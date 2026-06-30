@@ -4,7 +4,7 @@ import { TopStatusBar } from './components/TopStatusBar';
 import { ChatPanel } from './components/ChatPanel';
 import { PromptBar } from './components/PromptBar';
 import { Message, OrbState, BackendStatus } from './types';
-import { sendChatMessage, getBackendStatus } from "./api";
+import { sendChatMessage, getBackendStatus, resetConversation } from "./api";
 import './App.css';
 
 export default function App() {
@@ -30,10 +30,16 @@ export default function App() {
   }, []);
 
   // End chat and return to idle state
-  const handleEndChat = useCallback(() => {
+  const handleEndChat = useCallback(async () => {
     setOrbState('idle');
     setChatActive(false);
     setMessages([]);
+
+    try {
+      await resetConversation();
+    } catch (error) {
+      console.error('Reset conversation error:', error);
+    }
   }, []);
 
   // TODO: Backend integration

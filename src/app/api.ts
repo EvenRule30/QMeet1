@@ -27,8 +27,20 @@ export async function sendChatMessage(message: string): Promise<ChatApiResponse>
 
 export async function getBackendStatus(): Promise<BackendStatus> {
   const res = await fetch(`${API_BASE_URL}/api/status`);
+
   if (!res.ok) {
     throw new Error(`Backend status error: ${res.status}`);
   }
+
   return res.json();
+}
+
+export async function resetConversation(): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/reset`, {
+    method: "POST",
+  });
+
+  if (!res.ok) {
+    throw new Error(`Reset error: ${res.status}`);
+  }
 }

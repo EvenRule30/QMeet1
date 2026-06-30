@@ -67,6 +67,11 @@ def get_public_status() -> dict:
     }
 
 
+def reset_conversation() -> None:
+    global MESSAGE_HISTORY
+    MESSAGE_HISTORY.clear()
+    
+
 async def generate_reply(message: str) -> str:
     config = get_agent_config()
 

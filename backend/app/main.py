@@ -8,6 +8,7 @@ from app.agent import (
     AgentUserFacingError,
     generate_reply,
     get_public_status,
+    reset_conversation,
 )
 from app.schemas import ChatRequest, ChatResponse
 
@@ -56,3 +57,9 @@ async def chat(req: ChatRequest):
             status_code=500,
             detail="QMeet backend hit an unexpected error.",
         )
+    
+
+@app.post("/api/reset")
+async def reset():
+    reset_conversation()
+    return {"ok": True}
