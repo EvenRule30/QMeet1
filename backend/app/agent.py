@@ -1,4 +1,6 @@
 import os
+import json
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 
 import openai
@@ -33,6 +35,10 @@ class AgentConfig:
 
 class AgentUserFacingError(Exception):
     """Safe error message that can be shown in the UI."""
+
+
+def sse_event(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
 def get_agent_config() -> AgentConfig:
@@ -70,7 +76,7 @@ def get_public_status() -> dict:
 def reset_conversation() -> None:
     global MESSAGE_HISTORY
     MESSAGE_HISTORY.clear()
-    
+
 
 async def generate_reply(message: str) -> str:
     config = get_agent_config()
@@ -84,6 +90,34 @@ async def generate_reply(message: str) -> str:
     raise AgentUserFacingError(
         f'Unsupported LLM_PROVIDER="{config.provider}". Use "mock" or "openai".'
     )
+
+
+async def stream_reply(message: str) -> AsyncGenerator[str, None]:
+    config = get_agent_config()
+
+    if config.provider == "mock":
+        async for chunk in mock_stream_reply(message):
+            yield chunk
+        return
+
+    if config.provider == "openai":
+        async for chunk in openai_stream_reply(message, config):
+            yield chunk
+        return
+
+    raise AgentUserFacingError(
+        f'Unsupported LLM_PROVIDER="{config.provider}". Use "mock" or "openai".'
+    )
+
+
+async def mock_stream_reply(message: str) -> AsyncGenerator[str, None]:
+    import asyncio
+
+    reply = mock_reply(message)
+
+    for word in reply.split(" "):
+        yield word + " "
+        await asyncio.sleep(0.04)
 
 
 def mock_reply(message: str) -> str:
@@ -156,3 +190,75 @@ async def openai_reply(message: str, config: AgentConfig) -> str:
     MESSAGE_HISTORY.append({"role": "assistant", "content": reply})
 
     return reply
+
+
+async def openai_stream_reply(
+    message: str,
+    config: AgentConfig,
+) -> AsyncGenerator[str, None]:
+    api_key = os.getenv("OPENAI_API_KEY")
+
+    if not api_key:
+        raise AgentUserFacingError(
+            "OpenAI is selected, but OPENAI_API_KEY is missing in backend/.env."
+        )
+
+    client = AsyncOpenAI(api_key=api_key)
+    recent_history = MESSAGE_HISTORY[-10:]
+
+    input_messages = [
+        {
+            "role": "developer",
+            "content": SYSTEM_PROMPT,
+        },
+        *recent_history,
+        {
+            "role": "user",
+            "content": message,
+        },
+    ]
+
+    full_reply = ""
+
+    try:
+        stream = await client.responses.create(
+            model=config.model,
+            input=input_messages,
+            max_output_tokens=config.max_output_tokens,
+            stream=True,
+        )
+
+        async for event in stream:
+            if event.type == "response.output_text.delta":
+                delta = event.delta
+                full_reply += delta
+                yield delta
+
+            elif event.type == "response.completed":
+                break
+
+            elif event.type == "response.failed":
+                raise AgentUserFacingError("The model failed while generating a response.")
+
+    except openai.AuthenticationError as exc:
+        raise AgentUserFacingError(
+            "OpenAI authentication failed. Check backend/.env and verify the API key."
+        ) from exc
+    except openai.RateLimitError as exc:
+        raise AgentUserFacingError(
+            "OpenAI rate limit or quota was reached. Check API billing, limits, or try again later."
+        ) from exc
+    except openai.APIConnectionError as exc:
+        raise AgentUserFacingError(
+            "Could not connect to OpenAI. Check your internet connection."
+        ) from exc
+    except openai.APIError as exc:
+        raise AgentUserFacingError(
+            "OpenAI returned an API error. Try again shortly."
+        ) from exc
+
+    full_reply = full_reply.strip()
+
+    if full_reply:
+        MESSAGE_HISTORY.append({"role": "user", "content": message})
+        MESSAGE_HISTORY.append({"role": "assistant", "content": full_reply})

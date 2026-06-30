@@ -5,6 +5,13 @@ export type ChatApiResponse = {
   state: "idle" | "listening" | "thinking" | "speaking" | "error";
 };
 
+export type ChatStreamHandlers = {
+  onStart?: () => void;
+  onChunk: (text: string) => void;
+  onDone?: () => void;
+  onError?: (message: string) => void;
+};
+
 const API_BASE_URL =
   import.meta.env.VITE_QMEET_API_URL ?? "http://localhost:8000";
 
@@ -42,5 +49,73 @@ export async function resetConversation(): Promise<void> {
 
   if (!res.ok) {
     throw new Error(`Reset error: ${res.status}`);
+  }
+}
+
+export async function streamChatMessage(
+  message: string,
+  handlers: ChatStreamHandlers
+): Promise<void> {
+  const res = await fetch(`${API_BASE_URL}/api/chat/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+    },
+    body: JSON.stringify({ message }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Streaming backend error: ${res.status}`);
+  }
+
+  if (!res.body) {
+    throw new Error("Streaming response body was empty.");
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    const events = buffer.split("\n\n");
+    buffer = events.pop() ?? "";
+
+    for (const rawEvent of events) {
+      const lines = rawEvent.split("\n");
+      const eventLine = lines.find((line) => line.startsWith("event:"));
+      const dataLine = lines.find((line) => line.startsWith("data:"));
+
+      const event = eventLine?.replace("event:", "").trim();
+      const dataRaw = dataLine?.replace("data:", "").trim();
+
+      if (!event || !dataRaw) continue;
+
+      const data = JSON.parse(dataRaw);
+
+      if (event === "start") {
+        handlers.onStart?.();
+      }
+
+      if (event === "chunk") {
+        handlers.onChunk(data.text ?? "");
+      }
+
+      if (event === "done") {
+        handlers.onDone?.();
+      }
+
+      if (event === "error") {
+        handlers.onError?.(data.message ?? "Streaming error.");
+      }
+    }
   }
 }

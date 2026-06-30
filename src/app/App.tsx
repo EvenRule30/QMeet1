@@ -4,7 +4,7 @@ import { TopStatusBar } from './components/TopStatusBar';
 import { ChatPanel } from './components/ChatPanel';
 import { PromptBar } from './components/PromptBar';
 import { Message, OrbState, BackendStatus } from './types';
-import { sendChatMessage, getBackendStatus, resetConversation } from "./api";
+import { streamChatMessage, getBackendStatus, resetConversation } from "./api";
 import './App.css';
 
 export default function App() {
@@ -70,47 +70,78 @@ export default function App() {
 
     if (!chatActive) setChatActive(true);
 
+    const now = Date.now();
+    const assistantId = `a-${now}`;
+
     const userMsg: Message = {
-      id: `u-${Date.now()}`,
+      id: `u-${now}`,
       role: 'user',
       content: trimmed,
       timestamp: new Date(),
     };
 
-    setMessages((prev) => [...prev, userMsg]);
+    const assistantMsg: Message = {
+      id: assistantId,
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+    };
+
+    setMessages((prev) => [...prev, userMsg, assistantMsg]);
     setOrbState('thinking');
 
     try {
-      const data = await sendChatMessage(trimmed);
+      await streamChatMessage(trimmed, {
+        onStart: () => {
+          setOrbState('speaking');
+        },
 
-      setOrbState('speaking');
+        onChunk: (chunk) => {
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === assistantId
+                ? { ...msg, content: msg.content + chunk }
+                : msg
+            )
+          );
+        },
 
-      const assistantMsg: Message = {
-        id: `a-${Date.now()}`,
-        role: 'assistant',
-        content: data.reply,
-        timestamp: new Date(),
-      };
+        onDone: () => {
+          setOrbState('idle');
+        },
 
-      setMessages((prev) => [...prev, assistantMsg]);
+        onError: (message) => {
+          setOrbState('error');
 
-      window.setTimeout(() => {
-        setOrbState('idle');
-      }, 1200);
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === assistantId
+                ? { ...msg, content: message }
+                : msg
+            )
+          );
+
+          window.setTimeout(() => {
+            setOrbState('idle');
+          }, 2000);
+        },
+      });
     } catch (error) {
-      console.error('QMeet backend error:', error);
+      console.error('QMeet streaming error:', error);
 
       setOrbState('error');
 
-      const errorMsg: Message = {
-        id: `e-${Date.now()}`,
-        role: 'assistant',
-        content:
-          'Backend connection failed. Make sure the QMeet backend is running on http://localhost:8000.',
-        timestamp: new Date(),
-      };
-
-      setMessages((prev) => [...prev, errorMsg]);
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === assistantId
+            ? {
+                ...msg,
+                content:
+                  'Streaming connection failed. Make sure the QMeet backend is running on http://localhost:8000.',
+              }
+            : msg
+        )
+      );
 
       window.setTimeout(() => {
         setOrbState('idle');
