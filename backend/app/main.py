@@ -4,7 +4,11 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.agent import generate_reply
+from app.agent import (
+    AgentUserFacingError,
+    generate_reply,
+    get_public_status,
+)
 from app.schemas import ChatRequest, ChatResponse
 
 load_dotenv()
@@ -24,7 +28,15 @@ app.add_middleware(
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "service": "qmeet-agent"}
+    return {
+        "ok": True,
+        "service": "qmeet-agent",
+    }
+
+
+@app.get("/api/status")
+async def status():
+    return get_public_status()
 
 
 @app.post("/api/chat", response_model=ChatResponse)
@@ -37,5 +49,10 @@ async def chat(req: ChatRequest):
     try:
         reply = await generate_reply(message)
         return ChatResponse(reply=reply, state="speaking")
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+    except AgentUserFacingError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet backend hit an unexpected error.",
+        )
