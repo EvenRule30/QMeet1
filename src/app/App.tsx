@@ -4,7 +4,7 @@ import { TopStatusBar } from './components/TopStatusBar';
 import { ChatPanel } from './components/ChatPanel';
 import { PromptBar } from './components/PromptBar';
 import { Message, OrbState } from './types';
-import { getMockResponse } from './utils';
+import { sendChatMessage } from "./api";
 import './App.css';
 
 export default function App() {
@@ -42,33 +42,57 @@ export default function App() {
   //   // data.reply contains the assistant response
   //
   const handleSend = useCallback(async (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+
     if (!chatActive) setChatActive(true);
 
     const userMsg: Message = {
       id: `u-${Date.now()}`,
       role: 'user',
-      content: text,
+      content: trimmed,
       timestamp: new Date(),
     };
 
     setMessages((prev) => [...prev, userMsg]);
     setOrbState('thinking');
 
-    // Simulated latency — remove when wiring real backend
-    await new Promise((r) => setTimeout(r, 900 + Math.random() * 700));
+    try {
+      const data = await sendChatMessage(trimmed);
 
-    setOrbState('speaking');
-    const assistantMsg: Message = {
-      id: `a-${Date.now()}`,
-      role: 'assistant',
-      content: getMockResponse(text),
-      timestamp: new Date(),
-    };
-    setMessages((prev) => [...prev, assistantMsg]);
+      setOrbState('speaking');
 
-    // Simulated speaking duration — remove when wiring real backend
-    await new Promise((r) => setTimeout(r, 2000));
-    setOrbState('idle');
+      const assistantMsg: Message = {
+        id: `a-${Date.now()}`,
+        role: 'assistant',
+        content: data.reply,
+        timestamp: new Date(),
+      };
+
+      setMessages((prev) => [...prev, assistantMsg]);
+
+      window.setTimeout(() => {
+        setOrbState('idle');
+      }, 1200);
+    } catch (error) {
+      console.error('QMeet backend error:', error);
+
+      setOrbState('error');
+
+      const errorMsg: Message = {
+        id: `e-${Date.now()}`,
+        role: 'assistant',
+        content:
+          'Backend connection failed. Make sure the QMeet backend is running on http://localhost:8000.',
+        timestamp: new Date(),
+      };
+
+      setMessages((prev) => [...prev, errorMsg]);
+
+      window.setTimeout(() => {
+        setOrbState('idle');
+      }, 2000);
+    }
   }, [chatActive]);
 
   // TODO: Backend integration for voice capture
