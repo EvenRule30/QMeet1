@@ -1,3 +1,5 @@
+import { BackendStatus } from "./types";
+
 export type ChatApiResponse = {
   reply: string;
   state: "idle" | "listening" | "thinking" | "speaking" | "error";
@@ -20,5 +22,13 @@ export async function sendChatMessage(message: string): Promise<ChatApiResponse>
     throw new Error(text || `Backend error: ${res.status}`);
   }
 
+  return res.json();
+}
+
+export async function getBackendStatus(): Promise<BackendStatus> {
+  const res = await fetch(`${API_BASE_URL}/api/status`);
+  if (!res.ok) {
+    throw new Error(`Backend status error: ${res.status}`);
+  }
   return res.json();
 }

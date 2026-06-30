@@ -6,3 +6,11 @@ export interface Message {
   content: string;
   timestamp: Date;
 }
+
+export interface BackendStatus {
+  ok: boolean;
+  provider: string;
+  model: string;
+  hasOpenAIKey: boolean;
+  maxOutputTokens: number;
+}

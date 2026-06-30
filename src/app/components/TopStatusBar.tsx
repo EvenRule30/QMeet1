@@ -1,13 +1,14 @@
 import { useState, useEffect } from 'react';
-import { OrbState } from '../types';
+import { OrbState, BackendStatus } from '../types';
 
 interface TopStatusBarProps {
   orbState: OrbState;
   chatActive: boolean;
   onEnd: () => void;
+  backendStatus: BackendStatus | null;
 }
 
-export function TopStatusBar({ orbState, chatActive, onEnd }: TopStatusBarProps) {
+export function TopStatusBar({ orbState, chatActive, onEnd, backendStatus }: TopStatusBarProps) {
   const [time, setTime] = useState(() => new Date());
 
   useEffect(() => {
@@ -22,6 +23,11 @@ export function TopStatusBar({ orbState, chatActive, onEnd }: TopStatusBarProps)
     speaking: 'Responding',
     error: 'Error',
   };
+
+  const isConnected = backendStatus !== null;
+  const statusText = isConnected
+    ? `${backendStatus.provider} / ${backendStatus.model}`
+    : 'Disconnected';
 
   return (
     <div className="status-bar">
@@ -46,9 +52,9 @@ export function TopStatusBar({ orbState, chatActive, onEnd }: TopStatusBarProps)
             End
           </button>
         )}
-        <div className="connection-indicator">
+        <div className={`connection-indicator ${isConnected ? 'connected' : 'disconnected'}`}>
           <div className="conn-dot" />
-          <span className="conn-label">Connected</span>
+          <span className="conn-label">{statusText}</span>
         </div>
       </div>
     </div>

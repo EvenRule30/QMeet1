@@ -101,18 +101,33 @@
   gap: 6px;
 }
 
+.connection-indicator.connected .conn-dot {
+  background: #00ffb3;
+  box-shadow: 0 0 8px rgba(0, 255, 179, 0.9);
+  animation: conn-pulse 2.5s ease-in-out infinite;
+}
+.connection-indicator.connected .conn-label {
+  color: #00ffb3;
+}
+.connection-indicator.disconnected .conn-dot {
+  background: #ff4466;
+  box-shadow: 0 0 8px rgba(255, 68, 102, 0.9);
+  animation: conn-pulse 2.5s ease-in-out infinite;
+}
+.connection-indicator.disconnected .conn-label {
+  color: #ff6688;
+}
+
 .conn-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #00ffb3;
   box-shadow: 0 0 8px rgba(0, 255, 179, 0.9);
   animation: conn-pulse 2.5s ease-in-out infinite;
 }
 
 .conn-label {
   font-size: 11px;
-  color: #3d5a80;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }

@@ -1,16 +1,33 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { Orb } from './components/Orb';
 import { TopStatusBar } from './components/TopStatusBar';
 import { ChatPanel } from './components/ChatPanel';
 import { PromptBar } from './components/PromptBar';
-import { Message, OrbState } from './types';
-import { sendChatMessage } from "./api";
+import { Message, OrbState, BackendStatus } from './types';
+import { sendChatMessage, getBackendStatus } from "./api";
 import './App.css';
 
 export default function App() {
   const [chatActive, setChatActive] = useState(false);
   const [orbState, setOrbState] = useState<OrbState>('idle');
   const [messages, setMessages] = useState<Message[]>([]);
+  const [backendStatus, setBackendStatus] = useState<BackendStatus | null>(null);
+
+  // Fetch and poll backend status
+  useEffect(() => {
+    const fetchStatus = async () => {
+      try {
+        const status = await getBackendStatus();
+        setBackendStatus(status);
+      } catch (error) {
+        setBackendStatus(null);
+      }
+    };
+
+    fetchStatus();
+    const interval = setInterval(fetchStatus, 10000);
+    return () => clearInterval(interval);
+  }, []);
 
   // End chat and return to idle state
   const handleEndChat = useCallback(() => {
@@ -112,7 +129,7 @@ export default function App() {
 
   return (
     <div className="agent-screen">
-      <TopStatusBar orbState={orbState} chatActive={chatActive} onEnd={handleEndChat} />
+      <TopStatusBar orbState={orbState} chatActive={chatActive} onEnd={handleEndChat} backendStatus={backendStatus} />
 
       <div className="agent-body">
         {/* Orb area: full width when idle, 38% when chat active */}
