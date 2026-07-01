@@ -157,6 +157,7 @@ export default function App() {
     if (orbState !== 'idle') return;
 
     if (!isSpeechRecognitionSupported()) {
+      setChatActive(true);
       setMessages((prev) => [
         ...prev,
         {
@@ -199,6 +200,7 @@ export default function App() {
         }
 
         if (!transcriptSentRef.current) {
+          setChatActive(true);
           setOrbState('idle');
           setMessages((prev) => [
             ...prev,
@@ -241,7 +243,7 @@ export default function App() {
     recognition.onerror = (event: any) => {
       const errorCode = event.error;
       let errorMessage = 'Speech recognition failed. Please try again.';
-    
+
       if (errorCode === 'no-speech') {
         errorMessage = 'No speech detected. Please speak clearly and try again.';
       } else if (errorCode === 'audio-capture') {
@@ -255,7 +257,8 @@ export default function App() {
       if (listeningTimeoutRef.current) {
         clearTimeout(listeningTimeoutRef.current);
       }
-    
+
+      setChatActive(true);
       setOrbState('error');
       setMessages((prev) => [
         ...prev,
@@ -266,7 +269,7 @@ export default function App() {
           timestamp: new Date(),
         },
       ]);
-    
+
       setTimeout(() => {
         setOrbState('idle');
       }, 2000);
