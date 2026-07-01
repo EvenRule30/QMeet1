@@ -1,10 +1,11 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { Orb } from './components/Orb';
 import { TopStatusBar } from './components/TopStatusBar';
 import { ChatPanel } from './components/ChatPanel';
 import { PromptBar } from './components/PromptBar';
 import { Message, OrbState, BackendStatus } from './types';
 import { streamChatMessage, getBackendStatus, resetConversation } from "./api";
+import { getSpeechRecognition, isSpeechRecognitionSupported } from './speechRecognition';
 import './App.css';
 
 export default function App() {
@@ -12,6 +13,9 @@ export default function App() {
   const [orbState, setOrbState] = useState<OrbState>('idle');
   const [messages, setMessages] = useState<Message[]>([]);
   const [backendStatus, setBackendStatus] = useState<BackendStatus | null>(null);
+  const recognitionRef = useRef<InstanceType<ReturnType<typeof getSpeechRecognition>> | null>(null);
+  const transcriptSentRef = useRef(false);
+  const listeningTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Fetch and poll backend status
   useEffect(() => {
@@ -149,20 +153,150 @@ export default function App() {
     }
   }, [chatActive]);
 
-  // TODO: Backend integration for voice capture
-  // Replace this with actual STT (speech-to-text) stream:
-  // - Listen for audio from microphone
-  // - Send audio chunks to backend
-  // - Transition to 'thinking' state when transcription complete
-  //
   const handleOrbClick = useCallback(() => {
-    if (chatActive) return;
+    if (orbState !== 'idle') return;
+
+    if (!isSpeechRecognitionSupported()) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `a-${Date.now()}`,
+          role: 'assistant',
+          content: 'Voice input is not supported in this browser. Please use the text input instead.',
+          timestamp: new Date(),
+        },
+      ]);
+      return;
+    }
+
     setOrbState('listening');
-    setTimeout(() => {
-      setChatActive(true);
+    transcriptSentRef.current = false;
+
+    const SpeechRecognitionClass = getSpeechRecognition();
+
+    if (!SpeechRecognitionClass) {
       setOrbState('idle');
-    }, 1600);
-  }, [chatActive]);
+      return;
+    }
+
+    const recognition = new SpeechRecognitionClass();
+    recognitionRef.current = recognition;
+
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = 'en-US';
+    
+    recognition.onstart = () => {
+      setOrbState('listening');
+
+      if (listeningTimeoutRef.current) {
+        clearTimeout(listeningTimeoutRef.current);
+      }
+
+      listeningTimeoutRef.current = setTimeout(() => {
+        if (recognitionRef.current) {
+          recognitionRef.current.abort();
+        }
+
+        if (!transcriptSentRef.current) {
+          setOrbState('idle');
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `a-${Date.now()}`,
+              role: 'assistant',
+              content: 'I did not catch that. Tap the orb and try again.',
+              timestamp: new Date(),
+            },
+          ]);
+        }
+      }, 8000);
+    };
+    
+    recognition.onresult = (event: any) => {
+      if (transcriptSentRef.current) return;
+
+      let transcript = '';
+    
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcriptSegment = event.results[i][0].transcript;
+        transcript += transcriptSegment;
+    
+        if (event.results[i].isFinal) {
+          break;
+        }
+      }
+    
+      if (transcript.trim()) {
+        transcriptSentRef.current = true;
+
+        if (listeningTimeoutRef.current) {
+          clearTimeout(listeningTimeoutRef.current);
+        }
+
+        handleSend(transcript.trim());
+      }
+    };
+    
+    recognition.onerror = (event: any) => {
+      const errorCode = event.error;
+      let errorMessage = 'Speech recognition failed. Please try again.';
+    
+      if (errorCode === 'no-speech') {
+        errorMessage = 'No speech detected. Please speak clearly and try again.';
+      } else if (errorCode === 'audio-capture') {
+        errorMessage = 'Microphone not found or permission denied.';
+      } else if (errorCode === 'not-allowed') {
+        errorMessage = 'Microphone permission denied. Please enable it in your browser settings.';
+      } else if (errorCode === 'network') {
+        errorMessage = 'Network error during speech recognition.';
+      }
+
+      if (listeningTimeoutRef.current) {
+        clearTimeout(listeningTimeoutRef.current);
+      }
+    
+      setOrbState('error');
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `a-${Date.now()}`,
+          role: 'assistant',
+          content: errorMessage,
+          timestamp: new Date(),
+        },
+      ]);
+    
+      setTimeout(() => {
+        setOrbState('idle');
+      }, 2000);
+    };
+    
+    recognition.onend = () => {
+      if (listeningTimeoutRef.current) {
+        clearTimeout(listeningTimeoutRef.current);
+        listeningTimeoutRef.current = null;
+      }
+
+      if (!transcriptSentRef.current) {
+        setOrbState('idle');
+      }
+
+      recognitionRef.current = null;
+    };
+    
+    try {
+      recognition.start();
+    } catch (error) {
+      console.error('Speech recognition start error:', error);
+      
+      if (listeningTimeoutRef.current) {
+        clearTimeout(listeningTimeoutRef.current);
+      }
+      
+      setOrbState('idle');
+    }
+  }, [orbState, handleSend]);
 
   return (
     <div className="agent-screen">
@@ -180,7 +314,7 @@ export default function App() {
 
           {!chatActive && (
             <div className="idle-hint">
-              <span>Ask QMeet anything…</span>
+              <span>{orbState === 'listening' ? 'Listening…' : 'Ask QMeet anything…'}</span>
             </div>
           )}
         </div>
