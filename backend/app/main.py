@@ -21,10 +21,13 @@ app = FastAPI(title="QMeet Agent Backend")
 
 frontend_origin = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
 
+# change allow comments when loosening or tightening CORS for testing
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[frontend_origin],
-    allow_credentials=True,
+    #allow_origins=[frontend_origin],
+    allow_origins=["*"],
+    #allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
