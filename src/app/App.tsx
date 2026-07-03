@@ -6,6 +6,7 @@ import { PromptBar } from './components/PromptBar';
 import { Message, OrbState, BackendStatus, ActivePanel } from './types';
 import { streamChatMessage, getBackendStatus, resetConversation } from "./api";
 import { getSpeechRecognition, isSpeechRecognitionSupported } from './speechRecognition';
+import { speakText, stopSpeaking } from './speechSynthesis';
 import { parseCommand } from './commands';
 import './App.css';
 
@@ -15,10 +16,52 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [backendStatus, setBackendStatus] = useState<BackendStatus | null>(null);
   const [activePanel, setActivePanel] = useState<ActivePanel>('none');
+  const [voiceOutputEnabled] = useState(true);
+  const speechTokenRef = useRef(0);
   const recognitionRef = useRef<InstanceType<ReturnType<typeof getSpeechRecognition>> | null>(null);
   const transcriptSentRef = useRef(false);
   const listeningTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const suppressNextSpeechErrorRef = useRef(false);
+
+  const stopCurrentSpeech = useCallback(() => {
+    speechTokenRef.current += 1;
+    stopSpeaking();
+  }, []);
+
+  const speakAssistantText = useCallback((text: string) => {
+    const trimmed = text.trim();
+
+    if (!trimmed || !voiceOutputEnabled) {
+      setOrbState('idle');
+      return;
+    }
+
+    const speechToken = speechTokenRef.current + 1;
+    speechTokenRef.current = speechToken;
+
+    const didStart = speakText(trimmed, {
+      onStart: () => {
+        if (speechTokenRef.current === speechToken) {
+          setOrbState('speaking');
+        }
+      },
+      onEnd: () => {
+        if (speechTokenRef.current === speechToken) {
+          setOrbState('idle');
+        }
+      },
+      onError: () => {
+        if (speechTokenRef.current === speechToken) {
+          setOrbState('idle');
+        }
+      },
+    });
+
+    if (!didStart) {
+      setOrbState('idle');
+    }
+  }, [voiceOutputEnabled]);
+
 
   // Fetch and poll backend status
   useEffect(() => {
@@ -34,6 +77,13 @@ export default function App() {
     fetchStatus();
     const interval = setInterval(fetchStatus, 10000);
     return () => clearInterval(interval);
+  }, []);
+
+
+  useEffect(() => {
+    return () => {
+      stopSpeaking();
+    };
   }, []);
 
   // Cleanup speech recognition state
@@ -59,6 +109,7 @@ export default function App() {
 
   // End chat and return to idle state
   const handleEndChat = useCallback(async () => {
+    stopCurrentSpeech();
     finishListening();
     setChatActive(false);
     setMessages([]);
@@ -68,7 +119,7 @@ export default function App() {
     } catch (error) {
       console.error('Reset conversation error:', error);
     }
-  }, [finishListening]);
+  }, [finishListening, stopCurrentSpeech]);
 
   const closePanel = useCallback(() => {
     setActivePanel('none');
@@ -100,6 +151,8 @@ export default function App() {
     const trimmed = text.trim();
     if (!trimmed) return;
 
+    stopCurrentSpeech();
+
     const commandMatch = parseCommand(trimmed);
     
     if (commandMatch) {
@@ -116,13 +169,15 @@ export default function App() {
         timestamp: new Date(),
       };
       
+      const confirmationContent =
+        commandMatch.command === 'close-generic' && activePanel === 'none'
+          ? 'No panel is open.'
+          : commandMatch.confirmation;
+
       const confirmationMsg: Message = {
         id: `a-${now}`,
         role: 'assistant',
-        content: 
-        commandMatch.command === 'close-generic' && activePanel === 'none'
-            ? 'No panel is open.'
-            : commandMatch.confirmation,
+        content: confirmationContent,
         timestamp: new Date(),
       };
       
@@ -152,8 +207,11 @@ export default function App() {
         setMessages([userMsg, confirmationMsg]);
       } else if (commandMatch.command === 'end-chat') {
         await handleEndChat();
+        return;
       }
       
+      speakAssistantText(confirmationContent);
+
       return;
     }
 
@@ -179,13 +237,17 @@ export default function App() {
     setMessages((prev) => [...prev, userMsg, assistantMsg]);
     setOrbState('thinking');
 
+    let assistantReply = '';
+
     try {
       await streamChatMessage(trimmed, {
         onStart: () => {
-          setOrbState('speaking');
+          setOrbState('thinking');
         },
 
         onChunk: (chunk) => {
+          assistantReply += chunk;
+
           setMessages((prev) =>
             prev.map((msg) =>
               msg.id === assistantId
@@ -196,7 +258,7 @@ export default function App() {
         },
 
         onDone: () => {
-          setOrbState('idle');
+          speakAssistantText(assistantReply);
         },
 
         onError: (message) => {
@@ -236,10 +298,14 @@ export default function App() {
         setOrbState('idle');
       }, 2000);
     }
-  }, [chatActive, activePanel, handleEndChat, finishListening, closePanel]);
+  }, [chatActive, activePanel, handleEndChat, finishListening, closePanel, stopCurrentSpeech, speakAssistantText]);
 
   const handleOrbClick = useCallback(() => {
-    if (orbState !== 'idle') return;
+    if (orbState === 'speaking') {
+      stopCurrentSpeech();
+    } else if (orbState !== 'idle') {
+      return;
+    }
 
     if (!isSpeechRecognitionSupported()) {
       setChatActive(true);
@@ -396,7 +462,7 @@ export default function App() {
       
       setOrbState('idle');
     }
-  }, [orbState, handleSend]);
+  }, [orbState, handleSend, stopCurrentSpeech]);
 
   return (
     <div className="agent-screen">
