@@ -35,9 +35,29 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
+  // Cleanup speech recognition state
+  const finishListening = useCallback(() => {
+    if (listeningTimeoutRef.current) {
+      clearTimeout(listeningTimeoutRef.current);
+      listeningTimeoutRef.current = null;
+    }
+
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.abort();
+      } catch (error) {
+        console.error('Error aborting recognition:', error);
+      }
+      recognitionRef.current = null;
+    }
+
+    transcriptSentRef.current = false;
+    setOrbState('idle');
+  }, []);
+
   // End chat and return to idle state
   const handleEndChat = useCallback(async () => {
-    setOrbState('idle');
+    finishListening();
     setChatActive(false);
     setMessages([]);
 
@@ -46,7 +66,7 @@ export default function App() {
     } catch (error) {
       console.error('Reset conversation error:', error);
     }
-  }, []);
+  }, [finishListening]);
 
   // TODO: Backend integration
   // Replace this function body with actual FastAPI calls:
@@ -77,6 +97,8 @@ export default function App() {
     const commandMatch = parseCommand(trimmed);
 
     if (commandMatch) {
+      finishListening();
+
       if (!chatActive) setChatActive(true);
 
       const now = Date.now();
@@ -199,7 +221,7 @@ export default function App() {
         setOrbState('idle');
       }, 2000);
     }
-  }, [chatActive, handleEndChat]);
+  }, [chatActive, handleEndChat, finishListening]);
 
   const handleOrbClick = useCallback(() => {
     if (orbState !== 'idle') return;
@@ -333,7 +355,9 @@ export default function App() {
         setOrbState('idle');
       }
 
-      recognitionRef.current = null;
+      if (recognitionRef.current === recognition) {
+        recognitionRef.current = null;
+      }
     };
     
     try {
