@@ -13,6 +13,7 @@
   font-family: 'Exo 2', 'Inter', system-ui, sans-serif;
   background: #07091a;
   position: relative;
+  isolation: isolate;
   color: #e8edf5;
 }
 
@@ -173,7 +174,7 @@
   flex: 1;
   display: flex;
   position: relative;
-  z-index: 1;
+  z-index: auto;
   overflow: hidden;
 }
 
@@ -188,6 +189,8 @@
   transition: width 0.65s cubic-bezier(0.4, 0, 0.2, 1);
   width: 100%;
   flex-shrink: 0;
+  z-index: 120;
+  pointer-events: auto;
 }
 
 .orb-area.orb-area-active {
@@ -223,6 +226,8 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  position: relative;
+  z-index: 1;
   transition: width 0.65s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.5s ease 0.1s;
 }
 
@@ -716,4 +721,142 @@
     radial-gradient(ellipse 80% 55% at 50% 105%, #aa1133 0%, transparent 65%),
     radial-gradient(ellipse 70% 70% at 55% 45%, #4a1a1a 0%, #1a0808 50%, #0a0305 100%);
   animation: orb-breathe 0.6s ease-in-out infinite;
+}
+
+/* =====================================================
+   UI PANEL OVERLAY
+   ===================================================== */
+
+/*
+  The panel layer must sit above chat, but it should not consume
+  the whole screen's pointer events. Only the actual panel card should
+  block clicks/selection. The orb is given a higher z-index so voice
+  commands can still close panels.
+*/
+
+.panel-overlay {
+  position: absolute;
+  inset: 40px 0 0 0;
+  z-index: 100;
+  pointer-events: none;
+  display: block;
+  background: rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(3px);
+  animation: overlay-fade-in 0.2s ease-out;
+}
+
+@keyframes overlay-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.panel-content {
+  position: absolute;
+  top: 24px;
+  right: 24px;
+  bottom: 72px;
+  left: 42%;
+  z-index: 110;
+  pointer-events: auto;
+  box-sizing: border-box;
+
+  background: #07091a;
+  opacity: 1;
+  border: 1px solid rgba(0, 180, 255, 0.28);
+  border-radius: 20px;
+  padding: 28px;
+  overflow-y: auto;
+
+  box-shadow:
+    0 20px 80px rgba(0, 0, 0, 0.78),
+    0 0 44px rgba(0, 180, 255, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+
+  animation: panel-slide-up 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.panel-content,
+.panel-content * {
+  pointer-events: auto;
+}
+
+@keyframes panel-slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.panel-header {
+  font-size: 24px;
+  font-weight: 700;
+  background: linear-gradient(90deg, #00d4ff 0%, #cc44ff 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin-bottom: 20px;
+  letter-spacing: 0.05em;
+}
+
+.panel-body {
+  font-family: 'Inter', sans-serif;
+  font-size: 15px;
+  line-height: 1.7;
+  color: #c8d8ea;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.panel-section {
+  padding: 12px 12px 12px 16px;
+  border-left: 2px solid rgba(0, 180, 255, 0.3);
+  background: rgba(0, 180, 255, 0.04);
+  border-radius: 6px;
+}
+
+.panel-section-title {
+  font-weight: 600;
+  color: #00d4ff;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: 8px;
+}
+
+.panel-section-text {
+  color: #a8bcd4;
+  font-size: 14px;
+  margin: 0;
+}
+
+.close-panel-btn {
+  align-self: flex-end;
+  padding: 8px 16px;
+  margin-top: 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(0, 180, 255, 0.35);
+  background: rgba(0, 180, 255, 0.10);
+  color: rgba(0, 212, 255, 0.92);
+  font-family: 'Exo 2', sans-serif;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s, color 0.2s, box-shadow 0.2s;
+  pointer-events: auto;
+  position: relative;
+  z-index: 111;
+}
+
+.close-panel-btn:hover {
+  background: rgba(0, 180, 255, 0.18);
+  border-color: rgba(0, 180, 255, 0.55);
+  color: rgba(0, 212, 255, 1);
+  box-shadow: 0 0 16px rgba(0, 180, 255, 0.18);
 }
