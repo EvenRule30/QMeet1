@@ -860,3 +860,59 @@
   color: rgba(0, 212, 255, 1);
   box-shadow: 0 0 16px rgba(0, 180, 255, 0.18);
 }
+
+/* ---- Voice settings controls ---- */
+.settings-control-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+}
+
+.settings-control-label {
+  font-size: 14px;
+  color: #a8bcd4;
+}
+
+.settings-control-value {
+  font-family: 'Exo 2', monospace;
+  font-size: 13px;
+  color: #00d4ff;
+  letter-spacing: 0.06em;
+}
+
+.panel-action-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.panel-action-btn {
+  padding: 7px 13px;
+  border-radius: 14px;
+  border: 1px solid rgba(0, 180, 255, 0.22);
+  background: rgba(0, 180, 255, 0.06);
+  color: rgba(0, 212, 255, 0.82);
+  font-family: 'Exo 2', sans-serif;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s, color 0.2s, box-shadow 0.2s;
+}
+
+.panel-action-btn:hover {
+  background: rgba(0, 180, 255, 0.13);
+  border-color: rgba(0, 180, 255, 0.42);
+  color: rgba(0, 212, 255, 1);
+  box-shadow: 0 0 14px rgba(0, 180, 255, 0.14);
+}
+
+.panel-action-btn-active {
+  border-color: rgba(0, 255, 179, 0.36);
+  background: rgba(0, 255, 179, 0.08);
+  color: rgba(0, 255, 179, 0.95);
+}

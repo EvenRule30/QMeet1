@@ -16,7 +16,8 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [backendStatus, setBackendStatus] = useState<BackendStatus | null>(null);
   const [activePanel, setActivePanel] = useState<ActivePanel>('none');
-  const [voiceOutputEnabled] = useState(true);
+  const [voiceOutputEnabled, setVoiceOutputEnabled] = useState(true);
+  const [speechRate, setSpeechRate] = useState(1);
   const speechTokenRef = useRef(0);
   const recognitionRef = useRef<InstanceType<ReturnType<typeof getSpeechRecognition>> | null>(null);
   const transcriptSentRef = useRef(false);
@@ -28,10 +29,12 @@ export default function App() {
     stopSpeaking();
   }, []);
 
-  const speakAssistantText = useCallback((text: string) => {
+  const speakAssistantText = useCallback((text: string, options: { enabled?: boolean; rate?: number } = {}) => {
     const trimmed = text.trim();
+    const shouldSpeak = options.enabled ?? voiceOutputEnabled;
+    const rate = options.rate ?? speechRate;
 
-    if (!trimmed || !voiceOutputEnabled) {
+    if (!trimmed || !shouldSpeak) {
       setOrbState('idle');
       return;
     }
@@ -40,6 +43,7 @@ export default function App() {
     speechTokenRef.current = speechToken;
 
     const didStart = speakText(trimmed, {
+      rate,
       onStart: () => {
         if (speechTokenRef.current === speechToken) {
           setOrbState('speaking');
@@ -60,7 +64,7 @@ export default function App() {
     if (!didStart) {
       setOrbState('idle');
     }
-  }, [voiceOutputEnabled]);
+  }, [voiceOutputEnabled, speechRate]);
 
 
   // Fetch and poll backend status
@@ -125,6 +129,19 @@ export default function App() {
     setActivePanel('none');
   }, []);
 
+  const setVoiceOutput = useCallback((enabled: boolean) => {
+    if (!enabled) {
+      stopCurrentSpeech();
+    }
+    setVoiceOutputEnabled(enabled);
+  }, [stopCurrentSpeech]);
+
+  const adjustSpeechRate = useCallback((nextRate: number) => {
+    const clampedRate = Math.min(1.35, Math.max(0.75, nextRate));
+    setSpeechRate(clampedRate);
+    return clampedRate;
+  }, []);
+
   // TODO: Backend integration
   // Replace this function body with actual FastAPI calls:
   //
@@ -169,19 +186,13 @@ export default function App() {
         timestamp: new Date(),
       };
       
-      const confirmationContent =
+      let confirmationContent =
         commandMatch.command === 'close-generic' && activePanel === 'none'
           ? 'No panel is open.'
           : commandMatch.confirmation;
-
-      const confirmationMsg: Message = {
-        id: `a-${now}`,
-        role: 'assistant',
-        content: confirmationContent,
-        timestamp: new Date(),
-      };
-      
-      setMessages((prev) => [...prev, userMsg, confirmationMsg]);
+      let shouldSpeakConfirmation = voiceOutputEnabled;
+      let confirmationSpeechRate = speechRate;
+      let replaceMessages = false;
       
       if (commandMatch.command === 'open-menu') {
         setActivePanel('menu');
@@ -203,14 +214,58 @@ export default function App() {
         if (activePanel !== 'none') {
           closePanel();
         }
+      } else if (commandMatch.command === 'voice-output-on') {
+        setVoiceOutputEnabled(true);
+        shouldSpeakConfirmation = true;
+      } else if (commandMatch.command === 'voice-output-off') {
+        stopCurrentSpeech();
+        setVoiceOutputEnabled(false);
+        shouldSpeakConfirmation = false;
+      } else if (commandMatch.command === 'voice-output-toggle') {
+        const nextEnabled = !voiceOutputEnabled;
+        if (!nextEnabled) {
+          stopCurrentSpeech();
+        }
+        setVoiceOutputEnabled(nextEnabled);
+        confirmationContent = nextEnabled ? 'Voice output enabled.' : 'Voice output muted.';
+        shouldSpeakConfirmation = nextEnabled;
+      } else if (commandMatch.command === 'voice-slower') {
+        confirmationSpeechRate = adjustSpeechRate(speechRate - 0.15);
+        confirmationContent = `Speaking slower. Voice speed is now ${confirmationSpeechRate.toFixed(2)}×.`;
+      } else if (commandMatch.command === 'voice-faster') {
+        confirmationSpeechRate = adjustSpeechRate(speechRate + 0.15);
+        confirmationContent = `Speaking faster. Voice speed is now ${confirmationSpeechRate.toFixed(2)}×.`;
+      } else if (commandMatch.command === 'voice-normal') {
+        confirmationSpeechRate = adjustSpeechRate(1);
+        confirmationContent = 'Voice speed reset to normal.';
+      } else if (commandMatch.command === 'stop-speaking') {
+        stopCurrentSpeech();
+        setOrbState('idle');
+        shouldSpeakConfirmation = false;
       } else if (commandMatch.command === 'clear-chat') {
-        setMessages([userMsg, confirmationMsg]);
+        replaceMessages = true;
       } else if (commandMatch.command === 'end-chat') {
         await handleEndChat();
         return;
       }
       
-      speakAssistantText(confirmationContent);
+      const confirmationMsg: Message = {
+        id: `a-${now}`,
+        role: 'assistant',
+        content: confirmationContent,
+        timestamp: new Date(),
+      };
+      
+      if (replaceMessages) {
+        setMessages([userMsg, confirmationMsg]);
+      } else {
+        setMessages((prev) => [...prev, userMsg, confirmationMsg]);
+      }
+
+      speakAssistantText(confirmationContent, {
+        enabled: shouldSpeakConfirmation,
+        rate: confirmationSpeechRate,
+      });
 
       return;
     }
@@ -298,7 +353,7 @@ export default function App() {
         setOrbState('idle');
       }, 2000);
     }
-  }, [chatActive, activePanel, handleEndChat, finishListening, closePanel, stopCurrentSpeech, speakAssistantText]);
+  }, [chatActive, activePanel, voiceOutputEnabled, speechRate, handleEndChat, finishListening, closePanel, stopCurrentSpeech, speakAssistantText, adjustSpeechRate]);
 
   const handleOrbClick = useCallback(() => {
     if (orbState === 'speaking') {
@@ -501,7 +556,7 @@ export default function App() {
               <div className="panel-section">
                 <div className="panel-section-title">Voice Commands</div>
                 <p className="panel-section-text">
-                  Say commands like "show settings", "show status", "close panel", "go home", "clear chat", or "end chat". You can also ask "what can you do?" for command help.
+                  Say commands like "show settings", "show status", "close panel", "go home", "mute voice", "unmute voice", "speak slower", "speak faster", "clear chat", or "end chat". You can also ask "what can you do?" for command help.
                 </p>
               </div>
               <div className="panel-section">
@@ -528,6 +583,54 @@ export default function App() {
                 <p className="panel-section-text">
                   Microphone: Enabled · Language: English (US) · Recognition: Online
                 </p>
+                <div className="settings-control-row">
+                  <span className="settings-control-label">Spoken responses</span>
+                  <button
+                    className={`panel-action-btn ${voiceOutputEnabled ? 'panel-action-btn-active' : ''}`}
+                    onClick={() => {
+                      const nextEnabled = !voiceOutputEnabled;
+                      setVoiceOutput(nextEnabled);
+                      if (nextEnabled) {
+                        speakAssistantText('Voice output enabled.', { enabled: true });
+                      }
+                    }}
+                  >
+                    {voiceOutputEnabled ? 'On' : 'Muted'}
+                  </button>
+                </div>
+                <div className="settings-control-row">
+                  <span className="settings-control-label">Voice speed</span>
+                  <span className="settings-control-value">{speechRate.toFixed(2)}×</span>
+                </div>
+                <div className="panel-action-row">
+                  <button
+                    className="panel-action-btn"
+                    onClick={() => {
+                      const nextRate = adjustSpeechRate(speechRate - 0.15);
+                      speakAssistantText(`Voice speed is now ${nextRate.toFixed(2)}×.`, { rate: nextRate });
+                    }}
+                  >
+                    Slower
+                  </button>
+                  <button
+                    className="panel-action-btn"
+                    onClick={() => {
+                      const nextRate = adjustSpeechRate(1);
+                      speakAssistantText('Voice speed reset to normal.', { rate: nextRate });
+                    }}
+                  >
+                    Normal
+                  </button>
+                  <button
+                    className="panel-action-btn"
+                    onClick={() => {
+                      const nextRate = adjustSpeechRate(speechRate + 0.15);
+                      speakAssistantText(`Voice speed is now ${nextRate.toFixed(2)}×.`, { rate: nextRate });
+                    }}
+                  >
+                    Faster
+                  </button>
+                </div>
               </div>
               <div className="panel-section">
                 <div className="panel-section-title">Display</div>
@@ -558,6 +661,12 @@ export default function App() {
                 <div className="panel-section-title">Current State</div>
                 <p className="panel-section-text">
                   Orb State: {orbState.charAt(0).toUpperCase() + orbState.slice(1)} · Chat Active: {chatActive ? 'Yes' : 'No'}
+                </p>
+              </div>
+              <div className="panel-section">
+                <div className="panel-section-title">Voice Output</div>
+                <p className="panel-section-text">
+                  Spoken responses: {voiceOutputEnabled ? 'On' : 'Muted'} · Speed: {speechRate.toFixed(2)}×
                 </p>
               </div>
               <div className="panel-section">

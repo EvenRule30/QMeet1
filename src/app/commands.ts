@@ -8,6 +8,13 @@ export type LocalCommand =
   | 'show-status'
   | 'close-status'
   | 'hide-status'
+  | 'voice-output-on'
+  | 'voice-output-off'
+  | 'voice-output-toggle'
+  | 'voice-slower'
+  | 'voice-faster'
+  | 'voice-normal'
+  | 'stop-speaking'
   | 'clear-chat'
   | 'end-chat'
   | 'close-generic';
@@ -20,7 +27,7 @@ interface CommandMatch {
 }
 
 const HELP_MESSAGE =
-  'I can control the local QMeet interface by voice or text. I can open Menu, Settings, and Status. Try saying “open menu,” “show settings,” or “show status.” I can close panels with “close menu,” “close status,” “close panel,” or “go home.” I can also “clear chat” or “end chat.”';
+  'I can control the local QMeet interface by voice or text. I can open Menu, Settings, and Status. Try saying “open menu,” “show settings,” or “show status.” I can close panels with “close menu,” “close status,” “close panel,” or “go home.” I can also control spoken responses with “mute voice,” “unmute voice,” “speak slower,” “speak faster,” or “normal voice.”';
 
 const CONFIRMATIONS: Record<LocalCommand, string> = {
   help: HELP_MESSAGE,
@@ -32,6 +39,13 @@ const CONFIRMATIONS: Record<LocalCommand, string> = {
   'show-status': 'Showing status.',
   'close-status': 'Closing status.',
   'hide-status': 'Hiding status.',
+  'voice-output-on': 'Voice output enabled.',
+  'voice-output-off': 'Voice output muted.',
+  'voice-output-toggle': 'Toggling voice output.',
+  'voice-slower': 'Speaking slower.',
+  'voice-faster': 'Speaking faster.',
+  'voice-normal': 'Voice speed reset to normal.',
+  'stop-speaking': 'Speech stopped.',
   'clear-chat': 'Chat cleared.',
   'end-chat': 'Ending conversation.',
   'close-generic': 'Closed.',
@@ -100,6 +114,53 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
   [
     'hide-status',
     [rx(`^${REQUEST_PREFIX}hide\\s+(?:the\\s+)?status(?:\\s+(?:panel|screen|menu))?$`)],
+  ],
+  [
+    'voice-output-on',
+    [
+      rx(`^${REQUEST_PREFIX}(?:turn\\s+on|enable|unmute|activate)\\s+(?:the\\s+)?(?:voice|speech|voice\\s+output|spoken\\s+responses|speaker)$`),
+      rx(`^${REQUEST_PREFIX}(?:voice|speech|speaker)\\s+on$`),
+      rx(`^${REQUEST_PREFIX}(?:read|speak)\\s+(?:responses\\s+)?(?:out\\s+loud|aloud)$`),
+    ],
+  ],
+  [
+    'voice-output-off',
+    [
+      rx(`^${REQUEST_PREFIX}(?:turn\\s+off|disable|mute|deactivate)\\s+(?:the\\s+)?(?:voice|speech|voice\\s+output|spoken\\s+responses|speaker)$`),
+      rx(`^${REQUEST_PREFIX}(?:voice|speech|speaker)\\s+off$`),
+      rx(`^${REQUEST_PREFIX}(?:stop|quit)\\s+(?:reading|speaking)\\s+(?:out\\s+loud|aloud)$`),
+    ],
+  ],
+  [
+    'voice-output-toggle',
+    [rx(`^${REQUEST_PREFIX}toggle\\s+(?:the\\s+)?(?:voice|speech|voice\\s+output|spoken\\s+responses|speaker)$`)],
+  ],
+  [
+    'voice-slower',
+    [
+      rx(`^${REQUEST_PREFIX}(?:speak|talk|read)\\s+slower$`),
+      rx(`^${REQUEST_PREFIX}(?:slow\\s+down|decrease|lower)\\s+(?:the\\s+)?(?:voice|speech|voice\\s+speed|speech\\s+rate)$`),
+      rx(`^${REQUEST_PREFIX}(?:voice|speech)\\s+slower$`),
+    ],
+  ],
+  [
+    'voice-faster',
+    [
+      rx(`^${REQUEST_PREFIX}(?:speak|talk|read)\\s+faster$`),
+      rx(`^${REQUEST_PREFIX}(?:speed\\s+up|increase|raise)\\s+(?:the\\s+)?(?:voice|speech|voice\\s+speed|speech\\s+rate)$`),
+      rx(`^${REQUEST_PREFIX}(?:voice|speech)\\s+faster$`),
+    ],
+  ],
+  [
+    'voice-normal',
+    [
+      rx(`^${REQUEST_PREFIX}(?:normal|default|reset)\\s+(?:voice|speech|voice\\s+speed|speech\\s+rate)$`),
+      rx(`^${REQUEST_PREFIX}(?:speak|talk|read)\\s+(?:normally|normal)$`),
+    ],
+  ],
+  [
+    'stop-speaking',
+    [rx(`^${REQUEST_PREFIX}(?:stop\\s+speaking|stop\\s+talking|stop\\s+reading|be\\s+quiet|silence)$`)],
   ],
   [
     'clear-chat',
