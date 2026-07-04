@@ -1,5 +1,6 @@
 export type LocalCommand = 
   | 'help'
+  | 'identity'
   | 'open-menu'
   | 'close-menu'
   | 'open-settings'
@@ -27,10 +28,11 @@ interface CommandMatch {
 }
 
 const HELP_MESSAGE =
-  'I can control the local QMeet interface by voice or text. I can open Menu, Settings, and Status. Try saying “open menu,” “show settings,” or “show status.” I can close panels with “close menu,” “close status,” “close panel,” or “go home.” I can also control spoken responses with “mute voice,” “unmute voice,” “speak slower,” “speak faster,” or “normal voice.”';
+  'I’m QMeet, your local AI orb interface. I can control the local QMeet interface by voice or text. I can open Menu, Settings, and Status. Try saying “open menu,” “show settings,” or “show status.” I can close panels with “close menu,” “close status,” “close panel,” or “go home.” I can also control spoken responses with “mute voice,” “unmute voice,” “speak slower,” “speak faster,” or “normal voice.”';
 
 const CONFIRMATIONS: Record<LocalCommand, string> = {
   help: HELP_MESSAGE,
+  identity: 'I’m QMeet, your local AI orb interface.',
   'open-menu': 'Opening menu.',
   'close-menu': 'Closing menu.',
   'open-settings': 'Opening settings.',
@@ -55,6 +57,8 @@ const REQUEST_PREFIX =
   '(?:(?:please\\s+)?(?:can|could|would|will)\\s+you\\s+|please\\s+|i\\s+(?:want|need)\\s+you\\s+to\\s+)?';
 const OPEN_VERB = '(?:open|show|display|bring\\s+up|pull\\s+up|launch)';
 const CLOSE_VERB = '(?:close|hide|dismiss|remove|get\\s+rid\\s+of)';
+const QMEET_ALIAS =
+  '(?:q\\s*meet|queue\\s+meet|cue\\s+meet|cute\\s+meet|q\\s*meat|queue\\s+meat|cue\\s+meat|cute\\s+meat|key\\s+meet|key\\s+meat|q\\s*me|queue\\s+me|cue\\s+me)';
 
 function rx(pattern: string): RegExp {
   return new RegExp(pattern, 'i');
@@ -70,6 +74,14 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
       /^(?:how do i use (?:this|qmeet|the orb))$/i,
       /^(?:what menus can (?:you|qmeet|the orb) open)$/i,
       /^(?:tell me what (?:you|qmeet|the orb) can do)$/i,
+    ],
+  ],
+  [
+    'identity',
+    [
+      rx(`^(?:who\\s+are\\s+you|what\\s+are\\s+you|what(?:'s|\\s+is)\\s+your\\s+name|what\\s+are\\s+you\\s+called)$`),
+      rx(`^(?:are\\s+you|is\\s+your\\s+name)\\s+${QMEET_ALIAS}$`),
+      rx(`^${QMEET_ALIAS}$`),
     ],
   ],
   [
@@ -181,15 +193,22 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
   ],
 ];
 
+export function normalizeSpokenQMeet(text: string): string {
+  return text.replace(
+    /\b(?:q\s*meet|queue\s+meet|cue\s+meet|cute\s+meet|q\s*meat|queue\s+meat|cue\s+meat|cute\s+meat|key\s+meet|key\s+meat|q\s*me|queue\s+me|cue\s+me)\b/gi,
+    'QMeet'
+  );
+}
+
 function normalizeCommandText(text: string): string {
-  return text
+  return normalizeSpokenQMeet(text)
     .trim()
     .toLowerCase()
     .replace(/[“”]/g, '"')
     .replace(/[‘’]/g, "'")
     .replace(/[?!.,;:]+/g, ' ')
     .replace(/\s+/g, ' ')
-    .replace(/^(?:hey\s+)?(?:qmeet|queue meet|orb|assistant)\s+/, '')
+    .replace(/^(?:hey\s+)?(?:qmeet|orb|assistant)\s+/, '')
     .trim();
 }
 

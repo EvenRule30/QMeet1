@@ -7,7 +7,7 @@ import { Message, OrbState, BackendStatus, ActivePanel } from './types';
 import { streamChatMessage, getBackendStatus, resetConversation } from "./api";
 import { getSpeechRecognition, isSpeechRecognitionSupported } from './speechRecognition';
 import { speakText, stopSpeaking } from './speechSynthesis';
-import { parseCommand } from './commands';
+import { parseCommand, normalizeSpokenQMeet } from './commands';
 import './App.css';
 
 export default function App() {
@@ -18,6 +18,7 @@ export default function App() {
   const [activePanel, setActivePanel] = useState<ActivePanel>('none');
   const [voiceOutputEnabled, setVoiceOutputEnabled] = useState(true);
   const [speechRate, setSpeechRate] = useState(1);
+  const [showThinkingBubble, setShowThinkingBubble] = useState(false);
   const speechTokenRef = useRef(0);
   const recognitionRef = useRef<InstanceType<ReturnType<typeof getSpeechRecognition>> | null>(null);
   const transcriptSentRef = useRef(false);
@@ -115,6 +116,7 @@ export default function App() {
   const handleEndChat = useCallback(async () => {
     stopCurrentSpeech();
     finishListening();
+    setShowThinkingBubble(false);
     setChatActive(false);
     setMessages([]);
 
@@ -174,6 +176,7 @@ export default function App() {
     
     if (commandMatch) {
       finishListening();
+      setShowThinkingBubble(false);
 
       if (!chatActive) setChatActive(true);
 
@@ -282,17 +285,38 @@ export default function App() {
       timestamp: new Date(),
     };
 
-    const assistantMsg: Message = {
-      id: assistantId,
-      role: 'assistant',
-      content: '',
-      timestamp: new Date(),
-    };
-
-    setMessages((prev) => [...prev, userMsg, assistantMsg]);
+    setMessages((prev) => [...prev, userMsg]);
     setOrbState('thinking');
+    setShowThinkingBubble(true);
 
     let assistantReply = '';
+
+    const upsertAssistantMessage = (content: string, mode: 'replace' | 'append' = 'append') => {
+      setMessages((prev) => {
+        const existingMessage = prev.find((msg) => msg.id === assistantId);
+
+        if (existingMessage) {
+          return prev.map((msg) =>
+            msg.id === assistantId
+              ? {
+                  ...msg,
+                  content: mode === 'replace' ? content : msg.content + content,
+                }
+              : msg
+          );
+        }
+
+        return [
+          ...prev,
+          {
+            id: assistantId,
+            role: 'assistant',
+            content,
+            timestamp: new Date(),
+          },
+        ];
+      });
+    };
 
     try {
       await streamChatMessage(trimmed, {
@@ -301,31 +325,22 @@ export default function App() {
         },
 
         onChunk: (chunk) => {
-          assistantReply += chunk;
+          if (!chunk) return;
 
-          setMessages((prev) =>
-            prev.map((msg) =>
-              msg.id === assistantId
-                ? { ...msg, content: msg.content + chunk }
-                : msg
-            )
-          );
+          setShowThinkingBubble(false);
+          assistantReply += chunk;
+          upsertAssistantMessage(chunk, 'append');
         },
 
         onDone: () => {
+          setShowThinkingBubble(false);
           speakAssistantText(assistantReply);
         },
 
         onError: (message) => {
+          setShowThinkingBubble(false);
           setOrbState('error');
-
-          setMessages((prev) =>
-            prev.map((msg) =>
-              msg.id === assistantId
-                ? { ...msg, content: message }
-                : msg
-            )
-          );
+          upsertAssistantMessage(message, 'replace');
 
           window.setTimeout(() => {
             setOrbState('idle');
@@ -335,18 +350,11 @@ export default function App() {
     } catch (error) {
       console.error('QMeet streaming error:', error);
 
+      setShowThinkingBubble(false);
       setOrbState('error');
-
-      setMessages((prev) =>
-        prev.map((msg) =>
-          msg.id === assistantId
-            ? {
-                ...msg,
-                content:
-                  'Streaming connection failed. Make sure the QMeet backend is running on http://localhost:8000.',
-              }
-            : msg
-        )
+      upsertAssistantMessage(
+        'Streaming connection failed. Make sure the QMeet backend is running on http://localhost:8000.',
+        'replace'
       );
 
       window.setTimeout(() => {
@@ -442,7 +450,7 @@ export default function App() {
           clearTimeout(listeningTimeoutRef.current);
         }
 
-        handleSend(transcript.trim());
+        handleSend(normalizeSpokenQMeet(transcript.trim()));
       }
     };
     
@@ -542,7 +550,10 @@ export default function App() {
 
         {/* Chat area: hidden when idle, 62% when active */}
         <div className={`chat-area ${chatActive ? 'chat-area-visible' : 'chat-area-hidden'}`}>
-          <ChatPanel messages={messages} orbState={orbState} />
+          <ChatPanel
+            messages={messages}
+            orbState={showThinkingBubble ? orbState : orbState === 'thinking' ? 'idle' : orbState}
+          />
           <PromptBar onSend={handleSend} disabled={orbState === 'thinking'} />
         </div>
       </div>
