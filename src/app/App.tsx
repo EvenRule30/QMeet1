@@ -137,6 +137,18 @@ export default function App() {
     setActivePanel('none');
   }, []);
 
+  const openLauncherPanel = useCallback((panel: ActivePanel) => {
+    if (panel === 'calendar') {
+      setCalendarView('today');
+    }
+
+    if (panel === 'search') {
+      setSearchQuery('');
+    }
+
+    setActivePanel(panel);
+  }, []);
+
   const setVoiceOutput = useCallback((enabled: boolean) => {
     if (!enabled) {
       stopCurrentSpeech();
@@ -591,21 +603,54 @@ export default function App() {
       {/* Panel Overlays */}
       {activePanel === 'menu' && (
         <div className="panel-overlay">
-          <div className="panel-content">
+          <div className="panel-content panel-content-launcher">
             <div className="panel-header">Menu</div>
             <div className="panel-body">
-              <div className="panel-section">
-                <div className="panel-section-title">Voice Commands</div>
+              <div className="launcher-intro">
                 <p className="panel-section-text">
-                  Say commands like "show settings", "show status", "open notes", "open calendar", "today", "tomorrow", "close panel", "go home", "mute voice", "unmute voice", "speak slower", "speak faster", "clear chat", or "end chat". You can also ask "what can you do?" for command help.
+                  Choose a local QMeet tool by touch, or use the same commands by voice.
                 </p>
               </div>
-              <div className="panel-section">
-                <div className="panel-section-title">Chat</div>
+
+              <div className="launcher-grid" aria-label="QMeet app launcher">
+                <button className="launcher-card" onClick={() => openLauncherPanel('notes')}>
+                  <span className="launcher-title">Notes</span>
+                  <span className="launcher-description">Write and review local notes.</span>
+                  <span className="launcher-command">Say: open notes</span>
+                </button>
+
+                <button className="launcher-card" onClick={() => openLauncherPanel('calendar')}>
+                  <span className="launcher-title">Calendar</span>
+                  <span className="launcher-description">View today or tomorrow placeholders.</span>
+                  <span className="launcher-command">Say: open calendar</span>
+                </button>
+
+                <button className="launcher-card" onClick={() => openLauncherPanel('search')}>
+                  <span className="launcher-title">Search</span>
+                  <span className="launcher-description">Open the local search/browser shell.</span>
+                  <span className="launcher-command">Say: open search</span>
+                </button>
+
+                <button className="launcher-card" onClick={() => openLauncherPanel('settings')}>
+                  <span className="launcher-title">Settings</span>
+                  <span className="launcher-description">Adjust voice output and interface options.</span>
+                  <span className="launcher-command">Say: show settings</span>
+                </button>
+
+                <button className="launcher-card" onClick={() => openLauncherPanel('status')}>
+                  <span className="launcher-title">Status</span>
+                  <span className="launcher-description">Check orb, backend, and voice state.</span>
+                  <span className="launcher-command">Say: show status</span>
+                </button>
+              </div>
+
+              <div className="panel-section launcher-help-section">
+                <div className="panel-section-title">Quick Commands</div>
                 <p className="panel-section-text">
-                  Type or speak to chat with QMeet. Your messages will be sent to the AI backend.
+                  Try "what can you do", "go home", "close panel", "mute voice", "speak slower", "clear chat", or "end chat".
                 </p>
               </div>
+
               <button className="close-panel-btn" onClick={closePanel}>
                 Close
               </button>
