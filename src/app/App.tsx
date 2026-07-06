@@ -3,6 +3,7 @@ import { Orb } from './components/Orb';
 import { TopStatusBar } from './components/TopStatusBar';
 import { ChatPanel } from './components/ChatPanel';
 import { PromptBar } from './components/PromptBar';
+import { NotesPanel } from './components/NotesPanel';
 import { Message, OrbState, BackendStatus, ActivePanel } from './types';
 import { streamChatMessage, getBackendStatus, resetConversation } from "./api";
 import { getSpeechRecognition, isSpeechRecognitionSupported } from './speechRecognition';
@@ -213,6 +214,14 @@ export default function App() {
         closePanel();
       } else if (commandMatch.command === 'hide-status') {
         closePanel();
+      } else if (commandMatch.command === 'open-notes') {
+        setActivePanel('notes');
+      } else if (commandMatch.command === 'new-note') {
+        setActivePanel('notes');
+      } else if (commandMatch.command === 'close-notes') {
+        closePanel();
+      } else if (commandMatch.command === 'clear-notes') {
+        localStorage.removeItem('qmeet-notes');
       } else if (commandMatch.command === 'close-generic') {
         if (activePanel !== 'none') {
           closePanel();
@@ -698,6 +707,10 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {activePanel === 'notes' && (
+        <NotesPanel onClose={closePanel} />
       )}
     </div>
   );
