@@ -38,7 +38,7 @@ interface CommandMatch {
 }
 
 const HELP_MESSAGE =
-  "I'm QMeet, your local AI orb interface. I can control the local QMeet interface by voice or text. I can open Menu, Settings, Status, Notes, Calendar, and Search. Try saying \"open menu,\" \"show settings,\" \"show status,\" \"open notes,\" \"open calendar,\" or \"open search.\" I can show calendar views with \"today\" or \"tomorrow,\" and I can open the search/browser panel with \"search the web\" or \"open browser.\" I can close panels with \"close menu,\" \"close status,\" \"close calendar,\" \"close panel,\" or \"go home.\" I can also control spoken responses with \"mute voice,\" \"unmute voice,\" \"speak slower,\" \"speak faster,\" or \"normal voice.\" For notes, say \"new note,\" \"clear notes,\" or \"close notes.\"";
+  "I'm QMeet, your local AI orb interface. I can control the local QMeet interface by voice or text. I can open Menu, Settings, Status/System Dashboard, Notes, Calendar, and Search. Try saying \"open menu,\" \"show settings,\" \"show status,\" \"system status,\" \"open notes,\" \"open calendar,\" or \"open search.\" I can show calendar views with \"today\" or \"tomorrow,\" and I can open the search/browser panel with \"search the web\" or \"open browser.\" I can close panels with \"close menu,\" \"close status,\" \"close calendar,\" \"close panel,\" or \"go home.\" I can also control spoken responses with \"mute voice,\" \"unmute voice,\" \"speak slower,\" \"speak faster,\" or \"normal voice.\" For notes, say \"new note,\" \"clear notes,\" or \"close notes.\"";
 
 const CONFIRMATIONS: Record<LocalCommand, string> = {
   help: HELP_MESSAGE,
@@ -135,8 +135,9 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
   [
     'show-status',
     [
-      rx(`^${REQUEST_PREFIX}${OPEN_VERB}\\s+(?:me\\s+)?(?:the\\s+)?status(?:\\s+(?:panel|screen|menu))?$`),
-      /^(?:status|status panel)$/i,
+      rx(`^${REQUEST_PREFIX}${OPEN_VERB}\\s+(?:me\\s+)?(?:the\\s+)?status(?:\\s+(?:panel|screen|menu|dashboard))?$`),
+      rx(`^${REQUEST_PREFIX}${OPEN_VERB}\\s+(?:me\\s+)?(?:the\\s+)?(?:system\\s+)?(?:dashboard|diagnostics?|health|system\\s+status)$`),
+      /^(?:status|status panel|system status|system dashboard|dashboard|diagnostics|health)$/i,
     ],
   ],
   [

@@ -13,6 +13,40 @@ import { speakText, stopSpeaking } from './speechSynthesis';
 import { parseCommand, normalizeSpokenQMeet } from './commands';
 import './App.css';
 
+
+function getPanelLabel(panel: ActivePanel): string {
+  switch (panel) {
+    case 'menu':
+      return 'Menu';
+    case 'settings':
+      return 'Settings';
+    case 'status':
+      return 'Status';
+    case 'notes':
+      return 'Notes';
+    case 'calendar':
+      return 'Calendar';
+    case 'search':
+      return 'Search';
+    default:
+      return 'Home';
+  }
+}
+
+function getStoredNotesCount(): number {
+  if (typeof window === 'undefined') return 0;
+
+  try {
+    const rawNotes = window.localStorage.getItem('qmeet-notes');
+    if (!rawNotes) return 0;
+
+    const parsedNotes = JSON.parse(rawNotes);
+    return Array.isArray(parsedNotes) ? parsedNotes.length : 0;
+  } catch {
+    return 0;
+  }
+}
+
 export default function App() {
   const [chatActive, setChatActive] = useState(false);
   const [orbState, setOrbState] = useState<OrbState>('idle');
@@ -569,6 +603,21 @@ export default function App() {
     }
   }, [orbState, handleSend, stopCurrentSpeech]);
 
+  const statusSnapshot = new Date();
+    const statusDateLabel = statusSnapshot.toLocaleDateString([], {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+    const statusTimeLabel = statusSnapshot.toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const statusNotesCount = getStoredNotesCount();
+    const voiceInputSupported = isSpeechRecognitionSupported();
+    const activePanelLabel = getPanelLabel(activePanel);
+
   return (
     <div className="agent-screen">
       <TopStatusBar orbState={orbState} chatActive={chatActive} onEnd={handleEndChat} backendStatus={backendStatus} />
@@ -740,33 +789,112 @@ export default function App() {
       
       {activePanel === 'status' && (
         <div className="panel-overlay">
-          <div className="panel-content">
-            <div className="panel-header">Status</div>
-            <div className="panel-body">
+          <div className="panel-content panel-content-status">
+            <div className="panel-header">System Status</div>
+            <div className="panel-body status-panel-body">
+              <div className="status-hero">
+                <div>
+                  <div className="status-kicker">QMeet Prototype</div>
+                  <div className="status-title">Local tablet assistant dashboard</div>
+                </div>
+                <div className={`status-health-chip ${backendStatus?.ok ? 'status-health-good' : 'status-health-warn'}`}>
+                  {backendStatus?.ok ? 'Online' : 'Offline'}
+                </div>
+              </div>
+
+              <div className="status-grid">
+                <div className="status-card">
+                  <div className="status-card-title">Orb</div>
+                  <div className="status-card-value">{orbState.charAt(0).toUpperCase() + orbState.slice(1)}</div>
+                  <div className="status-card-meta">Current interaction state</div>
+                </div>
+
+                <div className="status-card">
+                  <div className="status-card-title">Active Panel</div>
+                  <div className="status-card-value">{activePanelLabel}</div>
+                  <div className="status-card-meta">Current UI surface</div>
+                </div>
+
+                <div className={`status-card ${backendStatus?.ok ? 'status-card-good' : 'status-card-warn'}`}>
+                  <div className="status-card-title">Backend</div>
+                  <div className="status-card-value">{backendStatus?.ok ? 'Connected' : 'Disconnected'}</div>
+                  <div className="status-card-meta">FastAPI agent service</div>
+                </div>
+
+                <div className="status-card">
+                  <div className="status-card-title">Provider</div>
+                  <div className="status-card-value">{backendStatus?.provider || 'Unknown'}</div>
+                  <div className="status-card-meta">Model: {backendStatus?.model || 'Unknown'}</div>
+                </div>
+
+                <div className="status-card">
+                  <div className="status-card-title">Voice Input</div>
+                  <div className="status-card-value">{voiceInputSupported ? 'Supported' : 'Unavailable'}</div>
+                  <div className="status-card-meta">Browser speech recognition</div>
+                </div>
+
+                <div className="status-card">
+                  <div className="status-card-title">Voice Output</div>
+                  <div className="status-card-value">{voiceOutputEnabled ? 'On' : 'Muted'}</div>
+                  <div className="status-card-meta">Speed: {speechRate.toFixed(2)}×</div>
+                </div>
+
+                <div className="status-card">
+                  <div className="status-card-title">Chat</div>
+                  <div className="status-card-value">{chatActive ? 'Active' : 'Idle'}</div>
+                  <div className="status-card-meta">Messages: {messages.length}</div>
+                </div>
+
+                <div className="status-card">
+                  <div className="status-card-title">Notes</div>
+                  <div className="status-card-value">{statusNotesCount}</div>
+                  <div className="status-card-meta">Saved locally</div>
+                </div>
+              </div>
+
+              <div className="panel-section status-detail-section">
+                <div className="panel-section-title">Backend Details</div>
+                <div className="status-detail-list">
+                  <div className="status-detail-row">
+                    <span>OpenAI key</span>
+                    <strong>{backendStatus?.hasOpenAIKey ? 'Configured' : 'Missing / Unknown'}</strong>
+                  </div>
+                  <div className="status-detail-row">
+                    <span>Max output tokens</span>
+                    <strong>{backendStatus?.maxOutputTokens ?? 'Unknown'}</strong>
+                  </div>
+                  <div className="status-detail-row">
+                    <span>Status refresh</span>
+                    <strong>Every 10 seconds</strong>
+                  </div>
+                </div>
+              </div>
+
+              <div className="panel-section status-detail-section">
+                <div className="panel-section-title">Interface</div>
+                <div className="status-detail-list">
+                  <div className="status-detail-row">
+                    <span>Date</span>
+                    <strong>{statusDateLabel}</strong>
+                  </div>
+                  <div className="status-detail-row">
+                    <span>Time snapshot</span>
+                    <strong>{statusTimeLabel}</strong>
+                  </div>
+                  <div className="status-detail-row">
+                    <span>Display target</span>
+                    <strong>1024×600</strong>
+                  </div>
+                </div>
+              </div>
+
               <div className="panel-section">
-                <div className="panel-section-title">Current State</div>
+                <div className="panel-section-title">Supported Status Commands</div>
                 <p className="panel-section-text">
-                  Orb State: {orbState.charAt(0).toUpperCase() + orbState.slice(1)} · Chat Active: {chatActive ? 'Yes' : 'No'}
+                  Say “show status,” “system status,” “diagnostics,” “close status,” or “go home.”
                 </p>
               </div>
-              <div className="panel-section">
-                <div className="panel-section-title">Voice Output</div>
-                <p className="panel-section-text">
-                  Spoken responses: {voiceOutputEnabled ? 'On' : 'Muted'} · Speed: {speechRate.toFixed(2)}×
-                </p>
-              </div>
-              <div className="panel-section">
-                <div className="panel-section-title">Backend Connection</div>
-                <p className="panel-section-text">
-                  {backendStatus?.ok ? 'Connected and ready' : 'Disconnected'}
-                </p>
-              </div>
-              <div className="panel-section">
-                <div className="panel-section-title">Messages</div>
-                <p className="panel-section-text">
-                  Total messages: {messages.length}
-                </p>
-              </div>
+              
               <button className="close-panel-btn" onClick={closePanel}>
                 Close
               </button>
