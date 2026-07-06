@@ -9,6 +9,10 @@ export type LocalCommand =
   | 'show-status'
   | 'close-status'
   | 'hide-status'
+  | 'open-notes'
+  | 'new-note'
+  | 'close-notes'
+  | 'clear-notes'
   | 'voice-output-on'
   | 'voice-output-off'
   | 'voice-output-toggle'
@@ -20,7 +24,7 @@ export type LocalCommand =
   | 'end-chat'
   | 'close-generic';
 
-export type ActivePanel = 'none' | 'menu' | 'settings' | 'status';
+export type ActivePanel = 'none' | 'menu' | 'settings' | 'status' | 'notes';
 
 interface CommandMatch {
   command: LocalCommand;
@@ -28,11 +32,11 @@ interface CommandMatch {
 }
 
 const HELP_MESSAGE =
-  'I’m QMeet, your local AI orb interface. I can control the local QMeet interface by voice or text. I can open Menu, Settings, and Status. Try saying “open menu,” “show settings,” or “show status.” I can close panels with “close menu,” “close status,” “close panel,” or “go home.” I can also control spoken responses with “mute voice,” “unmute voice,” “speak slower,” “speak faster,” or “normal voice.”';
+  "I'm QMeet, your local AI orb interface. I can control the local QMeet interface by voice or text. I can open Menu, Settings, Status, and Notes. Try saying \"open menu,\" \"show settings,\" \"show status,\" or \"open notes.\" I can close panels with \"close menu,\" \"close status,\" \"close panel,\" or \"go home.\" I can also control spoken responses with \"mute voice,\" \"unmute voice,\" \"speak slower,\" \"speak faster,\" or \"normal voice.\" For notes, say \"new note,\" \"clear notes,\" or \"close notes.\"";
 
 const CONFIRMATIONS: Record<LocalCommand, string> = {
   help: HELP_MESSAGE,
-  identity: 'I’m QMeet, your local AI orb interface.',
+  identity: "I'm QMeet, your local AI orb interface.",
   'open-menu': 'Opening menu.',
   'close-menu': 'Closing menu.',
   'open-settings': 'Opening settings.',
@@ -41,6 +45,10 @@ const CONFIRMATIONS: Record<LocalCommand, string> = {
   'show-status': 'Showing status.',
   'close-status': 'Closing status.',
   'hide-status': 'Hiding status.',
+  'open-notes': 'Opening notes.',
+  'new-note': 'Opening a new note.',
+  'close-notes': 'Closed notes.',
+  'clear-notes': 'Cleared notes.',
   'voice-output-on': 'Voice output enabled.',
   'voice-output-off': 'Voice output muted.',
   'voice-output-toggle': 'Toggling voice output.',
@@ -128,6 +136,29 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
     [rx(`^${REQUEST_PREFIX}hide\\s+(?:the\\s+)?status(?:\\s+(?:panel|screen|menu))?$`)],
   ],
   [
+    'open-notes',
+    [
+      rx(`^${REQUEST_PREFIX}${OPEN_VERB}\\s+(?:me\\s+)?(?:the\\s+)?notes?(?:\\s+(?:panel|screen|menu))?$`),
+      /^(?:notes?|notes panel)$/i,
+    ],
+  ],
+  [
+    'new-note',
+    [
+      rx(`^${REQUEST_PREFIX}(?:new|create|start)\\s+(?:a\\s+)?note$`),
+    ],
+  ],
+  [
+    'close-notes',
+    [rx(`^${REQUEST_PREFIX}${CLOSE_VERB}\\s+(?:the\\s+)?notes?(?:\\s+(?:panel|screen|menu))?$`)],
+  ],
+  [
+    'clear-notes',
+    [
+      rx(`^${REQUEST_PREFIX}(?:clear|delete|wipe)\\s+(?:all\\s+)?notes?$`),
+    ],
+  ],
+  [
     'voice-output-on',
     [
       rx(`^${REQUEST_PREFIX}(?:turn\\s+on|enable|unmute|activate)\\s+(?:the\\s+)?(?:voice|speech|voice\\s+output|spoken\\s+responses|speaker)$`),
@@ -204,8 +235,8 @@ function normalizeCommandText(text: string): string {
   return normalizeSpokenQMeet(text)
     .trim()
     .toLowerCase()
-    .replace(/[“”]/g, '"')
-    .replace(/[‘’]/g, "'")
+    .replace(/[""]/g, '"')
+    .replace(/['']/g, "'")
     .replace(/[?!.,;:]+/g, ' ')
     .replace(/\s+/g, ' ')
     .replace(/^(?:hey\s+)?(?:qmeet|orb|assistant)\s+/, '')

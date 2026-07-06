@@ -1,5 +1,5 @@
 export type OrbState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'error';
-export type ActivePanel = 'none' | 'menu' | 'settings' | 'status';
+export type ActivePanel = 'none' | 'menu' | 'settings' | 'status' | 'notes';
 
 export interface Message {
   id: string;
