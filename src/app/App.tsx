@@ -5,6 +5,7 @@ import { ChatPanel } from './components/ChatPanel';
 import { PromptBar } from './components/PromptBar';
 import { NotesPanel } from './components/NotesPanel';
 import { CalendarPanel } from './components/CalendarPanel';
+import { SearchPanel } from './components/SearchPanel';
 import { Message, OrbState, BackendStatus, ActivePanel } from './types';
 import { streamChatMessage, getBackendStatus, resetConversation } from "./api";
 import { getSpeechRecognition, isSpeechRecognitionSupported } from './speechRecognition';
@@ -23,6 +24,7 @@ export default function App() {
   const [showThinkingBubble, setShowThinkingBubble] = useState(false);
   const [notesClearVersion, setNotesClearVersion] = useState(0);
   const [calendarView, setCalendarView] = useState<'today' | 'tomorrow'>('today');
+  const [searchQuery, setSearchQuery] = useState('');
   const speechTokenRef = useRef(0);
   const recognitionRef = useRef<InstanceType<ReturnType<typeof getSpeechRecognition>> | null>(null);
   const transcriptSentRef = useRef(false);
@@ -236,6 +238,10 @@ export default function App() {
         setCalendarView('tomorrow');
         setActivePanel('calendar');
       } else if (commandMatch.command === 'close-calendar') {
+        closePanel();
+      } else if (commandMatch.command === 'open-search') {
+        setActivePanel('search');
+      } else if (commandMatch.command === 'close-search') {
         closePanel();
       } else if (commandMatch.command === 'close-generic') {
         if (activePanel !== 'none') {
@@ -732,6 +738,14 @@ export default function App() {
         <CalendarPanel
           view={calendarView}
           onViewChange={setCalendarView}
+          onClose={closePanel}
+        />
+      )}
+
+      {activePanel === 'search' && (
+        <SearchPanel
+          query={searchQuery}
+          onQueryChange={setSearchQuery}
           onClose={closePanel}
         />
       )}

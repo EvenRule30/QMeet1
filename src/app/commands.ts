@@ -17,6 +17,8 @@ export type LocalCommand =
   | 'show-today'
   | 'show-tomorrow'
   | 'close-calendar'
+  | 'open-search'
+  | 'close-search'
   | 'voice-output-on'
   | 'voice-output-off'
   | 'voice-output-toggle'
@@ -28,7 +30,7 @@ export type LocalCommand =
   | 'end-chat'
   | 'close-generic';
 
-export type ActivePanel = 'none' | 'menu' | 'settings' | 'status' | 'notes' | 'calendar';
+export type ActivePanel = 'none' | 'menu' | 'settings' | 'status' | 'notes' | 'calendar' | 'search';
 
 interface CommandMatch {
   command: LocalCommand;
@@ -36,7 +38,7 @@ interface CommandMatch {
 }
 
 const HELP_MESSAGE =
-  "I'm QMeet, your local AI orb interface. I can control the local QMeet interface by voice or text. I can open Menu, Settings, Status, Notes, and Calendar. Try saying \"open menu,\" \"show settings,\" \"show status,\" \"open notes,\" or \"open calendar.\" I can show calendar views with \"today\" or \"tomorrow.\" I can close panels with \"close menu,\" \"close status,\" \"close calendar,\" \"close panel,\" or \"go home.\" I can also control spoken responses with \"mute voice,\" \"unmute voice,\" \"speak slower,\" \"speak faster,\" or \"normal voice.\" For notes, say \"new note,\" \"clear notes,\" or \"close notes.\"";
+  "I'm QMeet, your local AI orb interface. I can control the local QMeet interface by voice or text. I can open Menu, Settings, Status, Notes, Calendar, and Search. Try saying \"open menu,\" \"show settings,\" \"show status,\" \"open notes,\" \"open calendar,\" or \"open search.\" I can show calendar views with \"today\" or \"tomorrow,\" and I can open the search/browser panel with \"search the web\" or \"open browser.\" I can close panels with \"close menu,\" \"close status,\" \"close calendar,\" \"close panel,\" or \"go home.\" I can also control spoken responses with \"mute voice,\" \"unmute voice,\" \"speak slower,\" \"speak faster,\" or \"normal voice.\" For notes, say \"new note,\" \"clear notes,\" or \"close notes.\"";
 
 const CONFIRMATIONS: Record<LocalCommand, string> = {
   help: HELP_MESSAGE,
@@ -57,6 +59,8 @@ const CONFIRMATIONS: Record<LocalCommand, string> = {
   'show-today': 'Showing today.',
   'show-tomorrow': 'Showing tomorrow.',
   'close-calendar': 'Closed calendar.',
+  'open-search': 'Opening search.',
+  'close-search': 'Closed search.',
   'voice-output-on': 'Voice output enabled.',
   'voice-output-off': 'Voice output muted.',
   'voice-output-toggle': 'Toggling voice output.',
@@ -191,6 +195,25 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
     'close-calendar',
     [
       rx(`^${REQUEST_PREFIX}${CLOSE_VERB}\\s+(?:my\\s+)?(?:the\\s+)?calendar(?:\\s+(?:panel|screen|menu|view))?$`),
+    ],
+  ],
+  [
+    'open-search',
+    [
+      rx(`^${REQUEST_PREFIX}${OPEN_VERB}\\s+(?:me\\s+)?(?:the\\s+)?(?:search|web\\s+search|browser)(?:\\s+(?:panel|screen|menu|view))?$`),
+      /^(?:open|show|display|launch) (?:search|browser|web search)$/i,
+      /^(?:open|show|display|launch) (?:the )?(?:search|browser|web search) (?:panel|screen|view)$/i,
+      rx(`^${REQUEST_PREFIX}(?:search|browse)\\s+(?:the\\s+)?(?:web|internet)$`),
+      rx(`^${REQUEST_PREFIX}(?:web|internet)\\s+(?:search|browser)$`),
+      /^(?:search|search panel|browser|web search)$/i,
+    ],
+  ],
+  [
+    'close-search',
+    [
+      rx(`^${REQUEST_PREFIX}${CLOSE_VERB}\\s+(?:the\\s+)?(?:search|web\\s+search|browser)(?:\\s+(?:panel|screen|menu|view))?$`),
+      /^(?:close|hide|dismiss) (?:search|browser|web search)$/i,
+      /^(?:close|hide|dismiss) (?:the )?(?:search|browser|web search) (?:panel|screen|view)$/i,
     ],
   ],
   [
