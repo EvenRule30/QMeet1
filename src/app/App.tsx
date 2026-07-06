@@ -3,6 +3,8 @@ import { Orb } from './components/Orb';
 import { TopStatusBar } from './components/TopStatusBar';
 import { ChatPanel } from './components/ChatPanel';
 import { PromptBar } from './components/PromptBar';
+import { NotesPanel } from './components/NotesPanel';
+import { CalendarPanel } from './components/CalendarPanel';
 import { Message, OrbState, BackendStatus, ActivePanel } from './types';
 import { streamChatMessage, getBackendStatus, resetConversation } from "./api";
 import { getSpeechRecognition, isSpeechRecognitionSupported } from './speechRecognition';
@@ -19,6 +21,8 @@ export default function App() {
   const [voiceOutputEnabled, setVoiceOutputEnabled] = useState(true);
   const [speechRate, setSpeechRate] = useState(1);
   const [showThinkingBubble, setShowThinkingBubble] = useState(false);
+  const [notesClearVersion, setNotesClearVersion] = useState(0);
+  const [calendarView, setCalendarView] = useState<'today' | 'tomorrow'>('today');
   const speechTokenRef = useRef(0);
   const recognitionRef = useRef<InstanceType<ReturnType<typeof getSpeechRecognition>> | null>(null);
   const transcriptSentRef = useRef(false);
@@ -212,6 +216,26 @@ export default function App() {
       } else if (commandMatch.command === 'close-status') {
         closePanel();
       } else if (commandMatch.command === 'hide-status') {
+        closePanel();
+      } else if (commandMatch.command === 'open-notes') {
+        setActivePanel('notes');
+      } else if (commandMatch.command === 'new-note') {
+        setActivePanel('notes');
+      } else if (commandMatch.command === 'close-notes') {
+        closePanel();
+      } else if (commandMatch.command === 'clear-notes') {
+        localStorage.removeItem('qmeet-notes');
+        setNotesClearVersion((version) => version + 1);
+      } else if (commandMatch.command === 'open-calendar') {
+        setCalendarView('today');
+        setActivePanel('calendar');
+      } else if (commandMatch.command === 'show-today') {
+        setCalendarView('today');
+        setActivePanel('calendar');
+      } else if (commandMatch.command === 'show-tomorrow') {
+        setCalendarView('tomorrow');
+        setActivePanel('calendar');
+      } else if (commandMatch.command === 'close-calendar') {
         closePanel();
       } else if (commandMatch.command === 'close-generic') {
         if (activePanel !== 'none') {
@@ -567,7 +591,7 @@ export default function App() {
               <div className="panel-section">
                 <div className="panel-section-title">Voice Commands</div>
                 <p className="panel-section-text">
-                  Say commands like "show settings", "show status", "close panel", "go home", "mute voice", "unmute voice", "speak slower", "speak faster", "clear chat", or "end chat". You can also ask "what can you do?" for command help.
+                  Say commands like "show settings", "show status", "open notes", "open calendar", "today", "tomorrow", "close panel", "go home", "mute voice", "unmute voice", "speak slower", "speak faster", "clear chat", or "end chat". You can also ask "what can you do?" for command help.
                 </p>
               </div>
               <div className="panel-section">
@@ -698,6 +722,18 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {activePanel === 'notes' && (
+        <NotesPanel onClose={closePanel} clearVersion={notesClearVersion} />
+      )}
+
+      {activePanel === 'calendar' && (
+        <CalendarPanel
+          view={calendarView}
+          onViewChange={setCalendarView}
+          onClose={closePanel}
+        />
       )}
     </div>
   );
