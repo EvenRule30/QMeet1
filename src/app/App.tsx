@@ -20,6 +20,7 @@ export default function App() {
   const [voiceOutputEnabled, setVoiceOutputEnabled] = useState(true);
   const [speechRate, setSpeechRate] = useState(1);
   const [showThinkingBubble, setShowThinkingBubble] = useState(false);
+  const [notesClearVersion, setNotesClearVersion] = useState(0);
   const speechTokenRef = useRef(0);
   const recognitionRef = useRef<InstanceType<ReturnType<typeof getSpeechRecognition>> | null>(null);
   const transcriptSentRef = useRef(false);
@@ -222,6 +223,7 @@ export default function App() {
         closePanel();
       } else if (commandMatch.command === 'clear-notes') {
         localStorage.removeItem('qmeet-notes');
+        setNotesClearVersion((version) => version + 1);
       } else if (commandMatch.command === 'close-generic') {
         if (activePanel !== 'none') {
           closePanel();
@@ -710,7 +712,7 @@ export default function App() {
       )}
 
       {activePanel === 'notes' && (
-        <NotesPanel onClose={closePanel} />
+        <NotesPanel onClose={closePanel} clearVersion={notesClearVersion} />
       )}
     </div>
   );

@@ -8,11 +8,13 @@ interface Note {
 
 interface NotesPanelProps {
   onClose: () => void;
+  clearVersion: number;
 }
 
-export function NotesPanel({ onClose }: NotesPanelProps) {
+export function NotesPanel({ onClose, clearVersion }: NotesPanelProps) {
   const [notes, setNotes] = useState<Note[]>([]);
   const [newNoteContent, setNewNoteContent] = useState('');
+  const [initialClearVersion, setInitialClearVersion] = useState(clearVersion);
 
   useEffect(() => {
     const stored = localStorage.getItem('qmeet-notes');
@@ -25,6 +27,13 @@ export function NotesPanel({ onClose }: NotesPanelProps) {
       }
     }
   }, []);
+
+  useEffect(() => {
+    if (clearVersion > initialClearVersion) {
+      setNotes([]);
+      setInitialClearVersion(clearVersion);
+    }
+  }, [clearVersion, initialClearVersion]);
 
   const saveNotes = (updatedNotes: Note[]) => {
     setNotes(updatedNotes);
