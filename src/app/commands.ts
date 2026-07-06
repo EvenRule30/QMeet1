@@ -26,13 +26,14 @@ export type LocalCommand =
   | 'voice-faster'
   | 'voice-normal'
   | 'stop-speaking'
-  | 'clear-chat'
+  | 'what-did-you-hear'
+  | 'clear-chat' 
   | 'end-chat'
   | 'close-generic';
 
 export type ActivePanel = 'none' | 'menu' | 'settings' | 'status' | 'notes' | 'calendar' | 'search';
 
-interface CommandMatch {
+export interface CommandMatch {
   command: LocalCommand;
   confirmation: string;
 }
@@ -68,6 +69,7 @@ const CONFIRMATIONS: Record<LocalCommand, string> = {
   'voice-faster': 'Speaking faster.',
   'voice-normal': 'Voice speed reset to normal.',
   'stop-speaking': 'Speech stopped.',
+  'what-did-you-hear': 'Checking the last heard transcript.',
   'clear-chat': 'Chat cleared.',
   'end-chat': 'Ending conversation.',
   'close-generic': 'Closed.',
@@ -266,6 +268,15 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
     [rx(`^${REQUEST_PREFIX}(?:stop\\s+speaking|stop\\s+talking|stop\\s+reading|be\\s+quiet|silence)$`)],
   ],
   [
+    'what-did-you-hear',
+    [
+      /^(?:what did you hear|what did you hear me say|what did i say|what was the last thing you heard)$/i,
+      /^(?:last transcript|show last transcript|repeat last transcript|debug transcript|voice debug)$/i,
+      rx(`^${REQUEST_PREFIX}(?:show|tell\\s+me|repeat)\\s+(?:the\\s+)?(?:last\\s+)?(?:voice\\s+)?(?:transcript|thing\\s+you\\s+heard)$`),
+    ],
+  ],
+
+  [
     'clear-chat',
     [
       rx(`^${REQUEST_PREFIX}(?:clear|reset|delete|wipe)\\s+(?:the\\s+)?(?:chat|conversation|messages)$`),
@@ -291,7 +302,7 @@ export function normalizeSpokenQMeet(text: string): string {
   );
 }
 
-function normalizeCommandText(text: string): string {
+export function normalizeCommandText(text: string): string {
   return normalizeSpokenQMeet(text)
     .trim()
     .toLowerCase()
@@ -306,16 +317,32 @@ function normalizeCommandText(text: string): string {
 }
 
 export function parseCommand(text: string): CommandMatch | null {
+  return debugCommandParse(text).match;
+  }
+  
+  export function debugCommandParse(text: string): {
+    rawText: string;
+    normalizedText: string;
+    match: CommandMatch | null;
+  } {
   const normalized = normalizeCommandText(text);
   
   for (const [command, patterns] of COMMAND_PATTERNS) {
     if (patterns.some((pattern) => pattern.test(normalized))) {
       return {
+        rawText: text,
+        normalizedText: normalized,
+        match: {
         command,
         confirmation: CONFIRMATIONS[command],
+        },
       };
     }
   }
 
-  return null;
+  return {
+    rawText: text,
+    normalizedText: normalized,
+    match: null,
+  };
 }

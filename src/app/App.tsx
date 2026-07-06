@@ -59,6 +59,9 @@ export default function App() {
   const [notesClearVersion, setNotesClearVersion] = useState(0);
   const [calendarView, setCalendarView] = useState<'today' | 'tomorrow'>('today');
   const [searchQuery, setSearchQuery] = useState('');
+  const [lastHeardTranscript, setLastHeardTranscript] = useState('');
+  const [lastNormalizedTranscript, setLastNormalizedTranscript] = useState('');
+  const [lastLocalCommand, setLastLocalCommand] = useState('None');
   const speechTokenRef = useRef(0);
   const recognitionRef = useRef<InstanceType<ReturnType<typeof getSpeechRecognition>> | null>(null);
   const transcriptSentRef = useRef(false);
@@ -246,6 +249,11 @@ export default function App() {
       if (!chatActive) setChatActive(true);
 
       const now = Date.now();
+      const previousLastHeardTranscript = lastHeardTranscript;
+      const previousLastNormalizedTranscript = lastNormalizedTranscript;
+      const previousLastLocalCommand = lastLocalCommand;
+
+      setLastLocalCommand(commandMatch.command);
       
       const userMsg: Message = {
         id: `u-${now}`,
@@ -335,6 +343,12 @@ export default function App() {
         stopCurrentSpeech();
         setOrbState('idle');
         shouldSpeakConfirmation = false;
+      } else if (commandMatch.command === 'what-did-you-hear') {
+        if (previousLastHeardTranscript) {
+          confirmationContent = `I last heard: "${previousLastHeardTranscript}". Normalized as: "${previousLastNormalizedTranscript || previousLastHeardTranscript}". Last local command: ${previousLastLocalCommand}.`;
+        } else {
+          confirmationContent = 'I have not heard a voice transcript yet.';
+        }
       } else if (commandMatch.command === 'clear-chat') {
         replaceMessages = true;
       } else if (commandMatch.command === 'end-chat') {
@@ -451,7 +465,7 @@ export default function App() {
         setOrbState('idle');
       }, 2000);
     }
-  }, [chatActive, activePanel, voiceOutputEnabled, speechRate, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, speakAssistantText, adjustSpeechRate]);
+  }, [chatActive, activePanel, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, speakAssistantText, adjustSpeechRate]);
 
   const handleOrbClick = useCallback(() => {
     if (orbState === 'speaking') {
@@ -540,7 +554,13 @@ export default function App() {
           clearTimeout(listeningTimeoutRef.current);
         }
 
-        handleSend(normalizeSpokenQMeet(transcript.trim()));
+        const rawTranscript = transcript.trim();
+        const normalizedTranscript = normalizeSpokenQMeet(rawTranscript);
+
+        setLastHeardTranscript(rawTranscript);
+        setLastNormalizedTranscript(normalizedTranscript);
+
+        handleSend(normalizedTranscript);
       }
     };
     
@@ -712,7 +732,7 @@ export default function App() {
               <div className="panel-section launcher-help-section">
                 <div className="panel-section-title">Quick Commands</div>
                 <p className="panel-section-text">
-                  Try "what can you do", "go home", "close panel", "mute voice", "speak slower", "clear chat", or "end chat".
+                  Try "what can you do", "what did you hear", "go home", "close panel", "mute voice", "speak slower", "clear chat", or "end chat".
                 </p>
               </div>
 
@@ -850,6 +870,18 @@ export default function App() {
                 </div>
 
                 <div className="status-card">
+                  <div className="status-card-title">Last Heard</div>
+                  <div className="status-card-value">{lastHeardTranscript || 'None'}</div>
+                  <div className="status-card-meta">{lastNormalizedTranscript ? `Normalized: ${lastNormalizedTranscript}` : 'Last voice transcript'}</div>
+                </div>
+
+                <div className="status-card">
+                  <div className="status-card-title">Last Command</div>
+                  <div className="status-card-value">{lastLocalCommand}</div>
+                  <div className="status-card-meta">Last local command matched</div>
+                </div>
+
+                <div className="status-card">
                   <div className="status-card-title">Voice Output</div>
                   <div className="status-card-value">{voiceOutputEnabled ? 'On' : 'Muted'}</div>
                   <div className="status-card-meta">Speed: {speechRate.toFixed(2)}×</div>
@@ -907,7 +939,7 @@ export default function App() {
               <div className="panel-section">
                 <div className="panel-section-title">Supported Status Commands</div>
                 <p className="panel-section-text">
-                  Say “show status,” “system status,” “diagnostics,” “close status,” or “go home.”
+                  Say “show status,” “system status,” “diagnostics,” “what did you hear,” “close status,” or “go home.”
                 </p>
               </div>
 
