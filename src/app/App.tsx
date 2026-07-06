@@ -63,6 +63,8 @@ export default function App() {
   const [lastNormalizedTranscript, setLastNormalizedTranscript] = useState('');
   const [lastLocalCommand, setLastLocalCommand] = useState('None');
   const speechTokenRef = useRef(0);
+  const responseTokenRef = useRef(0);
+  const activeStreamAbortRef = useRef<AbortController | null>(null);
   const recognitionRef = useRef<InstanceType<ReturnType<typeof getSpeechRecognition>> | null>(null);
   const transcriptSentRef = useRef(false);
   const listeningTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -72,6 +74,18 @@ export default function App() {
   const stopCurrentSpeech = useCallback(() => {
     speechTokenRef.current += 1;
     stopSpeaking();
+  }, []);
+
+  const cancelActiveResponse = useCallback(() => {
+    responseTokenRef.current += 1;
+
+    if (activeStreamAbortRef.current) {
+      activeStreamAbortRef.current.abort();
+      activeStreamAbortRef.current = null;
+    }
+
+    setShowThinkingBubble(false);
+    setOrbState('idle');
   }, []);
 
   const speakAssistantText = useCallback((text: string, options: { enabled?: boolean; rate?: number } = {}) => {
@@ -159,6 +173,7 @@ export default function App() {
   // End chat and return to idle state
   const handleEndChat = useCallback(async () => {
     stopCurrentSpeech();
+    cancelActiveResponse();
     finishListening();
     setShowThinkingBubble(false);
     setChatActive(false);
@@ -169,7 +184,7 @@ export default function App() {
     } catch (error) {
       console.error('Reset conversation error:', error);
     }
-  }, [finishListening, stopCurrentSpeech]);
+  }, [cancelActiveResponse, finishListening, stopCurrentSpeech]);
 
   const closePanel = useCallback(() => {
     setActivePanel('none');
@@ -177,6 +192,7 @@ export default function App() {
 
   const goHome = useCallback(() => {
     stopCurrentSpeech();
+    cancelActiveResponse();
     finishListening();
     setShowThinkingBubble(false);
     setActivePanel('none');
@@ -185,7 +201,7 @@ export default function App() {
     window.setTimeout(() => {
       orbAreaRef.current?.focus();
     }, 0);
-  }, [finishListening, stopCurrentSpeech]);
+  }, [cancelActiveResponse, finishListening, stopCurrentSpeech]);
 
   const openLauncherPanel = useCallback((panel: ActivePanel) => {
     if (panel === 'calendar') {
@@ -343,6 +359,14 @@ export default function App() {
         stopCurrentSpeech();
         setOrbState('idle');
         shouldSpeakConfirmation = false;
+      } else if (commandMatch.command === 'cancel-action') {
+        stopCurrentSpeech();
+        cancelActiveResponse();
+        finishListening();
+        setShowThinkingBubble(false);
+        setOrbState('idle');
+        confirmationContent = 'Cancelled.';
+        shouldSpeakConfirmation = false;
       } else if (commandMatch.command === 'what-did-you-hear') {
         if (previousLastHeardTranscript) {
           confirmationContent = `I last heard: "${previousLastHeardTranscript}". Normalized as: "${previousLastNormalizedTranscript || previousLastHeardTranscript}". Last local command: ${previousLastLocalCommand}.`;
@@ -389,9 +413,16 @@ export default function App() {
       timestamp: new Date(),
     };
 
+    cancelActiveResponse();
+
     setMessages((prev) => [...prev, userMsg]);
     setOrbState('thinking');
     setShowThinkingBubble(true);
+
+    const responseToken = responseTokenRef.current + 1;
+    responseTokenRef.current = responseToken;
+    const abortController = new AbortController();
+    activeStreamAbortRef.current = abortController;
 
     let assistantReply = '';
 
@@ -425,11 +456,12 @@ export default function App() {
     try {
       await streamChatMessage(trimmed, {
         onStart: () => {
+          if (responseTokenRef.current !== responseToken) return;
           setOrbState('thinking');
         },
 
         onChunk: (chunk) => {
-          if (!chunk) return;
+          if (responseTokenRef.current !== responseToken || !chunk) return;
 
           setShowThinkingBubble(false);
           assistantReply += chunk;
@@ -437,23 +469,34 @@ export default function App() {
         },
 
         onDone: () => {
+          if (responseTokenRef.current !== responseToken) return;
           setShowThinkingBubble(false);
+          activeStreamAbortRef.current = null;
           speakAssistantText(assistantReply);
         },
 
         onError: (message) => {
+          if (responseTokenRef.current !== responseToken) return;
           setShowThinkingBubble(false);
+          activeStreamAbortRef.current = null;
           setOrbState('error');
           upsertAssistantMessage(message, 'replace');
 
           window.setTimeout(() => {
-            setOrbState('idle');
+            if (responseTokenRef.current === responseToken) {
+              setOrbState('idle');
+            }
           }, 2000);
         },
-      });
+      }, { signal: abortController.signal });
     } catch (error) {
+      if (abortController.signal.aborted || responseTokenRef.current !== responseToken) {
+        return;
+      }
+
       console.error('QMeet streaming error:', error);
 
+      activeStreamAbortRef.current = null;
       setShowThinkingBubble(false);
       setOrbState('error');
       upsertAssistantMessage(
@@ -462,15 +505,42 @@ export default function App() {
       );
 
       window.setTimeout(() => {
-        setOrbState('idle');
+        if (responseTokenRef.current === responseToken) {
+          setOrbState('idle');
+        }
       }, 2000);
     }
-  }, [chatActive, activePanel, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, speakAssistantText, adjustSpeechRate]);
+  }, [chatActive, activePanel, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, adjustSpeechRate]);
 
   const handleOrbClick = useCallback(() => {
+    // If QMeet is actively generating/streaming, tapping the orb should cancel
+    // that response instead of starting a new listening session. Checking the
+    // active stream ref covers the period after the first text chunk appears,
+    // when the thinking bubble is hidden but the response is still in progress.
+    if (activeStreamAbortRef.current || orbState === 'thinking') {
+      cancelActiveResponse();
+      setChatActive(true);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `a-${Date.now()}`,
+          role: 'assistant',
+          content: 'Cancelled.',
+          timestamp: new Date(),
+        },
+      ]);
+      return;
+    }
+
+    // If QMeet is speaking, tapping the orb should stop the speech and return
+    // to idle. It should not immediately start listening from the same tap.
     if (orbState === 'speaking') {
       stopCurrentSpeech();
-    } else if (orbState !== 'idle') {
+      setOrbState('idle');
+      return;
+    }
+
+    if (orbState !== 'idle') {
       return;
     }
 
@@ -635,7 +705,7 @@ export default function App() {
       
       setOrbState('idle');
     }
-  }, [orbState, handleSend, stopCurrentSpeech]);
+  }, [orbState, handleSend, stopCurrentSpeech, cancelActiveResponse]);
 
   const statusSnapshot = new Date();
     const statusDateLabel = statusSnapshot.toLocaleDateString([], {
@@ -681,7 +751,7 @@ export default function App() {
             messages={messages}
             orbState={showThinkingBubble ? orbState : orbState === 'thinking' ? 'idle' : orbState}
           />
-          <PromptBar onSend={handleSend} disabled={orbState === 'thinking'} />
+          <PromptBar onSend={handleSend} disabled={false} />
         </div>
       </div>
 
@@ -732,7 +802,7 @@ export default function App() {
               <div className="panel-section launcher-help-section">
                 <div className="panel-section-title">Quick Commands</div>
                 <p className="panel-section-text">
-                  Try "what can you do", "what did you hear", "go home", "close panel", "mute voice", "speak slower", "clear chat", or "end chat".
+                  Try "what can you do", "what did you hear", "cancel", "go home", "close panel", "mute voice", "speak slower", "clear chat", or "end chat".
                 </p>
               </div>
 

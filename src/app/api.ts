@@ -54,7 +54,8 @@ export async function resetConversation(): Promise<void> {
 
 export async function streamChatMessage(
   message: string,
-  handlers: ChatStreamHandlers
+  handlers: ChatStreamHandlers,
+  options: { signal?: AbortSignal } = {}
 ): Promise<void> {
   const res = await fetch(`${API_BASE_URL}/api/chat/stream`, {
     method: "POST",
@@ -63,6 +64,7 @@ export async function streamChatMessage(
       Accept: "text/event-stream",
     },
     body: JSON.stringify({ message }),
+    signal: options.signal,
   });
 
   if (!res.ok) {

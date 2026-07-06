@@ -27,6 +27,7 @@ export type LocalCommand =
   | 'voice-normal'
   | 'stop-speaking'
   | 'what-did-you-hear'
+  | 'cancel-action'
   | 'clear-chat' 
   | 'end-chat'
   | 'close-generic';
@@ -70,6 +71,7 @@ const CONFIRMATIONS: Record<LocalCommand, string> = {
   'voice-normal': 'Voice speed reset to normal.',
   'stop-speaking': 'Speech stopped.',
   'what-did-you-hear': 'Checking the last heard transcript.',
+  'cancel-action': 'Cancelled.',
   'clear-chat': 'Chat cleared.',
   'end-chat': 'Ending conversation.',
   'close-generic': 'Closed.',
@@ -266,6 +268,12 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
   [
     'stop-speaking',
     [rx(`^${REQUEST_PREFIX}(?:stop\\s+speaking|stop\\s+talking|stop\\s+reading|be\\s+quiet|silence)$`)],
+  ],
+  [
+    'cancel-action',
+    [
+      rx(`^${REQUEST_PREFIX}(?:cancel|stop|nevermind|never\\s+mind|abort|cancel\\s+that|stop\\s+that|forget\\s+it|stop\\s+listening|cancel\\s+listening)$`),
+    ],
   ],
   [
     'what-did-you-hear',
