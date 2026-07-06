@@ -129,7 +129,8 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
   [
     'go-home',
     [
-      rx(`^${REQUEST_PREFIX}(?:go\\s+home|return\\s+home|back\\s+home|go\\s+back\\s+home|main\\s+screen|home)$`),
+      rx(`^${REQUEST_PREFIX}(?:go\\s+(?:to\\s+)?home|return\\s+(?:to\\s+)?home|back\\s+(?:to\\s+)?home|go\\s+back\\s+(?:to\\s+)?home|take\\s+me\\s+home|main\\s+screen|home\\s+screen|home)$`),
+      rx(`^${REQUEST_PREFIX}(?:close\\s+everything|hide\\s+everything|clear\\s+the\\s+screen|back\\s+to\\s+main)$`),
     ],
   ],
   [

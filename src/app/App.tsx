@@ -64,6 +64,7 @@ export default function App() {
   const transcriptSentRef = useRef(false);
   const listeningTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const suppressNextSpeechErrorRef = useRef(false);
+  const orbAreaRef = useRef<HTMLDivElement | null>(null);
 
   const stopCurrentSpeech = useCallback(() => {
     speechTokenRef.current += 1;
@@ -171,6 +172,18 @@ export default function App() {
     setActivePanel('none');
   }, []);
 
+  const goHome = useCallback(() => {
+    stopCurrentSpeech();
+    finishListening();
+    setShowThinkingBubble(false);
+    setActivePanel('none');
+    setOrbState('idle');
+
+    window.setTimeout(() => {
+      orbAreaRef.current?.focus();
+    }, 0);
+  }, [finishListening, stopCurrentSpeech]);
+
   const openLauncherPanel = useCallback((panel: ActivePanel) => {
     if (panel === 'calendar') {
       setCalendarView('today');
@@ -258,7 +271,8 @@ export default function App() {
       } else if (commandMatch.command === 'close-settings') {
         closePanel();
       } else if (commandMatch.command === 'go-home') {
-        closePanel();
+        confirmationContent = activePanel === 'none' ? "You're already home." : 'Going home.';
+        goHome();
       } else if (commandMatch.command === 'show-status') {
         setActivePanel('status');
       } else if (commandMatch.command === 'close-status') {
@@ -437,7 +451,7 @@ export default function App() {
         setOrbState('idle');
       }, 2000);
     }
-  }, [chatActive, activePanel, voiceOutputEnabled, speechRate, handleEndChat, finishListening, closePanel, stopCurrentSpeech, speakAssistantText, adjustSpeechRate]);
+  }, [chatActive, activePanel, voiceOutputEnabled, speechRate, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, speakAssistantText, adjustSpeechRate]);
 
   const handleOrbClick = useCallback(() => {
     if (orbState === 'speaking') {
@@ -625,9 +639,11 @@ export default function App() {
       <div className="agent-body">
         {/* Orb area: full width when idle, 38% when chat active */}
         <div
+        ref={orbAreaRef}
           className={`orb-area${chatActive ? ' orb-area-active' : ''}`}
           onClick={handleOrbClick}
           role="button"
+          tabIndex={0}
           aria-label="QMeet orb — tap to activate"
         >
           <Orb state={orbState} active={chatActive} />
@@ -894,7 +910,7 @@ export default function App() {
                   Say “show status,” “system status,” “diagnostics,” “close status,” or “go home.”
                 </p>
               </div>
-              
+
               <button className="close-panel-btn" onClick={closePanel}>
                 Close
               </button>
