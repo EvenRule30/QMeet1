@@ -6,7 +6,7 @@ import { PromptBar } from './components/PromptBar';
 import { NotesPanel } from './components/NotesPanel';
 import { CalendarPanel } from './components/CalendarPanel';
 import { SearchPanel } from './components/SearchPanel';
-import { Message, OrbState, BackendStatus, ActivePanel } from './types';
+import { Message, OrbState, BackendStatus, ActivePanel, Note } from './types';
 import { streamChatMessage, getBackendStatus, resetConversation } from "./api";
 import { getSpeechRecognition, isSpeechRecognitionSupported } from './speechRecognition';
 import { speakText, stopSpeaking } from './speechSynthesis';
@@ -33,20 +33,6 @@ function getPanelLabel(panel: ActivePanel): string {
   }
 }
 
-function getStoredNotesCount(): number {
-  if (typeof window === 'undefined') return 0;
-
-  try {
-    const rawNotes = window.localStorage.getItem('qmeet-notes');
-    if (!rawNotes) return 0;
-
-    const parsedNotes = JSON.parse(rawNotes);
-    return Array.isArray(parsedNotes) ? parsedNotes.length : 0;
-  } catch {
-    return 0;
-  }
-}
-
 export default function App() {
   const [chatActive, setChatActive] = useState(false);
   const [orbState, setOrbState] = useState<OrbState>('idle');
@@ -56,7 +42,27 @@ export default function App() {
   const [voiceOutputEnabled, setVoiceOutputEnabled] = useState(true);
   const [speechRate, setSpeechRate] = useState(1);
   const [showThinkingBubble, setShowThinkingBubble] = useState(false);
-  const [notesClearVersion, setNotesClearVersion] = useState(0);
+  const [notes, setNotes] = useState<Note[]>(() => {
+    if (typeof window === 'undefined') return [];
+
+    try {
+      const rawNotes = window.localStorage.getItem('qmeet-notes');
+      if (!rawNotes) return [];
+
+      const parsedNotes = JSON.parse(rawNotes);
+      if (!Array.isArray(parsedNotes)) return [];
+
+      return parsedNotes
+        .filter((note) => note && typeof note.content === 'string')
+        .map((note) => ({
+          id: typeof note.id === 'string' ? note.id : `note-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          content: note.content,
+          createdAt: typeof note.createdAt === 'string' ? note.createdAt : new Date().toISOString(),
+        }));
+    } catch {
+      return [];
+    }
+  });
   const [calendarView, setCalendarView] = useState<'today' | 'tomorrow'>('today');
   const [searchQuery, setSearchQuery] = useState('');
   const [lastHeardTranscript, setLastHeardTranscript] = useState('');
@@ -149,6 +155,69 @@ export default function App() {
       stopSpeaking();
     };
   }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('qmeet-notes', JSON.stringify(notes));
+    } catch (error) {
+      console.error('Failed to save notes:', error);
+    }
+  }, [notes]);
+
+  const saveNote = useCallback((content: string): Note | null => {
+    const trimmedContent = content.trim();
+
+    if (!trimmedContent) {
+      return null;
+    }
+
+    const note: Note = {
+      id: `note-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      content: trimmedContent,
+      createdAt: new Date().toISOString(),
+    };
+
+    setNotes((prev) => [note, ...prev]);
+    return note;
+  }, []);
+
+  const deleteNote = useCallback((noteId: string) => {
+    setNotes((prev) => prev.filter((note) => note.id !== noteId));
+  }, []);
+
+  const clearNotes = useCallback(() => {
+    setNotes([]);
+    try {
+      window.localStorage.removeItem('qmeet-notes');
+    } catch (error) {
+      console.error('Failed to clear notes:', error);
+    }
+  }, []);
+
+  const deleteLastNote = useCallback((): Note | null => {
+    if (notes.length === 0) return null;
+
+    const deletedNote = notes[0];
+    setNotes((prev) => prev.slice(1));
+    return deletedNote;
+  }, [notes]);
+
+  const getNotesReadout = useCallback(() => {
+    if (notes.length === 0) {
+      return 'You do not have any saved notes.';
+    }
+
+    const maxToRead = 5;
+    const noteLines = notes
+      .slice(0, maxToRead)
+      .map((note, index) => `${index + 1}. ${note.content}`);
+
+    const remainingCount = notes.length - maxToRead;
+    const suffix = remainingCount > 0 ? ` Plus ${remainingCount} more.` : '';
+
+    return `You have ${notes.length} saved note${notes.length === 1 ? '' : 's'}: ${noteLines.join(' ')}${suffix}`;
+  }, [notes]);
+
 
   // Cleanup speech recognition state
   const finishListening = useCallback(() => {
@@ -309,11 +378,24 @@ export default function App() {
         setActivePanel('notes');
       } else if (commandMatch.command === 'new-note') {
         setActivePanel('notes');
+      } else if (commandMatch.command === 'save-note') {
+        const savedNote = saveNote(commandMatch.payload ?? '');
+        setActivePanel('notes');
+        confirmationContent = savedNote ? 'Saved note.' : 'I did not catch the note text.';
+        shouldSpeakConfirmation = voiceOutputEnabled;
+      } else if (commandMatch.command === 'read-notes') {
+        setActivePanel('notes');
+        confirmationContent = getNotesReadout();
+        shouldSpeakConfirmation = voiceOutputEnabled;
+      } else if (commandMatch.command === 'delete-last-note') {
+        const deletedNote = deleteLastNote();
+        setActivePanel('notes');
+        confirmationContent = deletedNote ? 'Deleted the last note.' : 'No notes to delete.';
+        shouldSpeakConfirmation = voiceOutputEnabled;
       } else if (commandMatch.command === 'close-notes') {
         closePanel();
       } else if (commandMatch.command === 'clear-notes') {
-        localStorage.removeItem('qmeet-notes');
-        setNotesClearVersion((version) => version + 1);
+        clearNotes();
       } else if (commandMatch.command === 'open-calendar') {
         setCalendarView('today');
         setActivePanel('calendar');
@@ -512,7 +594,7 @@ export default function App() {
         }
       }, 2000);
     }
-  }, [chatActive, activePanel, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, adjustSpeechRate]);
+  }, [chatActive, activePanel, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes]);
 
   const handleOrbClick = useCallback(() => {
     // If QMeet is actively generating/streaming, tapping the orb should cancel
@@ -736,7 +818,7 @@ export default function App() {
       hour: '2-digit',
       minute: '2-digit',
     });
-    const statusNotesCount = getStoredNotesCount();
+    const statusNotesCount = notes.length;
     const voiceInputSupported = isSpeechRecognitionSupported();
     const activePanelLabel = getPanelLabel(activePanel);
 
@@ -1049,7 +1131,13 @@ export default function App() {
       )}
 
       {activePanel === 'notes' && (
-        <NotesPanel onClose={closePanel} clearVersion={notesClearVersion} />
+        <NotesPanel 
+          notes={notes}
+          onSaveNote={saveNote}
+          onDeleteNote={deleteNote}
+          onClearNotes={clearNotes}
+          onClose={closePanel}
+        />
       )}
 
       {activePanel === 'calendar' && (

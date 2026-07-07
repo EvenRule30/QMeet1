@@ -11,6 +11,9 @@ export type LocalCommand =
   | 'hide-status'
   | 'open-notes'
   | 'new-note'
+  | 'save-note'
+  | 'read-notes'
+  | 'delete-last-note'
   | 'close-notes'
   | 'clear-notes'
   | 'open-calendar'
@@ -37,10 +40,11 @@ export type ActivePanel = 'none' | 'menu' | 'settings' | 'status' | 'notes' | 'c
 export interface CommandMatch {
   command: LocalCommand;
   confirmation: string;
+  payload?: string;
 }
 
 const HELP_MESSAGE =
-  "I'm QMeet, your local AI orb interface. I can control the local QMeet interface by voice or text. I can open Menu, Settings, Status/System Dashboard, Notes, Calendar, and Search. Try saying \"open menu,\" \"show settings,\" \"show status,\" \"system status,\" \"open notes,\" \"open calendar,\" or \"open search.\" I can show calendar views with \"today\" or \"tomorrow,\" and I can open the search/browser panel with \"search the web\" or \"open browser.\" I can close panels with \"close menu,\" \"close status,\" \"close calendar,\" \"close panel,\" or \"go home.\" I can also control spoken responses with \"mute voice,\" \"unmute voice,\" \"speak slower,\" \"speak faster,\" or \"normal voice.\" For notes, say \"new note,\" \"clear notes,\" or \"close notes.\"";
+  "I'm QMeet, your local AI orb interface. I can control the local QMeet interface by voice or text. I can open Menu, Settings, Status/System Dashboard, Notes, Calendar, and Search. Try saying \"open menu,\" \"show settings,\" \"show status,\" \"open notes,\" \"open calendar,\" or \"open search.\" I can save notes with \"note that buy milk,\" \"remember that test the tablet UI,\" or \"save note call Dr. Fang.\" I can read notes with \"read my notes\" and delete the newest one with \"delete last note.\" I can close panels with \"close panel\" or \"go home.\" I can also control spoken responses with \"mute voice,\" \"unmute voice,\" \"speak slower,\" \"speak faster,\" or \"normal voice.\"";
 
 const CONFIRMATIONS: Record<LocalCommand, string> = {
   help: HELP_MESSAGE,
@@ -55,6 +59,9 @@ const CONFIRMATIONS: Record<LocalCommand, string> = {
   'hide-status': 'Hiding status.',
   'open-notes': 'Opening notes.',
   'new-note': 'Opening a new note.',
+  'save-note': 'Saved note.',
+  'read-notes': 'Reading notes.',
+  'delete-last-note': 'Deleted the last note.',
   'close-notes': 'Closed notes.',
   'clear-notes': 'Cleared notes.',
   'open-calendar': 'Opening calendar.',
@@ -158,6 +165,20 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
     [rx(`^${REQUEST_PREFIX}hide\\s+(?:the\\s+)?status(?:\\s+(?:panel|screen|menu))?$`)],
   ],
   [
+    'read-notes',
+    [
+      rx(`^${REQUEST_PREFIX}(?:read|list|tell\\s+me|show|display)\\s+(?:me\\s+)?(?:my\\s+)?notes$`),
+      /^(?:read my notes|read notes|list my notes|list notes|show my notes|display my notes)$/i,
+    ],
+  ],
+  [
+    'delete-last-note',
+    [
+      rx(`^${REQUEST_PREFIX}(?:delete|remove|erase|clear)\\s+(?:the\\s+)?(?:last|latest|newest|most\\s+recent)\\s+note$`),
+      /^(?:delete last note|remove last note|delete latest note|remove latest note)$/i,
+    ],
+  ],
+  [
     'open-notes',
     [
       rx(`^${REQUEST_PREFIX}${OPEN_VERB}\\s+(?:me\\s+)?(?:the\\s+)?notes?(?:\\s+(?:panel|screen|menu))?$`),
@@ -169,7 +190,7 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
   [
     'new-note',
     [
-      rx(`^${REQUEST_PREFIX}(?:new|create|start)\\s+(?:a\\s+)?note$`),
+      rx(`^${REQUEST_PREFIX}(?:new|create|start|make)\\s+(?:a\\s+)?note$`),
       rx(`^${REQUEST_PREFIX}(?:take|write)\\s+(?:a\\s+)?note$`),
     ],
   ],
@@ -328,6 +349,29 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
   ],
 ];
 
+
+function cleanNotePayload(payload: string): string {
+  return payload
+    .replace(/^["']+|["']+$/g, '')
+    .trim();
+}
+
+function extractNotePayload(normalized: string): string | null {
+  const patterns = [
+    /^(?:please\s+)?(?:note|remember)\s+that\s+(.+)$/i,
+    /^(?:please\s+)?(?:save|add)\s+(?:a\s+)?note\s+(.+)$/i,
+    /^(?:please\s+)?(?:take|write|create|make)\s+(?:a\s+)?note\s+(?:that\s+|saying\s+|called\s+|about\s+)?(.+)$/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+    const payload = match?.[1] ? cleanNotePayload(match[1]) : '';
+    if (payload) return payload;
+  }
+
+  return null;
+}
+
 export function normalizeSpokenQMeet(text: string): string {
   return text.replace(
     /\b(?:q\s*meet|queue\s+meet|cue\s+meet|cute\s+meet|q\s*meat|queue\s+meat|cue\s+meat|cute\s+meat|key\s+meet|key\s+meat|q\s*me|queue\s+me|cue\s+me)\b/gi,
@@ -359,6 +403,25 @@ export function parseCommand(text: string): CommandMatch | null {
     match: CommandMatch | null;
   } {
   const normalized = normalizeCommandText(text);
+  const payloadSource = normalizeSpokenQMeet(text)
+      .trim()
+      .replace(/[?!.,;:]+$/g, '')
+      .replace(/\s+/g, ' ')
+      .replace(/^(?:hey\s+)?(?:qmeet|orb|assistant)\s+/i, '')
+      .trim();
+  
+    const notePayload = extractNotePayload(payloadSource);
+    if (notePayload) {
+      return {
+        rawText: text,
+        normalizedText: normalized,
+        match: {
+          command: 'save-note',
+          confirmation: CONFIRMATIONS['save-note'],
+          payload: notePayload,
+        },
+      };
+    }
   
   for (const [command, patterns] of COMMAND_PATTERNS) {
     if (patterns.some((pattern) => pattern.test(normalized))) {
