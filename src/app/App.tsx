@@ -50,14 +50,50 @@ function getCalendarViewLabel(view: CalendarView): string {
   return view === 'tomorrow' ? 'tomorrow' : 'today';
 }
 
+const VOICE_OUTPUT_STORAGE_KEY = 'qmeet-voice-output-enabled';
+const SPEECH_RATE_STORAGE_KEY = 'qmeet-speech-rate';
+
+function clampSpeechRate(rate: number): number {
+  return Math.min(1.35, Math.max(0.75, rate));
+}
+
+function readStoredVoiceOutputEnabled(): boolean {
+  if (typeof window === 'undefined') return true;
+
+  try {
+    const storedValue = window.localStorage.getItem(VOICE_OUTPUT_STORAGE_KEY);
+
+    if (storedValue === 'false') return false;
+    if (storedValue === 'true') return true;
+
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+function readStoredSpeechRate(): number {
+  if (typeof window === 'undefined') return 1;
+
+  try {
+    const storedValue = window.localStorage.getItem(SPEECH_RATE_STORAGE_KEY);
+    if (!storedValue) return 1;
+
+    const parsedRate = Number(storedValue);
+    return Number.isFinite(parsedRate) ? clampSpeechRate(parsedRate) : 1;
+  } catch {
+    return 1;
+  }
+}
+
 export default function App() {
   const [chatActive, setChatActive] = useState(false);
   const [orbState, setOrbState] = useState<OrbState>('idle');
   const [messages, setMessages] = useState<Message[]>([]);
   const [backendStatus, setBackendStatus] = useState<BackendStatus | null>(null);
   const [activePanel, setActivePanel] = useState<ActivePanel>('none');
-  const [voiceOutputEnabled, setVoiceOutputEnabled] = useState(true);
-  const [speechRate, setSpeechRate] = useState(1);
+ const [voiceOutputEnabled, setVoiceOutputEnabled] = useState(readStoredVoiceOutputEnabled);
+   const [speechRate, setSpeechRate] = useState(readStoredSpeechRate);
   const [showThinkingBubble, setShowThinkingBubble] = useState(false);
   const [notes, setNotes] = useState<Note[]>(() => {
     if (typeof window === 'undefined') return [];
@@ -195,6 +231,22 @@ export default function App() {
       stopSpeaking();
     };
   }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(VOICE_OUTPUT_STORAGE_KEY, String(voiceOutputEnabled));
+    } catch (error) {
+      console.error('Failed to save voice output setting:', error);
+    }
+  }, [voiceOutputEnabled]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SPEECH_RATE_STORAGE_KEY, String(speechRate));
+    } catch (error) {
+      console.error('Failed to save speech rate setting:', error);
+    }
+  }, [speechRate]);
 
   useEffect(() => {
     try {
@@ -422,7 +474,7 @@ export default function App() {
   }, [stopCurrentSpeech]);
 
   const adjustSpeechRate = useCallback((nextRate: number) => {
-    const clampedRate = Math.min(1.35, Math.max(0.75, nextRate));
+    const clampedRate = clampSpeechRate(nextRate);
     setSpeechRate(clampedRate);
     return clampedRate;
   }, []);
@@ -584,18 +636,14 @@ export default function App() {
           closePanel();
         }
       } else if (commandMatch.command === 'voice-output-on') {
-        setVoiceOutputEnabled(true);
+        setVoiceOutput(true);
         shouldSpeakConfirmation = true;
       } else if (commandMatch.command === 'voice-output-off') {
-        stopCurrentSpeech();
-        setVoiceOutputEnabled(false);
+        setVoiceOutput(false);
         shouldSpeakConfirmation = false;
       } else if (commandMatch.command === 'voice-output-toggle') {
         const nextEnabled = !voiceOutputEnabled;
-        if (!nextEnabled) {
-          stopCurrentSpeech();
-        }
-        setVoiceOutputEnabled(nextEnabled);
+        setVoiceOutput(nextEnabled);
         confirmationContent = nextEnabled ? 'Voice output enabled.' : 'Voice output muted.';
         shouldSpeakConfirmation = nextEnabled;
       } else if (commandMatch.command === 'voice-slower') {
@@ -762,7 +810,7 @@ export default function App() {
         }
       }, 2000);
     }
-  }, [chatActive, activePanel, calendarView, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, clearCalendarEvents]);
+  }, [chatActive, activePanel, calendarView, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, clearCalendarEvents]);
 
   const handleOrbClick = useCallback(() => {
     // If QMeet is actively generating/streaming, tapping the orb should cancel
