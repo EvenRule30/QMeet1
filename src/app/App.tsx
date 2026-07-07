@@ -62,6 +62,7 @@ export default function App() {
   const [lastHeardTranscript, setLastHeardTranscript] = useState('');
   const [lastNormalizedTranscript, setLastNormalizedTranscript] = useState('');
   const [lastLocalCommand, setLastLocalCommand] = useState('None');
+  const [listeningTranscript, setListeningTranscript] = useState('');
   const speechTokenRef = useRef(0);
   const responseTokenRef = useRef(0);
   const activeStreamAbortRef = useRef<AbortController | null>(null);
@@ -167,6 +168,7 @@ export default function App() {
     }
 
     transcriptSentRef.current = false;
+    setListeningTranscript('');
     setOrbState('idle');
   }, []);
 
@@ -560,6 +562,7 @@ export default function App() {
 
     setOrbState('listening');
     transcriptSentRef.current = false;
+    setListeningTranscript('');
 
     const SpeechRecognitionClass = getSpeechRecognition();
 
@@ -572,7 +575,7 @@ export default function App() {
     recognitionRef.current = recognition;
 
     recognition.continuous = false;
-    recognition.interimResults = false;
+    recognition.interimResults = true;
     recognition.lang = 'en-US';
     
     recognition.onstart = () => {
@@ -588,6 +591,7 @@ export default function App() {
         }
 
         if (!transcriptSentRef.current) {
+          setListeningTranscript('')
           setChatActive(true);
           setOrbState('idle');
           setMessages((prev) => [
@@ -604,27 +608,33 @@ export default function App() {
     };
     
     recognition.onresult = (event: any) => {
-      if (transcriptSentRef.current) return;
-
-      let transcript = '';
+      let interimTranscript = '';
+      let finalTranscript = '';
     
       for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcriptSegment = event.results[i][0].transcript;
-        transcript += transcriptSegment;
+        const transcript = event.results[i][0]?.transcript ?? '';
     
         if (event.results[i].isFinal) {
-          break;
+          finalTranscript += transcript;
+        } else {
+          interimTranscript += transcript;
         }
       }
     
-      if (transcript.trim()) {
+      const previewText = (finalTranscript || interimTranscript).trim();
+      if (previewText) {
+        setListeningTranscript(previewText);
+      }
+
+      if (finalTranscript.trim()) {
+        if (transcriptSentRef.current) return;
         transcriptSentRef.current = true;
 
         if (listeningTimeoutRef.current) {
           clearTimeout(listeningTimeoutRef.current);
         }
 
-        const rawTranscript = transcript.trim();
+        const rawTranscript = finalTranscript.trim();
         const normalizedTranscript = normalizeSpokenQMeet(rawTranscript);
 
         setLastHeardTranscript(rawTranscript);
@@ -643,6 +653,7 @@ export default function App() {
         if (listeningTimeoutRef.current) {
           clearTimeout(listeningTimeoutRef.current);
         }
+        setListeningTranscript('');
         return;
       }
 
@@ -662,6 +673,7 @@ export default function App() {
         clearTimeout(listeningTimeoutRef.current);
       }
     
+      setListeningTranscript('');
       setChatActive(true);
       setOrbState('error');
       setMessages((prev) => [
@@ -686,7 +698,12 @@ export default function App() {
       }
 
       if (!transcriptSentRef.current) {
+        setListeningTranscript('');
         setOrbState('idle');
+      } else {
+        window.setTimeout(() => {
+          setListeningTranscript('');
+        }, 300);
       }
 
       if (recognitionRef.current === recognition) {
@@ -703,6 +720,7 @@ export default function App() {
         clearTimeout(listeningTimeoutRef.current);
       }
       
+      setListeningTranscript('');
       setOrbState('idle');
     }
   }, [orbState, handleSend, stopCurrentSpeech, cancelActiveResponse]);
@@ -741,6 +759,15 @@ export default function App() {
           {!chatActive && (
             <div className="idle-hint">
               <span>{orbState === 'listening' ? 'Listening…' : 'Ask QMeet anything…'}</span>
+            </div>
+          )}
+
+          {orbState === 'listening' && (
+            <div className="listening-preview">
+              <div className="listening-preview-label">Heard:</div>
+              <div className="listening-preview-text">
+                {listeningTranscript || 'Listening…'}
+              </div>
             </div>
           )}
         </div>

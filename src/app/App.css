@@ -221,6 +221,51 @@
   50% { opacity: 0.85; }
 }
 
+/* ---- Listening Preview ---- */
+.listening-preview {
+  position: absolute;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 90%;
+  padding: 12px 16px;
+  background: rgba(0, 255, 180, 0.12);
+  border: 1px solid rgba(0, 255, 180, 0.28);
+  border-radius: 12px;
+  text-align: center;
+  z-index: 5;
+  animation: preview-fade-in 0.25s ease-out;
+}
+
+@keyframes preview-fade-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+.listening-preview-label {
+  font-family: 'Exo 2', sans-serif;
+  font-size: 11px;
+  color: #00ffb3;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.listening-preview-text {
+  font-family: 'Inter', sans-serif;
+  font-size: 14px;
+  color: #c8d8ea;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
 /* ---- Chat Area ---- */
 .chat-area {
   display: flex;
