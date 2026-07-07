@@ -21,6 +21,8 @@ export type LocalCommand =
   | 'show-tomorrow'
   | 'close-calendar'
   | 'open-search'
+  | 'run-search'
+  | 'clear-search'
   | 'close-search'
   | 'voice-output-on'
   | 'voice-output-off'
@@ -44,7 +46,7 @@ export interface CommandMatch {
 }
 
 const HELP_MESSAGE =
-  "I'm QMeet, your local AI orb interface. I can control the local QMeet interface by voice or text. I can open Menu, Settings, Status/System Dashboard, Notes, Calendar, and Search. Try saying \"open menu,\" \"show settings,\" \"show status,\" \"open notes,\" \"open calendar,\" or \"open search.\" I can save notes with \"note that buy milk,\" \"remember that test the tablet UI,\" or \"save note call Dr. Fang.\" I can read notes with \"read my notes\" and delete the newest one with \"delete last note.\" I can close panels with \"close panel\" or \"go home.\" I can also control spoken responses with \"mute voice,\" \"unmute voice,\" \"speak slower,\" \"speak faster,\" or \"normal voice.\"";
+  "I'm QMeet, your local AI orb interface. I can control the local QMeet interface by voice or text. I can open Menu, Settings, Status/System Dashboard, Notes, Calendar, and Search. Try saying \"open menu,\" \"show settings,\" \"show status,\" \"open notes,\" \"open calendar,\" or \"open search.\" I can save notes with \"note that buy milk,\" \"remember that test the tablet UI,\" or \"save note call Dr. Fang.\" I can prepare local search queries with \"search for raspberry pi kiosk mode,\" \"look up local voice assistant,\" or \"google chromium flags.\" I can read notes with \"read my notes\" and delete the newest one with \"delete last note.\" I can close panels with \"close panel\" or \"go home.\" I can also control spoken responses with \"mute voice,\" \"unmute voice,\" \"speak slower,\" \"speak faster,\" or \"normal voice.\"";
 
 const CONFIRMATIONS: Record<LocalCommand, string> = {
   help: HELP_MESSAGE,
@@ -69,6 +71,8 @@ const CONFIRMATIONS: Record<LocalCommand, string> = {
   'show-tomorrow': 'Showing tomorrow.',
   'close-calendar': 'Closed calendar.',
   'open-search': 'Opening search.',
+  'run-search': 'Searching locally.',
+  'clear-search': 'Search cleared.',
   'close-search': 'Closed search.',
   'voice-output-on': 'Voice output enabled.',
   'voice-output-off': 'Voice output muted.',
@@ -246,6 +250,13 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
     ],
   ],
   [
+    'clear-search',
+    [
+      rx(`^${REQUEST_PREFIX}(?:clear|reset|delete|wipe)\s+(?:the\s+)?(?:search|search\s+query|web\s+search|browser\s+query)$`),
+      /^(?:clear search|reset search|clear search query|clear browser query)$/i,
+    ],
+  ],
+  [
     'close-search',
     [
       rx(`^${REQUEST_PREFIX}${CLOSE_VERB}\\s+(?:the\\s+)?(?:search|web\\s+search|browser)(?:\\s+(?:panel|screen|menu|view))?$`),
@@ -350,7 +361,7 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
 ];
 
 
-function cleanNotePayload(payload: string): string {
+function cleanCommandPayload(payload: string): string {
   return payload
     .replace(/^["']+|["']+$/g, '')
     .trim();
@@ -365,8 +376,35 @@ function extractNotePayload(normalized: string): string | null {
 
   for (const pattern of patterns) {
     const match = normalized.match(pattern);
-    const payload = match?.[1] ? cleanNotePayload(match[1]) : '';
+    const payload = match?.[1] ? cleanCommandPayload(match[1]) : '';
     if (payload) return payload;
+  }
+
+  return null;
+}
+
+function extractSearchPayload(normalized: string): { payload: string; confirmationPrefix: string } | null {
+  const patterns: Array<{ pattern: RegExp; confirmationPrefix: string; rejectPayload?: (payload: string) => boolean }> = [
+    { pattern: /^(?:please\s+)?search\s+(?:the\s+)?(?:web|internet)\s+for\s+(.+)$/i, confirmationPrefix: 'Searching locally for' },
+    { pattern: /^(?:please\s+)?search\s+for\s+(.+)$/i, confirmationPrefix: 'Searching locally for' },
+    { pattern: /^(?:please\s+)?search\s+(.+)$/i, confirmationPrefix: 'Searching locally for' },
+    { pattern: /^(?:please\s+)?(?:web|internet)\s+search\s+(.+)$/i, confirmationPrefix: 'Searching locally for' },
+    { pattern: /^(?:please\s+)?look\s+(?:this\s+)?up\s+(.+)$/i, confirmationPrefix: 'Searching locally for' },
+    { pattern: /^(?:please\s+)?google\s+(.+)$/i, confirmationPrefix: 'Search query prepared' },
+    {
+      pattern: /^(?:please\s+)?find\s+(.+)$/i,
+      confirmationPrefix: 'Searching locally for',
+      rejectPayload: (payload) => /^(?:out|me|a\s+solution|a\s+way)\b/i.test(payload),
+    },
+  ];
+
+  for (const { pattern, confirmationPrefix, rejectPayload } of patterns) {
+    const match = normalized.match(pattern);
+    const payload = match?.[1] ? cleanCommandPayload(match[1]) : '';
+
+    if (!payload || rejectPayload?.(payload)) continue;
+
+    return { payload, confirmationPrefix };
   }
 
   return null;
@@ -422,6 +460,19 @@ export function parseCommand(text: string): CommandMatch | null {
         },
       };
     }
+  
+    const searchPayload = extractSearchPayload(payloadSource);
+  if (searchPayload) {
+    return {
+      rawText: text,
+      normalizedText: normalized,
+      match: {
+        command: 'run-search',
+        confirmation: `${searchPayload.confirmationPrefix}: ${searchPayload.payload}`,
+        payload: searchPayload.payload,
+      },
+    };
+  }
   
   for (const [command, patterns] of COMMAND_PATTERNS) {
     if (patterns.some((pattern) => pattern.test(normalized))) {

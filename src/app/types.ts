@@ -15,3 +15,9 @@ export interface BackendStatus {
   hasOpenAIKey: boolean;
   maxOutputTokens: number;
 }
+
+export interface Note {
+  id: string;
+  content: string;
+  createdAt: string;
+}

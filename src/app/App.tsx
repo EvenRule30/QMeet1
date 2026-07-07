@@ -409,6 +409,17 @@ export default function App() {
         closePanel();
       } else if (commandMatch.command === 'open-search') {
         setActivePanel('search');
+      } else if (commandMatch.command === 'run-search') {
+        const preparedSearchQuery = commandMatch.payload?.trim() ?? '';
+        setSearchQuery(preparedSearchQuery);
+        setActivePanel('search');
+        confirmationContent = preparedSearchQuery
+          ? commandMatch.confirmation
+          : 'Opening search.';
+      } else if (commandMatch.command === 'clear-search') {
+        setSearchQuery('');
+        setActivePanel('search');
+        confirmationContent = 'Search cleared.';
       } else if (commandMatch.command === 'close-search') {
         closePanel();
       } else if (commandMatch.command === 'close-generic') {

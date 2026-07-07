@@ -43,17 +43,17 @@ export function SearchPanel({ query, onQueryChange, onClose }: SearchPanelProps)
 
           <div className="search-placeholder-result">
             <div className="search-placeholder-title">
-              {trimmedQuery ? `Queued search: ${trimmedQuery}` : 'No active search yet.'}
+              {trimmedQuery ? `Prepared search query: ${trimmedQuery}` : 'No active search yet.'}
             </div>
             <p className="search-placeholder-text">
-              Real web browsing is not connected yet. This panel is a local prototype shell for future browser/search integration.
+              Real web browsing is not connected yet. This panel is a local prototype shell. Voice/text search commands currently prepare the query here for future browser/search integration.
             </p>
           </div>
 
           <div className="panel-section">
             <div className="panel-section-title">Supported Commands</div>
             <p className="panel-section-text">
-              Say “open search,” “open browser,” “search the web,” “close search,” or “go home.”
+              Say “open search,” “search for raspberry pi kiosk mode,” “look up local voice assistant,” “google chromium flags,” “clear search,” “close search,” or “go home.”
             </p>
           </div>
 
