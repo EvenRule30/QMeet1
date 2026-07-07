@@ -6,7 +6,7 @@ import { PromptBar } from './components/PromptBar';
 import { NotesPanel } from './components/NotesPanel';
 import { CalendarPanel } from './components/CalendarPanel';
 import { SearchPanel } from './components/SearchPanel';
-import { Message, OrbState, BackendStatus, ActivePanel, Note } from './types';
+import { Message, OrbState, BackendStatus, ActivePanel, Note, CalendarEvent } from './types';
 import { streamChatMessage, getBackendStatus, resetConversation } from "./api";
 import { getSpeechRecognition, isSpeechRecognitionSupported } from './speechRecognition';
 import { speakText, stopSpeaking } from './speechSynthesis';
@@ -31,6 +31,23 @@ function getPanelLabel(panel: ActivePanel): string {
     default:
       return 'Home';
   }
+}
+
+
+type CalendarView = 'today' | 'tomorrow';
+
+function getLocalDateKey(offsetDays = 0): string {
+  const date = new Date();
+  date.setDate(date.getDate() + offsetDays);
+  return date.toISOString().slice(0, 10);
+}
+
+function getDateKeyForCalendarView(view: CalendarView): string {
+  return view === 'tomorrow' ? getLocalDateKey(1) : getLocalDateKey(0);
+}
+
+function getCalendarViewLabel(view: CalendarView): string {
+  return view === 'tomorrow' ? 'tomorrow' : 'today';
 }
 
 export default function App() {
@@ -63,7 +80,30 @@ export default function App() {
       return [];
     }
   });
-  const [calendarView, setCalendarView] = useState<'today' | 'tomorrow'>('today');
+  const [calendarView, setCalendarView] = useState<CalendarView>('today');
+  const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>(() => {
+    if (typeof window === 'undefined') return [];
+  
+    try {
+      const rawEvents = window.localStorage.getItem('qmeet-calendar-events');
+      if (!rawEvents) return [];
+  
+      const parsedEvents = JSON.parse(rawEvents);
+      if (!Array.isArray(parsedEvents)) return [];
+  
+      return parsedEvents
+        .filter((event) => event && typeof event.title === 'string' && typeof event.dateKey === 'string')
+        .map((event) => ({
+          id: typeof event.id === 'string' ? event.id : `event-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          title: event.title,
+          dateKey: event.dateKey,
+          time: typeof event.time === 'string' ? event.time : 'Later',
+          createdAt: typeof event.createdAt === 'string' ? event.createdAt : new Date().toISOString(),
+        }));
+    } catch {
+      return [];
+    }
+  });
   const [searchQuery, setSearchQuery] = useState('');
   const [lastHeardTranscript, setLastHeardTranscript] = useState('');
   const [lastNormalizedTranscript, setLastNormalizedTranscript] = useState('');
@@ -164,6 +204,14 @@ export default function App() {
     }
   }, [notes]);
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('qmeet-calendar-events', JSON.stringify(calendarEvents));
+    } catch (error) {
+      console.error('Failed to save calendar events:', error);
+    }
+  }, [calendarEvents]);
+
   const saveNote = useCallback((content: string): Note | null => {
     const trimmedContent = content.trim();
 
@@ -217,6 +265,86 @@ export default function App() {
 
     return `You have ${notes.length} saved note${notes.length === 1 ? '' : 's'}: ${noteLines.join(' ')}${suffix}`;
   }, [notes]);
+
+  const saveCalendarEvent = useCallback((eventInput?: { day?: CalendarView; time?: string; title?: string }): CalendarEvent | null => {
+    const title = eventInput?.title?.trim() ?? '';
+
+    if (!title) {
+      return null;
+    }
+
+    const view = eventInput?.day ?? 'today';
+    const event: CalendarEvent = {
+      id: `event-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      title,
+      dateKey: getDateKeyForCalendarView(view),
+      time: eventInput?.time?.trim() || 'Later',
+      createdAt: new Date().toISOString(),
+    };
+
+    setCalendarEvents((prev) => [event, ...prev]);
+    return event;
+  }, []);
+
+  const deleteCalendarEvent = useCallback((eventId: string) => {
+    setCalendarEvents((prev) => prev.filter((event) => event.id !== eventId));
+  }, []);
+
+  const clearCalendarEvents = useCallback(() => {
+    setCalendarEvents([]);
+
+    try {
+      window.localStorage.removeItem('qmeet-calendar-events');
+    } catch (error) {
+      console.error('Failed to clear calendar events:', error);
+    }
+  }, []);
+
+  const deleteLastCalendarEvent = useCallback((): CalendarEvent | null => {
+    if (calendarEvents.length === 0) return null;
+
+    const deletedEvent = calendarEvents[0];
+    setCalendarEvents((prev) => prev.slice(1));
+    return deletedEvent;
+  }, [calendarEvents]);
+
+  const getCalendarReadout = useCallback((view: CalendarView | 'all' = 'all') => {
+    const todayKey = getDateKeyForCalendarView('today');
+    const tomorrowKey = getDateKeyForCalendarView('tomorrow');
+
+    const describeEvents = (label: string, eventsForDate: CalendarEvent[]) => {
+      if (eventsForDate.length === 0) {
+        return `No local events saved for ${label}.`;
+      }
+
+      const eventText = eventsForDate
+        .slice(0, 5)
+        .map((event, index) => `${index + 1}. ${event.time}: ${event.title}`)
+        .join(' ');
+
+      const remainingCount = eventsForDate.length - 5;
+      const suffix = remainingCount > 0 ? ` Plus ${remainingCount} more.` : '';
+
+      return `${label.charAt(0).toUpperCase() + label.slice(1)}: ${eventText}${suffix}`;
+    };
+
+    if (view === 'today') {
+      return describeEvents('today', calendarEvents.filter((event) => event.dateKey === todayKey));
+    }
+
+    if (view === 'tomorrow') {
+      return describeEvents('tomorrow', calendarEvents.filter((event) => event.dateKey === tomorrowKey));
+    }
+
+    const todayEvents = calendarEvents.filter((event) => event.dateKey === todayKey);
+    const tomorrowEvents = calendarEvents.filter((event) => event.dateKey === tomorrowKey);
+
+    if (todayEvents.length === 0 && tomorrowEvents.length === 0) {
+      return 'You do not have any local calendar events saved for today or tomorrow.';
+    }
+
+    return `${describeEvents('today', todayEvents)} ${describeEvents('tomorrow', tomorrowEvents)}`;
+  }, [calendarEvents]);
 
 
   // Cleanup speech recognition state
@@ -399,6 +527,35 @@ export default function App() {
       } else if (commandMatch.command === 'open-calendar') {
         setCalendarView('today');
         setActivePanel('calendar');
+      } else if (commandMatch.command === 'add-calendar-event') {
+        const addedEvent = saveCalendarEvent(commandMatch.calendarEvent);
+        const targetView = commandMatch.calendarEvent?.day ?? 'today';
+        setCalendarView(targetView);
+        setActivePanel('calendar');
+        confirmationContent = addedEvent
+          ? `Added event ${getCalendarViewLabel(targetView)} at ${addedEvent.time}: ${addedEvent.title}.`
+          : 'I did not catch the event details.';
+        shouldSpeakConfirmation = voiceOutputEnabled;
+      } else if (commandMatch.command === 'read-calendar') {
+        const targetView = commandMatch.calendarView === 'today' || commandMatch.calendarView === 'tomorrow'
+          ? commandMatch.calendarView
+          : calendarView;
+        setCalendarView(targetView);
+        setActivePanel('calendar');
+        confirmationContent = getCalendarReadout(commandMatch.calendarView ?? 'all');
+        shouldSpeakConfirmation = voiceOutputEnabled;
+      } else if (commandMatch.command === 'delete-last-event') {
+        const deletedEvent = deleteLastCalendarEvent();
+        setActivePanel('calendar');
+        confirmationContent = deletedEvent
+          ? `Deleted the last event: ${deletedEvent.time}: ${deletedEvent.title}.`
+          : 'No calendar events to delete.';
+        shouldSpeakConfirmation = voiceOutputEnabled;
+      } else if (commandMatch.command === 'clear-calendar') {
+        clearCalendarEvents();
+        setActivePanel('calendar');
+        confirmationContent = 'Cleared local calendar events.';
+        shouldSpeakConfirmation = voiceOutputEnabled;
       } else if (commandMatch.command === 'show-today') {
         setCalendarView('today');
         setActivePanel('calendar');
@@ -605,7 +762,7 @@ export default function App() {
         }
       }, 2000);
     }
-  }, [chatActive, activePanel, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes]);
+  }, [chatActive, activePanel, calendarView, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, clearCalendarEvents]);
 
   const handleOrbClick = useCallback(() => {
     // If QMeet is actively generating/streaming, tapping the orb should cancel
@@ -1088,6 +1245,12 @@ export default function App() {
                   <div className="status-card-value">{statusNotesCount}</div>
                   <div className="status-card-meta">Saved locally</div>
                 </div>
+
+                <div className="status-card">
+                  <div className="status-card-title">Calendar</div>
+                  <div className="status-card-value">{calendarEvents.length}</div>
+                  <div className="status-card-meta">Local events</div>
+                </div>
               </div>
 
               <div className="panel-section status-detail-section">
@@ -1154,7 +1317,9 @@ export default function App() {
       {activePanel === 'calendar' && (
         <CalendarPanel
           view={calendarView}
+          events={calendarEvents}
           onViewChange={setCalendarView}
+          onDeleteEvent={deleteCalendarEvent}
           onClose={closePanel}
         />
       )}

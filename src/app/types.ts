@@ -21,3 +21,11 @@ export interface Note {
   content: string;
   createdAt: string;
 }
+
+export interface CalendarEvent {
+  id: string;
+  title: string;
+  dateKey: string;
+  time: string;
+  createdAt: string;
+}

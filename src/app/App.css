@@ -1205,6 +1205,46 @@
   line-height: 1.45;
 }
 
+.calendar-agenda-event {
+  grid-template-columns: 64px 1fr;
+}
+
+.calendar-event-title {
+  display: block;
+  color: #e8edf5;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.calendar-event-meta {
+  display: block;
+  color: #6e86a5;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.calendar-event-delete-btn {
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 68, 102, 0.2);
+  background: rgba(255, 68, 102, 0.06);
+  color: rgba(255, 120, 140, 0.8);
+  font-family: 'Exo 2', sans-serif;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s, color 0.2s;
+}
+
+.calendar-event-delete-btn:hover {
+  background: rgba(255, 68, 102, 0.12);
+  border-color: rgba(255, 68, 102, 0.35);
+  color: rgba(255, 120, 140, 1);
+}
+
+
 
 /* ---- Search / Browser Placeholder Panel ---- */
 .search-panel {
