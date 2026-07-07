@@ -58,7 +58,7 @@ export interface CommandMatch {
 }
 
 const HELP_MESSAGE =
-  "I'm QMeet, your local AI orb interface. I can control the local QMeet interface by voice or text. I can open Menu, Settings, Status/System Dashboard, Notes, Calendar, and Search. Try saying \"open menu,\" \"show settings,\" \"show status,\" \"open notes,\" \"open calendar,\" or \"open search.\" I can save notes with \"note that buy milk,\" \"remember that test the tablet UI,\" or \"save note call Dr. Fang.\" I can prepare local search queries with \"search for raspberry pi kiosk mode,\" \"look up local voice assistant,\" or \"google chromium flags.\" I can read notes with \"read my notes\" and delete the newest one with \"delete last note.\" I can close panels with \"close panel\" or \"go home.\" I can also control spoken responses with \"mute voice,\" \"unmute voice,\" \"speak slower,\" \"speak faster,\" or \"normal voice.\"";
+  "I'm QMeet, your local AI orb interface. I can control the local UI without sending those commands to OpenAI. I can open Menu, Settings, Status, Notes, Calendar, and Search. Notes: say \"note that buy milk,\" \"read my notes,\" or \"delete last note.\" Search: say \"search for raspberry pi kiosk mode,\" \"look up chromium flags,\" or \"clear search.\" Calendar: say \"add event tomorrow at 3 called meeting,\" \"show today's events,\" \"what's on my calendar,\" \"delete last event,\" or \"clear calendar.\" Voice: say \"mute voice,\" \"unmute voice,\" \"speak slower,\" \"speak faster,\" or \"normal voice.\" Navigation: say \"go home,\" \"close panel,\" \"cancel,\" or \"what did you hear.\"";
 
 const CONFIRMATIONS: Record<LocalCommand, string> = {
   help: HELP_MESSAGE,
@@ -111,6 +111,8 @@ const CLOSE_VERB = '(?:close|hide|dismiss|remove|get\\s+rid\\s+of)';
 const QMEET_ALIAS =
   '(?:q\\s*meet|queue\\s+meet|cue\\s+meet|cute\\s+meet|q\\s*meat|queue\\s+meat|cue\\s+meat|cute\\s+meat|key\\s+meet|key\\s+meat|q\\s*me|queue\\s+me|cue\\s+me|computer|cube\\s+meet)';
 
+const CALENDAR_ALIAS = '(?:calendar|calender|calander|schedule|agenda)';
+
 function rx(pattern: string): RegExp {
   return new RegExp(pattern, 'i');
 }
@@ -125,6 +127,7 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
       /^(?:how do i use (?:this|qmeet|the orb))$/i,
       /^(?:what menus can (?:you|qmeet|the orb) open)$/i,
       /^(?:tell me what (?:you|qmeet|the orb) can do)$/i,
+      /^(?:local commands?|local tools?|what local tools do you have|what tools do you have)$/i,
     ],
   ],
   [
@@ -188,7 +191,7 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
     'read-notes',
     [
       rx(`^${REQUEST_PREFIX}(?:read|list|tell\\s+me|show|display)\\s+(?:me\\s+)?(?:my\\s+)?notes$`),
-      /^(?:read my notes|read notes|list my notes|list notes|show my notes|display my notes)$/i,
+      /^(?:read my notes|read notes|list my notes|list notes|show my notes|display my notes|what are my notes|what notes do i have)$/i,
     ],
   ],
   [
@@ -227,30 +230,34 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
   [
     'read-calendar',
     [
-      rx(`^${REQUEST_PREFIX}(?:what(?:'s|\s+is)\s+on\s+(?:my\s+)?calendar|read\s+(?:my\s+)?calendar|list\s+(?:my\s+)?calendar|show\s+(?:my\s+)?events)$`),
-      rx(`^${REQUEST_PREFIX}(?:show|read|list|display)\s+(?:my\s+)?(?:calendar\s+)?events$`),
+      rx(`^${REQUEST_PREFIX}(?:what(?:'s|\\s+is)|what\\s+are)\\s+(?:on|in)\\s+(?:my\\s+)?${CALENDAR_ALIAS}(?:\\s+events?)?$`),
+      rx(`^${REQUEST_PREFIX}(?:read|list|show|display)\\s+(?:my\\s+)?${CALENDAR_ALIAS}(?:\\s+events?)?$`),
+      rx(`^${REQUEST_PREFIX}(?:show|read|list|display)\\s+(?:my\\s+)?(?:calendar|calender|calander|schedule|agenda)?\\s*events$`),
+      rx(`^${REQUEST_PREFIX}(?:what\\s+events\\s+do\\s+i\\s+have|what\\s+is\\s+my\\s+schedule|what\\s+are\\s+my\\s+events)$`),
+      /^(?:calendar events|calender events|calander events|my events|my schedule|agenda)$/i,
     ],
   ],
   [
     'delete-last-event',
     [
-      rx(`^${REQUEST_PREFIX}(?:delete|remove|erase|clear)\s+(?:the\s+)?(?:last|latest|newest|most\s+recent)\s+(?:calendar\s+)?(?:event|appointment|meeting)$`),
+      rx(`^${REQUEST_PREFIX}(?:delete|remove|erase|clear)\\s+(?:the\\s+)?(?:last|latest|newest|most\\s+recent)\\s+(?:calendar\\s+)?(?:event|appointment|meeting)$`),
       /^(?:delete last event|remove last event|delete latest event|remove latest event)$/i,
     ],
   ],
   [
     'clear-calendar',
     [
-      rx(`^${REQUEST_PREFIX}(?:clear|reset|delete|wipe)\s+(?:the\s+)?(?:calendar|calendar\s+events|events|agenda)$`),
-      /^(?:clear calendar|clear calendar events|clear events|reset calendar)$/i,
+      rx(`^${REQUEST_PREFIX}(?:clear|reset|delete|wipe|remove|erase)\\s+(?:all\\s+|my\\s+|the\\s+)?${CALENDAR_ALIAS}(?:\\s+(?:events?|appointments?|meetings?|entries))?$`),
+      rx(`^${REQUEST_PREFIX}(?:clear|reset|delete|wipe|remove|erase)\\s+(?:all\\s+)?(?:events?|appointments?|meetings?|entries)\\s+(?:from|on|in)\\s+(?:my\\s+)?${CALENDAR_ALIAS}$`),
+      /^(?:clear calendar|clear calender|clear calander|clear schedule|clear agenda|clear calendar events|clear calender events|clear calander events|clear my calendar|clear my schedule|clear all events|reset calendar|wipe calendar)$/i,
     ],
   ],
   [
     'open-calendar',
     [
       rx(`^${REQUEST_PREFIX}${OPEN_VERB}\\s+(?:me\\s+)?(?:my\\s+)?(?:the\\s+)?calendar(?:\\s+(?:panel|screen|menu|view))?$`),
-      /^(?:calendar|calendar panel|calender|schedule)$/i,
-      rx(`^${REQUEST_PREFIX}${OPEN_VERB}\\s+(?:the\\s+)?(?:calender|schedule)$`),
+      /^(?:calendar|calendar panel|calender|calander|schedule|agenda)$/i,
+      rx(`^${REQUEST_PREFIX}${OPEN_VERB}\\s+(?:the\\s+)?(?:calender|calander|schedule|agenda)$`),
     ],
   ],
   [
@@ -358,7 +365,7 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
     [
       rx(`^${REQUEST_PREFIX}(?:stop\\s+speaking|stop\\s+talking|stop\\s+reading|be\\s+quiet|silence)$`),
       rx(`^${REQUEST_PREFIX}(?:stop|cancel)\\s+(?:your\\s+)?(?:response|responding|talking|speaking|voice)$`),
-      /^(?:stop talking|stop response|stop responding|stop speaking|never mind|forget that|enough|pause)$/i,
+      /^(?:stop talking|stop response|stop responding|stop speaking|shut up|be quiet)$/i,
     ],
   ],
   [
@@ -366,7 +373,7 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
     [
       rx(`^${REQUEST_PREFIX}(?:cancel|stop|nevermind|never\\s+mind|abort|cancel\\s+that|stop\\s+that|forget\\s+(?:it|that)|stop\\s+listening|cancel\\s+listening)$`),
       rx(`^${REQUEST_PREFIX}(?:cancel|stop)\\s+(?:the\\s+)?(?:request|action)$`),
-      /^(?:never mind|forget that|cancel request)$/i,
+      /^(?:never mind|forget that|cancel request|enough|pause)$/i,
     ],
   ],
   [
@@ -450,8 +457,10 @@ function extractSearchPayload(normalized: string): { payload: string; confirmati
 
 function extractCalendarEventPayload(normalized: string): CalendarCommandPayload | null {
   const patterns = [
-    /^(?:please\s+)?(?:add|create|schedule|make)\s+(?:an?\s+)?(?:calendar\s+)?(?:event|appointment|reminder|meeting)\s+(?:(today|tomorrow)\s+)?(?:at\s+)?(.+?)\s+(?:called|named|titled|for|about)\s+(.+)$/i,
-    /^(?:please\s+)?(?:put|add)\s+(.+?)\s+(?:on|to)\s+(?:my\s+)?calendar\s+(?:(today|tomorrow)\s+)?(?:at\s+)?(.+)$/i,
+    /^(?:please\s+)?(?:add|create|schedule|make)\s+(?:an?\s+)?(?:(?:calendar|calender|calander)\s+)?(?:event|appointment|reminder|meeting)\s+(?:(today|tomorrow)\s+)?(?:at\s+)?(.+?)\s+(?:called|named|titled|for|about)\s+(.+)$/i,
+    /^(?:please\s+)?(?:put|add)\s+(.+?)\s+(?:on|to)\s+(?:my\s+)?(?:calendar|calender|calander|schedule|agenda)\s+(?:(today|tomorrow)\s+)?(?:at\s+)?(.+)$/i,
+    /^(?:please\s+)?schedule\s+(.+?)\s+(today|tomorrow)\s+(?:at\s+)?(.+)$/i,
+    /^(?:please\s+)?remind\s+me\s+(today|tomorrow)\s+(?:at\s+)?(.+?)\s+to\s+(.+)$/i,
   ];
 
   for (const pattern of patterns) {
@@ -471,10 +480,34 @@ function extractCalendarEventPayload(normalized: string): CalendarCommandPayload
           title,
         };
       }
-    } else {
+    } else if (pattern === patterns[1]) {
       const title = match[1] ? cleanCommandPayload(match[1]) : '';
       const day = (match[2]?.toLowerCase() === 'tomorrow' ? 'tomorrow' : 'today') as 'today' | 'tomorrow';
       const time = match[3] ? cleanCommandPayload(match[3]) : '';
+
+      if (title) {
+        return {
+          day,
+          time: time || 'Later',
+          title,
+        };
+      }
+    } else if (pattern === patterns[2]) {
+      const title = match[1] ? cleanCommandPayload(match[1]) : '';
+      const day = (match[2]?.toLowerCase() === 'tomorrow' ? 'tomorrow' : 'today') as 'today' | 'tomorrow';
+      const time = match[3] ? cleanCommandPayload(match[3]) : '';
+
+      if (title) {
+        return {
+          day,
+          time: time || 'Later',
+          title,
+        };
+      }
+    } else {
+      const day = (match[1]?.toLowerCase() === 'tomorrow' ? 'tomorrow' : 'today') as 'today' | 'tomorrow';
+      const time = match[2] ? cleanCommandPayload(match[2]) : '';
+      const title = match[3] ? cleanCommandPayload(match[3]) : '';
 
       if (title) {
         return {
@@ -491,24 +524,26 @@ function extractCalendarEventPayload(normalized: string): CalendarCommandPayload
 
 function extractCalendarReadPayload(normalized: string): 'today' | 'tomorrow' | 'all' | null {
   const todayPatterns = [
-    /^(?:please\s+)?(?:show|read|list|display|open|pull\s+up|bring\s+up)\s+(?:my\s+)?(?:calendar\s+)?today(?:'s)?\s+(?:events|agenda|schedule|calendar)$/i,
+    /^(?:please\s+)?(?:show|read|list|display|open|pull\s+up|bring\s+up)\s+(?:my\s+)?(?:(?:calendar|calender|calander|schedule|agenda)\s+)?today(?:'s)?\s+(?:events|agenda|schedule|calendar)$/i,
     /^(?:please\s+)?(?:show|read|list|display|open|pull\s+up|bring\s+up)\s+(?:my\s+)?today(?:'s)?\s+(?:events|agenda|schedule|calendar)$/i,
-    /^(?:please\s+)?what(?:'s|\s+is)\s+on\s+(?:my\s+)?calendar\s+today$/i,
+    /^(?:please\s+)?what(?:'s|\s+is)\s+on\s+(?:my\s+)?(?:calendar|calender|calander|schedule|agenda)\s+today$/i,
     /^(?:please\s+)?what\s+do\s+i\s+have\s+(?:today|on\s+today)$/i,
   ];
 
   const tomorrowPatterns = [
-    /^(?:please\s+)?(?:show|read|list|display|open|pull\s+up|bring\s+up)\s+(?:my\s+)?(?:calendar\s+)?tomorrow(?:'s)?\s+(?:events|agenda|schedule|calendar)$/i,
+    /^(?:please\s+)?(?:show|read|list|display|open|pull\s+up|bring\s+up)\s+(?:my\s+)?(?:(?:calendar|calender|calander|schedule|agenda)\s+)?tomorrow(?:'s)?\s+(?:events|agenda|schedule|calendar)$/i,
     /^(?:please\s+)?(?:show|read|list|display|open|pull\s+up|bring\s+up)\s+(?:my\s+)?tomorrow(?:'s)?\s+(?:events|agenda|schedule|calendar)$/i,
-    /^(?:please\s+)?what(?:'s|\s+is)\s+on\s+(?:my\s+)?calendar\s+tomorrow$/i,
+    /^(?:please\s+)?what(?:'s|\s+is)\s+on\s+(?:my\s+)?(?:calendar|calender|calander|schedule|agenda)\s+tomorrow$/i,
     /^(?:please\s+)?what\s+do\s+i\s+have\s+(?:tomorrow|on\s+tomorrow)$/i,
   ];
 
   const allPatterns = [
-    /^(?:please\s+)?what(?:'s|\s+is)\s+on\s+(?:my\s+)?calendar$/i,
-    /^(?:please\s+)?(?:read|list|show|display)\s+(?:my\s+)?calendar$/i,
-    /^(?:please\s+)?(?:read|list|show|display)\s+(?:my\s+)?events$/i,
+    /^(?:please\s+)?what(?:'s|\s+is)\s+on\s+(?:my\s+)?(?:calendar|calender|calander|schedule|agenda)$/i,
+    /^(?:please\s+)?what\s+are\s+(?:my\s+)?(?:calendar|calender|calander|schedule|agenda)\s+events$/i,
+    /^(?:please\s+)?(?:read|list|show|display)\s+(?:my\s+)?(?:calendar|calender|calander|schedule|agenda)$/i,
+    /^(?:please\s+)?(?:read|list|show|display)\s+(?:my\s+)?(?:calendar|calender|calander|schedule|agenda)?\s*events$/i,
     /^(?:please\s+)?what\s+do\s+i\s+have\s+scheduled$/i,
+    /^(?:please\s+)?what\s+are\s+my\s+events$/i,
   ];
 
   if (todayPatterns.some((pattern) => pattern.test(normalized))) return 'today';
@@ -541,9 +576,9 @@ export function normalizeCommandText(text: string): string {
 
 export function parseCommand(text: string): CommandMatch | null {
   return debugCommandParse(text).match;
-  }
-  
-  export function debugCommandParse(text: string): {
+}
+
+export function debugCommandParse(text: string): {
     rawText: string;
     normalizedText: string;
     match: CommandMatch | null;

@@ -39,11 +39,37 @@ type CalendarView = 'today' | 'tomorrow';
 function getLocalDateKey(offsetDays = 0): string {
   const date = new Date();
   date.setDate(date.getDate() + offsetDays);
-  return date.toISOString().slice(0, 10);
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+
+  return `${year}-${month}-${day}`;
 }
 
 function getDateKeyForCalendarView(view: CalendarView): string {
   return view === 'tomorrow' ? getLocalDateKey(1) : getLocalDateKey(0);
+}
+
+function getLegacyUtcDateKeyForCalendarView(view: CalendarView): string {
+  const date = new Date();
+
+  if (view === 'tomorrow') {
+    date.setDate(date.getDate() + 1);
+  }
+
+  return date.toISOString().slice(0, 10);
+}
+
+function getAcceptedDateKeysForCalendarView(view: CalendarView): Set<string> {
+  return new Set([
+    getDateKeyForCalendarView(view),
+    getLegacyUtcDateKeyForCalendarView(view),
+  ]);
+}
+
+function isEventForCalendarView(event: CalendarEvent, view: CalendarView): boolean {
+  return getAcceptedDateKeysForCalendarView(view).has(event.dateKey);
 }
 
 function getCalendarViewLabel(view: CalendarView): string {
@@ -52,6 +78,12 @@ function getCalendarViewLabel(view: CalendarView): string {
 
 const VOICE_OUTPUT_STORAGE_KEY = 'qmeet-voice-output-enabled';
 const SPEECH_RATE_STORAGE_KEY = 'qmeet-speech-rate';
+const CALENDAR_EVENTS_STORAGE_KEY = 'qmeet-calendar-events';
+const LEGACY_CALENDAR_EVENTS_STORAGE_KEYS = [
+  'qmeet-calendar',
+  'qmeet-events',
+  'calendar-events',
+];
 
 function clampSpeechRate(rate: number): number {
   return Math.min(1.35, Math.max(0.75, rate));
@@ -92,8 +124,8 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [backendStatus, setBackendStatus] = useState<BackendStatus | null>(null);
   const [activePanel, setActivePanel] = useState<ActivePanel>('none');
- const [voiceOutputEnabled, setVoiceOutputEnabled] = useState(readStoredVoiceOutputEnabled);
-   const [speechRate, setSpeechRate] = useState(readStoredSpeechRate);
+  const [voiceOutputEnabled, setVoiceOutputEnabled] = useState(readStoredVoiceOutputEnabled);
+  const [speechRate, setSpeechRate] = useState(readStoredSpeechRate);
   const [showThinkingBubble, setShowThinkingBubble] = useState(false);
   const [notes, setNotes] = useState<Note[]>(() => {
     if (typeof window === 'undefined') return [];
@@ -121,7 +153,7 @@ export default function App() {
     if (typeof window === 'undefined') return [];
   
     try {
-      const rawEvents = window.localStorage.getItem('qmeet-calendar-events');
+      const rawEvents = window.localStorage.getItem(CALENDAR_EVENTS_STORAGE_KEY);
       if (!rawEvents) return [];
   
       const parsedEvents = JSON.parse(rawEvents);
@@ -258,7 +290,7 @@ export default function App() {
 
   useEffect(() => {
     try {
-      window.localStorage.setItem('qmeet-calendar-events', JSON.stringify(calendarEvents));
+      window.localStorage.setItem(CALENDAR_EVENTS_STORAGE_KEY, JSON.stringify(calendarEvents));
     } catch (error) {
       console.error('Failed to save calendar events:', error);
     }
@@ -346,7 +378,11 @@ export default function App() {
     setCalendarEvents([]);
 
     try {
-      window.localStorage.removeItem('qmeet-calendar-events');
+      window.localStorage.setItem(CALENDAR_EVENTS_STORAGE_KEY, '[]');
+
+      for (const legacyKey of LEGACY_CALENDAR_EVENTS_STORAGE_KEYS) {
+        window.localStorage.removeItem(legacyKey);
+      }
     } catch (error) {
       console.error('Failed to clear calendar events:', error);
     }
@@ -361,8 +397,8 @@ export default function App() {
   }, [calendarEvents]);
 
   const getCalendarReadout = useCallback((view: CalendarView | 'all' = 'all') => {
-    const todayKey = getDateKeyForCalendarView('today');
-    const tomorrowKey = getDateKeyForCalendarView('tomorrow');
+    const getEventsForView = (targetView: CalendarView) =>
+      calendarEvents.filter((event) => isEventForCalendarView(event, targetView));
 
     const describeEvents = (label: string, eventsForDate: CalendarEvent[]) => {
       if (eventsForDate.length === 0) {
@@ -381,15 +417,15 @@ export default function App() {
     };
 
     if (view === 'today') {
-      return describeEvents('today', calendarEvents.filter((event) => event.dateKey === todayKey));
+      return describeEvents('today', getEventsForView('today'));
     }
 
     if (view === 'tomorrow') {
-      return describeEvents('tomorrow', calendarEvents.filter((event) => event.dateKey === tomorrowKey));
+      return describeEvents('tomorrow', getEventsForView('tomorrow'));
     }
 
-    const todayEvents = calendarEvents.filter((event) => event.dateKey === todayKey);
-    const tomorrowEvents = calendarEvents.filter((event) => event.dateKey === tomorrowKey);
+    const todayEvents = getEventsForView('today');
+    const tomorrowEvents = getEventsForView('tomorrow');
 
     if (todayEvents.length === 0 && tomorrowEvents.length === 0) {
       return 'You do not have any local calendar events saved for today or tomorrow.';
@@ -589,12 +625,20 @@ export default function App() {
           : 'I did not catch the event details.';
         shouldSpeakConfirmation = voiceOutputEnabled;
       } else if (commandMatch.command === 'read-calendar') {
-        const targetView = commandMatch.calendarView === 'today' || commandMatch.calendarView === 'tomorrow'
-          ? commandMatch.calendarView
-          : calendarView;
+        const requestedCalendarView = commandMatch.calendarView ?? 'all';
+        const hasTodayEvents = calendarEvents.some((event) => isEventForCalendarView(event, 'today'));
+        const hasTomorrowEvents = calendarEvents.some((event) => isEventForCalendarView(event, 'tomorrow'));
+        const targetView = requestedCalendarView === 'today' || requestedCalendarView === 'tomorrow'
+          ? requestedCalendarView
+          : hasTodayEvents
+            ? 'today'
+            : hasTomorrowEvents
+              ? 'tomorrow'
+              : calendarView;
+
         setCalendarView(targetView);
         setActivePanel('calendar');
-        confirmationContent = getCalendarReadout(commandMatch.calendarView ?? 'all');
+        confirmationContent = getCalendarReadout(requestedCalendarView);
         shouldSpeakConfirmation = voiceOutputEnabled;
       } else if (commandMatch.command === 'delete-last-event') {
         const deletedEvent = deleteLastCalendarEvent();
@@ -605,8 +649,15 @@ export default function App() {
         shouldSpeakConfirmation = voiceOutputEnabled;
       } else if (commandMatch.command === 'clear-calendar') {
         clearCalendarEvents();
+
+        try {
+          await resetConversation();
+        } catch (error) {
+          console.error('Reset conversation after clearing calendar error:', error);
+        }
+
         setActivePanel('calendar');
-        confirmationContent = 'Cleared local calendar events.';
+        confirmationContent = 'Cleared all local calendar events.';
         shouldSpeakConfirmation = voiceOutputEnabled;
       } else if (commandMatch.command === 'show-today') {
         setCalendarView('today');
@@ -810,7 +861,7 @@ export default function App() {
         }
       }, 2000);
     }
-  }, [chatActive, activePanel, calendarView, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, clearCalendarEvents]);
+  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, clearCalendarEvents]);
 
   const handleOrbClick = useCallback(() => {
     // If QMeet is actively generating/streaming, tapping the orb should cancel
@@ -1035,6 +1086,9 @@ export default function App() {
       minute: '2-digit',
     });
     const statusNotesCount = notes.length;
+    const statusTodayEventsCount = calendarEvents.filter((event) => event.dateKey === getDateKeyForCalendarView('today')).length;
+    const statusTomorrowEventsCount = calendarEvents.filter((event) => event.dateKey === getDateKeyForCalendarView('tomorrow')).length;
+    const trimmedSearchQuery = searchQuery.trim();
     const voiceInputSupported = isSpeechRecognitionSupported();
     const activePanelLabel = getPanelLabel(activePanel);
 
@@ -1127,7 +1181,7 @@ export default function App() {
               <div className="panel-section launcher-help-section">
                 <div className="panel-section-title">Quick Commands</div>
                 <p className="panel-section-text">
-                  Try "what can you do", "what did you hear", "cancel", "go home", "close panel", "mute voice", "speak slower", "clear chat", or "end chat".
+                  Try "what can you do", "note that buy milk", "search for kiosk mode", "add event tomorrow at 3 called meeting", "what's on my calendar", "what did you hear", "cancel", "go home", or "mute voice".
                 </p>
               </div>
 
@@ -1147,7 +1201,7 @@ export default function App() {
               <div className="panel-section">
                 <div className="panel-section-title">Voice Settings</div>
                 <p className="panel-section-text">
-                  Microphone: Enabled · Language: English (US) · Recognition: Online
+                  Microphone: Enabled · Language: English (US) · Recognition: Online · Voice preferences persist across reloads
                 </p>
                 <div className="settings-control-row">
                   <span className="settings-control-label">Spoken responses</span>
@@ -1297,7 +1351,25 @@ export default function App() {
                 <div className="status-card">
                   <div className="status-card-title">Calendar</div>
                   <div className="status-card-value">{calendarEvents.length}</div>
-                  <div className="status-card-meta">Local events</div>
+                  <div className="status-card-meta">Local events total</div>
+                </div>
+
+                <div className="status-card">
+                  <div className="status-card-title">Today</div>
+                  <div className="status-card-value">{statusTodayEventsCount}</div>
+                  <div className="status-card-meta">Events saved for today</div>
+                </div>
+
+                <div className="status-card">
+                  <div className="status-card-title">Tomorrow</div>
+                  <div className="status-card-value">{statusTomorrowEventsCount}</div>
+                  <div className="status-card-meta">Events saved for tomorrow</div>
+                </div>
+
+                <div className="status-card">
+                  <div className="status-card-title">Search</div>
+                  <div className="status-card-value">{trimmedSearchQuery ? 'Prepared' : 'Empty'}</div>
+                  <div className="status-card-meta">{trimmedSearchQuery || 'No local query'}</div>
                 </div>
               </div>
 
@@ -1337,10 +1409,28 @@ export default function App() {
                 </div>
               </div>
 
+              <div className="panel-section status-detail-section">
+                <div className="panel-section-title">Local Storage</div>
+                <div className="status-detail-list">
+                  <div className="status-detail-row">
+                    <span>Voice output preference</span>
+                    <strong>Saved</strong>
+                  </div>
+                  <div className="status-detail-row">
+                    <span>Voice speed preference</span>
+                    <strong>Saved</strong>
+                  </div>
+                  <div className="status-detail-row">
+                    <span>Notes and calendar events</span>
+                    <strong>Saved locally</strong>
+                  </div>
+                </div>
+              </div>
+
               <div className="panel-section">
                 <div className="panel-section-title">Supported Status Commands</div>
                 <p className="panel-section-text">
-                  Say “show status,” “system status,” “diagnostics,” “what did you hear,” “close status,” or “go home.”
+                  Say “show status,” “system status,” “diagnostics,” “what did you hear,” “read my notes,” “what's on my calendar,” “close status,” or “go home.”
                 </p>
               </div>
 
