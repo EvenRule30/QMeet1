@@ -1499,6 +1499,12 @@ export default function App() {
         setLastHeardTranscript(rawTranscript);
         setLastNormalizedTranscript(normalizedTranscript);
 
+        // Speech recognition has finished capturing the user's phrase at this point.
+        // Clear the visible listening preview immediately so the UI does not keep
+        // showing "Heard: Listening..." while QMeet is actually parsing the command.
+        setListeningTranscript('');
+        setOrbState('thinking');
+
         handleSend(normalizedTranscript);
       }
     };
