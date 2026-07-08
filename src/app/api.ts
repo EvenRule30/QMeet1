@@ -1,4 +1,4 @@
-import { BackendStatus, CommandIntentResponse } from "./types";
+import { BackendStatus, CalendarAuthResetResponse, CalendarAuthStartResponse, CalendarBackendStatus, CalendarBackendView, CalendarEventsResponse, CommandIntentResponse } from "./types";
 
 export type ChatApiResponse = {
   reply: string;
@@ -65,6 +65,56 @@ export async function interpretCommandIntent(message: string): Promise<CommandIn
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || `Command interpreter error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+
+export async function getCalendarStatus(): Promise<CalendarBackendStatus> {
+  const res = await fetch(`${API_BASE_URL}/api/calendar/status`);
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Calendar status error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+export async function startCalendarAuth(): Promise<CalendarAuthStartResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/calendar/auth/start`, {
+    method: "POST",
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Calendar auth start error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+export async function resetCalendarAuth(): Promise<CalendarAuthResetResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/calendar/auth/reset`, {
+    method: "POST",
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Calendar auth reset error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+export async function getCalendarEvents(view: CalendarBackendView = "today"): Promise<CalendarEventsResponse> {
+  const params = new URLSearchParams({ view });
+  const res = await fetch(`${API_BASE_URL}/api/calendar/events?${params.toString()}`);
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Calendar events error: ${res.status}`);
   }
 
   return res.json();

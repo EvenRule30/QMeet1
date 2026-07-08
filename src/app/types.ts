@@ -28,6 +28,46 @@ export interface CalendarEvent {
   dateKey: string;
   time: string;
   createdAt: string;
+  source?: 'local' | 'google';
+  googleEventId?: string;
+  start?: string | null;
+  end?: string | null;
+  location?: string;
+  description?: string;
+  allDay?: boolean;
+  calendarId?: string;
+}
+
+export type CalendarBackendView = 'today' | 'tomorrow' | 'week';
+
+export interface CalendarBackendStatus {
+  ok: boolean;
+  provider: 'google';
+  configured: boolean;
+  connected: boolean;
+  calendarId: string;
+  message: string;
+}
+
+export interface CalendarAuthStartResponse {
+  ok: boolean;
+  authUrl: string;
+  message: string;
+}
+
+export interface CalendarAuthResetResponse {
+  ok: boolean;
+  message: string;
+}
+
+export interface CalendarEventsResponse {
+  ok: boolean;
+  configured: boolean;
+  connected: boolean;
+  source: 'google';
+  view: CalendarBackendView;
+  events: CalendarEvent[];
+  message: string;
 }
 
 

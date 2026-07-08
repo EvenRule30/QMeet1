@@ -6,8 +6,8 @@ import { PromptBar } from './components/PromptBar';
 import { NotesPanel } from './components/NotesPanel';
 import { CalendarPanel } from './components/CalendarPanel';
 import { SearchPanel } from './components/SearchPanel';
-import { Message, OrbState, BackendStatus, ActivePanel, Note, CalendarEvent } from './types';
-import { streamChatMessage, getBackendStatus, resetConversation, interpretCommandIntent } from "./api";
+import { Message, OrbState, BackendStatus, ActivePanel, Note, CalendarEvent, CalendarBackendStatus, CalendarBackendView } from './types';
+import { streamChatMessage, getBackendStatus, resetConversation, interpretCommandIntent, getCalendarStatus, getCalendarEvents, startCalendarAuth, resetCalendarAuth } from "./api";
 import { getSpeechRecognition, isSpeechRecognitionSupported } from './speechRecognition';
 import { speakText, stopSpeaking } from './speechSynthesis';
 import { parseCommand, normalizeSpokenQMeet } from './commands';
@@ -238,11 +238,16 @@ export default function App() {
           dateKey: event.dateKey,
           time: typeof event.time === 'string' ? event.time : 'Later',
           createdAt: typeof event.createdAt === 'string' ? event.createdAt : new Date().toISOString(),
+          source: 'local',
         }));
     } catch {
       return [];
     }
   });
+  const [googleCalendarStatus, setGoogleCalendarStatus] = useState<CalendarBackendStatus | null>(null);
+  const [googleCalendarEvents, setGoogleCalendarEvents] = useState<CalendarEvent[]>([]);
+  const [googleCalendarLoading, setGoogleCalendarLoading] = useState(false);
+  const [googleCalendarError, setGoogleCalendarError] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [lastHeardTranscript, setLastHeardTranscript] = useState('');
   const [lastNormalizedTranscript, setLastNormalizedTranscript] = useState('');
@@ -441,6 +446,7 @@ export default function App() {
       dateKey: getDateKeyForCalendarView(view),
       time: eventInput?.time?.trim() || 'Later',
       createdAt: new Date().toISOString(),
+      source: 'local',
     };
 
     setCalendarEvents((prev) => [event, ...prev]);
@@ -473,24 +479,28 @@ export default function App() {
     return deletedEvent;
   }, [calendarEvents]);
 
-  const getCalendarReadout = useCallback((view: CalendarView | 'all' = 'all') => {
+  const getCalendarReadout = useCallback((view: CalendarView | 'all' = 'all', remoteEvents: CalendarEvent[] = googleCalendarEvents) => {
+    const googleConnected = Boolean(googleCalendarStatus?.connected);
+    const sourceEvents = googleConnected ? remoteEvents : calendarEvents;
+    const sourceLabel = googleConnected ? 'Google Calendar' : 'local calendar';
+
     const getEventsForView = (targetView: CalendarView) =>
-      calendarEvents.filter((event) => isEventForCalendarView(event, targetView));
+      sourceEvents.filter((event) => isEventForCalendarView(event, targetView));
 
     const describeEvents = (label: string, eventsForDate: CalendarEvent[]) => {
       if (eventsForDate.length === 0) {
-        return `No local events saved for ${label}.`;
+        return `No ${sourceLabel} events saved for ${label}.`;
       }
 
       const eventText = eventsForDate
         .slice(0, 5)
-        .map((event, index) => `${index + 1}. ${event.time}: ${event.title}`)
+        .map((event, index) => `${index + 1}. ${event.time}: ${event.title}${event.location ? ` at ${event.location}` : ''}`)
         .join(' ');
 
       const remainingCount = eventsForDate.length - 5;
       const suffix = remainingCount > 0 ? ` Plus ${remainingCount} more.` : '';
 
-      return `${label.charAt(0).toUpperCase() + label.slice(1)}: ${eventText}${suffix}`;
+      return `${label.charAt(0).toUpperCase() + label.slice(1)} ${sourceLabel}: ${eventText}${suffix}`;
     };
 
     if (view === 'today') {
@@ -505,11 +515,13 @@ export default function App() {
     const tomorrowEvents = getEventsForView('tomorrow');
 
     if (todayEvents.length === 0 && tomorrowEvents.length === 0) {
-      return 'You do not have any local calendar events saved for today or tomorrow.';
+      return googleConnected
+        ? 'You do not have any Google Calendar events for today or tomorrow.'
+        : 'You do not have any local calendar events saved for today or tomorrow.';
     }
 
     return `${describeEvents('today', todayEvents)} ${describeEvents('tomorrow', tomorrowEvents)}`;
-  }, [calendarEvents]);
+  }, [calendarEvents, googleCalendarEvents, googleCalendarStatus?.connected]);
 
 
   // Cleanup speech recognition state
@@ -591,6 +603,96 @@ export default function App() {
     setSpeechRate(clampedRate);
     return clampedRate;
   }, []);
+  const loadGoogleCalendarStatus = useCallback(async (): Promise<CalendarBackendStatus | null> => {
+    try {
+      const status = await getCalendarStatus();
+      setGoogleCalendarStatus(status);
+      if (status.connected) {
+        setGoogleCalendarError('');
+      }
+      return status;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not load Google Calendar status.';
+      setGoogleCalendarStatus(null);
+      setGoogleCalendarError(message);
+      return null;
+    }
+  }, []);
+
+  const refreshGoogleCalendar = useCallback(async (viewInput: CalendarBackendView = calendarView): Promise<CalendarEvent[]> => {
+    setGoogleCalendarLoading(true);
+    setGoogleCalendarError('');
+
+    try {
+      const status = await getCalendarStatus();
+      setGoogleCalendarStatus(status);
+
+      if (!status.connected) {
+        setGoogleCalendarEvents([]);
+        setGoogleCalendarError(status.message);
+        return [];
+      }
+
+      const response = await getCalendarEvents(viewInput);
+      setGoogleCalendarEvents(response.events);
+      setGoogleCalendarError(response.message);
+      return response.events;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not read Google Calendar events.';
+      setGoogleCalendarError(message);
+      return [];
+    } finally {
+      setGoogleCalendarLoading(false);
+    }
+  }, [calendarView]);
+
+  useEffect(() => {
+    loadGoogleCalendarStatus();
+  }, [loadGoogleCalendarStatus]);
+
+  useEffect(() => {
+    if (activePanel === 'calendar') {
+      refreshGoogleCalendar(calendarView);
+    }
+  }, [activePanel, calendarView, refreshGoogleCalendar]);
+
+  const handleStartGoogleCalendarAuth = useCallback(async () => {
+    setGoogleCalendarLoading(true);
+    setGoogleCalendarError('');
+
+    try {
+      const response = await startCalendarAuth();
+
+      if (response.authUrl) {
+        window.open(response.authUrl, '_blank', 'noopener,noreferrer');
+        setGoogleCalendarError('Google authorization opened in a new tab. After approving access, return here and press Refresh.');
+      } else {
+        setGoogleCalendarError(response.message || 'Google Calendar authorization did not return a URL.');
+      }
+    } catch (error) {
+      setGoogleCalendarError(error instanceof Error ? error.message : 'Could not start Google Calendar authorization.');
+    } finally {
+      setGoogleCalendarLoading(false);
+      loadGoogleCalendarStatus();
+    }
+  }, [loadGoogleCalendarStatus]);
+
+  const handleResetGoogleCalendarAuth = useCallback(async () => {
+    setGoogleCalendarLoading(true);
+    setGoogleCalendarError('');
+
+    try {
+      const response = await resetCalendarAuth();
+      setGoogleCalendarEvents([]);
+      setGoogleCalendarError(response.message || 'Google Calendar authorization reset.');
+      await loadGoogleCalendarStatus();
+    } catch (error) {
+      setGoogleCalendarError(error instanceof Error ? error.message : 'Could not reset Google Calendar authorization.');
+    } finally {
+      setGoogleCalendarLoading(false);
+    }
+  }, [loadGoogleCalendarStatus]);
+
 
   // TODO: Backend integration
   // Replace this function body with actual FastAPI calls:
@@ -799,8 +901,14 @@ export default function App() {
         shouldSpeakConfirmation = voiceOutputEnabled;
       } else if (commandMatch.command === 'read-calendar') {
         const requestedCalendarView = commandMatch.calendarView ?? 'all';
-        const hasTodayEvents = calendarEvents.some((event) => isEventForCalendarView(event, 'today'));
-        const hasTomorrowEvents = calendarEvents.some((event) => isEventForCalendarView(event, 'tomorrow'));
+        const remoteCalendarView: CalendarBackendView =
+                  requestedCalendarView === 'all' ? 'week' : requestedCalendarView;
+                const remoteEvents = googleCalendarStatus?.connected
+                  ? await refreshGoogleCalendar(remoteCalendarView)
+                  : googleCalendarEvents;
+                const sourceEvents = googleCalendarStatus?.connected ? remoteEvents : calendarEvents;
+                const hasTodayEvents = sourceEvents.some((event) => isEventForCalendarView(event, 'today'));
+                const hasTomorrowEvents = sourceEvents.some((event) => isEventForCalendarView(event, 'tomorrow'));
         const targetView = requestedCalendarView === 'today' || requestedCalendarView === 'tomorrow'
           ? requestedCalendarView
           : hasTodayEvents
@@ -811,7 +919,7 @@ export default function App() {
 
         setCalendarView(targetView);
         setActivePanel('calendar');
-        confirmationContent = getCalendarReadout(requestedCalendarView);
+        confirmationContent = getCalendarReadout(requestedCalendarView, remoteEvents);
         shouldSpeakConfirmation = voiceOutputEnabled;
       } else if (commandMatch.command === 'delete-last-event') {
         const deletedEvent = deleteLastCalendarEvent();
@@ -1187,7 +1295,7 @@ export default function App() {
         }
       }, 2000);
     }
-  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, clearCalendarEvents]);
+  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, googleCalendarStatus?.connected, googleCalendarEvents]);
 
   const handleOrbClick = useCallback(() => {
     // If QMeet is actively generating/streaming, tapping the orb should cancel
@@ -1414,6 +1522,12 @@ export default function App() {
     const statusNotesCount = notes.length;
     const statusTodayEventsCount = calendarEvents.filter((event) => event.dateKey === getDateKeyForCalendarView('today')).length;
     const statusTomorrowEventsCount = calendarEvents.filter((event) => event.dateKey === getDateKeyForCalendarView('tomorrow')).length;
+    const statusGoogleEventsCount = googleCalendarEvents.length;
+    const statusGoogleCalendarLabel = googleCalendarStatus?.connected
+      ? 'Connected'
+      : googleCalendarStatus?.configured
+        ? 'Needs auth'
+        : 'Not configured';
     const trimmedSearchQuery = searchQuery.trim();
     const voiceInputSupported = isSpeechRecognitionSupported();
     const activePanelLabel = getPanelLabel(activePanel);
@@ -1726,6 +1840,12 @@ export default function App() {
                 </div>
 
                 <div className="status-card">
+                  <div className="status-card-title">Google Calendar</div>
+                  <div className="status-card-value">{statusGoogleCalendarLabel}</div>
+                  <div className="status-card-meta">{statusGoogleEventsCount} loaded · {googleCalendarLoading ? 'Loading' : 'Idle'}</div>
+                </div>
+
+                <div className="status-card">
                   <div className="status-card-title">Search</div>
                   <div className="status-card-value">{trimmedSearchQuery ? 'Prepared' : 'Empty'}</div>
                   <div className="status-card-meta">{trimmedSearchQuery || 'No local query'}</div>
@@ -1815,8 +1935,15 @@ export default function App() {
         <CalendarPanel
           view={calendarView}
           events={calendarEvents}
+          googleEvents={googleCalendarEvents}
+          googleStatus={googleCalendarStatus}
+          googleLoading={googleCalendarLoading}
+          googleError={googleCalendarError}
           onViewChange={setCalendarView}
           onDeleteEvent={deleteCalendarEvent}
+          onConnectGoogleCalendar={handleStartGoogleCalendarAuth}
+          onRefreshGoogleCalendar={() => refreshGoogleCalendar(calendarView)}
+          onResetGoogleCalendar={handleResetGoogleCalendarAuth}
           onClose={closePanel}
         />
       )}

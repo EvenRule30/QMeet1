@@ -22,3 +22,49 @@ class CommandInterpretResponse(BaseModel):
     frontendCommand: str = ""
     payload: dict[str, Any] = Field(default_factory=dict)
     reason: str = ""
+
+
+class CalendarStatusResponse(BaseModel):
+    ok: bool = True
+    provider: Literal["google"] = "google"
+    configured: bool = False
+    connected: bool = False
+    calendarId: str = "primary"
+    message: str = ""
+
+
+class CalendarAuthStartResponse(BaseModel):
+    ok: bool = True
+    authUrl: str = ""
+    message: str = ""
+
+
+class CalendarAuthResetResponse(BaseModel):
+    ok: bool = True
+    message: str = ""
+
+
+class CalendarEventItem(BaseModel):
+    id: str
+    title: str
+    dateKey: str
+    time: str = "Later"
+    createdAt: str
+    source: Literal["local", "google"] = "google"
+    googleEventId: str = ""
+    start: str | None = None
+    end: str | None = None
+    location: str = ""
+    description: str = ""
+    allDay: bool = False
+    calendarId: str = "primary"
+
+
+class CalendarEventsResponse(BaseModel):
+    ok: bool = True
+    configured: bool = False
+    connected: bool = False
+    source: Literal["google"] = "google"
+    view: Literal["today", "tomorrow", "week"] = "today"
+    events: list[CalendarEventItem] = Field(default_factory=list)
+    message: str = ""

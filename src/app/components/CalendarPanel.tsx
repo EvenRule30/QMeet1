@@ -1,12 +1,19 @@
-import { CalendarEvent } from '../types';
+import { CalendarBackendStatus, CalendarEvent } from '../types';
 
 type CalendarView = 'today' | 'tomorrow';
 
 interface CalendarPanelProps {
   view: CalendarView;
   events: CalendarEvent[];
+  googleEvents?: CalendarEvent[];
+  googleStatus?: CalendarBackendStatus | null;
+  googleLoading?: boolean;
+  googleError?: string;
   onViewChange: (view: CalendarView) => void;
   onDeleteEvent: (eventId: string) => void;
+  onConnectGoogleCalendar?: () => void;
+  onRefreshGoogleCalendar?: () => void;
+  onResetGoogleCalendar?: () => void;
   onClose: () => void;
 }
 
@@ -69,10 +76,66 @@ function formatEventCreatedAt(createdAt: string): string {
   });
 }
 
-export function CalendarPanel({ view, events, onViewChange, onDeleteEvent, onClose }: CalendarPanelProps) {
+function getGoogleStatusLabel(status?: CalendarBackendStatus | null): string {
+  if (!status) return 'Checking';
+  if (!status.configured) return 'Not configured';
+  if (!status.connected) return 'Needs authorization';
+  return 'Connected';
+}
+
+function CalendarEventRow({
+  event,
+  canDelete,
+  onDelete,
+}: {
+  event: CalendarEvent;
+  canDelete: boolean;
+  onDelete?: (eventId: string) => void;
+}) {
+  const sourceLabel = event.source === 'google' ? 'Google Calendar' : 'Local event';
+
+  return (
+    <div className="calendar-agenda-item calendar-agenda-event" key={event.id}>
+      <span className="calendar-agenda-time">{event.time || '—'}</span>
+      <span className="calendar-agenda-text">
+        <span className="calendar-event-title">{event.title}</span>
+        <span className="calendar-event-meta">
+          {sourceLabel}
+          {event.location ? ` · ${event.location}` : ''}
+          {event.source !== 'google' ? ` · Added ${formatEventCreatedAt(event.createdAt)}` : ''}
+        </span>
+        {canDelete && onDelete && (
+          <button
+            className="calendar-event-delete-btn"
+            onClick={() => onDelete(event.id)}
+          >
+            Delete
+          </button>
+        )}
+      </span>
+    </div>
+  );
+}
+
+export function CalendarPanel({
+  view,
+  events,
+  googleEvents = [],
+  googleStatus = null,
+  googleLoading = false,
+  googleError = '',
+  onViewChange,
+  onDeleteEvent,
+  onConnectGoogleCalendar,
+  onRefreshGoogleCalendar,
+  onResetGoogleCalendar,
+  onClose,
+}: CalendarPanelProps) {
   const title = view === 'today' ? "Today's Calendar" : "Tomorrow's Calendar";
   const acceptedDateKeys = getAcceptedDateKeysForView(view);
-  const visibleEvents = events.filter((event) => acceptedDateKeys.has(event.dateKey));
+  const visibleLocalEvents = events.filter((event) => acceptedDateKeys.has(event.dateKey));
+  const visibleGoogleEvents = googleEvents.filter((event) => acceptedDateKeys.has(event.dateKey));
+  const googleConnected = Boolean(googleStatus?.connected);
 
   return (
     <div className="panel-overlay">
@@ -104,9 +167,57 @@ export function CalendarPanel({ view, events, onViewChange, onDeleteEvent, onClo
           </div>
 
           <div className="panel-section">
-            <div className="panel-section-title">Local Agenda</div>
+            <div className="panel-section-title">Google Calendar</div>
+            <p className="panel-section-text">
+              Status: {getGoogleStatusLabel(googleStatus)}
+              {googleStatus?.calendarId ? ` · Calendar: ${googleStatus.calendarId}` : ''}
+              {googleLoading ? ' · Loading…' : ''}
+            </p>
+            {(googleError || googleStatus?.message) && (
+              <p className="panel-section-text">
+                {googleError || googleStatus?.message}
+              </p>
+            )}
+            <div className="panel-action-row">
+              {!googleConnected && (
+                <button className="panel-action-btn" onClick={onConnectGoogleCalendar}>
+                  Connect
+                </button>
+              )}
+              <button className="panel-action-btn" onClick={onRefreshGoogleCalendar}>
+                Refresh
+              </button>
+              {googleStatus?.connected && (
+                <button className="panel-action-btn" onClick={onResetGoogleCalendar}>
+                  Disconnect
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="panel-section">
+            <div className="panel-section-title">
+              {googleConnected ? 'Google Agenda' : 'Local Agenda'}
+            </div>
             <div className="calendar-agenda">
-              {visibleEvents.length === 0 ? (
+              {googleConnected ? (
+                visibleGoogleEvents.length === 0 ? (
+                  <div className="calendar-agenda-item">
+                    <span className="calendar-agenda-time">—</span>
+                    <span className="calendar-agenda-text">
+                      No Google Calendar events found for {view === 'today' ? 'today' : 'tomorrow'}.
+                    </span>
+                  </div>
+                ) : (
+                  visibleGoogleEvents.map((event) => (
+                    <CalendarEventRow
+                      key={event.id}
+                      event={event}
+                      canDelete={false}
+                    />
+                  ))
+                )
+              ) : visibleLocalEvents.length === 0 ? (
                 <>
                   <div className="calendar-agenda-item">
                     <span className="calendar-agenda-time">—</span>
@@ -117,36 +228,43 @@ export function CalendarPanel({ view, events, onViewChange, onDeleteEvent, onClo
                   <div className="calendar-agenda-item">
                     <span className="calendar-agenda-time">Later</span>
                     <span className="calendar-agenda-text">
-                      Google Calendar integration can be added in a future phase.
+                      Connect Google Calendar to read real events in Phase 6A.
                     </span>
                   </div>
                 </>
               ) : (
-                visibleEvents.map((event) => (
-                  <div className="calendar-agenda-item calendar-agenda-event" key={event.id}>
-                    <span className="calendar-agenda-time">{event.time || '—'}</span>
-                    <span className="calendar-agenda-text">
-                      <span className="calendar-event-title">{event.title}</span>
-                      <span className="calendar-event-meta">
-                        Added {formatEventCreatedAt(event.createdAt)}
-                      </span>
-                      <button
-                        className="calendar-event-delete-btn"
-                        onClick={() => onDeleteEvent(event.id)}
-                      >
-                        Delete
-                      </button>
-                    </span>
-                  </div>
+                visibleLocalEvents.map((event) => (
+                  <CalendarEventRow
+                    key={event.id}
+                    event={{ ...event, source: event.source ?? 'local' }}
+                    canDelete
+                    onDelete={onDeleteEvent}
+                    />
                 ))
               )}
             </div>
           </div>
 
+          {googleConnected && visibleLocalEvents.length > 0 && (
+            <div className="panel-section">
+              <div className="panel-section-title">Local Events</div>
+              <div className="calendar-agenda">
+                {visibleLocalEvents.map((event) => (
+                  <CalendarEventRow
+                    key={event.id}
+                    event={{ ...event, source: event.source ?? 'local' }}
+                    canDelete
+                    onDelete={onDeleteEvent}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="panel-section">
             <div className="panel-section-title">Supported Commands</div>
             <p className="panel-section-text">
-              Say “add event tomorrow at 3 called meeting,” “what's on my calendar,” “show today's events,” “show tomorrow's events,” “delete last event,” “clear calendar,” “close calendar,” or “go home.”
+               Say “what's on my calendar,” “show today's events,” or “show tomorrow's events” to read Google Calendar when connected. Local add/delete commands still use the prototype calendar until write access is added later.
             </p>
           </div>
 

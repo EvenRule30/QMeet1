@@ -1,9 +1,9 @@
 import os
 from dotenv import load_dotenv
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 
 from app.agent import (
     AgentUserFacingError,
@@ -14,7 +14,26 @@ from app.agent import (
     sse_event,
     stream_reply,
 )
-from app.schemas import ChatRequest, ChatResponse, CommandInterpretRequest, CommandInterpretResponse
+
+from app.calendar_service import (
+    CalendarIntegrationError,
+    complete_calendar_auth,
+    get_calendar_status,
+    list_calendar_events,
+    reset_calendar_auth,
+    start_calendar_auth,
+)
+
+from app.schemas import (
+    CalendarAuthResetResponse,
+    CalendarAuthStartResponse,
+    CalendarEventsResponse,
+    CalendarStatusResponse,
+    ChatRequest,
+    ChatResponse,
+    CommandInterpretRequest,
+    CommandInterpretResponse,
+)
 
 load_dotenv()
 
@@ -45,6 +64,125 @@ async def health():
 @app.get("/api/status")
 async def status():
     return get_public_status()
+
+
+@app.get("/api/calendar/status", response_model=CalendarStatusResponse)
+async def calendar_status():
+    return CalendarStatusResponse(**get_calendar_status())
+
+
+@app.post("/api/calendar/auth/start", response_model=CalendarAuthStartResponse)
+async def calendar_auth_start():
+    try:
+        return CalendarAuthStartResponse(**start_calendar_auth())
+    except CalendarIntegrationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not start Google Calendar authorization.",
+        )
+
+
+@app.get("/api/calendar/auth/callback")
+async def calendar_auth_callback(
+    request: Request,
+    code: str | None = Query(default=None),
+    error: str | None = Query(default=None),
+):
+    if error:
+        return HTMLResponse(
+            f"""
+            <html>
+              <body style="font-family: system-ui; background: #080a18; color: white; padding: 32px;">
+                <h1>Google Calendar was not connected</h1>
+                <p>{error}</p>
+                <p>You can close this tab and try again from QMeet.</p>
+              </body>
+            </html>
+            """,
+            status_code=400,
+        )
+
+    if not code:
+        return HTMLResponse(
+            """
+            <html>
+              <body style="font-family: system-ui; background: #080a18; color: white; padding: 32px;">
+                <h1>Missing authorization code</h1>
+                <p>QMeet did not receive a Google authorization code.</p>
+              </body>
+            </html>
+            """,
+            status_code=400,
+        )
+
+    try:
+        complete_calendar_auth(code=code, authorization_response=str(request.url))
+        return HTMLResponse(
+            """
+            <html>
+              <body style="font-family: system-ui; background: #080a18; color: white; padding: 32px;">
+                <h1>QMeet Calendar connected</h1>
+                <p>Google Calendar is now connected in read-only mode.</p>
+                <p>You can close this tab and return to QMeet.</p>
+              </body>
+            </html>
+            """
+        )
+    except CalendarIntegrationError as exc:
+        return HTMLResponse(
+            f"""
+            <html>
+              <body style="font-family: system-ui; background: #080a18; color: white; padding: 32px;">
+                <h1>Google Calendar connection failed</h1>
+                <p>{str(exc)}</p>
+                <p>You can close this tab and try again from QMeet.</p>
+              </body>
+            </html>
+            """,
+            status_code=400,
+        )
+    except Exception as exc:
+        print(f"Unexpected Google OAuth callback error: {exc}")
+        return HTMLResponse(
+            f"""
+            <html>
+              <body style="font-family: system-ui; background: #080a18; color: white; padding: 32px;">
+                <h1>Google Calendar connection failed</h1>
+                <p>QMeet hit an unexpected OAuth callback error.</p>
+                <pre style="white-space: pre-wrap; color: #ffb4c2;">{str(exc)}</pre>
+              </body>
+            </html>
+            """,
+            status_code=500,
+        )
+
+
+@app.post("/api/calendar/auth/reset", response_model=CalendarAuthResetResponse)
+async def calendar_auth_reset():
+    try:
+        return CalendarAuthResetResponse(**reset_calendar_auth())
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not reset Google Calendar authorization.",
+        )
+
+
+@app.get("/api/calendar/events", response_model=CalendarEventsResponse)
+async def calendar_events(
+    view: str = Query(default="today", pattern="^(today|tomorrow|week)$"),
+):
+    try:
+        return CalendarEventsResponse(**list_calendar_events(view))
+    except CalendarIntegrationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not read Google Calendar events.",
+        )
 
 
 @app.post("/api/command/interpret", response_model=CommandInterpretResponse)
