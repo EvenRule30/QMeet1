@@ -8,12 +8,13 @@ from fastapi.responses import StreamingResponse
 from app.agent import (
     AgentUserFacingError,
     generate_reply,
+    interpret_command_intent,
     get_public_status,
     reset_conversation,
     sse_event,
     stream_reply,
 )
-from app.schemas import ChatRequest, ChatResponse
+from app.schemas import ChatRequest, ChatResponse, CommandInterpretRequest, CommandInterpretResponse
 
 load_dotenv()
 
@@ -44,6 +45,25 @@ async def health():
 @app.get("/api/status")
 async def status():
     return get_public_status()
+
+
+@app.post("/api/command/interpret", response_model=CommandInterpretResponse)
+async def command_interpret(req: CommandInterpretRequest):
+    message = req.message.strip()
+
+    if not message:
+        raise HTTPException(status_code=400, detail="Message cannot be empty.")
+
+    try:
+        intent = await interpret_command_intent(message)
+        return CommandInterpretResponse(**intent)
+    except AgentUserFacingError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet command interpreter hit an unexpected error.",
+        )
 
 
 @app.post("/api/chat", response_model=ChatResponse)

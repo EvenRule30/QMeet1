@@ -7,7 +7,7 @@ import { NotesPanel } from './components/NotesPanel';
 import { CalendarPanel } from './components/CalendarPanel';
 import { SearchPanel } from './components/SearchPanel';
 import { Message, OrbState, BackendStatus, ActivePanel, Note, CalendarEvent } from './types';
-import { streamChatMessage, getBackendStatus, resetConversation } from "./api";
+import { streamChatMessage, getBackendStatus, resetConversation, interpretCommandIntent } from "./api";
 import { getSpeechRecognition, isSpeechRecognitionSupported } from './speechRecognition';
 import { speakText, stopSpeaking } from './speechSynthesis';
 import { parseCommand, normalizeSpokenQMeet } from './commands';
@@ -84,6 +84,9 @@ const LEGACY_CALENDAR_EVENTS_STORAGE_KEYS = [
   'qmeet-events',
   'calendar-events',
 ];
+
+const COMMAND_INTERPRETER_EXECUTE_THRESHOLD = 0.8;
+const COMMAND_INTERPRETER_CLARIFY_THRESHOLD = 0.5;
 
 function clampSpeechRate(rate: number): number {
   return Math.min(1.35, Math.max(0.75, rate));
@@ -537,9 +540,11 @@ export default function App() {
   //   const data = await res.json();
   //   // data.reply contains the assistant response
   //
-  const handleSend = useCallback(async (text: string) => {
+  const handleSend = useCallback(async (text: string, displayText?: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
+
+    const visibleUserText = (displayText ?? trimmed).trim() || trimmed;
 
     stopCurrentSpeech();
 
@@ -561,7 +566,7 @@ export default function App() {
       const userMsg: Message = {
         id: `u-${now}`,
         role: 'user',
-        content: trimmed,
+        content: visibleUserText,
         timestamp: new Date(),
       };
       
@@ -752,6 +757,74 @@ export default function App() {
       return;
     }
 
+    if (displayText) {
+      finishListening();
+      setShowThinkingBubble(false);
+
+      if (!chatActive) setChatActive(true);
+
+      const now = Date.now();
+      const userMsg: Message = {
+        id: `u-${now}`,
+        role: 'user',
+        content: visibleUserText,
+        timestamp: new Date(),
+      };
+      const assistantMsg: Message = {
+        id: `a-${now}`,
+        role: 'assistant',
+        content: 'I understood that as a command, but I could not match it to a local action.',
+        timestamp: new Date(),
+      };
+
+      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      speakAssistantText(assistantMsg.content);
+      return;
+    }
+
+    try {
+      const interpretedCommand = await interpretCommandIntent(trimmed);
+
+      if (
+        interpretedCommand.intent === 'command' &&
+        interpretedCommand.frontendCommand &&
+        interpretedCommand.confidence >= COMMAND_INTERPRETER_EXECUTE_THRESHOLD
+      ) {
+        return handleSend(interpretedCommand.frontendCommand, visibleUserText);
+      }
+
+      if (
+        interpretedCommand.intent === 'command' &&
+        interpretedCommand.frontendCommand &&
+        interpretedCommand.confidence >= COMMAND_INTERPRETER_CLARIFY_THRESHOLD
+      ) {
+        finishListening();
+        setShowThinkingBubble(false);
+
+        if (!chatActive) setChatActive(true);
+
+        const now = Date.now();
+        const userMsg: Message = {
+          id: `u-${now}`,
+          role: 'user',
+          content: visibleUserText,
+          timestamp: new Date(),
+        };
+        const assistantMsg: Message = {
+          id: `a-${now}`,
+          role: 'assistant',
+          content: `I think that may be a command, but I am not certain. Try saying: "${interpretedCommand.frontendCommand}".`,
+          timestamp: new Date(),
+        };
+
+        setMessages((prev) => [...prev, userMsg, assistantMsg]);
+        speakAssistantText(assistantMsg.content);
+        return;
+      }
+    } catch (error) {
+      console.warn('Command interpreter unavailable, falling back to chat:', error);
+    }
+
     if (!chatActive) setChatActive(true);
 
     const now = Date.now();
@@ -760,7 +833,7 @@ export default function App() {
     const userMsg: Message = {
       id: `u-${now}`,
       role: 'user',
-      content: trimmed,
+      content: visibleUserText,
       timestamp: new Date(),
     };
 

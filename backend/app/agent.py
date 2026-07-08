@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 import os
 import json
+import re
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 
@@ -18,6 +21,276 @@ Behavior:
 - Do not mention backend, API, provider, or implementation details unless asked.
 - If asked what you are, say you are QMeet, the orb assistant.
 """.strip()
+
+
+
+COMMAND_INTERPRETER_PROMPT = """
+You are QMeet's command interpreter. Classify the user's text as either a local UI command or normal chat.
+
+Return JSON only. Do not use markdown. Do not explain. Do not claim that you performed an action.
+
+Allowed JSON shape:
+{
+  "intent": "command" | "chat",
+  "action": "none" | "open_panel" | "close_panel" | "go_home" | "clear_chat" | "end_chat" | "save_note" | "read_notes" | "delete_last_note" | "clear_notes" | "prepare_search" | "clear_search" | "add_calendar_event" | "read_calendar" | "delete_last_calendar_event" | "clear_calendar" | "voice_output_on" | "voice_output_off" | "voice_slower" | "voice_faster" | "voice_normal" | "cancel",
+  "confidence": 0.0,
+  "frontendCommand": "",
+  "payload": {},
+  "reason": ""
+}
+
+The frontend only executes the exact frontendCommand text. Use these exact frontendCommand forms:
+- open menu
+- open settings
+- show status
+- open notes
+- open calendar
+- open search
+- close panel
+- go home
+- clear chat
+- end chat
+- note that <note text>
+- read my notes
+- delete last note
+- clear notes
+- search for <query>
+- clear search
+- add event today at <time> called <title>
+- add event tomorrow at <time> called <title>
+- what's on my calendar
+- show today's events
+- show tomorrow's events
+- delete last event
+- clear calendar
+- mute voice
+- unmute voice
+- speak slower
+- speak faster
+- normal voice
+- cancel
+
+Rules:
+- Use intent "chat" for normal questions, explanations, coding help, opinions, or anything that should be answered by the AI.
+- Use intent "command" only for local QMeet UI/tool control.
+- Calendar misspellings like "calender" and "calander" should still map to calendar commands.
+- If the user asks to clear/wipe/remove/delete their calendar/schedule/agenda/events, map to "clear calendar".
+- If the user asks to stop the current response, stop listening, never mind, forget that, or cancel, map to "cancel".
+- If the user asks you to stop talking right now, map to "cancel". If they ask to disable spoken responses in general, map to "mute voice".
+- If a command is clear but wording is fuzzy, return confidence 0.80 or higher.
+- If command intent is possible but unclear, use intent "command" with confidence between 0.50 and 0.79 and a best frontendCommand.
+- If not a command, use intent "chat", action "none", confidence below 0.50, and empty frontendCommand.
+""".strip()
+
+
+ALLOWED_COMMAND_ACTIONS = {
+    "none",
+    "open_panel",
+    "close_panel",
+    "go_home",
+    "clear_chat",
+    "end_chat",
+    "save_note",
+    "read_notes",
+    "delete_last_note",
+    "clear_notes",
+    "prepare_search",
+    "clear_search",
+    "add_calendar_event",
+    "read_calendar",
+    "delete_last_calendar_event",
+    "clear_calendar",
+    "voice_output_on",
+    "voice_output_off",
+    "voice_slower",
+    "voice_faster",
+    "voice_normal",
+    "cancel",
+}
+
+
+def _empty_command_intent(reason: str = "") -> dict:
+    return {
+        "intent": "chat",
+        "action": "none",
+        "confidence": 0.0,
+        "frontendCommand": "",
+        "payload": {},
+        "reason": reason,
+    }
+
+
+def _extract_json_object(text: str) -> dict:
+    stripped = text.strip()
+
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("No JSON object found.")
+
+    return json.loads(stripped[start : end + 1])
+
+
+def _normalize_command_intent(raw: dict) -> dict:
+    intent = str(raw.get("intent", "chat")).strip().lower()
+    if intent not in {"command", "chat"}:
+        intent = "chat"
+
+    action = str(raw.get("action", "none")).strip()
+    if action not in ALLOWED_COMMAND_ACTIONS:
+        action = "none"
+
+    try:
+        confidence = float(raw.get("confidence", 0.0))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    confidence = max(0.0, min(confidence, 1.0))
+
+    frontend_command = str(raw.get("frontendCommand", "")).strip()
+
+    payload = raw.get("payload", {})
+    if not isinstance(payload, dict):
+        payload = {}
+
+    reason = str(raw.get("reason", "")).strip()
+
+    if intent == "chat" or action == "none":
+        return {
+            "intent": "chat",
+            "action": "none",
+            "confidence": min(confidence, 0.49),
+            "frontendCommand": "",
+            "payload": {},
+            "reason": reason,
+        }
+
+    if not frontend_command:
+        return _empty_command_intent("Interpreter returned a command without a frontendCommand.")
+
+    return {
+        "intent": "command",
+        "action": action,
+        "confidence": confidence,
+        "frontendCommand": frontend_command,
+        "payload": payload,
+        "reason": reason,
+    }
+
+
+async def interpret_command_intent(message: str) -> dict:
+    config = get_agent_config()
+
+    if config.provider == "mock":
+        return mock_interpret_command_intent(message)
+
+    if config.provider == "openai":
+        return await openai_interpret_command_intent(message, config)
+
+    raise AgentUserFacingError(
+        f'Unsupported LLM_PROVIDER="{config.provider}". Use "mock" or "openai".'
+    )
+
+
+def mock_interpret_command_intent(message: str) -> dict:
+    text = message.strip()
+    lowered = text.lower()
+
+    if not text:
+        return _empty_command_intent("Empty input.")
+
+    if re.search(r"\b(clear|wipe|delete|remove|erase)\b.*\b(calendar|calender|calander|schedule|agenda|events?)\b", lowered):
+        return {
+            "intent": "command",
+            "action": "clear_calendar",
+            "confidence": 0.95,
+            "frontendCommand": "clear calendar",
+            "payload": {},
+            "reason": "Mock matched calendar clear wording.",
+        }
+
+    if re.search(r"\b(open|show|pull up|bring up)\b.*\b(notes?|notepad|notebook)\b", lowered):
+        return {
+            "intent": "command",
+            "action": "open_panel",
+            "confidence": 0.9,
+            "frontendCommand": "open notes",
+            "payload": {"panel": "notes"},
+            "reason": "Mock matched notes panel wording.",
+        }
+
+    if re.search(r"\b(mute|silence)\b.*\b(voice|speech|yourself|talking)\b", lowered):
+        return {
+            "intent": "command",
+            "action": "voice_output_off",
+            "confidence": 0.9,
+            "frontendCommand": "mute voice",
+            "payload": {},
+            "reason": "Mock matched voice mute wording.",
+        }
+
+    return _empty_command_intent("Mock did not match a local command.")
+
+
+async def openai_interpret_command_intent(message: str, config: AgentConfig) -> dict:
+    api_key = os.getenv("OPENAI_API_KEY")
+
+    if not api_key:
+        raise AgentUserFacingError(
+            "OpenAI is selected, but OPENAI_API_KEY is missing in backend/.env."
+        )
+
+    client = AsyncOpenAI(api_key=api_key)
+
+    try:
+        response = await client.responses.create(
+            model=config.model,
+            input=[
+                {
+                    "role": "developer",
+                    "content": COMMAND_INTERPRETER_PROMPT,
+                },
+                {
+                    "role": "user",
+                    "content": message,
+                },
+            ],
+            max_output_tokens=260,
+        )
+    except openai.AuthenticationError as exc:
+        raise AgentUserFacingError(
+            "OpenAI authentication failed. Check backend/.env and verify the API key."
+        ) from exc
+    except openai.RateLimitError as exc:
+        raise AgentUserFacingError(
+            "OpenAI rate limit or quota was reached. Check API billing, limits, or try again later."
+        ) from exc
+    except openai.APIConnectionError as exc:
+        raise AgentUserFacingError(
+            "Could not connect to OpenAI. Check your internet connection."
+        ) from exc
+    except openai.APIError as exc:
+        raise AgentUserFacingError(
+            "OpenAI returned an API error. Try again shortly."
+        ) from exc
+
+    raw_text = response.output_text.strip()
+
+    if not raw_text:
+        return _empty_command_intent("Interpreter returned empty output.")
+
+    try:
+        raw_json = _extract_json_object(raw_text)
+    except (json.JSONDecodeError, ValueError):
+        return _empty_command_intent("Interpreter returned invalid JSON.")
+
+    return _normalize_command_intent(raw_json)
+
 
 
 # Simple in-memory history for the current backend process.

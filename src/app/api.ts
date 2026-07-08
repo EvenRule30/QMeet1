@@ -1,4 +1,4 @@
-import { BackendStatus } from "./types";
+import { BackendStatus, CommandIntentResponse } from "./types";
 
 export type ChatApiResponse = {
   reply: string;
@@ -50,6 +50,24 @@ export async function resetConversation(): Promise<void> {
   if (!res.ok) {
     throw new Error(`Reset error: ${res.status}`);
   }
+}
+
+
+export async function interpretCommandIntent(message: string): Promise<CommandIntentResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/command/interpret`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ message }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Command interpreter error: ${res.status}`);
+  }
+
+  return res.json();
 }
 
 export async function streamChatMessage(
