@@ -88,6 +88,74 @@ const LEGACY_CALENDAR_EVENTS_STORAGE_KEYS = [
 const COMMAND_INTERPRETER_EXECUTE_THRESHOLD = 0.8;
 const COMMAND_INTERPRETER_CLARIFY_THRESHOLD = 0.5;
 
+type PendingInterpreterCommand = {
+  originalText: string;
+  frontendCommand: string;
+  action: string;
+  confidence: number;
+  reason: string;
+};
+
+const DESTRUCTIVE_FRONTEND_COMMANDS = new Set([
+  'clear chat',
+  'end chat',
+  'delete last note',
+  'clear notes',
+  'delete last event',
+  'clear calendar',
+]);
+
+const DESTRUCTIVE_LOCAL_COMMANDS = new Set([
+  'clear-chat',
+  'end-chat',
+  'delete-last-note',
+  'clear-notes',
+  'delete-last-event',
+  'clear-calendar',
+]);
+
+const LOCAL_COMMAND_TO_FRONTEND_COMMAND: Record<string, string> = {
+  'clear-chat': 'clear chat',
+  'end-chat': 'end chat',
+  'delete-last-note': 'delete last note',
+  'clear-notes': 'clear notes',
+  'delete-last-event': 'delete last event',
+  'clear-calendar': 'clear calendar',
+};
+
+function normalizePendingDecisionText(text: string): string {
+  return text
+    .trim()
+    .toLowerCase()
+    .replace(/[?!.,;:]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isDestructiveInterpreterCommand(frontendCommand: string): boolean {
+  return DESTRUCTIVE_FRONTEND_COMMANDS.has(normalizePendingDecisionText(frontendCommand));
+}
+
+function isDestructiveLocalCommand(command: string): boolean {
+  return DESTRUCTIVE_LOCAL_COMMANDS.has(command);
+}
+
+function getFrontendCommandForLocalCommand(command: string): string {
+  return LOCAL_COMMAND_TO_FRONTEND_COMMAND[command] ?? command.replace(/-/g, ' ');
+}
+
+function isConfirmingPendingCommand(text: string): boolean {
+  return /^(?:yes|yeah|yep|correct|confirm|confirmed|do it|run it|execute it|go ahead|proceed|that is right|that's right)$/i.test(
+    normalizePendingDecisionText(text)
+  );
+}
+
+function isRejectingPendingCommand(text: string): boolean {
+  return /^(?:no|nope|cancel|cancel it|cancel that|stop|nevermind|never mind|do not|don't|dont|abort|forget it|forget that)$/i.test(
+    normalizePendingDecisionText(text)
+  );
+}
+
 function clampSpeechRate(rate: number): number {
   return Math.min(1.35, Math.max(0.75, rate));
 }
@@ -184,6 +252,7 @@ export default function App() {
   const [lastInterpreterFrontendCommand, setLastInterpreterFrontendCommand] = useState('None');
   const [lastInterpreterConfidence, setLastInterpreterConfidence] = useState<number | null>(null);
   const [lastInterpreterReason, setLastInterpreterReason] = useState('No interpreter request has run yet.');
+  const [pendingInterpreterCommand, setPendingInterpreterCommand] = useState<PendingInterpreterCommand | null>(null);
   const [listeningTranscript, setListeningTranscript] = useState('');
   const speechTokenRef = useRef(0);
   const responseTokenRef = useRef(0);
@@ -545,13 +614,57 @@ export default function App() {
   //   const data = await res.json();
   //   // data.reply contains the assistant response
   //
-  const handleSend = useCallback(async (text: string, displayText?: string, commandRoute: 'exact' | 'interpreter' = 'exact') => {
+  const handleSend = useCallback(async (text: string, displayText?: string, commandRoute: 'exact' | 'interpreter' | 'confirmed' = 'exact') => {
     const trimmed = text.trim();
     if (!trimmed) return;
 
     const visibleUserText = (displayText ?? trimmed).trim() || trimmed;
 
     stopCurrentSpeech();
+
+    if (pendingInterpreterCommand) {
+          if (isConfirmingPendingCommand(trimmed)) {
+            const commandToRun = pendingInterpreterCommand;
+            setPendingInterpreterCommand(null);
+            setLastInputRoute('Confirmed fuzzy interpreter command');
+            setLastInterpreterAction(commandToRun.action);
+            setLastInterpreterFrontendCommand(commandToRun.frontendCommand);
+            setLastInterpreterConfidence(commandToRun.confidence);
+            setLastInterpreterReason(commandToRun.reason || 'User confirmed a pending destructive command.');
+            return handleSend(commandToRun.frontendCommand, visibleUserText, 'confirmed');
+          }
+    
+          if (isRejectingPendingCommand(trimmed)) {
+            finishListening();
+            setShowThinkingBubble(false);
+            setPendingInterpreterCommand(null);
+            setLastInputRoute('Cancelled pending command');
+            setLastLocalCommand('Pending command cancelled');
+            setLastInterpreterReason(`User cancelled pending command: ${pendingInterpreterCommand.frontendCommand}.`);
+    
+            if (!chatActive) setChatActive(true);
+    
+            const now = Date.now();
+            const userMsg: Message = {
+              id: `u-${now}`,
+              role: 'user',
+              content: visibleUserText,
+              timestamp: new Date(),
+            };
+            const assistantMsg: Message = {
+              id: `a-${now}`,
+              role: 'assistant',
+              content: 'Cancelled pending command.',
+              timestamp: new Date(),
+            };
+    
+            setMessages((prev) => [...prev, userMsg, assistantMsg]);
+            speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+            return;
+          }
+    
+          setPendingInterpreterCommand(null);
+        }
 
     const commandMatch = parseCommand(trimmed);
     
@@ -567,9 +680,12 @@ export default function App() {
       const previousLastLocalCommand = lastLocalCommand;
 
       setLastLocalCommand(commandMatch.command);
+      setPendingInterpreterCommand(null);
       
       if (commandRoute === 'interpreter') {
         setLastInputRoute('Fuzzy interpreter command');
+      } else if (commandRoute === 'confirmed') {
+        setLastInputRoute('Confirmed destructive command');
       } else {
         setLastInputRoute('Exact local command');
         setLastInterpreterAction('Not used');
@@ -585,6 +701,43 @@ export default function App() {
         timestamp: new Date(),
       };
       
+      if (commandRoute !== 'confirmed' && isDestructiveLocalCommand(commandMatch.command)) {
+        const frontendCommand = getFrontendCommandForLocalCommand(commandMatch.command);
+        const confirmationPrompt = `I understood that as: ${frontendCommand}. This changes or deletes local data. Say "confirm" to run it, or "cancel" to stop.`;
+
+        setPendingInterpreterCommand({
+          originalText: visibleUserText,
+          frontendCommand,
+          action: commandMatch.command,
+          confidence: commandRoute === 'exact' ? 1 : 0.9,
+          reason:
+            commandRoute === 'exact'
+              ? 'Exact frontend parser matched a destructive command, so QMeet paused for confirmation.'
+              : 'Command interpreter mapped the input to a destructive command, so QMeet paused for confirmation.',
+        });
+        setLastInputRoute(commandRoute === 'exact' ? 'Exact command needs safety confirmation' : 'Fuzzy interpreter needs safety confirmation');
+        setLastLocalCommand('Pending destructive command');
+        setLastInterpreterAction(commandRoute === 'exact' ? 'Not used' : commandMatch.command);
+        setLastInterpreterFrontendCommand(frontendCommand);
+        setLastInterpreterConfidence(commandRoute === 'exact' ? 1 : 0.9);
+        setLastInterpreterReason(
+          commandRoute === 'exact'
+            ? 'Exact frontend parser matched a destructive command, so QMeet paused for confirmation.'
+            : 'Command interpreter mapped the input to a destructive command, so QMeet paused for confirmation.'
+        );
+
+        const assistantMsg: Message = {
+          id: `a-${now}`,
+          role: 'assistant',
+          content: confirmationPrompt,
+          timestamp: new Date(),
+        };
+
+        setMessages((prev) => [...prev, userMsg, assistantMsg]);
+        speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+        return;
+      }
+
       let confirmationContent =
         commandMatch.command === 'close-generic' && activePanel === 'none'
           ? 'No panel is open.'
@@ -806,6 +959,49 @@ export default function App() {
       if (
         interpretedCommand.intent === 'command' &&
         interpretedCommand.frontendCommand &&
+        interpretedCommand.confidence >= COMMAND_INTERPRETER_EXECUTE_THRESHOLD &&
+        isDestructiveInterpreterCommand(interpretedCommand.frontendCommand)
+      ) {
+        finishListening();
+        setShowThinkingBubble(false);
+        setPendingInterpreterCommand({
+          originalText: visibleUserText,
+          frontendCommand: interpretedCommand.frontendCommand,
+          action: interpretedCommand.action,
+          confidence: interpretedCommand.confidence,
+          reason: interpretedCommand.reason || 'Interpreter mapped fuzzy input to a destructive frontend command.',
+        });
+        setLastInputRoute('Fuzzy interpreter needs safety confirmation');
+        setLastLocalCommand('Pending destructive command');
+        setLastInterpreterAction(interpretedCommand.action);
+        setLastInterpreterFrontendCommand(interpretedCommand.frontendCommand);
+        setLastInterpreterConfidence(interpretedCommand.confidence);
+        setLastInterpreterReason(interpretedCommand.reason || 'Interpreter mapped fuzzy input to a destructive frontend command.');
+
+        if (!chatActive) setChatActive(true);
+
+        const now = Date.now();
+        const userMsg: Message = {
+          id: `u-${now}`,
+          role: 'user',
+          content: visibleUserText,
+          timestamp: new Date(),
+        };
+        const assistantMsg: Message = {
+          id: `a-${now}`,
+          role: 'assistant',
+          content: `I interpreted that as: ${interpretedCommand.frontendCommand}. This changes or deletes local data. Say "confirm" to run it, or "cancel" to stop.`,
+          timestamp: new Date(),
+        };
+
+        setMessages((prev) => [...prev, userMsg, assistantMsg]);
+        speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+        return;
+      }
+
+      if (
+        interpretedCommand.intent === 'command' &&
+        interpretedCommand.frontendCommand &&
         interpretedCommand.confidence >= COMMAND_INTERPRETER_EXECUTE_THRESHOLD
       ) {
         setLastInputRoute('Fuzzy interpreter command');
@@ -830,6 +1026,17 @@ export default function App() {
         setLastInterpreterConfidence(interpretedCommand.confidence);
         setLastInterpreterReason(interpretedCommand.reason || 'Interpreter confidence was below the automatic execution threshold.');
 
+        const destructiveCommand = isDestructiveInterpreterCommand(interpretedCommand.frontendCommand);
+        if (destructiveCommand) {
+          setPendingInterpreterCommand({
+            originalText: visibleUserText,
+            frontendCommand: interpretedCommand.frontendCommand,
+            action: interpretedCommand.action,
+            confidence: interpretedCommand.confidence,
+            reason: interpretedCommand.reason || 'Interpreter confidence was below the automatic execution threshold.',
+          });
+        }
+
         if (!chatActive) setChatActive(true);
 
         const now = Date.now();
@@ -842,7 +1049,9 @@ export default function App() {
         const assistantMsg: Message = {
           id: `a-${now}`,
           role: 'assistant',
-          content: `I think that may be a command, but I am not certain. Try saying: "${interpretedCommand.frontendCommand}".`,
+          content: destructiveCommand
+            ? `I think that may mean: ${interpretedCommand.frontendCommand}. This changes or deletes local data. Say "confirm" to run it, or "cancel" to stop.`
+            : `I think that may be a command, but I am not certain. Try saying: "${interpretedCommand.frontendCommand}".`,
           timestamp: new Date(),
         };
 
@@ -851,6 +1060,7 @@ export default function App() {
         return;
       }
 
+      setPendingInterpreterCommand(null);
       setLastInputRoute('Normal chat');
       setLastLocalCommand('No local command');
       setLastInterpreterAction(interpretedCommand.action || 'none');
@@ -859,6 +1069,7 @@ export default function App() {
       setLastInterpreterReason(interpretedCommand.reason || 'Interpreter classified the input as normal chat.');
     } catch (error) {
       console.warn('Command interpreter unavailable, falling back to chat:', error);
+      setPendingInterpreterCommand(null);
       setLastInputRoute('Interpreter unavailable → normal chat');
       setLastLocalCommand('No local command');
       setLastInterpreterAction('Error');
@@ -976,7 +1187,7 @@ export default function App() {
         }
       }, 2000);
     }
-  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, clearCalendarEvents]);
+  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, clearCalendarEvents]);
 
   const handleOrbClick = useCallback(() => {
     // If QMeet is actively generating/streaming, tapping the orb should cancel
@@ -1212,6 +1423,9 @@ export default function App() {
     const interpreterReasonLabel = lastInterpreterReason.length > 82
       ? `${lastInterpreterReason.slice(0, 79)}...`
       : lastInterpreterReason;
+    const pendingInterpreterLabel = pendingInterpreterCommand
+      ? pendingInterpreterCommand.frontendCommand
+      : 'None';
 
   return (
     <div className="agent-screen">
@@ -1467,6 +1681,12 @@ export default function App() {
                   <div className="status-card-title">Mapped Command</div>
                   <div className="status-card-value">{lastInterpreterFrontendCommand}</div>
                   <div className="status-card-meta">{interpreterReasonLabel}</div>
+                </div>
+
+                <div className="status-card">
+                  <div className="status-card-title">Pending Confirm</div>
+                  <div className="status-card-value">{pendingInterpreterLabel}</div>
+                  <div className="status-card-meta">Destructive fuzzy commands wait for confirm</div>
                 </div>
 
                 <div className="status-card">
