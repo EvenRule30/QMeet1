@@ -179,6 +179,11 @@ export default function App() {
   const [lastHeardTranscript, setLastHeardTranscript] = useState('');
   const [lastNormalizedTranscript, setLastNormalizedTranscript] = useState('');
   const [lastLocalCommand, setLastLocalCommand] = useState('None');
+  const [lastInputRoute, setLastInputRoute] = useState('None');
+  const [lastInterpreterAction, setLastInterpreterAction] = useState('Not used');
+  const [lastInterpreterFrontendCommand, setLastInterpreterFrontendCommand] = useState('None');
+  const [lastInterpreterConfidence, setLastInterpreterConfidence] = useState<number | null>(null);
+  const [lastInterpreterReason, setLastInterpreterReason] = useState('No interpreter request has run yet.');
   const [listeningTranscript, setListeningTranscript] = useState('');
   const speechTokenRef = useRef(0);
   const responseTokenRef = useRef(0);
@@ -540,7 +545,7 @@ export default function App() {
   //   const data = await res.json();
   //   // data.reply contains the assistant response
   //
-  const handleSend = useCallback(async (text: string, displayText?: string) => {
+  const handleSend = useCallback(async (text: string, displayText?: string, commandRoute: 'exact' | 'interpreter' = 'exact') => {
     const trimmed = text.trim();
     if (!trimmed) return;
 
@@ -563,6 +568,16 @@ export default function App() {
 
       setLastLocalCommand(commandMatch.command);
       
+      if (commandRoute === 'interpreter') {
+        setLastInputRoute('Fuzzy interpreter command');
+      } else {
+        setLastInputRoute('Exact local command');
+        setLastInterpreterAction('Not used');
+        setLastInterpreterFrontendCommand('None');
+        setLastInterpreterConfidence(null);
+        setLastInterpreterReason('Exact frontend parser matched before the command interpreter was needed.');
+      }
+
       const userMsg: Message = {
         id: `u-${now}`,
         role: 'user',
@@ -760,6 +775,9 @@ export default function App() {
     if (displayText) {
       finishListening();
       setShowThinkingBubble(false);
+      setLastInputRoute('Interpreter command failed to execute');
+      setLastLocalCommand('Interpreter unmatched command');
+      setLastInterpreterReason('The interpreter returned a frontend command, but the frontend parser could not execute it.');
 
       if (!chatActive) setChatActive(true);
 
@@ -790,7 +808,12 @@ export default function App() {
         interpretedCommand.frontendCommand &&
         interpretedCommand.confidence >= COMMAND_INTERPRETER_EXECUTE_THRESHOLD
       ) {
-        return handleSend(interpretedCommand.frontendCommand, visibleUserText);
+        setLastInputRoute('Fuzzy interpreter command');
+        setLastInterpreterAction(interpretedCommand.action);
+        setLastInterpreterFrontendCommand(interpretedCommand.frontendCommand);
+        setLastInterpreterConfidence(interpretedCommand.confidence);
+        setLastInterpreterReason(interpretedCommand.reason || 'Interpreter mapped fuzzy input to a frontend command.');
+        return handleSend(interpretedCommand.frontendCommand, visibleUserText, 'interpreter');
       }
 
       if (
@@ -800,6 +823,12 @@ export default function App() {
       ) {
         finishListening();
         setShowThinkingBubble(false);
+        setLastInputRoute('Interpreter needs confirmation');
+        setLastLocalCommand('Interpreter clarification');
+        setLastInterpreterAction(interpretedCommand.action);
+        setLastInterpreterFrontendCommand(interpretedCommand.frontendCommand);
+        setLastInterpreterConfidence(interpretedCommand.confidence);
+        setLastInterpreterReason(interpretedCommand.reason || 'Interpreter confidence was below the automatic execution threshold.');
 
         if (!chatActive) setChatActive(true);
 
@@ -821,8 +850,21 @@ export default function App() {
         speakAssistantText(assistantMsg.content);
         return;
       }
+
+      setLastInputRoute('Normal chat');
+      setLastLocalCommand('No local command');
+      setLastInterpreterAction(interpretedCommand.action || 'none');
+      setLastInterpreterFrontendCommand(interpretedCommand.frontendCommand || 'None');
+      setLastInterpreterConfidence(interpretedCommand.confidence);
+      setLastInterpreterReason(interpretedCommand.reason || 'Interpreter classified the input as normal chat.');
     } catch (error) {
       console.warn('Command interpreter unavailable, falling back to chat:', error);
+      setLastInputRoute('Interpreter unavailable → normal chat');
+      setLastLocalCommand('No local command');
+      setLastInterpreterAction('Error');
+      setLastInterpreterFrontendCommand('None');
+      setLastInterpreterConfidence(null);
+      setLastInterpreterReason(error instanceof Error ? error.message : 'Interpreter request failed.');
     }
 
     if (!chatActive) setChatActive(true);
@@ -1164,6 +1206,12 @@ export default function App() {
     const trimmedSearchQuery = searchQuery.trim();
     const voiceInputSupported = isSpeechRecognitionSupported();
     const activePanelLabel = getPanelLabel(activePanel);
+    const interpreterConfidenceLabel = lastInterpreterConfidence === null
+      ? '—'
+      : `${Math.round(lastInterpreterConfidence * 100)}%`;
+    const interpreterReasonLabel = lastInterpreterReason.length > 82
+      ? `${lastInterpreterReason.slice(0, 79)}...`
+      : lastInterpreterReason;
 
   return (
     <div className="agent-screen">
@@ -1404,6 +1452,24 @@ export default function App() {
                 </div>
 
                 <div className="status-card">
+                  <div className="status-card-title">Input Route</div>
+                  <div className="status-card-value">{lastInputRoute}</div>
+                  <div className="status-card-meta">Exact parser, interpreter, or chat</div>
+                </div>
+
+                <div className="status-card">
+                  <div className="status-card-title">Interpreter</div>
+                  <div className="status-card-value">{lastInterpreterAction}</div>
+                  <div className="status-card-meta">Confidence: {interpreterConfidenceLabel}</div>
+                </div>
+
+                <div className="status-card">
+                  <div className="status-card-title">Mapped Command</div>
+                  <div className="status-card-value">{lastInterpreterFrontendCommand}</div>
+                  <div className="status-card-meta">{interpreterReasonLabel}</div>
+                </div>
+
+                <div className="status-card">
                   <div className="status-card-title">Voice Output</div>
                   <div className="status-card-value">{voiceOutputEnabled ? 'On' : 'Muted'}</div>
                   <div className="status-card-meta">Speed: {speechRate.toFixed(2)}×</div>
@@ -1503,7 +1569,7 @@ export default function App() {
               <div className="panel-section">
                 <div className="panel-section-title">Supported Status Commands</div>
                 <p className="panel-section-text">
-                  Say “show status,” “system status,” “diagnostics,” “what did you hear,” “read my notes,” “what's on my calendar,” “close status,” or “go home.”
+                  Say “show status,” “system status,” “diagnostics,” “what did you hear,” “read my notes,” “what's on my calendar,” “close status,” or “go home.” This panel also shows whether the last input used the exact parser, fuzzy command interpreter, or normal chat.
                 </p>
               </div>
 
