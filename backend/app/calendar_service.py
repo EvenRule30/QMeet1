@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -13,7 +14,10 @@ from googleapiclient.errors import HttpError
 from oauthlib.oauth2 import OAuth2Error
 
 
-SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+SCOPES = [
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/calendar.events",
+]
 
 
 class CalendarIntegrationError(Exception):
@@ -29,6 +33,7 @@ class CalendarConfig:
     redirect_uri: str
     calendar_id: str
     timezone_name: str
+    write_enabled: bool
 
 
 def _truthy(value: str | None) -> bool:
@@ -42,7 +47,7 @@ def get_calendar_config() -> CalendarConfig:
         os.getenv("GOOGLE_CALENDAR_CREDENTIALS_FILE", "google_credentials.json")
     )
     token_file = Path(
-        os.getenv("GOOGLE_CALENDAR_TOKEN_FILE", "token_calendar_readonly.json")
+        os.getenv("GOOGLE_CALENDAR_TOKEN_FILE", "token_calendar_events.json")
     )
 
     if not credentials_file.is_absolute():
@@ -69,6 +74,7 @@ def get_calendar_config() -> CalendarConfig:
         ).strip(),
         calendar_id=os.getenv("GOOGLE_CALENDAR_ID", "primary").strip() or "primary",
         timezone_name=os.getenv("GOOGLE_CALENDAR_TIMEZONE", "local").strip() or "local",
+        write_enabled=_truthy(os.getenv("GOOGLE_CALENDAR_WRITE_ENABLED", "false")),
     )
 
 
@@ -158,7 +164,7 @@ def get_calendar_status() -> dict:
     elif not connected:
         message = "Google Calendar is configured but not authorized yet."
     else:
-        message = "Google Calendar is connected in read-only mode."
+        message = "Google Calendar is connected with event write access." if config.write_enabled else "Google Calendar is connected, but event writing is disabled."
 
     return {
         "ok": True,
@@ -166,6 +172,8 @@ def get_calendar_status() -> dict:
         "configured": configured,
         "connected": connected,
         "calendarId": config.calendar_id,
+        "writeEnabled": config.write_enabled,
+        "scopes": SCOPES,
         "message": message,
     }
 
@@ -217,7 +225,7 @@ def start_calendar_auth() -> dict:
     return {
         "ok": True,
         "authUrl": auth_url,
-        "message": "Open this URL, sign into Google, and approve read-only Calendar access.",
+        "message": "Open this URL, sign into Google, and approve Calendar read/write access.",
     }
 
 
@@ -364,6 +372,140 @@ def _normalize_google_event(item: dict, config: CalendarConfig) -> dict:
         "calendarId": config.calendar_id,
     }
 
+
+
+def _target_date_for_day(day: str, config: CalendarConfig) -> datetime:
+    tz = _get_timezone(config)
+    now = datetime.now(tz)
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    if (day or "").strip().lower() == "tomorrow":
+        start += timedelta(days=1)
+
+    return start
+
+
+def _parse_time_for_event(day: str, time_text: str | None, config: CalendarConfig) -> tuple[datetime, datetime, bool]:
+    start_of_day = _target_date_for_day(day, config)
+    raw = (time_text or "").strip().lower()
+
+    if not raw or raw in {"later", "all day", "all-day", "sometime", "anytime"}:
+        return start_of_day, start_of_day + timedelta(days=1), True
+
+    normalized = (
+        raw.replace(".", "")
+        .replace("a m", "am")
+        .replace("p m", "pm")
+        .replace("a.m", "am")
+        .replace("p.m", "pm")
+        .replace("o'clock", "")
+        .replace("oclock", "")
+        .strip()
+    )
+
+    if normalized == "noon":
+        hour = 12
+        minute = 0
+    elif normalized == "midnight":
+        hour = 0
+        minute = 0
+    else:
+        match = re.match(r"^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$", normalized)
+        if not match:
+            return start_of_day, start_of_day + timedelta(days=1), True
+
+        hour = int(match.group(1))
+        minute = int(match.group(2) or "0")
+        suffix = match.group(3)
+
+        if minute > 59 or hour > 23:
+            return start_of_day, start_of_day + timedelta(days=1), True
+
+        if suffix == "pm" and hour < 12:
+            hour += 12
+        elif suffix == "am" and hour == 12:
+            hour = 0
+        elif suffix is None and 1 <= hour <= 7:
+            # Voice commands like "tomorrow at 3" usually mean afternoon in this prototype.
+            hour += 12
+
+    start = start_of_day.replace(hour=hour, minute=minute)
+    end = start + timedelta(hours=1)
+    return start, end, False
+
+
+def create_calendar_event(title: str, day: str = "today", time: str = "Later", description: str = "", location: str = "") -> dict:
+    config = get_calendar_config()
+    status = get_calendar_status()
+
+    if not status["configured"] or not status["connected"]:
+        raise CalendarIntegrationError(status["message"])
+
+    if not config.write_enabled:
+        raise CalendarIntegrationError(
+            "Google Calendar event writing is disabled. Set GOOGLE_CALENDAR_WRITE_ENABLED=true in backend/.env."
+        )
+
+    clean_title = (title or "").strip()
+    if not clean_title:
+        raise CalendarIntegrationError("Calendar event title cannot be empty.")
+
+    creds = _load_credentials(config)
+    if not creds:
+        raise CalendarIntegrationError("Google Calendar needs authorization with event write access.")
+
+    start, end, all_day = _parse_time_for_event(day, time, config)
+
+    if all_day:
+        event_body = {
+            "summary": clean_title,
+            "start": {"date": start.date().isoformat()},
+            "end": {"date": end.date().isoformat()},
+        }
+    else:
+        event_body = {
+            "summary": clean_title,
+            "start": {"dateTime": start.isoformat()},
+            "end": {"dateTime": end.isoformat()},
+        }
+
+    if config.timezone_name.lower() != "local":
+        if all_day:
+            pass
+        else:
+            event_body["start"]["timeZone"] = config.timezone_name
+            event_body["end"]["timeZone"] = config.timezone_name
+
+    if description.strip():
+        event_body["description"] = description.strip()
+
+    if location.strip():
+        event_body["location"] = location.strip()
+
+    try:
+        service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+        created = (
+            service.events()
+            .insert(calendarId=config.calendar_id, body=event_body)
+            .execute()
+        )
+    except HttpError as exc:
+        raise CalendarIntegrationError(
+            "Google Calendar event creation failed. Reconnect Calendar and make sure the token has event write access."
+        ) from exc
+    except Exception as exc:
+        raise CalendarIntegrationError("Could not create Google Calendar event.") from exc
+
+    normalized_event = _normalize_google_event(created, config)
+
+    return {
+        "ok": True,
+        "configured": True,
+        "connected": True,
+        "source": "google",
+        "event": normalized_event,
+        "message": f"Created Google Calendar event: {normalized_event['time']}: {normalized_event['title']}.",
+    }
 
 def list_calendar_events(view: str = "today") -> dict:
     requested_view = view if view in {"today", "tomorrow", "week"} else "today"

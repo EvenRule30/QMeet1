@@ -46,6 +46,8 @@ export interface CalendarBackendStatus {
   configured: boolean;
   connected: boolean;
   calendarId: string;
+  writeEnabled?: boolean;
+  scope?: string;
   message: string;
 }
 
@@ -67,6 +69,23 @@ export interface CalendarEventsResponse {
   source: 'google';
   view: CalendarBackendView;
   events: CalendarEvent[];
+  message: string;
+}
+
+export interface CalendarCreateEventRequest {
+  title: string;
+  day: 'today' | 'tomorrow';
+  time: string;
+  description?: string;
+  location?: string;
+}
+
+export interface CalendarCreateEventResponse {
+  ok: boolean;
+  configured: boolean;
+  connected: boolean;
+  source: 'google';
+  event: CalendarEvent | null;
   message: string;
 }
 

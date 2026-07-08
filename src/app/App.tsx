@@ -7,7 +7,7 @@ import { NotesPanel } from './components/NotesPanel';
 import { CalendarPanel } from './components/CalendarPanel';
 import { SearchPanel } from './components/SearchPanel';
 import { Message, OrbState, BackendStatus, ActivePanel, Note, CalendarEvent, CalendarBackendStatus, CalendarBackendView } from './types';
-import { streamChatMessage, getBackendStatus, resetConversation, interpretCommandIntent, getCalendarStatus, getCalendarEvents, startCalendarAuth, resetCalendarAuth } from "./api";
+import { streamChatMessage, getBackendStatus, resetConversation, interpretCommandIntent, getCalendarStatus, getCalendarEvents, createCalendarEvent, startCalendarAuth, resetCalendarAuth } from "./api";
 import { getSpeechRecognition, isSpeechRecognitionSupported } from './speechRecognition';
 import { speakText, stopSpeaking } from './speechSynthesis';
 import { parseCommand, normalizeSpokenQMeet } from './commands';
@@ -432,7 +432,7 @@ export default function App() {
     return `You have ${notes.length} saved note${notes.length === 1 ? '' : 's'}: ${noteLines.join(' ')}${suffix}`;
   }, [notes]);
 
-  const saveCalendarEvent = useCallback((eventInput?: { day?: CalendarView; time?: string; title?: string }): CalendarEvent | null => {
+  const saveCalendarEvent = useCallback(async (eventInput?: { day?: CalendarView; time?: string; title?: string }): Promise<CalendarEvent | null> => {
     const title = eventInput?.title?.trim() ?? '';
 
     if (!title) {
@@ -440,18 +440,51 @@ export default function App() {
     }
 
     const view = eventInput?.day ?? 'today';
+    const eventTime = eventInput?.time?.trim() || 'Later';
+
+    if (googleCalendarStatus?.connected && googleCalendarStatus?.writeEnabled) {
+      setGoogleCalendarLoading(true);
+      setGoogleCalendarError('');
+
+      try {
+        const response = await createCalendarEvent({
+          title,
+          day: view,
+          time: eventTime,
+        });
+
+        if (response.event) {
+          setGoogleCalendarEvents((prev) => [
+            response.event as CalendarEvent,
+            ...prev.filter((event) => event.id !== response.event?.id),
+          ]);
+          setGoogleCalendarError(response.message || 'Google Calendar event created.');
+          return response.event;
+        }
+
+        setGoogleCalendarError(response.message || 'Google Calendar did not return the created event.');
+        return null;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Could not create Google Calendar event.';
+        setGoogleCalendarError(message);
+        return null;
+      } finally {
+        setGoogleCalendarLoading(false);
+      }
+    }
+
     const event: CalendarEvent = {
       id: `event-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       title,
       dateKey: getDateKeyForCalendarView(view),
-      time: eventInput?.time?.trim() || 'Later',
+      time: eventTime,
       createdAt: new Date().toISOString(),
       source: 'local',
     };
 
     setCalendarEvents((prev) => [event, ...prev]);
     return event;
-  }, []);
+  }, [googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled]);
 
   const deleteCalendarEvent = useCallback((eventId: string) => {
     setCalendarEvents((prev) => prev.filter((event) => event.id !== eventId));
@@ -803,6 +836,47 @@ export default function App() {
         timestamp: new Date(),
       };
       
+      if (
+        commandRoute !== 'confirmed' &&
+        commandMatch.command === 'add-calendar-event' &&
+        googleCalendarStatus?.connected &&
+        googleCalendarStatus?.writeEnabled
+      ) {
+        const targetView = commandMatch.calendarEvent?.day ?? 'today';
+        const targetTime = commandMatch.calendarEvent?.time?.trim() || 'Later';
+        const targetTitle = commandMatch.calendarEvent?.title?.trim() ?? '';
+
+        if (targetTitle) {
+          const frontendCommand = `add event ${targetView} at ${targetTime} called ${targetTitle}`;
+          const confirmationPrompt = `I understood that as: create a Google Calendar event ${targetView} at ${targetTime}: ${targetTitle}. Say "confirm" to create it, or "cancel" to stop.`;
+
+          setPendingInterpreterCommand({
+            originalText: visibleUserText,
+            frontendCommand,
+            action: commandMatch.command,
+            confidence: commandRoute === 'exact' ? 1 : 0.9,
+            reason: 'Google Calendar event creation requires confirmation before writing to the real calendar.',
+          });
+          setLastInputRoute(commandRoute === 'exact' ? 'Exact Google Calendar write needs confirmation' : 'Fuzzy Google Calendar write needs confirmation');
+          setLastLocalCommand('Pending Google Calendar write');
+          setLastInterpreterAction(commandRoute === 'exact' ? 'Not used' : commandMatch.command);
+          setLastInterpreterFrontendCommand(frontendCommand);
+          setLastInterpreterConfidence(commandRoute === 'exact' ? 1 : 0.9);
+          setLastInterpreterReason('Google Calendar event creation requires confirmation before writing to the real calendar.');
+
+          const assistantMsg: Message = {
+            id: `a-${now}`,
+            role: 'assistant',
+            content: confirmationPrompt,
+            timestamp: new Date(),
+          };
+
+          setMessages((prev) => [...prev, userMsg, assistantMsg]);
+          speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+          return;
+        }
+      }
+
       if (commandRoute !== 'confirmed' && isDestructiveLocalCommand(commandMatch.command)) {
         const frontendCommand = getFrontendCommandForLocalCommand(commandMatch.command);
         const confirmationPrompt = `I understood that as: ${frontendCommand}. This changes or deletes local data. Say "confirm" to run it, or "cancel" to stop.`;
@@ -891,13 +965,15 @@ export default function App() {
         setCalendarView('today');
         setActivePanel('calendar');
       } else if (commandMatch.command === 'add-calendar-event') {
-        const addedEvent = saveCalendarEvent(commandMatch.calendarEvent);
+        const addedEvent = await saveCalendarEvent(commandMatch.calendarEvent);
         const targetView = commandMatch.calendarEvent?.day ?? 'today';
         setCalendarView(targetView);
         setActivePanel('calendar');
         confirmationContent = addedEvent
-          ? `Added event ${getCalendarViewLabel(targetView)} at ${addedEvent.time}: ${addedEvent.title}.`
-          : 'I did not catch the event details.';
+          ? `Added ${addedEvent.source === 'google' ? 'Google Calendar' : 'local'} event ${getCalendarViewLabel(targetView)} at ${addedEvent.time}: ${addedEvent.title}.`
+          : googleCalendarStatus?.connected && googleCalendarStatus?.writeEnabled
+            ? 'I could not create the Google Calendar event. Check the Calendar panel status.'
+            : 'I did not catch the event details.';
         shouldSpeakConfirmation = voiceOutputEnabled;
       } else if (commandMatch.command === 'read-calendar') {
         const requestedCalendarView = commandMatch.calendarView ?? 'all';
@@ -1295,7 +1371,7 @@ export default function App() {
         }
       }, 2000);
     }
-  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, googleCalendarStatus?.connected, googleCalendarEvents]);
+  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents]);
 
   const handleOrbClick = useCallback(() => {
     // If QMeet is actively generating/streaming, tapping the orb should cancel
@@ -1524,7 +1600,7 @@ export default function App() {
     const statusTomorrowEventsCount = calendarEvents.filter((event) => event.dateKey === getDateKeyForCalendarView('tomorrow')).length;
     const statusGoogleEventsCount = googleCalendarEvents.length;
     const statusGoogleCalendarLabel = googleCalendarStatus?.connected
-      ? 'Connected'
+      ? googleCalendarStatus?.writeEnabled ? 'Connected · Write' : 'Connected · Read only'
       : googleCalendarStatus?.configured
         ? 'Needs auth'
         : 'Not configured';

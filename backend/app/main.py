@@ -20,6 +20,7 @@ from app.calendar_service import (
     complete_calendar_auth,
     get_calendar_status,
     list_calendar_events,
+    create_calendar_event,
     reset_calendar_auth,
     start_calendar_auth,
 )
@@ -27,6 +28,8 @@ from app.calendar_service import (
 from app.schemas import (
     CalendarAuthResetResponse,
     CalendarAuthStartResponse,
+    CalendarCreateEventRequest,
+    CalendarCreateEventResponse,
     CalendarEventsResponse,
     CalendarStatusResponse,
     ChatRequest,
@@ -182,6 +185,25 @@ async def calendar_events(
         raise HTTPException(
             status_code=500,
             detail="QMeet could not read Google Calendar events.",
+        )
+
+
+@app.post("/api/calendar/events", response_model=CalendarCreateEventResponse)
+async def calendar_create_event(req: CalendarCreateEventRequest):
+    try:
+        return CalendarCreateEventResponse(**create_calendar_event(
+            title=req.title,
+            day=req.day,
+            time=req.time,
+            description=req.description,
+            location=req.location,
+        ))
+    except CalendarIntegrationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not create the Google Calendar event.",
         )
 
 

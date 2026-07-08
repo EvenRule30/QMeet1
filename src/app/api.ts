@@ -1,4 +1,4 @@
-import { BackendStatus, CalendarAuthResetResponse, CalendarAuthStartResponse, CalendarBackendStatus, CalendarBackendView, CalendarEventsResponse, CommandIntentResponse } from "./types";
+import { BackendStatus, CalendarAuthResetResponse, CalendarAuthStartResponse, CalendarBackendStatus, CalendarBackendView, CalendarCreateEventRequest, CalendarCreateEventResponse, CalendarEventsResponse, CommandIntentResponse } from "./types";
 
 export type ChatApiResponse = {
   reply: string;
@@ -115,6 +115,24 @@ export async function getCalendarEvents(view: CalendarBackendView = "today"): Pr
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || `Calendar events error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+
+export async function createCalendarEvent(event: CalendarCreateEventRequest): Promise<CalendarCreateEventResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/calendar/events`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(event),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Calendar create event error: ${res.status}`);
   }
 
   return res.json();

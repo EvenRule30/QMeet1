@@ -455,68 +455,123 @@ function extractSearchPayload(normalized: string): { payload: string; confirmati
 }
 
 
-function extractCalendarEventPayload(normalized: string): CalendarCommandPayload | null {
-  const patterns = [
-    /^(?:please\s+)?(?:add|create|schedule|make)\s+(?:an?\s+)?(?:(?:calendar|calender|calander)\s+)?(?:event|appointment|reminder|meeting)\s+(?:(today|tomorrow)\s+)?(?:at\s+)?(.+?)\s+(?:called|named|titled|for|about)\s+(.+)$/i,
-    /^(?:please\s+)?(?:put|add)\s+(.+?)\s+(?:on|to)\s+(?:my\s+)?(?:calendar|calender|calander|schedule|agenda)\s+(?:(today|tomorrow)\s+)?(?:at\s+)?(.+)$/i,
-    /^(?:please\s+)?schedule\s+(.+?)\s+(today|tomorrow)\s+(?:at\s+)?(.+)$/i,
-    /^(?:please\s+)?remind\s+me\s+(today|tomorrow)\s+(?:at\s+)?(.+?)\s+to\s+(.+)$/i,
+function splitCalendarTitleAndTrailingTime(rawTitle: string): { title: string; time: string } {
+  const titleWithSpeechFixes = cleanCommandPayload(rawTitle)
+    // Chrome speech recognition sometimes inserts "to at" / "two at" before a time.
+    // Example: "called QMeet test to at 5:00" should become title "QMeet test", time "5:00".
+    .replace(/\b(?:to|too|two)\s+at\s+/gi, 'at ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const trailingTimePatterns = [
+    /\s+(?:at|by)\s+((?:\d{1,2})(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?|am|pm)?|noon|midnight)\s*$/i,
+    /\s+(?:around|for)\s+((?:\d{1,2})(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?|am|pm)?|noon|midnight)\s*$/i,
   ];
 
-  for (const pattern of patterns) {
-    const match = normalized.match(pattern);
+  for (const pattern of trailingTimePatterns) {
+    const match = titleWithSpeechFixes.match(pattern);
 
-    if (!match) continue;
-
-    if (pattern === patterns[0]) {
-      const day = (match[1]?.toLowerCase() === 'tomorrow' ? 'tomorrow' : 'today') as 'today' | 'tomorrow';
-      const time = match[2] ? cleanCommandPayload(match[2]) : '';
-      const title = match[3] ? cleanCommandPayload(match[3]) : '';
-
-      if (title) {
-        return {
-          day,
-          time: time || 'Later',
-          title,
-        };
-      }
-    } else if (pattern === patterns[1]) {
-      const title = match[1] ? cleanCommandPayload(match[1]) : '';
-      const day = (match[2]?.toLowerCase() === 'tomorrow' ? 'tomorrow' : 'today') as 'today' | 'tomorrow';
-      const time = match[3] ? cleanCommandPayload(match[3]) : '';
-
-      if (title) {
-        return {
-          day,
-          time: time || 'Later',
-          title,
-        };
-      }
-    } else if (pattern === patterns[2]) {
-      const title = match[1] ? cleanCommandPayload(match[1]) : '';
-      const day = (match[2]?.toLowerCase() === 'tomorrow' ? 'tomorrow' : 'today') as 'today' | 'tomorrow';
-      const time = match[3] ? cleanCommandPayload(match[3]) : '';
-
-      if (title) {
-        return {
-          day,
-          time: time || 'Later',
-          title,
-        };
-      }
-    } else {
-      const day = (match[1]?.toLowerCase() === 'tomorrow' ? 'tomorrow' : 'today') as 'today' | 'tomorrow';
-      const time = match[2] ? cleanCommandPayload(match[2]) : '';
-      const title = match[3] ? cleanCommandPayload(match[3]) : '';
-
-      if (title) {
-        return {
-          day,
-          time: time || 'Later',
-          title,
-        };
-      }
+    if (match?.[1]) {
+      return {
+        title: cleanCommandPayload(titleWithSpeechFixes.replace(pattern, '')),
+        time: cleanCommandPayload(match[1]),
+      };
     }
+  }
+
+  return {
+    title: titleWithSpeechFixes,
+    time: '',
+  };
+}
+
+function normalizeCalendarTimeCandidate(rawTime: string | undefined): string {
+  const cleanedTime = rawTime ? cleanCommandPayload(rawTime) : '';
+
+  // Guard against a regex backtracking case where the parser reads the day word
+  // as the time. Example: "add event today called QMeet test at 5" can
+  // otherwise become time="today" and title="QMeet test".
+  if (/^(?:today|tomorrow)$/i.test(cleanedTime)) {
+    return '';
+  }
+
+  return cleanedTime;
+}
+
+function makeCalendarCommandPayload(
+  rawDay: string | undefined,
+  rawTime: string | undefined,
+  rawTitle: string | undefined
+): CalendarCommandPayload | null {
+  const day = (rawDay?.toLowerCase() === 'tomorrow' ? 'tomorrow' : 'today') as 'today' | 'tomorrow';
+  const explicitTime = normalizeCalendarTimeCandidate(rawTime);
+  const titleParts = splitCalendarTitleAndTrailingTime(rawTitle ?? '');
+  const title = titleParts.title;
+  const time = explicitTime || titleParts.time || 'Later';
+
+  if (!title) return null;
+
+  return {
+    day,
+    time,
+    title,
+  };
+}
+
+function extractCalendarEventPayload(normalized: string): CalendarCommandPayload | null {
+  const patterns: Array<{
+    pattern: RegExp;
+    read: (match: RegExpMatchArray) => CalendarCommandPayload | null;
+  }> = [
+    // "add event today called meeting at 5" / "add event today called meeting to at 5"
+    // This must run before the broad "day/time called title" pattern below.
+    {
+      pattern: /^(?:please\s+)?(?:add|create|schedule|make)\s+(?:an?\s+)?(?:(?:calendar|calender|calander)\s+)?(?:event|appointment|reminder|meeting)\s+(today|tomorrow)\s+(?:called|named|titled|for|about)\s+(.+)$/i,
+      read: (match) => makeCalendarCommandPayload(match[1], undefined, match[2]),
+    },
+
+    // "add event today at 3 called meeting" / "add event at 3 called meeting"
+    {
+      pattern: /^(?:please\s+)?(?:add|create|schedule|make)\s+(?:an?\s+)?(?:(?:calendar|calender|calander)\s+)?(?:event|appointment|reminder|meeting)\s+(?:(today|tomorrow)\s+)?at\s+(.+?)\s+(?:called|named|titled|for|about)\s+(.+)$/i,
+      read: (match) => makeCalendarCommandPayload(match[1], match[2], match[3]),
+    },
+
+    // "add event called meeting today at 5"
+    {
+      pattern: /^(?:please\s+)?(?:add|create|schedule|make)\s+(?:an?\s+)?(?:(?:calendar|calender|calander)\s+)?(?:event|appointment|reminder|meeting)\s+(?:called|named|titled|for|about)\s+(.+?)\s+(today|tomorrow)(?:\s+(?:at|by)\s+(.+))?$/i,
+      read: (match) => makeCalendarCommandPayload(match[2], match[3], match[1]),
+    },
+
+    // "add event called meeting at 5" defaults to today.
+    {
+      pattern: /^(?:please\s+)?(?:add|create|schedule|make)\s+(?:an?\s+)?(?:(?:calendar|calender|calander)\s+)?(?:event|appointment|reminder|meeting)\s+(?:called|named|titled|for|about)\s+(.+)$/i,
+      read: (match) => makeCalendarCommandPayload('today', undefined, match[1]),
+    },
+
+    // "put meeting on my calendar tomorrow at 3"
+    {
+      pattern: /^(?:please\s+)?(?:put|add)\s+(.+?)\s+(?:on|to)\s+(?:my\s+)?(?:calendar|calender|calander|schedule|agenda)\s+(?:(today|tomorrow)\s+)?(?:at\s+)?(.+)$/i,
+      read: (match) => makeCalendarCommandPayload(match[2], match[3], match[1]),
+    },
+
+    // "schedule meeting tomorrow at 3"
+    {
+      pattern: /^(?:please\s+)?schedule\s+(.+?)\s+(today|tomorrow)\s+(?:at\s+)?(.+)$/i,
+      read: (match) => makeCalendarCommandPayload(match[2], match[3], match[1]),
+    },
+
+    // "remind me tomorrow at 3 to call Bob"
+    {
+      pattern: /^(?:please\s+)?remind\s+me\s+(today|tomorrow)\s+(?:at\s+)?(.+?)\s+to\s+(.+)$/i,
+      read: (match) => makeCalendarCommandPayload(match[1], match[2], match[3]),
+    },
+  ];
+
+  for (const { pattern, read } of patterns) {
+    const match = normalized.match(pattern);
+    const payload = match ? read(match) : null;
+
+    if (payload) return payload;
   }
 
   return null;

@@ -80,7 +80,7 @@ function getGoogleStatusLabel(status?: CalendarBackendStatus | null): string {
   if (!status) return 'Checking';
   if (!status.configured) return 'Not configured';
   if (!status.connected) return 'Needs authorization';
-  return 'Connected';
+  return status.writeEnabled ? 'Connected · Write enabled' : 'Connected · Read only';
 }
 
 function CalendarEventRow({
@@ -171,6 +171,7 @@ export function CalendarPanel({
             <p className="panel-section-text">
               Status: {getGoogleStatusLabel(googleStatus)}
               {googleStatus?.calendarId ? ` · Calendar: ${googleStatus.calendarId}` : ''}
+              {googleStatus?.writeEnabled ? ' · Event creation enabled' : googleStatus?.connected ? ' · Read-only / writes disabled' : ''}
               {googleLoading ? ' · Loading…' : ''}
             </p>
             {(googleError || googleStatus?.message) && (
@@ -264,7 +265,7 @@ export function CalendarPanel({
           <div className="panel-section">
             <div className="panel-section-title">Supported Commands</div>
             <p className="panel-section-text">
-               Say “what's on my calendar,” “show today's events,” or “show tomorrow's events” to read Google Calendar when connected. Local add/delete commands still use the prototype calendar until write access is added later.
+               Say “what's on my calendar,” “show today's events,” or “show tomorrow's events” to read Google Calendar. When Google Calendar is connected with writing enabled, “add event tomorrow at 3 called meeting” creates a real Google event after confirmation. Delete/clear commands still affect only local prototype events.
             </p>
           </div>
 

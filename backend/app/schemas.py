@@ -30,6 +30,8 @@ class CalendarStatusResponse(BaseModel):
     configured: bool = False
     connected: bool = False
     calendarId: str = "primary"
+    writeEnabled: bool = False
+    scope: str = ""
     message: str = ""
 
 
@@ -67,4 +69,21 @@ class CalendarEventsResponse(BaseModel):
     source: Literal["google"] = "google"
     view: Literal["today", "tomorrow", "week"] = "today"
     events: list[CalendarEventItem] = Field(default_factory=list)
+    message: str = ""
+
+
+class CalendarCreateEventRequest(BaseModel):
+    title: str
+    day: Literal["today", "tomorrow"] = "today"
+    time: str = "Later"
+    description: str = ""
+    location: str = ""
+
+
+class CalendarCreateEventResponse(BaseModel):
+    ok: bool = True
+    configured: bool = False
+    connected: bool = False
+    source: Literal["google"] = "google"
+    event: CalendarEventItem | None = None
     message: str = ""
