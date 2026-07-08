@@ -16,6 +16,10 @@ QMeet currently supports:
 - Browser speech-to-text input through the Web Speech API
 - Browser speech output through the SpeechSynthesis API
 - Local voice/text command routing before sending prompts to OpenAI
+- Backend command interpreter agent for fuzzy command detection
+- Strict JSON command classification for ambiguous/misheard commands
+- Command route/status debugging for exact parser, fuzzy interpreter, and normal chat paths
+- Confirmation layer for destructive local commands
 - Menu launcher panel
 - Settings panel
 - Status/system dashboard panel
@@ -37,7 +41,9 @@ QMeet currently supports:
 
 ## What Runs Locally vs Through OpenAI
 
-QMeet checks local commands first. If the command parser matches the text, the action runs entirely in the frontend and **does not call OpenAI**.
+QMeet checks exact local commands first. If the frontend parser matches the text, the action runs entirely in the frontend and **does not call normal OpenAI chat**.
+
+If the exact parser does not match, QMeet calls the backend command interpreter. The interpreter returns strict command JSON, not a friendly chat reply. If the result maps to an allowlisted frontend command with enough confidence, the frontend executes that local command. Only when the interpreter says the input is not a command does QMeet send the prompt to normal AI chat.
 
 Examples of local-only actions:
 
@@ -52,7 +58,9 @@ Examples of local-only actions:
 - Going home
 - Clearing local UI state
 
-Normal prompts that do not match a local command are sent to the FastAPI backend, which then uses the configured AI provider.
+Normal prompts that do not match either the exact parser or the fuzzy command interpreter are sent to the FastAPI backend, which then uses the configured AI provider for conversational responses.
+
+The command interpreter never directly changes frontend state. It only classifies intent. The frontend remains the final executor for notes, calendar, search, settings, panels, and other local actions.
 
 ## What QMeet Can Do by Voice or Text
 
@@ -105,7 +113,7 @@ show dashboard
 what did you hear
 ```
 
-The Status panel shows backend status, provider/model, voice input support, voice output state, speed, last heard transcript, last local command, chat status, notes count, and calendar event count.
+The Status panel shows backend status, provider/model, voice input support, voice output state, speed, last heard transcript, last local command, command route, interpreter action/confidence, pending confirmation, chat status, notes count, and calendar event count.
 
 ### Notes Commands
 
@@ -180,6 +188,74 @@ qmeet-calendar-events
 
 The calendar is currently local-only. It is not connected to Google Calendar yet.
 
+## Fuzzy Command Interpreter
+
+QMeet includes a backend command interpreter for phrases that do not exactly match the frontend command parser.
+
+Examples of fuzzy commands the interpreter can classify:
+
+```text
+wipe my calander stuff
+pull up my notepad
+don't talk out loud anymore
+look up raspberry pi kiosk flags
+put meeting on my calendar tomorrow at 3
+what stuff do i have planned
+```
+
+The interpreter returns a strict result shaped like:
+
+```json
+{
+  "intent": "command",
+  "action": "clear_calendar",
+  "confidence": 0.95,
+  "frontendCommand": "clear calendar",
+  "payload": {},
+  "reason": "User requests to wipe calendar, interpreted as clear calendar."
+}
+```
+
+The frontend then executes only known allowlisted commands. If the interpreter returns `intent: "chat"`, the message falls through to normal AI chat.
+
+### Command Route Debugging
+
+The Status panel shows how the most recent input was handled:
+
+```text
+Exact local command
+Fuzzy interpreter command
+Normal chat
+```
+
+For fuzzy interpreter commands, the Status panel also shows the interpreted action, confidence, mapped frontend command, and reason.
+
+### Destructive Command Confirmation
+
+Destructive local commands require confirmation before execution, whether they came from the exact parser or the fuzzy interpreter.
+
+Protected commands include:
+
+```text
+clear chat
+end chat
+delete last note
+clear notes
+delete last event
+clear calendar
+```
+
+Flow:
+
+```text
+User: wipe the calendar
+QMeet: I understood that as: clear calendar. This changes or deletes local data. Say "confirm" to run it, or "cancel" to stop.
+User: confirm
+QMeet: Cleared all local calendar events.
+```
+
+Use `cancel`, `no`, or `never mind` to stop a pending destructive command.
+
 ## Recommended Development Flow
 
 For normal development, run both the frontend and backend on the laptop.
@@ -197,8 +273,8 @@ QMeet1-1/
 ├── backend/
 │   ├── app/
 │   │   ├── main.py          # FastAPI app and routes
-│   │   ├── agent.py         # OpenAI/mock provider logic and streaming
-│   │   └── schemas.py       # Request/response schemas
+│   │   ├── agent.py         # OpenAI/mock provider logic, streaming, and command interpreter
+│   │   └── schemas.py       # Request/response schemas, including command interpreter schema
 │   ├── requirements.txt
 │   ├── .env.example
 │   └── .env                 # Must create locally using .env.example
@@ -421,10 +497,11 @@ GET  /health
 GET  /api/status
 POST /api/chat
 POST /api/chat/stream
+POST /api/command/interpret
 POST /api/reset
 ```
 
-The frontend primarily uses `/api/chat/stream` for streamed responses.
+The frontend primarily uses `/api/chat/stream` for streamed responses and `/api/command/interpret` for fuzzy command classification.
 
 ## Basic Backend Tests
 
@@ -463,6 +540,26 @@ curl.exe -N -X POST "http://localhost:8000/api/chat/stream" `
 Remove-Item body.json
 ```
 
+
+Command interpreter test:
+
+```powershell
+Invoke-RestMethod `
+  -Uri "http://localhost:8000/api/command/interpret" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body '{"message":"wipe my calander stuff"}'
+```
+
+Expected shape:
+
+```text
+intent          : command
+action          : clear_calendar
+confidence      : 0.95
+frontendCommand : clear calendar
+```
+
 ## Build
 
 ```powershell
@@ -477,9 +574,13 @@ npm run preview
 ```text
 User types or speaks a prompt
 ↓
-Frontend checks local commands first
+Frontend checks exact local commands first
 ↓
-No command match
+No exact command match
+↓
+Frontend asks backend command interpreter for strict JSON classification
+↓
+Interpreter returns intent = chat
 ↓
 Prompt streams through FastAPI/OpenAI
 ↓
@@ -495,15 +596,49 @@ Orb speaks completed response if voice output is enabled
 ```text
 User types or speaks a local command
 ↓
-Command parser matches locally
+Exact command parser matches locally
 ↓
-No OpenAI request is made
+No normal OpenAI chat request is made
 ↓
 UI action runs immediately
 ↓
 Assistant confirmation appears
 ↓
 Orb speaks confirmation if voice output is enabled
+```
+
+### Fuzzy interpreted command
+
+```text
+User types or speaks a command with unusual wording or speech-recognition mistakes
+↓
+Exact command parser does not match
+↓
+Backend command interpreter classifies the phrase into strict JSON
+↓
+Frontend checks the mapped command against its allowlist
+↓
+If safe and confident, frontend executes the local action
+↓
+Normal chat is skipped
+```
+
+### Destructive command confirmation
+
+```text
+User asks for a destructive local command
+↓
+QMeet stores a pending command instead of executing immediately
+↓
+User says confirm / yes / do it
+↓
+Frontend executes the pending command
+
+or
+
+User says cancel / no / never mind
+↓
+Pending command is discarded
 ```
 
 ### Voice input
@@ -517,9 +652,11 @@ Listening transcript preview appears
 ↓
 Final transcript is normalized
 ↓
-QMeet checks local command parser
+QMeet checks the exact local command parser
 ↓
-Command runs locally or prompt streams through backend
+If needed, QMeet asks the fuzzy command interpreter
+↓
+Command runs locally or prompt streams through backend chat
 ```
 
 ### Cancel / stop behavior
@@ -615,7 +752,7 @@ If the browser produces a new misheard variant, add it to `normalizeSpokenQMeet(
 
 ### A local command goes to OpenAI instead
 
-The command parser did not match the text, so the prompt fell through to backend chat.
+The exact command parser and fuzzy command interpreter did not classify the text as a local command, so the prompt fell through to backend chat.
 
 Check:
 
@@ -623,13 +760,45 @@ Check:
 what did you hear
 ```
 
-Then add a matching pattern in:
+Then check the Status panel to see whether the last route was:
+
+```text
+Exact local command
+Fuzzy interpreter command
+Normal chat
+```
+
+If the exact parser should handle the phrase, add a pattern in:
 
 ```text
 src/app/commands.ts
 ```
 
-For common misspellings, add aliases. Example: the calendar clear command currently accepts variants such as `calendar`, `calender`, and `calander`.
+If the interpreter misunderstood the phrase, update the backend interpreter prompt/schema/mapping in:
+
+```text
+backend/app/agent.py
+backend/app/schemas.py
+src/app/App.tsx
+```
+
+For common misspellings, aliases can still be added to the exact parser. Example: the calendar clear command currently accepts variants such as `calendar`, `calender`, and `calander`.
+
+### QMeet asks for confirmation before clearing or deleting
+
+This is expected for destructive local commands. Say:
+
+```text
+confirm
+```
+
+To stop the pending action, say:
+
+```text
+cancel
+never mind
+no
+```
 
 ### Calendar events are remembered but not visible
 
@@ -691,8 +860,13 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 ## Development Notes
 
 - Keep the frontend OpenAI-key-free. API keys belong only in `backend/.env`.
-- Local commands should run before sending prompts to the backend.
-- Local command responses should not call OpenAI.
+- Exact local commands should run before the fuzzy command interpreter.
+- The fuzzy command interpreter should run before normal chat.
+- The command interpreter should return strict JSON only.
+- The command interpreter should never directly mutate frontend state.
+- Frontend command execution should remain allowlisted and deterministic.
+- Destructive local commands should require confirmation.
+- Local command responses should not call normal OpenAI chat.
 - Notes, Calendar, Search, Settings, Status, and Menu should remain usable without OpenAI.
 - The UI is currently optimized for the 1024×600 tablet target.
 - Pi kiosk/autolaunch work is intentionally delayed until the prototype is more complete.
@@ -724,9 +898,13 @@ Completed prototype phases:
   - visual event display after reload
   - clear calendar command aliases
   - backend reset after local calendar clear
+- Phase 5A: Backend fuzzy command interpreter
+- Phase 5B: Command route/status debugging
+- Phase 5C: Confirmation for destructive local commands
 
 Useful future work:
 
+- Add command interpreter test coverage / command audit logs
 - Add real web/browser integration for Search
 - Add Google Calendar integration
 - Add edit/search/delete-by-name for notes and calendar events
