@@ -9,7 +9,7 @@ backend/app/__pycache__/
 *.pyd
 backend/calendar_auth_state.json
 backend/token_calendar_readonly.json
-`nbackend/google_credentials.json
+backend/google_credentials.json
 
 # Env files
 .env
