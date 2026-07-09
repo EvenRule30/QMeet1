@@ -21,6 +21,7 @@ from app.calendar_service import (
     get_calendar_status,
     list_calendar_events,
     create_calendar_event,
+    update_calendar_event,
     delete_calendar_event,
     reset_calendar_auth,
     start_calendar_auth,
@@ -31,6 +32,8 @@ from app.schemas import (
     CalendarAuthStartResponse,
     CalendarCreateEventRequest,
     CalendarCreateEventResponse,
+    CalendarUpdateEventRequest,
+    CalendarUpdateEventResponse,
     CalendarDeleteEventResponse,
     CalendarEventsResponse,
     CalendarStatusResponse,
@@ -129,7 +132,7 @@ async def calendar_auth_callback(
             <html>
               <body style="font-family: system-ui; background: #080a18; color: white; padding: 32px;">
                 <h1>QMeet Calendar connected</h1>
-                <p>Google Calendar is now connected in read-only mode.</p>
+                <p>Google Calendar is now connected to QMeet.</p>
                 <p>You can close this tab and return to QMeet.</p>
               </body>
             </html>
@@ -206,6 +209,26 @@ async def calendar_create_event(req: CalendarCreateEventRequest):
         raise HTTPException(
             status_code=500,
             detail="QMeet could not create the Google Calendar event.",
+        )
+
+
+@app.patch("/api/calendar/events/{event_id}", response_model=CalendarUpdateEventResponse)
+async def calendar_update_event(event_id: str, req: CalendarUpdateEventRequest):
+    try:
+        return CalendarUpdateEventResponse(**update_calendar_event(
+            event_id=event_id,
+            title=req.title,
+            day=req.day,
+            time=req.time,
+            description=req.description,
+            location=req.location,
+        ))
+    except CalendarIntegrationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not update the Google Calendar event.",
         )
 
 

@@ -90,6 +90,23 @@ export interface CalendarCreateEventResponse {
 }
 
 
+export interface CalendarUpdateEventRequest {
+  title?: string;
+  day?: 'today' | 'tomorrow';
+  time?: string;
+  description?: string;
+  location?: string;
+}
+
+export interface CalendarUpdateEventResponse {
+  ok: boolean;
+  configured: boolean;
+  connected: boolean;
+  source: 'google';
+  event: CalendarEvent | null;
+  message: string;
+}
+
 export interface CalendarDeleteEventResponse {
   ok: boolean;
   configured: boolean;

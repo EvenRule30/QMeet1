@@ -300,7 +300,7 @@ export function CalendarPanel({
           <div className="panel-section">
             <div className="panel-section-title">Supported Commands</div>
             <p className="panel-section-text">
-               Say “what's on my calendar,” “show today's events,” or “show tomorrow's events” to read Google Calendar. When Google Calendar is connected with writing enabled, “add event tomorrow at 3 called meeting” creates a real Google event after confirmation, and “delete last event” deletes the next visible Google event after confirmation. Clear calendar still affects only local prototype events.
+               Say “what's on my calendar,” “show today's events,” or “show tomorrow's events” to read Google Calendar. When Google Calendar is connected with writing enabled, “add event tomorrow at 3 called meeting” creates a real Google event after confirmation, “reschedule last event to tomorrow at 4” or “rename last event to project sync” edits the next visible event after confirmation, and “delete last event” deletes the next visible Google event after confirmation. Clear calendar still affects only local prototype events.
             </p>
           </div>
 

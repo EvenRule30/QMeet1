@@ -508,6 +508,122 @@ def create_calendar_event(title: str, day: str = "today", time: str = "Later", d
     }
 
 
+
+def update_calendar_event(
+    event_id: str,
+    title: str = "",
+    day: str | None = None,
+    time: str = "",
+    description: str = "",
+    location: str = "",
+) -> dict:
+    config = get_calendar_config()
+    status = get_calendar_status()
+
+    if not status["configured"] or not status["connected"]:
+        raise CalendarIntegrationError(status["message"])
+
+    if not config.write_enabled:
+        raise CalendarIntegrationError(
+            "Google Calendar event editing is disabled. Set GOOGLE_CALENDAR_WRITE_ENABLED=true in backend/.env."
+        )
+
+    clean_event_id = (event_id or "").strip()
+    if clean_event_id.startswith("google-"):
+        clean_event_id = clean_event_id.removeprefix("google-")
+
+    if not clean_event_id:
+        raise CalendarIntegrationError("Google Calendar event id cannot be empty.")
+
+    clean_title = (title or "").strip()
+    clean_time = (time or "").strip()
+    clean_day = (day or "").strip().lower()
+    if clean_day not in {"today", "tomorrow", ""}:
+        clean_day = ""
+
+    if not clean_title and not clean_time and not clean_day and not description and not location:
+        raise CalendarIntegrationError("No calendar event changes were provided.")
+
+    creds = _load_credentials(config)
+    if not creds:
+        raise CalendarIntegrationError("Google Calendar needs authorization with event write access.")
+
+    try:
+        service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+        existing = service.events().get(
+            calendarId=config.calendar_id,
+            eventId=clean_event_id,
+        ).execute()
+
+        body: dict = {}
+
+        if clean_title:
+            body["summary"] = clean_title
+
+        if description:
+            body["description"] = description
+
+        if location:
+            body["location"] = location
+
+        if clean_day or clean_time:
+            target_day = clean_day
+            if not target_day:
+                existing_start = existing.get("start", {})
+                existing_start_text = existing_start.get("dateTime") or existing_start.get("date")
+                if existing_start_text:
+                    try:
+                        existing_start_dt = datetime.fromisoformat(existing_start_text.replace("Z", "+00:00"))
+                        today_key = _target_date_for_day("today", config).date().isoformat()
+                        target_day = "today" if existing_start_dt.date().isoformat() == today_key else "tomorrow"
+                    except Exception:
+                        target_day = "today"
+                else:
+                    target_day = "today"
+
+            start_dt, end_dt, all_day = _parse_time_for_event(target_day or "today", clean_time or "Later", config)
+
+            if all_day:
+                body["start"] = {"date": start_dt.date().isoformat()}
+                body["end"] = {"date": end_dt.date().isoformat()}
+            else:
+                # Match the create-event path: for local timezone mode, keep the
+                # timezone embedded in the ISO datetime and do not send a
+                # timeZone string. On Windows, str(local tzinfo) can be a
+                # display name/offset that Google Calendar rejects. Only send
+                # timeZone when the user explicitly configured an IANA zone.
+                body["start"] = {"dateTime": start_dt.isoformat()}
+                body["end"] = {"dateTime": end_dt.isoformat()}
+
+                if config.timezone_name.lower() != "local":
+                    body["start"]["timeZone"] = config.timezone_name
+                    body["end"]["timeZone"] = config.timezone_name
+
+        updated = service.events().patch(
+            calendarId=config.calendar_id,
+            eventId=clean_event_id,
+            body=body,
+        ).execute()
+    except HttpError as exc:
+        status_code = getattr(getattr(exc, "resp", None), "status", None)
+        if status_code == 404:
+            raise CalendarIntegrationError("Google Calendar event was not found. Refresh the calendar and try again.") from exc
+        raise CalendarIntegrationError(
+            "Google Calendar event update failed. Refresh or reconnect Calendar and try again."
+        ) from exc
+    except Exception as exc:
+        raise CalendarIntegrationError("Could not update Google Calendar event.") from exc
+
+    return {
+        "ok": True,
+        "configured": True,
+        "connected": True,
+        "source": "google",
+        "event": _normalize_google_event(updated, config),
+        "message": "Updated Google Calendar event.",
+    }
+
+
 def delete_calendar_event(event_id: str) -> dict:
     config = get_calendar_config()
     status = get_calendar_status()

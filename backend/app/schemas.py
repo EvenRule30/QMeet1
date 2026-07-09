@@ -89,6 +89,23 @@ class CalendarCreateEventResponse(BaseModel):
     message: str = ""
 
 
+class CalendarUpdateEventRequest(BaseModel):
+    title: str = ""
+    day: Literal["today", "tomorrow"] | None = None
+    time: str = ""
+    description: str = ""
+    location: str = ""
+
+
+class CalendarUpdateEventResponse(BaseModel):
+    ok: bool = True
+    configured: bool = False
+    connected: bool = False
+    source: Literal["google"] = "google"
+    event: CalendarEventItem | None = None
+    message: str = ""
+
+
 class CalendarDeleteEventResponse(BaseModel):
     ok: bool = True
     configured: bool = False

@@ -20,6 +20,7 @@ export type LocalCommand =
   | 'add-calendar-event'
   | 'read-calendar'
   | 'refresh-calendar'
+  | 'edit-last-event'
   | 'delete-last-event'
   | 'clear-calendar'
   | 'show-today'
@@ -50,16 +51,23 @@ export interface CalendarCommandPayload {
   title: string;
 }
 
+export interface CalendarEditCommandPayload {
+  day?: 'today' | 'tomorrow';
+  time?: string;
+  title?: string;
+}
+
 export interface CommandMatch {
   command: LocalCommand;
   confirmation: string;
   payload?: string;
   calendarEvent?: CalendarCommandPayload;
+  calendarEdit?: CalendarEditCommandPayload;
   calendarView?: 'today' | 'tomorrow' | 'all';
 }
 
 const HELP_MESSAGE =
-  "I'm QMeet, your local AI orb interface. I can control the local UI without sending those commands to OpenAI. I can open Menu, Settings, Status, Notes, Calendar, and Search. Notes: say \"note that buy milk,\" \"read my notes,\" or \"delete last note.\" Search: say \"search for raspberry pi kiosk mode,\" \"look up chromium flags,\" or \"clear search.\" Calendar: say \"add event tomorrow at 3 called meeting,\" \"show today's events,\" \"what's on my calendar,\" \"refresh calendar,\" \"delete last event,\" or \"clear calendar.\" Voice: say \"mute voice,\" \"unmute voice,\" \"speak slower,\" \"speak faster,\" or \"normal voice.\" Navigation: say \"go home,\" \"close panel,\" \"cancel,\" or \"what did you hear.\"";
+  "I'm QMeet, your local AI orb interface. I can control the local UI without sending those commands to OpenAI. I can open Menu, Settings, Status, Notes, Calendar, and Search. Notes: say \"note that buy milk,\" \"read my notes,\" or \"delete last note.\" Search: say \"search for raspberry pi kiosk mode,\" \"look up chromium flags,\" or \"clear search.\" Calendar: say \"add event tomorrow at 3 called meeting,\" \"reschedule last event to tomorrow at 4,\" \"rename last event to project sync,\" \"show today's events,\" \"what's on my calendar,\" \"refresh calendar,\" \"delete last event,\" or \"clear calendar.\" Voice: say \"mute voice,\" \"unmute voice,\" \"speak slower,\" \"speak faster,\" or \"normal voice.\" Navigation: say \"go home,\" \"close panel,\" \"cancel,\" or \"what did you hear.\"";
 
 const CONFIRMATIONS: Record<LocalCommand, string> = {
   help: HELP_MESSAGE,
@@ -83,6 +91,7 @@ const CONFIRMATIONS: Record<LocalCommand, string> = {
   'add-calendar-event': 'Added event.',
   'read-calendar': 'Reading calendar.',
   'refresh-calendar': 'Refreshing calendar.',
+  'edit-last-event': 'Updated the last event.',
   'delete-last-event': 'Deleted the last event.',
   'clear-calendar': 'Cleared calendar.',
   'show-today': 'Showing today.',
@@ -245,6 +254,15 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
     [
       rx(`^${REQUEST_PREFIX}(?:refresh|reload|sync|update)\s+(?:my\s+)?(?:calendar|calender|calander|schedule|agenda)(?:\s+(?:events?|view|panel))?$`),
       /^(?:refresh calendar|reload calendar|sync calendar|update calendar|refresh schedule|reload schedule|sync schedule)$/i,
+    ],
+  ],
+
+  [
+    'edit-last-event',
+    [
+      rx(`^${REQUEST_PREFIX}(?:reschedule|move)\s+(?:the\s+)?(?:last|latest|next|current|this)\s+(?:calendar\s+)?(?:event|appointment|meeting)\s+(?:to|for)\s+(.+)$`),
+      rx(`^${REQUEST_PREFIX}(?:rename|retitle)\s+(?:the\s+)?(?:last|latest|next|current|this)\s+(?:calendar\s+)?(?:event|appointment|meeting)\s+(?:to|as|called|named)\s+(.+)$`),
+      rx(`^${REQUEST_PREFIX}(?:change|edit|update)\s+(?:the\s+)?(?:last|latest|next|current|this)\s+(?:calendar\s+)?(?:event|appointment|meeting)(?:\s+.*)?$`),
     ],
   ],
   [
@@ -587,6 +605,93 @@ function extractCalendarEventPayload(normalized: string): CalendarCommandPayload
   return null;
 }
 
+function normalizeCalendarEditTail(tail: string): string {
+  return tail
+    .replace(/\b(?:two|too|to)\s+at\b/gi, 'at')
+    .replace(/\b(?:for)\s+at\b/gi, 'at')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isCalendarDay(value: string | undefined): value is 'today' | 'tomorrow' {
+  return value === 'today' || value === 'tomorrow';
+}
+
+function extractCalendarEditPayload(normalized: string): CalendarEditCommandPayload | null {
+  const base = String.raw`(?:the\s+)?(?:last|latest|next|current|this)\s+(?:calendar\s+)?(?:event|appointment|meeting)`;
+
+  const titleOnlyPatterns = [
+    new RegExp(String.raw`^(?:please\s+)?(?:rename|retitle)\s+${base}\s+(?:to|as|called|named)\s+(.+)$`, 'i'),
+    new RegExp(String.raw`^(?:please\s+)?(?:change|edit|update)\s+${base}\s+(?:title|name)\s+(?:to|as|called|named)\s+(.+)$`, 'i'),
+  ];
+
+  for (const pattern of titleOnlyPatterns) {
+    const match = normalized.match(pattern);
+    const title = match?.[1] ? cleanCommandPayload(match[1]) : '';
+    if (title) return { title };
+  }
+
+  const timeOnlyPatterns = [
+    new RegExp(String.raw`^(?:please\s+)?(?:change|edit|update)\s+${base}\s+(?:time\s+)?(?:to|for)\s+(?:at\s+)?(.+)$`, 'i'),
+    new RegExp(String.raw`^(?:please\s+)?(?:reschedule|move)\s+${base}\s+(?:to|for)\s+(?:at\s+)?(.+)$`, 'i'),
+  ];
+
+  for (const pattern of timeOnlyPatterns) {
+    const match = normalized.match(pattern);
+    const rawTail = match?.[1] ? normalizeCalendarEditTail(cleanCommandPayload(match[1])) : '';
+    if (!rawTail) continue;
+
+    const withDayAndTitle = rawTail.match(/^(today|tomorrow)\s+(?:at\s+)?(.+?)\s+(?:called|named|titled|as)\s+(.+)$/i);
+    if (withDayAndTitle) {
+      const day = withDayAndTitle[1].toLowerCase();
+      const time = cleanCommandPayload(withDayAndTitle[2]);
+      const title = cleanCommandPayload(withDayAndTitle[3]);
+      if (isCalendarDay(day) && time) return { day, time, ...(title ? { title } : {}) };
+    }
+
+    const withDay = rawTail.match(/^(today|tomorrow)\s+(?:at\s+)?(.+)$/i);
+    if (withDay) {
+      const day = withDay[1].toLowerCase();
+      const time = cleanCommandPayload(withDay[2]);
+      if (isCalendarDay(day) && time) return { day, time };
+    }
+
+    const withTitle = rawTail.match(/^(.+?)\s+(?:called|named|titled|as)\s+(.+)$/i);
+    if (withTitle) {
+      const time = cleanCommandPayload(withTitle[1]);
+      const title = cleanCommandPayload(withTitle[2]);
+      if (time || title) return { ...(time ? { time } : {}), ...(title ? { title } : {}) };
+    }
+
+    return { time: rawTail };
+  }
+
+  const combinedPatterns = [
+    new RegExp(String.raw`^(?:please\s+)?(?:change|edit|update)\s+${base}\s+(?:to\s+)?(?:(today|tomorrow)\s+)?(?:at\s+)?(.+?)\s+(?:called|named|titled|as)\s+(.+)$`, 'i'),
+    new RegExp(String.raw`^(?:please\s+)?(?:change|edit|update)\s+${base}\s+(?:to\s+)?(today|tomorrow)\s+(?:at\s+)?(.+)$`, 'i'),
+  ];
+
+  for (const pattern of combinedPatterns) {
+    const match = normalized.match(pattern);
+    if (!match) continue;
+
+    const dayCandidate = match[1]?.toLowerCase();
+    const day = isCalendarDay(dayCandidate) ? dayCandidate : undefined;
+    const time = match[2] ? cleanCommandPayload(normalizeCalendarEditTail(match[2])) : '';
+    const title = match[3] ? cleanCommandPayload(match[3]) : '';
+
+    if (day || time || title) {
+      return {
+        ...(day ? { day } : {}),
+        ...(time ? { time } : {}),
+        ...(title ? { title } : {}),
+      };
+    }
+  }
+
+  return null;
+}
+
 function extractCalendarReadPayload(normalized: string): 'today' | 'tomorrow' | 'all' | null {
   const todayPatterns = [
     /^(?:please\s+)?(?:show|read|list|display|open|pull\s+up|bring\s+up)\s+(?:my\s+)?(?:(?:calendar|calender|calander|schedule|agenda)\s+)?today(?:'s)?\s+(?:events|agenda|schedule|calendar)$/i,
@@ -665,6 +770,19 @@ export function debugCommandParse(text: string): {
           command: 'save-note',
           confirmation: CONFIRMATIONS['save-note'],
           payload: notePayload,
+        },
+      };
+    }
+
+    const calendarEdit = extractCalendarEditPayload(payloadSource);
+    if (calendarEdit) {
+      return {
+        rawText: text,
+        normalizedText: normalized,
+        match: {
+          command: 'edit-last-event',
+          confirmation: CONFIRMATIONS['edit-last-event'],
+          calendarEdit,
         },
       };
     }

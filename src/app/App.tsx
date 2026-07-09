@@ -7,7 +7,7 @@ import { NotesPanel } from './components/NotesPanel';
 import { CalendarPanel } from './components/CalendarPanel';
 import { SearchPanel } from './components/SearchPanel';
 import { Message, OrbState, BackendStatus, ActivePanel, Note, CalendarEvent, CalendarBackendStatus, CalendarBackendView } from './types';
-import { streamChatMessage, getBackendStatus, resetConversation, interpretCommandIntent, getCalendarStatus, getCalendarEvents, createCalendarEvent, deleteGoogleCalendarEvent, startCalendarAuth, resetCalendarAuth } from "./api";
+import { streamChatMessage, getBackendStatus, resetConversation, interpretCommandIntent, getCalendarStatus, getCalendarEvents, createCalendarEvent, deleteGoogleCalendarEvent, updateGoogleCalendarEvent, startCalendarAuth, resetCalendarAuth } from "./api";
 import { getSpeechRecognition, isSpeechRecognitionSupported } from './speechRecognition';
 import { speakText, stopSpeaking } from './speechSynthesis';
 import { parseCommand, normalizeSpokenQMeet } from './commands';
@@ -102,6 +102,7 @@ const DESTRUCTIVE_FRONTEND_COMMANDS = new Set([
   'delete last note',
   'clear notes',
   'delete last event',
+  'edit last event',
   'clear calendar',
 ]);
 
@@ -111,6 +112,7 @@ const DESTRUCTIVE_LOCAL_COMMANDS = new Set([
   'delete-last-note',
   'clear-notes',
   'delete-last-event',
+  'edit-last-event',
   'clear-calendar',
 ]);
 
@@ -120,6 +122,7 @@ const LOCAL_COMMAND_TO_FRONTEND_COMMAND: Record<string, string> = {
   'delete-last-note': 'delete last note',
   'clear-notes': 'clear notes',
   'delete-last-event': 'delete last event',
+  'edit-last-event': 'edit last event',
   'clear-calendar': 'clear calendar',
 };
 
@@ -142,6 +145,48 @@ function isDestructiveLocalCommand(command: string): boolean {
 
 function getFrontendCommandForLocalCommand(command: string): string {
   return LOCAL_COMMAND_TO_FRONTEND_COMMAND[command] ?? command.replace(/-/g, ' ');
+}
+
+function describeCalendarEditPayload(changes?: { day?: CalendarView; time?: string; title?: string }): string {
+  if (!changes) return 'no changes';
+
+  const parts: string[] = [];
+  const day = changes.day?.trim();
+  const time = changes.time?.trim();
+  const title = changes.title?.trim();
+
+  if (day || time) {
+    parts.push(`${day ? day : 'same day'}${time ? ` at ${time}` : ''}`);
+  }
+
+  if (title) {
+    parts.push(`title "${title}"`);
+  }
+
+  return parts.length > 0 ? parts.join(', ') : 'no changes';
+}
+
+function buildCalendarEditFrontendCommand(changes?: { day?: CalendarView; time?: string; title?: string }): string {
+  const day = changes?.day?.trim();
+  const time = changes?.time?.trim();
+  const title = changes?.title?.trim();
+
+  if (title && !day && !time) {
+    return `rename last event to ${title}`;
+  }
+
+  const when = `${day ? `${day} ` : ''}${time ? `at ${time}` : ''}`.trim();
+  const titlePart = title ? ` called ${title}` : '';
+
+  if (when) {
+    return `edit last event to ${when}${titlePart}`;
+  }
+
+  if (title) {
+    return `rename last event to ${title}`;
+  }
+
+  return 'edit last event';
 }
 
 function isConfirmingPendingCommand(text: string): boolean {
@@ -527,6 +572,81 @@ export default function App() {
     return localEvent;
   }, [calendarEvents, googleCalendarEvents]);
 
+    const updateCalendarEvent = useCallback(async (eventId: string, changes?: { day?: CalendarView; time?: string; title?: string }): Promise<CalendarEvent | null> => {
+      if (!changes || (!changes.day && !changes.time?.trim() && !changes.title?.trim())) {
+        setGoogleCalendarError('No calendar event changes were provided.');
+        return null;
+      }
+  
+      const googleEvent = googleCalendarEvents.find(
+        (event) => event.id === eventId || event.googleEventId === eventId
+      );
+  
+      if (googleEvent?.source === 'google') {
+        const googleEventId = googleEvent.googleEventId || googleEvent.id.replace(/^google-/, '');
+  
+        if (!googleEventId) {
+          setGoogleCalendarError('Could not identify the Google Calendar event to update.');
+          return null;
+        }
+  
+        setGoogleCalendarLoading(true);
+        setGoogleCalendarError('');
+  
+        try {
+          const response = await updateGoogleCalendarEvent(googleEventId, {
+            ...(changes.title?.trim() ? { title: changes.title.trim() } : {}),
+            ...(changes.day ? { day: changes.day } : {}),
+            ...(changes.time?.trim() ? { time: changes.time.trim() } : {}),
+          });
+  
+          if (response.event) {
+            setGoogleCalendarEvents((prev) =>
+              [
+                response.event as CalendarEvent,
+                ...prev.filter((event) =>
+                  event.id !== googleEvent.id &&
+                  event.googleEventId !== googleEvent.googleEventId &&
+                  event.googleEventId !== googleEventId
+                ),
+              ]
+            );
+            setGoogleCalendarError(response.message || 'Updated Google Calendar event.');
+            return response.event;
+          }
+  
+          setGoogleCalendarError(response.message || 'Google Calendar did not return the updated event.');
+          return null;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Could not update Google Calendar event.';
+          setGoogleCalendarError(message);
+          return null;
+        } finally {
+          setGoogleCalendarLoading(false);
+        }
+      }
+  
+      const localEvent = calendarEvents.find((event) => event.id === eventId) ?? null;
+  
+      if (!localEvent) {
+        return null;
+      }
+  
+      const updatedLocalEvent: CalendarEvent = {
+        ...localEvent,
+        title: changes.title?.trim() || localEvent.title,
+        time: changes.time?.trim() || localEvent.time,
+        dateKey: changes.day ? getDateKeyForCalendarView(changes.day) : localEvent.dateKey,
+        source: localEvent.source ?? 'local',
+      };
+  
+      setCalendarEvents((prev) =>
+        prev.map((event) => (event.id === localEvent.id ? updatedLocalEvent : event))
+      );
+  
+      return updatedLocalEvent;
+    }, [calendarEvents, googleCalendarEvents]);
+
   const clearCalendarEvents = useCallback(() => {
     setCalendarEvents([]);
 
@@ -542,26 +662,43 @@ export default function App() {
   }, []);
 
   const getNextCalendarEventForDeletion = useCallback((): CalendarEvent | null => {
-      if (googleCalendarStatus?.connected) {
-        const visibleGoogleEvents = googleCalendarEvents.filter((event) => isEventForCalendarView(event, calendarView));
-        return visibleGoogleEvents[0] ?? googleCalendarEvents[0] ?? null;
-      }
-  
-      return calendarEvents[0] ?? null;
-    }, [calendarEvents, calendarView, googleCalendarEvents, googleCalendarStatus?.connected]);
-  
-    const deleteLastCalendarEvent = useCallback(async (): Promise<CalendarEvent | null> => {
-      const targetEvent = getNextCalendarEventForDeletion();
-  
-      if (!targetEvent) return null;
-  
-      if (targetEvent.source === 'google' || targetEvent.googleEventId) {
-        return deleteCalendarEvent(targetEvent.id);
-      }
-  
-      setCalendarEvents((prev) => prev.filter((event) => event.id !== targetEvent.id));
-      return targetEvent;
-    }, [deleteCalendarEvent, getNextCalendarEventForDeletion]);
+    if (googleCalendarStatus?.connected) {
+      const visibleGoogleEvents = googleCalendarEvents.filter((event) => isEventForCalendarView(event, calendarView));
+      return visibleGoogleEvents[0] ?? googleCalendarEvents[0] ?? null;
+    }
+
+    return calendarEvents[0] ?? null;
+  }, [calendarEvents, calendarView, googleCalendarEvents, googleCalendarStatus?.connected]);
+
+  const getNextCalendarEventForChange = useCallback((): CalendarEvent | null => {
+    if (googleCalendarStatus?.connected) {
+      const visibleGoogleEvents = googleCalendarEvents.filter((event) => isEventForCalendarView(event, calendarView));
+      return visibleGoogleEvents[0] ?? googleCalendarEvents[0] ?? null;
+    }
+
+    return calendarEvents[0] ?? null;
+  }, [calendarEvents, calendarView, googleCalendarEvents, googleCalendarStatus?.connected]);
+
+  const editLastCalendarEvent = useCallback(async (changes?: { day?: CalendarView; time?: string; title?: string }): Promise<CalendarEvent | null> => {
+    const targetEvent = getNextCalendarEventForChange();
+
+    if (!targetEvent) return null;
+
+    return updateCalendarEvent(targetEvent.id, changes);
+  }, [getNextCalendarEventForChange, updateCalendarEvent]);
+
+  const deleteLastCalendarEvent = useCallback(async (): Promise<CalendarEvent | null> => {
+    const targetEvent = getNextCalendarEventForDeletion();
+
+    if (!targetEvent) return null;
+
+    if (targetEvent.source === 'google' || targetEvent.googleEventId) {
+      return deleteCalendarEvent(targetEvent.id);
+    }
+
+    setCalendarEvents((prev) => prev.filter((event) => event.id !== targetEvent.id));
+    return targetEvent;
+  }, [deleteCalendarEvent, getNextCalendarEventForDeletion]);
 
   const getCalendarReadout = useCallback((view: CalendarView | 'all' = 'all', remoteEvents: CalendarEvent[] = googleCalendarEvents) => {
     const googleConnected = Boolean(googleCalendarStatus?.connected);
@@ -928,6 +1065,58 @@ export default function App() {
         }
       }
 
+      if (commandRoute !== 'confirmed' && commandMatch.command === 'edit-last-event') {
+              const targetEditEvent = getNextCalendarEventForChange();
+              const editDescription = describeCalendarEditPayload(commandMatch.calendarEdit);
+      
+              if (!targetEditEvent) {
+                setLastInputRoute('Edit command had no target');
+                setLastLocalCommand('No calendar event to edit');
+      
+                const assistantMsg: Message = {
+                  id: `a-${now}`,
+                  role: 'assistant',
+                  content: googleCalendarStatus?.connected
+                    ? 'I did not find a Google Calendar event to edit for the current view.'
+                    : 'I did not find a local calendar event to edit.',
+                  timestamp: new Date(),
+                };
+      
+                setMessages((prev) => [...prev, userMsg, assistantMsg]);
+                speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+                return;
+              }
+      
+              const frontendCommand = buildCalendarEditFrontendCommand(commandMatch.calendarEdit);
+              const sourceLabel = targetEditEvent.source === 'google' ? 'Google Calendar' : 'local';
+              const confirmationPrompt = `I understood that as: update ${sourceLabel} event: ${targetEditEvent.time || '—'}: ${targetEditEvent.title}. Changes: ${editDescription}. Say "confirm" to update it, or "cancel" to stop.`;
+      
+              setPendingInterpreterCommand({
+                originalText: visibleUserText,
+                frontendCommand,
+                action: commandMatch.command,
+                confidence: commandRoute === 'exact' ? 1 : 0.9,
+                reason: 'Calendar event editing requires confirmation before changing the calendar.',
+              });
+              setLastInputRoute(commandRoute === 'exact' ? 'Exact Google Calendar edit needs confirmation' : 'Fuzzy Google Calendar edit needs confirmation');
+              setLastLocalCommand('Pending calendar edit');
+              setLastInterpreterAction(commandRoute === 'exact' ? 'Not used' : commandMatch.command);
+              setLastInterpreterFrontendCommand(frontendCommand);
+              setLastInterpreterConfidence(commandRoute === 'exact' ? 1 : 0.9);
+              setLastInterpreterReason('Calendar event editing requires confirmation before changing the calendar.');
+      
+              const assistantMsg: Message = {
+                id: `a-${now}`,
+                role: 'assistant',
+                content: confirmationPrompt,
+                timestamp: new Date(),
+              };
+      
+              setMessages((prev) => [...prev, userMsg, assistantMsg]);
+              speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+              return;
+            }
+
       if (commandRoute !== 'confirmed' && isDestructiveLocalCommand(commandMatch.command)) {
         const frontendCommand = getFrontendCommandForLocalCommand(commandMatch.command);
         const targetDeleteEvent = commandMatch.command === 'delete-last-event'
@@ -1044,6 +1233,15 @@ export default function App() {
         confirmationContent = googleCalendarStatus?.connected
           ? `Refreshed Google Calendar. ${refreshedEvents.length} event${refreshedEvents.length === 1 ? '' : 's'} loaded.`
           : 'Calendar refreshed. Google Calendar is not connected, so QMeet is showing local calendar events.';
+        shouldSpeakConfirmation = voiceOutputEnabled;
+      } else if (commandMatch.command === 'edit-last-event') {
+        const updatedEvent = await editLastCalendarEvent(commandMatch.calendarEdit);
+        setActivePanel('calendar');
+        confirmationContent = updatedEvent
+          ? `Updated ${updatedEvent.source === 'google' ? 'Google Calendar' : 'local'} event: ${updatedEvent.time}: ${updatedEvent.title}.`
+          : googleCalendarStatus?.connected
+            ? 'I could not update the Google Calendar event. Check the Calendar panel status.'
+            : 'No local calendar events to update.';
         shouldSpeakConfirmation = voiceOutputEnabled;
       } else if (commandMatch.command === 'add-calendar-event') {
         const addedEvent = await saveCalendarEvent(commandMatch.calendarEvent);
@@ -1454,7 +1652,7 @@ export default function App() {
         }
       }, 2000);
     }
-  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, getNextCalendarEventForDeletion, clearCalendarEvents, refreshGoogleCalendar, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents]);
+  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, getNextCalendarEventForDeletion, getNextCalendarEventForChange, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents]);
 
   const handleOrbClick = useCallback(() => {
     // If QMeet is actively generating/streaming, tapping the orb should cancel

@@ -32,7 +32,7 @@ Return JSON only. Do not use markdown. Do not explain. Do not claim that you per
 Allowed JSON shape:
 {
   "intent": "command" | "chat",
-  "action": "none" | "open_panel" | "close_panel" | "go_home" | "clear_chat" | "end_chat" | "save_note" | "read_notes" | "delete_last_note" | "clear_notes" | "prepare_search" | "clear_search" | "add_calendar_event" | "read_calendar" | "delete_last_calendar_event" | "clear_calendar" | "voice_output_on" | "voice_output_off" | "voice_slower" | "voice_faster" | "voice_normal" | "cancel",
+  "action": "none" | "open_panel" | "close_panel" | "go_home" | "clear_chat" | "end_chat" | "save_note" | "read_notes" | "delete_last_note" | "clear_notes" | "prepare_search" | "clear_search" | "add_calendar_event" | "read_calendar" | "delete_last_calendar_event" | "edit_calendar_event" | "clear_calendar" | "voice_output_on" | "voice_output_off" | "voice_slower" | "voice_faster" | "voice_normal" | "cancel",
   "confidence": 0.0,
   "frontendCommand": "",
   "payload": {},
@@ -62,6 +62,10 @@ The frontend only executes the exact frontendCommand text. Use these exact front
 - show today's events
 - show tomorrow's events
 - delete last event
+- reschedule last event to <today|tomorrow> at <time>
+- move last event to <today|tomorrow> at <time>
+- rename last event to <new title>
+- edit last event to <today|tomorrow> at <time> called <title>
 - clear calendar
 - mute voice
 - unmute voice
@@ -75,6 +79,7 @@ Rules:
 - Use intent "command" only for local QMeet UI/tool control.
 - Calendar misspellings like "calender" and "calander" should still map to calendar commands.
 - If the user asks to clear/wipe/remove/delete their calendar/schedule/agenda/events, map to "clear calendar".
+- If the user asks to move/reschedule/edit/rename the last/current/next calendar event, map to the closest edit/reschedule/rename frontendCommand form above.
 - If the user asks to stop the current response, stop listening, never mind, forget that, or cancel, map to "cancel".
 - If the user asks you to stop talking right now, map to "cancel". If they ask to disable spoken responses in general, map to "mute voice".
 - If a command is clear but wording is fuzzy, return confidence 0.80 or higher.
@@ -99,6 +104,7 @@ ALLOWED_COMMAND_ACTIONS = {
     "add_calendar_event",
     "read_calendar",
     "delete_last_calendar_event",
+    "edit_calendar_event",
     "clear_calendar",
     "voice_output_on",
     "voice_output_off",
@@ -203,6 +209,26 @@ def mock_interpret_command_intent(message: str) -> dict:
 
     if not text:
         return _empty_command_intent("Empty input.")
+
+    if re.search(r"\b(reschedule|move)\b.*\b(last|latest|next|current|this)\b.*\b(event|appointment|meeting)\b", lowered):
+        return {
+            "intent": "command",
+            "action": "edit_calendar_event",
+            "confidence": 0.9,
+            "frontendCommand": text,
+            "payload": {},
+            "reason": "Mock matched calendar reschedule wording.",
+        }
+
+    if re.search(r"\b(rename|retitle)\b.*\b(last|latest|next|current|this)\b.*\b(event|appointment|meeting)\b", lowered):
+        return {
+            "intent": "command",
+            "action": "edit_calendar_event",
+            "confidence": 0.9,
+            "frontendCommand": text,
+            "payload": {},
+            "reason": "Mock matched calendar rename wording.",
+        }
 
     if re.search(r"\b(clear|wipe|delete|remove|erase)\b.*\b(calendar|calender|calander|schedule|agenda|events?)\b", lowered):
         return {
