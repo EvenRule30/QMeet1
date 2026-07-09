@@ -119,12 +119,21 @@ export interface SearchSourceItem {
   title: string;
   url: string;
   domain: string;
+  usedFor?: string;
+}
+
+export interface SearchResultCard {
+  title: string;
+  detail: string;
 }
 
 export interface SearchResponse {
   ok: boolean;
   query: string;
   summary: string;
+  recommendation?: string;
+    steps?: string[];
+    cards?: SearchResultCard[];
   sources: SearchSourceItem[];
   provider: string;
   message: string;

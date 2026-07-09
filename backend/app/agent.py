@@ -322,13 +322,35 @@ async def openai_interpret_command_intent(message: str, config: AgentConfig) -> 
 SEARCH_WEB_PROMPT = """
 You are QMeet's web search helper for a small 1024x600 tablet UI.
 
-Use web search for the user's query and return a concise, useful answer.
-Requirements:
-- Keep the answer compact: 3-6 short bullets or 1-2 short paragraphs.
-- Prefer current, concrete information.
-- Mention uncertainty if search results are mixed or incomplete.
-- Do not claim to perform local device actions.
-- Do not include raw JSON.
+Use web search for the user's query, then return JSON only. Do not use markdown.
+The frontend renders this JSON into compact cards, so each field must be specific, short, and easy to scan.
+
+Required JSON shape:
+{
+  "summary": "One plain sentence explaining the answer.",
+  "recommendation": "A direct recommendation or best next move for the user.",
+  "steps": ["3-5 concrete action steps. Start with a verb. Do not number the items."],
+  "cards": [
+    {"title": "Short label", "detail": "Specific useful detail, setting, command idea, or caveat."}
+  ],
+  "sourceHints": [
+    {"domain": "example.com", "usedFor": "Short phrase explaining what this source is useful for."}
+  ]
+}
+
+Rules:
+- Keep summary under 180 characters.
+- Keep recommendation under 260 characters.
+- Steps must not start with numbers like "1." or "2."; the UI numbers them.
+- Steps must be readable UI text, not API prose. Start with a verb and avoid generic filler.
+- Do not use markdown, bullets, code fences, link syntax, underscores, em dashes, en dashes, or separator dashes in any field.
+- For API/tool names, write readable names like "web search tool" unless exact code syntax is essential.
+- Avoid awkward phrases like "the Responses API" after a separator. Write normal sentences.
+- Make cards specific enough to help the user decide what to do next.
+- Card titles must be plain words under 32 characters. Do not use dash-separated titles.
+- sourceHints usedFor must be under 70 characters and should not start with "Official information on" or "Best for".
+- Use sourceHints only to label source usefulness; do not invent URLs.
+- If results are mixed or incomplete, say so in recommendation or a card.
 """.strip()
 
 
@@ -342,26 +364,358 @@ def _source_domain(url: str) -> str:
         return ""
 
 
+def _canonical_source_url(url: str) -> str:
+    try:
+        from urllib.parse import urlparse, urlunparse
+
+        parsed = urlparse(url.strip())
+        return urlunparse((
+            parsed.scheme,
+            parsed.netloc.replace("www.", ""),
+            parsed.path.rstrip("/"),
+            "",
+            "",
+            "",
+        ))
+    except Exception:
+        return url.strip()
+
+
+def _clean_search_text(value: object, max_length: int = 420) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+
+    # Convert markdown links to just their labels, then strip markdown markers.
+    text = re.sub(r"\[([^\]]+)\]\((?:https?://|www\.)[^)]+\)", r"\1", text)
+    text = re.sub(r"[*`#>]+", "", text)
+
+    # Search results are UI text, not code. Remove visual artifacts the model
+    # often emits: underscores, em dashes, en dashes, and dash separators.
+    text = text.replace("_", " ")
+    text = re.sub(r"\s+[—–]\s+", " ", text)
+    text = re.sub(r"\s+-\s+", " ", text)
+    text = re.sub(r"[—–]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip(" -•\t\n\r")
+
+    # The UI adds numbering, so remove any numbering/bullet prefixes returned by the model.
+    # Run a few passes to handle cases like "1. 1. Install Chromium".
+    for _ in range(4):
+        text = re.sub(r"^\s*(?:step\s+)?\d{1,2}\s*[:\.)-]\s+", "", text, flags=re.IGNORECASE).strip()
+        text = re.sub(r"^\s*(?:[-•*])\s+", "", text).strip()
+
+    # Remove source-card boilerplate and citation helper phrases that read badly in the UI.
+    text = re.sub(r"^best for\s*:?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"^official information\s+(?:on|about)\s+", "", text, flags=re.IGNORECASE)
+
+    # Fix artifacts like "Integrate the Responses API" only when the phrase is
+    # created by separator cleanup and sounds unnatural in a command-style step.
+    text = re.sub(r"\bthe\s+(?=Responses API|web search tool|Calendar API|OpenAI API)", "", text, flags=re.IGNORECASE)
+
+    if len(text) > max_length:
+        return text[: max_length - 3].rstrip() + "..."
+
+    return text
+
+
+def _as_short_list(value: object, *, max_items: int, max_length: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+
+    items: list[str] = []
+    for item in value:
+        cleaned = _clean_search_text(item, max_length=max_length)
+        if cleaned and cleaned not in items:
+            items.append(cleaned)
+        if len(items) >= max_items:
+            break
+
+    return items
+
+
+def _extract_json_object(text: str) -> dict:
+    stripped = text.strip()
+
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```(?:json)?\s*", "", stripped, flags=re.IGNORECASE)
+        stripped = re.sub(r"\s*```$", "", stripped)
+
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("No JSON object found.")
+
+    return json.loads(stripped[start : end + 1])
+
+
+def _normalize_search_card(card: object) -> dict | None:
+    if not isinstance(card, dict):
+        return None
+
+    title = _clean_search_text(card.get("title"), max_length=80)
+    detail = _clean_search_text(card.get("detail"), max_length=260)
+
+    if not title and not detail:
+        return None
+
+    return {
+        "title": title or "Detail",
+        "detail": detail,
+    }
+
+
+def _parse_search_payload(raw_text: str, query: str) -> dict:
+    try:
+        raw_json = _extract_json_object(raw_text)
+    except (json.JSONDecodeError, ValueError):
+        summary = _clean_search_text(raw_text, max_length=360)
+        return {
+            "summary": summary or f"Search results for {query} are available.",
+            "recommendation": "Review the sources and use the steps that match your setup.",
+            "steps": [],
+            "cards": [],
+            "sourceHints": [],
+        }
+
+    summary = _clean_search_text(raw_json.get("summary"), max_length=220)
+    recommendation = _clean_search_text(raw_json.get("recommendation"), max_length=320)
+    steps = _as_short_list(raw_json.get("steps"), max_items=6, max_length=180)
+
+    cards: list[dict] = []
+    raw_cards = raw_json.get("cards")
+    if isinstance(raw_cards, list):
+        for raw_card in raw_cards:
+            card = _normalize_search_card(raw_card)
+            if card:
+                cards.append(card)
+            if len(cards) >= 4:
+                break
+
+    source_hints: list[dict] = []
+    raw_hints = raw_json.get("sourceHints")
+    if isinstance(raw_hints, list):
+        for hint in raw_hints:
+            if not isinstance(hint, dict):
+                continue
+
+            domain = _clean_search_text(hint.get("domain"), max_length=120).lower().replace("www.", "")
+            used_for = _clean_search_text(hint.get("usedFor"), max_length=160)
+            if domain or used_for:
+                source_hints.append({"domain": domain, "usedFor": used_for})
+
+            if len(source_hints) >= 6:
+                break
+
+    if not summary:
+        summary = f"Search results for {query} are available."
+
+    if not recommendation:
+        recommendation = "Use the source-backed steps below as the next checklist."
+
+    if not steps and cards:
+        steps = [card["detail"] for card in cards if card.get("detail")][:4]
+
+    return {
+        "summary": summary,
+        "recommendation": recommendation,
+        "steps": steps,
+        "cards": cards,
+        "sourceHints": source_hints,
+    }
+
+
+def _humanize_slug(slug: str) -> str:
+    slug = re.sub(r"[-_]+", " ", slug)
+    slug = re.sub(r"\.(html?|md|php)$", "", slug, flags=re.IGNORECASE)
+    slug = _clean_search_text(slug, max_length=100)
+    return slug[:1].upper() + slug[1:] if slug else ""
+
+
+def _clean_source_title_for_display(url: str, title: str = "") -> str:
+    domain = _source_domain(url)
+    cleaned_title = _clean_search_text(title, max_length=140)
+    lower_title = cleaned_title.lower()
+
+    # The Responses API can surface citation text as a messy title. If the title
+    # looks like a query/citation artifact, use a readable title inferred from the URL.
+    bad_title = (
+        not cleaned_title
+        or lower_title in {domain.lower(), f"www.{domain}".lower()}
+        or "best for:" in lower_title
+        or "utm_source" in lower_title
+        or "http" in lower_title
+        or len(cleaned_title) > 95
+    )
+
+    known_domains = {
+        "platform.openai.com": "OpenAI API documentation",
+        "help.openai.com": "OpenAI Help Center article",
+        "help-lb.openai.com": "OpenAI Help Center article",
+        "openai.com": "OpenAI product update",
+        "raspberrypi.com": "Official Raspberry Pi guide",
+        "raspberrytips.com": "Raspberry Pi Tips guide",
+        "zbotic.in": "Touchscreen kiosk guide",
+    }
+
+    try:
+        from urllib.parse import urlparse, unquote
+
+        parsed = urlparse(url)
+        path = parsed.path.lower()
+        original_path = parsed.path.strip("/")
+
+        if "platform.openai.com" in domain:
+            return "OpenAI API documentation"
+        if "help" in domain and "openai.com" in domain:
+            return "OpenAI Help Center article"
+        if domain == "openai.com" and "new-tools-for-building-agents" in path:
+            return "OpenAI tools for building agents"
+        if "raspberrypi.com" in domain and "kiosk" in path:
+            return "Official Raspberry Pi kiosk tutorial"
+        if "raspberrypi.com" in domain and ("configuration" in path or "display" in path or "config" in path):
+            return "Official Raspberry Pi display configuration"
+        if "raspberrytips.com" in domain and "config" in path:
+            return "Raspberry Pi raspi-config guide"
+        if "raspberrytips.com" in domain and "kiosk" in path:
+            return "Raspberry Pi kiosk walkthrough"
+
+        if not bad_title:
+            return cleaned_title
+
+        pieces = [piece for piece in original_path.split("/") if piece]
+        if pieces:
+            inferred = _humanize_slug(unquote(pieces[-1]))
+            if inferred:
+                return inferred
+    except Exception:
+        pass
+
+    if not bad_title:
+        return cleaned_title
+
+    return known_domains.get(domain, domain or url or "Source")
+
+
+def _infer_title_from_url(url: str, title: str = "") -> str:
+    return _clean_source_title_for_display(url, title)
+
+
+def _infer_source_use(domain: str, title: str, url: str) -> str:
+    haystack = f"{domain} {title} {url}".lower()
+
+    if "raspberrypi.com" in haystack:
+        if "configuration" in haystack or "display" in haystack or "config" in haystack:
+            return "Official Raspberry Pi display/configuration reference."
+        if "kiosk" in haystack or "tutorial" in haystack:
+            return "Official Raspberry Pi kiosk setup pattern."
+        return "Official Raspberry Pi documentation."
+
+    if "help" in haystack and "openai.com" in haystack:
+        return "Help article or implementation note."
+
+    if "openai.com" in haystack:
+        return "Official OpenAI reference."
+
+    if "raspberrytips" in haystack:
+        return "Practical Raspberry Pi walkthrough and setup notes."
+
+    if "github" in haystack:
+        return "Example commands, config files, or implementation references."
+
+    if "forum" in haystack or "stack" in haystack or "reddit" in haystack:
+        return "Community troubleshooting and edge cases."
+
+    if "zbotic" in haystack or "touch" in haystack:
+        return "Touchscreen or display-specific setup notes."
+
+    return "Additional reference for this search result."
+
+
+def _apply_source_hints(sources: list[dict], hints: list[dict]) -> list[dict]:
+    if not hints:
+        return sources
+
+    for source in sources:
+        domain = str(source.get("domain", "")).lower().replace("www.", "")
+        url = str(source.get("url", "")).lower()
+
+        for hint in hints:
+            hint_domain = str(hint.get("domain", "")).lower().replace("www.", "")
+            used_for = str(hint.get("usedFor", "")).strip()
+
+            if used_for and hint_domain and (hint_domain in domain or hint_domain in url):
+                source["usedFor"] = used_for
+                break
+
+    return sources
+
+
+def _source_score(source: dict) -> int:
+    haystack = f"{source.get('domain','')} {source.get('title','')} {source.get('url','')}".lower()
+    score = 0
+    for preferred in ("platform.openai.com", "help.openai.com", "openai.com", "raspberrypi.com", "raspberrytips.com"):
+        if preferred in haystack:
+            score += 4
+    for useful in ("docs", "documentation", "guide", "tutorial", "kiosk", "configuration", "api", "responses"):
+        if useful in haystack:
+            score += 1
+    return score
+
+
 def _dedupe_sources(sources: list[dict]) -> list[dict]:
-    seen: set[str] = set()
-    deduped: list[dict] = []
+    by_url: dict[str, dict] = {}
 
     for source in sources:
         url = str(source.get("url", "")).strip()
-        if not url or url in seen:
+        if not url:
             continue
 
-        title = str(source.get("title", "")).strip() or _source_domain(url) or url
+        canonical_url = _canonical_source_url(url)
         domain = str(source.get("domain", "")).strip() or _source_domain(url)
-
-        seen.add(url)
-        deduped.append({
-            "title": title[:180],
+        title = _infer_title_from_url(url, str(source.get("title", "")))
+        candidate = {
+            "title": title[:120],
             "url": url,
             "domain": domain[:120],
-        })
+            "usedFor": _infer_source_use(domain, title, url),
+        }
 
-        if len(deduped) >= 8:
+        existing = by_url.get(canonical_url)
+        if not existing or _source_score(candidate) > _source_score(existing):
+            by_url[canonical_url] = candidate
+
+    # Sort useful/official-looking sources first, then prevent visual repetition.
+    ordered = sorted(by_url.values(), key=_source_score, reverse=True)
+    domain_counts: dict[str, int] = {}
+    title_domain_seen: set[tuple[str, str]] = set()
+    deduped: list[dict] = []
+
+    for source in ordered:
+        domain = source["domain"]
+        title = source["title"]
+        key = (title.lower(), domain.lower())
+        if key in title_domain_seen:
+            continue
+
+        # The panel is small; one source per domain is usually clearer. Allow a
+        # second only when the titles are meaningfully different.
+        domain_count = domain_counts.get(domain, 0)
+        if domain_count >= 1 and len(deduped) >= 3:
+            continue
+        if domain_count >= 2:
+            continue
+
+        title_domain_seen.add(key)
+        domain_counts[domain] = domain_count + 1
+        deduped.append(source)
+
+        if len(deduped) >= 4:
             break
 
     return deduped
@@ -394,7 +748,6 @@ def _collect_web_sources(response) -> list[dict]:
             "domain": candidate.get("domain") or candidate.get("site") or "",
         })
 
-    # Top-level sources, if the SDK surfaces them.
     for source in data.get("sources", []) if isinstance(data.get("sources"), list) else []:
         add_source(source)
 
@@ -404,13 +757,11 @@ def _collect_web_sources(response) -> list[dict]:
             if not isinstance(item, dict):
                 continue
 
-            # Search action sources from include=["web_search_call.action.sources"].
             action = item.get("action")
             if isinstance(action, dict):
                 for source in action.get("sources", []) if isinstance(action.get("sources"), list) else []:
                     add_source(source)
 
-            # Inline URL citations on assistant message content.
             content = item.get("content", [])
             if isinstance(content, list):
                 for content_item in content:
@@ -457,10 +808,19 @@ def mock_search_web(query: str) -> dict:
     return {
         "ok": True,
         "query": cleaned,
-        "summary": (
-            "Mock web search is active. In OpenAI mode, QMeet will use the backend "
-            f'to search the web for: "{cleaned}".'
-        ),
+        "summary": f'Mock web search result for "{cleaned}".',
+        "recommendation": "Switch LLM_PROVIDER to openai to get current source-backed web results.",
+        "steps": [
+            "Keep the search query short and specific.",
+            "Review the source cards before applying a setup change.",
+            "Use normal chat for follow-up explanation after the search result loads.",
+        ],
+        "cards": [
+            {
+                "title": "Mock mode",
+                "detail": "The backend route is working, but it is not performing a real web lookup until OpenAI mode is enabled.",
+            }
+        ],
         "sources": [],
         "provider": "mock",
         "message": "Mock search complete.",
@@ -498,7 +858,7 @@ async def openai_search_web(query: str, config: AgentConfig) -> dict:
                     "content": cleaned,
                 },
             ],
-            max_output_tokens=max(300, min(config.max_output_tokens, 900)),
+            max_output_tokens=max(700, min(config.max_output_tokens, 1200)),
         )
     except openai.AuthenticationError as exc:
         raise AgentUserFacingError(
@@ -517,16 +877,22 @@ async def openai_search_web(query: str, config: AgentConfig) -> dict:
             "OpenAI returned a web search API error. Try again shortly."
         ) from exc
 
-    summary = response.output_text.strip()
+    raw_text = response.output_text.strip()
 
-    if not summary:
+    if not raw_text:
         raise AgentUserFacingError("Web search returned an empty response.")
+
+    payload = _parse_search_payload(raw_text, cleaned)
+    sources = _apply_source_hints(_collect_web_sources(response), payload.get("sourceHints", []))
 
     return {
         "ok": True,
         "query": cleaned,
-        "summary": summary,
-        "sources": _collect_web_sources(response),
+        "summary": payload["summary"],
+        "recommendation": payload["recommendation"],
+        "steps": payload["steps"],
+        "cards": payload["cards"],
+        "sources": sources,
         "provider": "openai",
         "message": "Search complete.",
     }

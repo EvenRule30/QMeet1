@@ -76,16 +76,6 @@ function getCalendarViewLabel(view: CalendarView): string {
   return view === 'tomorrow' ? 'tomorrow' : 'today';
 }
 
-function compactSearchSpeech(text: string, maxLength = 520): string {
-  const cleaned = text.trim().replace(/\s+/g, ' ');
-
-  if (cleaned.length <= maxLength) {
-    return cleaned;
-  }
-
-  return `${cleaned.slice(0, maxLength).trim()}...`;
-}
-
 
 const VOICE_OUTPUT_STORAGE_KEY = 'qmeet-voice-output-enabled';
 const SPEECH_RATE_STORAGE_KEY = 'qmeet-speech-rate';
@@ -1367,7 +1357,15 @@ export default function App() {
           const searchResponse = await runWebSearch(preparedSearchQuery);
 
           if (searchResponse?.ok) {
-            confirmationContent = `Search complete. ${compactSearchSpeech(searchResponse.summary)}`;
+            const sourceCount = searchResponse.sources?.length ?? 0;
+            const stepCount = searchResponse.steps?.length ?? 0;
+            const sourceText = sourceCount > 0
+              ? ` ${sourceCount} source${sourceCount === 1 ? '' : 's'} added.`
+              : '';
+            const stepText = stepCount > 0
+              ? ` ${stepCount} action step${stepCount === 1 ? '' : 's'} included.`
+              : '';
+            confirmationContent = `Search complete. I put the full result in the Search panel.${stepText}${sourceText}`;
           } else {
             confirmationContent = searchResponse?.message || searchError || 'Web search failed.';
           }

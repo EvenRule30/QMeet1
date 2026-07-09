@@ -124,12 +124,21 @@ class SearchSourceItem(BaseModel):
     title: str = ""
     url: str = ""
     domain: str = ""
+    usedFor: str = ""
+
+
+class SearchResultCard(BaseModel):
+    title: str = ""
+    detail: str = ""
 
 
 class SearchResponse(BaseModel):
     ok: bool = True
     query: str = ""
     summary: str = ""
+    recommendation: str = ""
+    steps: list[str] = Field(default_factory=list)
+    cards: list[SearchResultCard] = Field(default_factory=list)
     sources: list[SearchSourceItem] = Field(default_factory=list)
     provider: str = ""
     message: str = ""
