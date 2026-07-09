@@ -36,6 +36,12 @@ function getPanelLabel(panel: ActivePanel): string {
 
 type CalendarView = 'today' | 'tomorrow';
 
+type CalendarDeleteCriteria = {
+  day?: CalendarView;
+  time?: string;
+  title?: string;
+};
+
 type ActivityInput = {
   orbState: OrbState;
   activePanel: ActivePanel;
@@ -216,6 +222,8 @@ function getBriefToolSpeech(command: string, fullText: string): string {
       return 'Event added.';
     case 'edit-last-event':
       return 'Event updated.';
+    case 'delete-calendar-event':
+      return 'Event deleted.';
     case 'read-calendar':
       // Calendar readouts should still be spoken aloud. Keep the chat/panel
       // and voice output aligned here instead of using the short tool reply.
@@ -295,6 +303,8 @@ function getResultToastForCommand(command: string, fullText: string): Omit<Resul
       return { kind: 'calendar', title: 'Event added', detail: compactToastDetail(trimmed) };
     case 'edit-last-event':
       return { kind: 'calendar', title: 'Event updated', detail: compactToastDetail(trimmed) };
+    case 'delete-calendar-event':
+      return { kind: 'calendar', title: 'Event deleted', detail: compactToastDetail(trimmed) };
     case 'delete-last-event':
       return { kind: 'calendar', title: 'Event deleted', detail: compactToastDetail(trimmed) };
     case 'refresh-calendar':
@@ -419,6 +429,7 @@ const DESTRUCTIVE_FRONTEND_COMMANDS = new Set([
   'delete last note',
   'clear notes',
   'delete last event',
+  'delete event',
   'edit last event',
   'clear calendar',
 ]);
@@ -429,6 +440,7 @@ const DESTRUCTIVE_LOCAL_COMMANDS = new Set([
   'delete-last-note',
   'clear-notes',
   'delete-last-event',
+  'delete-calendar-event',
   'edit-last-event',
   'clear-calendar',
 ]);
@@ -439,6 +451,7 @@ const LOCAL_COMMAND_TO_FRONTEND_COMMAND: Record<string, string> = {
   'delete-last-note': 'delete last note',
   'clear-notes': 'clear notes',
   'delete-last-event': 'delete last event',
+  'delete-calendar-event': 'delete event',
   'edit-last-event': 'edit last event',
   'clear-calendar': 'clear calendar',
 };
@@ -453,7 +466,8 @@ function normalizePendingDecisionText(text: string): string {
 }
 
 function isDestructiveInterpreterCommand(frontendCommand: string): boolean {
-  return DESTRUCTIVE_FRONTEND_COMMANDS.has(normalizePendingDecisionText(frontendCommand));
+  const normalizedCommand = normalizePendingDecisionText(frontendCommand);
+  return DESTRUCTIVE_FRONTEND_COMMANDS.has(normalizedCommand) || /^delete event/.test(normalizedCommand);
 }
 
 function isDestructiveLocalCommand(command: string): boolean {
@@ -504,6 +518,122 @@ function buildCalendarEditFrontendCommand(changes?: { day?: CalendarView; time?:
   }
 
   return 'edit last event';
+}
+
+
+function buildCalendarDeleteFrontendCommand(criteria?: CalendarDeleteCriteria): string {
+  const day = criteria?.day?.trim();
+  const time = criteria?.time?.trim();
+  const title = criteria?.title?.trim();
+
+  const parts = ['delete event'];
+
+  if (day) parts.push(day);
+  if (time) parts.push(`at ${time}`);
+  if (title) parts.push(`called ${title}`);
+
+  return parts.join(' ');
+}
+
+function describeCalendarDeletePayload(criteria?: CalendarDeleteCriteria): string {
+  const day = criteria?.day?.trim();
+  const time = criteria?.time?.trim();
+  const title = criteria?.title?.trim();
+
+  const parts: string[] = [];
+  if (day) parts.push(day);
+  if (time) parts.push(`at ${time}`);
+  if (title) parts.push(`called "${title}"`);
+
+  return parts.length > 0 ? parts.join(' ') : 'matching event';
+}
+
+function normalizeCalendarLookupText(value: string | undefined | null): string {
+  return (value ?? '')
+    .toLowerCase()
+    .replace(/[._-]+/g, ' ')
+    .replace(/[^a-z0-9:\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeCalendarLookupTime(value: string | undefined | null): string {
+  const cleaned = normalizeCalendarLookupText(value)
+    .replace(/\b([ap])\s*m\b/g, '$1m')
+    .replace(/\bnoon\b/g, '12:00pm')
+    .replace(/\bmidnight\b/g, '12:00am')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const match = cleaned.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i);
+  if (!match) return cleaned.replace(/\s+/g, '');
+
+  const hour = String(Number(match[1]));
+  const minute = match[2] ?? '00';
+  const suffix = match[3] ?? '';
+
+  return `${hour}:${minute}${suffix}`;
+}
+
+function calendarLookupTimeHasMeridiem(value: string): boolean {
+  return /(?:am|pm)$/i.test(value);
+}
+
+function calendarLookupTimeWithoutMeridiem(value: string): string {
+  return value.replace(/(?:am|pm)$/i, '');
+}
+
+function getCalendarEventTimeCandidates(event: CalendarEvent): string[] {
+  const candidates = [event.time];
+
+  if (event.start) {
+    const startDate = new Date(event.start);
+    if (!Number.isNaN(startDate.getTime())) {
+      candidates.push(
+        startDate.toLocaleTimeString([], {
+          hour: 'numeric',
+          minute: '2-digit',
+        })
+      );
+    }
+  }
+
+  return candidates.filter(Boolean);
+}
+
+function calendarEventMatchesDeleteCriteria(event: CalendarEvent, criteria?: CalendarDeleteCriteria): boolean {
+  if (!criteria) return true;
+
+  if (criteria.day && !isEventForCalendarView(event, criteria.day)) {
+    return false;
+  }
+
+  const targetTitle = normalizeCalendarLookupText(criteria.title);
+  if (targetTitle) {
+    const eventTitle = normalizeCalendarLookupText(event.title);
+    if (!eventTitle.includes(targetTitle) && !targetTitle.includes(eventTitle)) {
+      return false;
+    }
+  }
+
+  const targetTime = normalizeCalendarLookupTime(criteria.time);
+  if (targetTime) {
+    const targetWithoutMeridiem = calendarLookupTimeWithoutMeridiem(targetTime);
+    const targetHasMeridiem = calendarLookupTimeHasMeridiem(targetTime);
+    const eventTimes = getCalendarEventTimeCandidates(event).map(normalizeCalendarLookupTime);
+
+    const timeMatches = eventTimes.some((eventTime) => {
+      if (eventTime === targetTime) return true;
+      if (!targetHasMeridiem) {
+        return calendarLookupTimeWithoutMeridiem(eventTime) === targetWithoutMeridiem;
+      }
+      return false;
+    });
+
+    if (!timeMatches) return false;
+  }
+
+  return true;
 }
 
 function isConfirmingPendingCommand(text: string): boolean {
@@ -1222,6 +1352,39 @@ export default function App() {
     }
   }, [calendarView]);
 
+  const getCalendarEventsForDeleteCriteria = useCallback(async (criteria?: CalendarDeleteCriteria): Promise<CalendarEvent[]> => {
+    if (googleCalendarStatus?.connected) {
+      const targetView = criteria?.day ?? calendarView;
+      return refreshGoogleCalendar(targetView);
+    }
+
+    return calendarEvents;
+  }, [calendarEvents, calendarView, googleCalendarStatus?.connected, refreshGoogleCalendar]);
+
+  const findCalendarEventForDeletion = useCallback(async (criteria?: CalendarDeleteCriteria): Promise<CalendarEvent | null> => {
+    const sourceEvents = await getCalendarEventsForDeleteCriteria(criteria);
+    const matchingEvents = sourceEvents.filter((event) => calendarEventMatchesDeleteCriteria(event, criteria));
+
+    if (criteria?.day || criteria?.time || criteria?.title) {
+      return matchingEvents[0] ?? null;
+    }
+
+    return getNextCalendarEventForDeletion();
+  }, [getCalendarEventsForDeleteCriteria, getNextCalendarEventForDeletion]);
+
+  const deleteCalendarEventByCriteria = useCallback(async (criteria?: CalendarDeleteCriteria): Promise<CalendarEvent | null> => {
+    const targetEvent = await findCalendarEventForDeletion(criteria);
+
+    if (!targetEvent) return null;
+
+    if (targetEvent.source === 'google' || targetEvent.googleEventId) {
+      return deleteCalendarEvent(targetEvent.id);
+    }
+
+    setCalendarEvents((prev) => prev.filter((event) => event.id !== targetEvent.id));
+    return targetEvent;
+  }, [deleteCalendarEvent, findCalendarEventForDeletion]);
+
   useEffect(() => {
     loadGoogleCalendarStatus();
   }, [loadGoogleCalendarStatus]);
@@ -1512,19 +1675,28 @@ export default function App() {
             }
 
       if (commandRoute !== 'confirmed' && isDestructiveLocalCommand(commandMatch.command)) {
-        const frontendCommand = getFrontendCommandForLocalCommand(commandMatch.command);
+        const frontendCommand = commandMatch.command === 'delete-calendar-event'
+          ? buildCalendarDeleteFrontendCommand(commandMatch.calendarDelete)
+          : getFrontendCommandForLocalCommand(commandMatch.command);
+        const isCalendarDeleteCommand = commandMatch.command === 'delete-last-event' || commandMatch.command === 'delete-calendar-event';
         const targetDeleteEvent = commandMatch.command === 'delete-last-event'
           ? getNextCalendarEventForDeletion()
-          : null;
+          : commandMatch.command === 'delete-calendar-event'
+            ? await findCalendarEventForDeletion(commandMatch.calendarDelete)
+            : null;
+        const rawDeleteDescription = commandMatch.command === 'delete-calendar-event'
+          ? describeCalendarDeletePayload(commandMatch.calendarDelete)
+          : frontendCommand;
+        const deleteDescription = rawDeleteDescription.replace(/[.?!\s]+$/g, '').trim() || rawDeleteDescription;
         const confirmationPrompt = targetDeleteEvent
-          ? `I understood that as: ${frontendCommand}. This will delete ${targetDeleteEvent.source === 'google' ? 'Google Calendar' : 'local'} event: ${targetDeleteEvent.time || '—'}: ${targetDeleteEvent.title}. Say "confirm" to run it, or "cancel" to stop.`
-          : commandMatch.command === 'delete-last-event'
-            ? 'I did not find a calendar event to delete.'
+          ? `I understood that as: ${deleteDescription}. This will delete ${targetDeleteEvent.source === 'google' ? 'Google Calendar' : 'local'} event: ${targetDeleteEvent.time || '—'}: ${targetDeleteEvent.title}. Say "confirm" to run it, or "cancel" to stop.`
+          : isCalendarDeleteCommand
+            ? `I did not find a calendar event matching ${deleteDescription}.`
             : `I understood that as: ${frontendCommand}. This changes or deletes local data. Say "confirm" to run it, or "cancel" to stop.`;
 
-        if (commandMatch.command === 'delete-last-event' && !targetDeleteEvent) {
+        if (isCalendarDeleteCommand && !targetDeleteEvent) {
           setLastInputRoute('Delete command had no target');
-          setLastLocalCommand('No calendar event to delete');
+          setLastLocalCommand('No matching calendar event to delete');
 
           const assistantMsg: Message = {
             id: `a-${now}`,
@@ -1670,6 +1842,17 @@ export default function App() {
         setCalendarView(targetView);
         setActivePanel('calendar');
         confirmationContent = getCalendarReadout(requestedCalendarView, remoteEvents);
+        shouldSpeakConfirmation = voiceOutputEnabled;
+      } else if (commandMatch.command === 'delete-calendar-event') {
+        const targetView = commandMatch.calendarDelete?.day ?? calendarView;
+        const deletedEvent = await deleteCalendarEventByCriteria(commandMatch.calendarDelete);
+        setCalendarView(targetView);
+        setActivePanel('calendar');
+        confirmationContent = deletedEvent
+          ? `Deleted ${deletedEvent.source === 'google' ? 'Google Calendar' : 'local'} event: ${deletedEvent.time}: ${deletedEvent.title}.`
+          : googleCalendarStatus?.connected
+            ? `No Google Calendar event matched ${describeCalendarDeletePayload(commandMatch.calendarDelete)}.`
+            : `No local calendar event matched ${describeCalendarDeletePayload(commandMatch.calendarDelete)}.`;
         shouldSpeakConfirmation = voiceOutputEnabled;
       } else if (commandMatch.command === 'delete-last-event') {
         const deletedEvent = await deleteLastCalendarEvent();
@@ -2070,7 +2253,7 @@ export default function App() {
         }
       }, 2000);
     }
-  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, getNextCalendarEventForDeletion, getNextCalendarEventForChange, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, runWebSearch, clearSearchState, searchError, pushResultToast, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents]);
+  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, deleteCalendarEventByCriteria, findCalendarEventForDeletion, getNextCalendarEventForDeletion, getNextCalendarEventForChange, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, runWebSearch, clearSearchState, searchError, pushResultToast, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents]);
 
   const handleOrbClick = useCallback(() => {
     // If QMeet is actively generating/streaming, tapping the orb should cancel
