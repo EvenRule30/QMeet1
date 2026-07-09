@@ -1,6 +1,6 @@
 # QMeet1-1
 
-QMeet is a React/Vite prototype for a tablet-style AI home screen. The interface centers on an animated AI orb that can listen, answer, speak aloud, and control local tablet panels and Google Calendar through voice or typed commands.
+QMeet is a React/Vite prototype for a tablet-style AI home screen. The interface centers on an animated AI orb that can listen, answer, speak aloud, and control local tablet panels, web search, and Google Calendar through voice or typed commands.
 
 The current prototype targets a **1024×600 landscape Raspberry Pi/tablet display** and is currently tested primarily in **Google Chrome / Chromium**.
 
@@ -25,8 +25,10 @@ QMeet currently supports:
 - Status/system dashboard panel
 - Local Notes panel with `localStorage` persistence
 - Voice note creation, reading, deleting, and clearing
-- Local Search/Browser placeholder panel
-- Voice search query preparation without real web integration yet
+- Real web search panel powered through the FastAPI backend
+- Voice/text search commands with structured result cards
+- Search results with summary, recommendation, action steps, useful details, and readable source cards
+- Short chat acknowledgement for search commands so full results stay in the Search panel
 - Calendar panel with Google Calendar read/create/delete/edit support
 - Calendar refresh/sync command and panel refresh button
 - Local calendar fallback with `localStorage` event persistence
@@ -59,7 +61,7 @@ Examples of local-only actions:
 - Opening panels
 - Saving notes
 - Reading saved notes
-- Preparing a search query
+- Running web search commands through the backend search endpoint
 - Adding calendar events locally or to Google Calendar when connected
 - Reading local or Google Calendar events
 - Muting/unmuting voice output
@@ -164,7 +166,25 @@ clear search
 close search
 ```
 
-Search is currently a local placeholder. It opens the Search panel and fills/prepares the query, but does not perform real web browsing yet.
+Search commands call the backend `/api/search` endpoint. The backend uses the configured provider to perform web search and returns structured results for the Search panel.
+
+The Search panel shows:
+
+```text
+Summary
+Recommended Setup / Recommendation
+Action Steps
+Useful Details
+Sources
+```
+
+For search commands, the chat bubble stays short, for example:
+
+```text
+Search complete. I put the full result in the Search panel.
+```
+
+This prevents long web answers from becoming unreadable text walls in the chat panel.
 
 ### Calendar Commands
 
@@ -309,9 +329,9 @@ QMeet1-1/
 ├── backend/
 │   ├── app/
 │   │   ├── main.py          # FastAPI app and routes
-│   │   ├── agent.py            # OpenAI/mock provider logic, streaming, and command interpreter
-│   │   ├── calendar_service.py # Google Calendar OAuth/read/create/delete helpers
-│   │   └── schemas.py          # Request/response schemas, including command and calendar schemas
+│   │   ├── agent.py            # OpenAI/mock provider logic, streaming, command interpreter, and web search
+│   │   ├── calendar_service.py # Google Calendar OAuth/read/create/delete/edit helpers
+│   │   └── schemas.py          # Request/response schemas, including command, search, and calendar schemas
 │   ├── requirements.txt
 │   ├── .env.example
 │   └── .env                 # Must create locally using .env.example
@@ -372,7 +392,7 @@ Browser features:
 - Speech input uses the browser Web Speech API. Chrome/Chromium is the main target.
 - Speech output uses browser `speechSynthesis`.
 - Browser microphone permission must be enabled for voice input.
-- Local Notes, Calendar, Search state, and voice settings use browser `localStorage`.
+- Local Notes, Calendar fallback data, and voice settings use browser `localStorage`.
 
 ## Environment Setup
 
@@ -702,6 +722,34 @@ Invoke-RestMethod `
   -Method DELETE
 ```
 
+## Web Search Backend Test
+
+After the backend is running, test the search endpoint directly:
+
+```powershell
+Invoke-RestMethod `
+  -Uri "http://localhost:8000/api/search" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body '{"query":"raspberry pi chromium kiosk mode"}'
+```
+
+Expected response shape:
+
+```text
+ok             : True
+query          : raspberry pi chromium kiosk mode
+summary        : ...
+recommendation : ...
+actionSteps    : {...}
+detailCards    : {...}
+sources        : {...}
+provider       : openai
+message        : Search complete.
+```
+
+Search requires the backend provider to support web search. In mock mode, QMeet returns a mock search response.
+
 ## Build
 
 ```powershell
@@ -782,6 +830,26 @@ User says cancel / no / never mind
 ↓
 Pending command is discarded
 ```
+
+### Web search command
+
+```text
+User asks QMeet to search for something
+↓
+Exact command parser maps the phrase to a search command
+↓
+Frontend calls FastAPI /api/search
+↓
+Backend performs web search through the configured provider
+↓
+Backend returns structured search data
+↓
+Search panel renders Summary, Recommendation, Action Steps, Useful Details, and Sources
+↓
+Chat bubble only shows a short completion message
+```
+
+Search output is intentionally kept out of the main chat stream so long web results stay readable on the 1024×600 tablet UI.
 
 ### Google Calendar command
 
@@ -895,6 +963,51 @@ VITE_QMEET_API_URL=http://localhost:8000
 ```
 
 For LAN testing, use the laptop IP instead of `localhost`.
+
+### Web search works but results look shallow
+
+Try a more specific query. For example:
+
+```text
+search for raspberry pi chromium kiosk mode systemd autostart 1024x600
+```
+
+The backend prompt asks for action-oriented output, but very broad queries may still produce generic summaries.
+
+### Web search fails
+
+Check the backend search endpoint directly:
+
+```powershell
+Invoke-RestMethod `
+  -Uri "http://localhost:8000/api/search" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body '{"query":"OpenAI web search Responses API"}'
+```
+
+If this fails, verify:
+
+```text
+backend/.env has OPENAI_API_KEY
+backend/.env has LLM_PROVIDER=openai
+backend is running on port 8000
+frontend .env.local points to the backend URL
+```
+
+### Search panel shows old placeholder behavior
+
+Make sure these files were updated together:
+
+```text
+backend/app/agent.py
+backend/app/schemas.py
+src/app/types.ts
+src/app/App.tsx
+src/app/components/SearchPanel.tsx
+```
+
+Then restart both backend and frontend.
 
 ### Google Calendar is not connected
 
@@ -1150,13 +1263,13 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 - Frontend command execution should remain allowlisted and deterministic.
 - Destructive local commands should require confirmation.
 - Local command responses should not call normal OpenAI chat.
-- Notes, Calendar, Search, Settings, Status, and Menu should remain usable without normal OpenAI chat.
+- Notes, Calendar, Settings, Status, and Menu should remain usable without normal OpenAI chat. Search should use the dedicated backend search endpoint instead of normal chat.
 - Google Calendar credentials and tokens must stay backend-only and ignored by git.
 - Calendar create/delete actions should keep confirmation or explicit user intent.
 - `clear calendar` should remain local-only unless a separate, heavily confirmed Google bulk-delete feature is intentionally added.
 - The UI is currently optimized for the 1024×600 tablet target.
 - Pi kiosk/autolaunch work is intentionally delayed until the prototype is more complete.
-- Real web search is not implemented yet.
+- Search results should stay structured and readable on the 1024×600 tablet target.
 
 
 ### Calendar refresh does not show new events
@@ -1224,6 +1337,20 @@ Completed prototype phases:
   - edit last event title/date/time together
   - confirmation before changing real Google Calendar events
   - timezone fix for rescheduling when using local timezone config
+- Phase 7A: Real web search integration
+  - backend `/api/search` endpoint
+  - OpenAI web search through the backend
+  - voice/text search command execution
+  - Search panel result state
+- Phase 7B/7D: Search presentation and usefulness polish
+  - structured search response data
+  - summary, recommendation, action steps, useful details, and sources
+  - short chat acknowledgement instead of full search wall
+- Phase 7E/7F: Search readability and formatting polish
+  - cleaner action steps
+  - cleaned source cards
+  - markdown/artifact cleanup
+  - better readable result layout on the tablet screen
 - Calendar parser fixes:
   - title-before-time event phrasing
   - speech artifacts such as `to at 5`
@@ -1232,8 +1359,10 @@ Completed prototype phases:
 
 Useful future work:
 
+- Add richer source ranking / domain grouping for Search
+- Add search result history or saved search cards
+- Add follow-up search commands such as “open the first source” later
 - Add command interpreter test coverage / command audit logs
-- Add real web/browser integration for Search
 - Add Google Calendar edit/delete-by-title/date matching
 - Add safer event disambiguation when multiple matching events exist
 - Add richer date parsing beyond today/tomorrow
