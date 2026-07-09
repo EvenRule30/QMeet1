@@ -2126,3 +2126,638 @@
   }
 }
 
+/* =====================================================
+   Phase 8D — 1024×600 tablet / kiosk layout polish
+   ===================================================== */
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+@media (max-width: 1100px), (max-height: 650px) {
+  .status-bar {
+    height: 36px;
+    min-height: 36px;
+    padding: 0 14px;
+  }
+
+  .status-left {
+    gap: 9px;
+    min-width: 0;
+  }
+
+  .status-right {
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .status-logo {
+    font-size: 14px;
+    letter-spacing: 0.14em;
+  }
+
+  .status-divider,
+  .status-activity-divider {
+    opacity: 0.45;
+  }
+
+  .status-state,
+  .status-activity,
+  .conn-label {
+    font-size: 10px;
+  }
+
+  .status-activity {
+    max-width: 145px;
+  }
+
+  .conn-label {
+    display: block;
+    max-width: 170px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .status-time {
+    font-size: 12px;
+  }
+
+  .agent-body,
+  .chat-area,
+  .chat-panel,
+  .chat-messages {
+    min-height: 0;
+  }
+
+  .orb-area.orb-area-active {
+    width: 36%;
+  }
+
+  .chat-area-visible {
+    width: 64%;
+  }
+
+  .orb-idle-pos {
+    width: 198px;
+    height: 198px;
+    --orbit-r-1: 122px;
+    --orbit-r-2: 110px;
+  }
+
+  .orb-active {
+    width: 142px;
+    height: 142px;
+    --orbit-r-1: 88px;
+    --orbit-r-2: 78px;
+  }
+
+  .orb-activity {
+    bottom: -64px;
+    width: min(236px, 160%);
+    padding: 7px 11px;
+    border-radius: 14px;
+  }
+
+  .orb-active .orb-activity {
+    bottom: -60px;
+    width: min(206px, 176%);
+  }
+
+  .orb-activity-label {
+    font-size: 10px;
+    letter-spacing: 0.11em;
+  }
+
+  .orb-activity-detail {
+    font-size: 11px;
+  }
+
+  .idle-hint {
+    bottom: 18px;
+  }
+
+  .idle-hint span {
+    font-size: 13px;
+  }
+
+  .listening-preview {
+    bottom: 18px;
+    padding: 9px 12px;
+    max-width: 86%;
+  }
+
+  .listening-preview-label {
+    font-size: 10px;
+    margin-bottom: 4px;
+  }
+
+  .listening-preview-text {
+    font-size: 12px;
+  }
+
+  .chat-panel {
+    padding: 10px 10px 0 10px;
+    gap: 8px;
+  }
+
+  .chat-activity-card {
+    padding: 8px 10px;
+    border-radius: 12px;
+  }
+
+  .chat-activity-label {
+    font-size: 10px;
+  }
+
+  .chat-activity-detail {
+    font-size: 11px;
+  }
+
+  .chat-messages {
+    gap: 8px;
+    padding-right: 2px;
+  }
+
+  .message {
+    gap: 8px;
+  }
+
+  .message-avatar {
+    width: 26px;
+    height: 26px;
+    font-size: 10px;
+  }
+
+  .message-bubble,
+  .message-tool .message-bubble,
+  .message-notice .message-bubble,
+  .message-error .message-bubble {
+    max-width: 84%;
+    padding: 8px 11px;
+    border-radius: 11px;
+  }
+
+  .message-bubble p,
+  .message-tool .message-bubble p,
+  .message-notice .message-bubble p,
+  .message-error .message-bubble p {
+    font-size: 13px;
+    line-height: 1.42;
+  }
+
+  .message-tool-label,
+  .thinking-copy {
+    font-size: 9px;
+    margin-bottom: 4px;
+  }
+
+  .message-time {
+    font-size: 9px;
+    margin-top: 4px;
+  }
+
+  .thinking-bubble {
+    padding: 10px 14px !important;
+  }
+
+  .thinking-dots {
+    height: 16px;
+  }
+
+  .thinking-dots span {
+    width: 6px;
+    height: 6px;
+  }
+
+  .prompt-bar {
+    height: 50px;
+    min-height: 50px;
+    margin-top: 5px;
+    padding: 0 10px 7px 10px;
+    gap: 8px;
+  }
+
+  .prompt-input {
+    height: 39px;
+    padding: 0 15px;
+    border-radius: 20px;
+    font-size: 13px;
+  }
+
+  .send-btn {
+    width: 39px;
+    height: 39px;
+  }
+
+  .panel-overlay {
+    inset: 36px 0 0 0;
+    backdrop-filter: blur(2px);
+  }
+
+  .panel-content {
+    top: 10px;
+    right: 12px;
+    bottom: 12px;
+    left: 38%;
+    padding: 16px;
+    border-radius: 16px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .panel-header {
+    flex: 0 0 auto;
+    margin-bottom: 10px;
+    font-size: 20px;
+    line-height: 1.1;
+  }
+
+  .panel-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    gap: 10px;
+    padding-right: 3px;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+
+  .panel-body::-webkit-scrollbar,
+  .notes-list-section::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  .panel-section {
+    padding: 9px 10px 9px 12px;
+    border-radius: 8px;
+  }
+
+  .panel-section-title {
+    margin-bottom: 5px;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+  }
+
+  .panel-section-text {
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  .panel-action-row {
+    gap: 6px;
+    margin-top: 6px;
+  }
+
+  .panel-action-btn {
+    padding: 6px 10px;
+    border-radius: 12px;
+    font-size: 10px;
+    letter-spacing: 0.07em;
+  }
+
+  .close-panel-btn {
+    position: sticky;
+    bottom: 0;
+    z-index: 20;
+    flex: 0 0 auto;
+    align-self: flex-end;
+    margin-top: 8px;
+    padding: 7px 14px;
+    border-radius: 14px;
+    background: rgba(7, 9, 26, 0.96);
+    box-shadow:
+      0 -10px 24px rgba(7, 9, 26, 0.84),
+      0 0 14px rgba(0, 180, 255, 0.12);
+  }
+
+  .panel-content-launcher {
+    padding-bottom: 14px;
+  }
+
+  .launcher-intro {
+    margin-top: -3px;
+  }
+
+  .launcher-grid {
+    gap: 8px;
+  }
+
+  .launcher-card {
+    min-height: 82px;
+    padding: 10px;
+    gap: 5px;
+    border-radius: 12px;
+  }
+
+  .launcher-title {
+    font-size: 13px;
+  }
+
+  .launcher-description {
+    font-size: 11px;
+    line-height: 1.3;
+  }
+
+  .launcher-command {
+    font-size: 9px;
+  }
+
+  .launcher-help-section {
+    display: none;
+  }
+
+  .settings-control-row {
+    padding: 5px 0;
+  }
+
+  .settings-control-label,
+  .settings-control-value {
+    font-size: 12px;
+  }
+
+  .status-panel-body {
+    gap: 10px;
+  }
+
+  .status-hero {
+    padding: 10px 12px;
+    border-radius: 12px;
+  }
+
+  .status-kicker {
+    font-size: 10px;
+    margin-bottom: 3px;
+  }
+
+  .status-title {
+    font-size: 13px;
+  }
+
+  .status-health-chip {
+    padding: 6px 10px;
+    font-size: 10px;
+  }
+
+  .status-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .status-card {
+    min-height: 66px;
+    padding: 9px;
+    border-radius: 10px;
+  }
+
+  .status-card-title {
+    font-size: 9px;
+    margin-bottom: 5px;
+  }
+
+  .status-card-value {
+    font-size: 14px;
+    margin-bottom: 3px;
+  }
+
+  .status-card-meta {
+    font-size: 10px;
+  }
+
+  .status-detail-row {
+    gap: 8px;
+    font-size: 11px;
+    padding-bottom: 5px;
+  }
+
+  .notes-panel,
+  .calendar-panel,
+  .search-panel {
+    max-height: none;
+  }
+
+  .notes-panel .notes-panel-body {
+    overflow: hidden;
+  }
+
+  .notes-panel .panel-header {
+    margin-bottom: 8px;
+    font-size: 20px;
+  }
+
+  .notes-panel .panel-section:first-child {
+    flex: 0 0 auto;
+  }
+
+  .notes-panel .note-input-section {
+    gap: 6px;
+  }
+
+  .notes-panel .note-input {
+    height: 44px;
+    padding: 8px 10px;
+    font-size: 12px;
+    border-radius: 10px;
+  }
+
+  .notes-panel .notes-list-section {
+    flex: 1 1 auto;
+    min-height: 84px;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .notes-panel .notes-panel-body > .panel-section:last-of-type {
+    display: none;
+  }
+
+  .notes-panel .note-item {
+    padding: 8px 9px;
+  }
+
+  .notes-panel .note-content {
+    margin-bottom: 6px;
+    font-size: 12px;
+    line-height: 1.35;
+  }
+
+  .notes-panel .note-footer {
+    font-size: 10px;
+  }
+
+  .notes-panel .note-delete-btn {
+    padding: 3px 8px;
+    font-size: 9px;
+  }
+
+  .calendar-panel-body,
+  .search-panel-body {
+    gap: 10px;
+  }
+
+  .calendar-hero,
+  .search-hero {
+    padding: 10px 12px;
+    border-radius: 12px;
+    gap: 10px;
+  }
+
+  .calendar-kicker,
+  .search-kicker {
+    margin-bottom: 4px;
+    font-size: 10px;
+  }
+
+  .calendar-date {
+    font-size: 14px;
+    line-height: 1.25;
+  }
+
+  .calendar-date-chip,
+  .search-chip {
+    padding: 7px 9px;
+    border-radius: 12px;
+    font-size: 10px;
+  }
+
+  .calendar-agenda {
+    gap: 7px;
+  }
+
+  .calendar-agenda-item,
+  .calendar-agenda-event {
+    grid-template-columns: 54px 1fr;
+    gap: 8px;
+    padding: 8px;
+    border-radius: 9px;
+  }
+
+  .calendar-agenda-time {
+    font-size: 10px;
+  }
+
+  .calendar-agenda-text {
+    font-size: 12px;
+    line-height: 1.34;
+  }
+
+  .calendar-event-title {
+    margin-bottom: 3px;
+    font-size: 12px;
+  }
+
+  .calendar-event-meta {
+    margin-bottom: 6px;
+    font-size: 10px;
+  }
+
+  .calendar-event-delete-btn {
+    padding: 3px 8px;
+    font-size: 9px;
+  }
+
+  .search-title {
+    font-size: 14px;
+    line-height: 1.25;
+  }
+
+  .search-input-row {
+    gap: 6px;
+  }
+
+  .search-input {
+    min-width: 0;
+    height: 38px;
+    padding: 0 11px;
+    border-radius: 12px;
+    font-size: 12px;
+  }
+
+  .search-placeholder-result,
+  .search-result-card {
+    padding: 10px;
+    border-radius: 10px;
+  }
+
+  .search-placeholder-title {
+    font-size: 12px;
+    margin-bottom: 4px;
+  }
+
+  .search-placeholder-text {
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  .search-result-kicker {
+    font-size: 10px;
+  }
+
+  .search-result-query {
+    font-size: 13px;
+    line-height: 1.35;
+  }
+
+  .search-result-card .panel-section {
+    margin-top: 8px !important;
+  }
+
+  .result-toast-stack {
+    left: 12px;
+    bottom: 10px;
+    width: 286px;
+    max-width: 34%;
+    gap: 7px;
+  }
+
+  .result-toast {
+    min-height: 48px;
+    grid-template-columns: 30px 1fr 22px;
+    padding: 7px 8px;
+    border-radius: 13px;
+  }
+
+  .result-toast-icon {
+    width: 29px;
+    height: 29px;
+    border-radius: 10px;
+    font-size: 9px;
+  }
+
+  .result-toast-title {
+    font-size: 10px;
+    margin-bottom: 1px;
+  }
+
+  .result-toast-detail {
+    font-size: 10px;
+    line-height: 1.25;
+  }
+}
+
+@media (max-width: 900px) {
+  .conn-label {
+    max-width: 130px;
+  }
+
+  .status-activity {
+    max-width: 110px;
+  }
+
+  .panel-content {
+    left: 36%;
+  }
+}
+
