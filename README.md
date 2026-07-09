@@ -28,11 +28,13 @@ QMeet currently supports:
 - Local Search/Browser placeholder panel
 - Voice search query preparation without real web integration yet
 - Calendar panel with Google Calendar read/create/delete support
+- Calendar refresh/sync command and panel refresh button
 - Local calendar fallback with `localStorage` event persistence
 - Voice calendar event creation, reading, deleting, and clearing
 - Google Calendar OAuth through the FastAPI backend
 - Google Calendar event creation with confirmation
 - Google Calendar event deletion with confirmation for voice/text commands
+- Safer delete confirmation that names the exact event before deleting
 - Persistent voice output settings across reloads
 - Persistent speech speed across reloads
 - Voice output settings, including mute/unmute and speech speed control
@@ -41,6 +43,7 @@ QMeet currently supports:
 - QMeet name recognition normalization for common speech parser mistakes such as “cue meet,” “queue meet,” or “cute meet”
 - Cancel/stop behavior for speech, listening, and active streamed responses
 - Listening preview clears when QMeet moves from voice capture into command processing
+- Clear Google/local calendar source labels in the Calendar panel
 - Conversation reset and backend memory reset
 - Laptop-to-Raspberry-Pi LAN testing
 
@@ -178,6 +181,8 @@ show today's events
 show tomorrow's events
 today's agenda
 tomorrow's agenda
+refresh calendar
+sync calendar
 delete last event
 remove last event
 clear calendar
@@ -191,8 +196,10 @@ Calendar behavior depends on whether Google Calendar is connected:
 ```text
 Google Calendar connected
 ├─ read events from Google Calendar
+├─ refresh/sync events on demand
 ├─ create events in Google Calendar after confirmation
-└─ delete selected / last Google events after confirmation for voice/text commands
+├─ delete selected / last Google events after confirmation for voice/text commands
+└─ show clear Google/local source labels in the Calendar panel
 
 Google Calendar not connected
 └─ fall back to local browser calendar events
@@ -203,6 +210,8 @@ Local fallback calendar events are stored in browser `localStorage` under:
 ```text
 qmeet-calendar-events
 ```
+
+`refresh calendar` / `sync calendar` reloads Google Calendar events from the backend without needing to close and reopen the panel.
 
 `clear calendar` clears only local fallback events and local context. It does not mass-delete Google Calendar events. Google deletion is intentionally event-specific for safety.
 
@@ -767,6 +776,8 @@ Backend uses saved Google OAuth token
 Google Calendar read/create/delete runs
 ↓
 QMeet refreshes calendar events and reports the real backend result
+
+For refresh/sync commands, QMeet reloads Google Calendar events without creating or deleting anything.
 ```
 
 ### Voice input
@@ -1108,6 +1119,28 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 - Pi kiosk/autolaunch work is intentionally delayed until the prototype is more complete.
 - Real web search is not implemented yet.
 
+
+### Calendar refresh does not show new events
+
+Use one of these commands:
+
+```text
+refresh calendar
+sync calendar
+```
+
+Or open the Calendar panel and use the refresh button. This reloads Google Calendar events from the backend. If refresh still shows stale data, verify the backend is connected:
+
+```powershell
+Invoke-RestMethod http://localhost:8000/api/calendar/status
+```
+
+Expected:
+
+```text
+connected : True
+```
+
 ## Current Status
 
 Completed prototype phases:
@@ -1140,6 +1173,12 @@ Completed prototype phases:
 - Phase 6A: Google Calendar read integration
 - Phase 6B: Google Calendar event creation
 - Phase 6C: Google Calendar event deletion
+- Phase 6D: Calendar polish
+  - refresh/sync calendar command
+  - safer delete confirmation with event title/time
+  - panel delete browser confirmation
+  - clearer Google/local source labels
+  - cleaner event sorting
 - Calendar parser fixes:
   - title-before-time event phrasing
   - speech artifacts such as `to at 5`
