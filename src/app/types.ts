@@ -1,11 +1,32 @@
 export type OrbState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'error';
 export type ActivePanel = 'none' | 'menu' | 'settings' | 'status' | 'notes' | 'calendar' | 'search';
 
+export type AssistantActivityKind =
+  | 'idle'
+  | 'listening'
+  | 'thinking'
+  | 'speaking'
+  | 'search'
+  | 'calendar'
+  | 'notes'
+  | 'settings'
+  | 'status'
+  | 'navigation'
+  | 'confirmation'
+  | 'error';
+
+export interface AssistantActivity {
+  kind: AssistantActivityKind;
+  label: string;
+  detail: string;
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
+  variant?: 'normal' | 'tool' | 'notice' | 'error';
 }
 
 export interface BackendStatus {

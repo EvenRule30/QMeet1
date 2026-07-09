@@ -6,7 +6,7 @@ import { PromptBar } from './components/PromptBar';
 import { NotesPanel } from './components/NotesPanel';
 import { CalendarPanel } from './components/CalendarPanel';
 import { SearchPanel } from './components/SearchPanel';
-import { Message, OrbState, BackendStatus, ActivePanel, Note, CalendarEvent, CalendarBackendStatus, CalendarBackendView, SearchResponse } from './types';
+import { Message, OrbState, BackendStatus, ActivePanel, Note, CalendarEvent, CalendarBackendStatus, CalendarBackendView, SearchResponse, AssistantActivity } from './types';
 import { streamChatMessage, getBackendStatus, resetConversation, interpretCommandIntent, getCalendarStatus, getCalendarEvents, createCalendarEvent, deleteGoogleCalendarEvent, updateGoogleCalendarEvent, startCalendarAuth, resetCalendarAuth, searchWeb } from "./api";
 import { getSpeechRecognition, isSpeechRecognitionSupported } from './speechRecognition';
 import { speakText, stopSpeaking } from './speechSynthesis';
@@ -35,6 +35,131 @@ function getPanelLabel(panel: ActivePanel): string {
 
 
 type CalendarView = 'today' | 'tomorrow';
+
+type ActivityInput = {
+  orbState: OrbState;
+  activePanel: ActivePanel;
+  chatActive: boolean;
+  searchLoading: boolean;
+  googleCalendarLoading: boolean;
+  pendingCommand: PendingInterpreterCommand | null;
+  searchQuery: string;
+  hasSearchResult: boolean;
+  notesCount: number;
+  calendarCount: number;
+};
+
+function getAssistantActivity(input: ActivityInput): AssistantActivity {
+  if (input.pendingCommand) {
+    return {
+      kind: 'confirmation',
+      label: 'Confirm action',
+      detail: 'Say confirm or cancel',
+    };
+  }
+
+  if (input.searchLoading) {
+    return {
+      kind: 'search',
+      label: 'Searching web',
+      detail: input.searchQuery ? input.searchQuery : 'Gathering results',
+    };
+  }
+
+  if (input.googleCalendarLoading) {
+    return {
+      kind: 'calendar',
+      label: 'Calendar sync',
+      detail: 'Reading Google Calendar',
+    };
+  }
+
+  if (input.orbState === 'listening') {
+    return {
+      kind: 'listening',
+      label: 'Listening',
+      detail: 'Speak naturally',
+    };
+  }
+
+  if (input.orbState === 'thinking') {
+    return {
+      kind: 'thinking',
+      label: 'Working',
+      detail: 'Routing request',
+    };
+  }
+
+  if (input.orbState === 'speaking') {
+    return {
+      kind: 'speaking',
+      label: 'Responding',
+      detail: 'Tap orb to stop',
+    };
+  }
+
+  if (input.orbState === 'error') {
+    return {
+      kind: 'error',
+      label: 'Needs attention',
+      detail: 'Check the message panel',
+    };
+  }
+
+  if (input.activePanel === 'search') {
+    return {
+      kind: 'search',
+      label: input.hasSearchResult ? 'Search results' : 'Search ready',
+      detail: input.searchQuery || 'Ask me to search the web',
+    };
+  }
+
+  if (input.activePanel === 'calendar') {
+    return {
+      kind: 'calendar',
+      label: 'Calendar open',
+      detail: `${input.calendarCount} local event${input.calendarCount === 1 ? '' : 's'}`,
+    };
+  }
+
+  if (input.activePanel === 'notes') {
+    return {
+      kind: 'notes',
+      label: 'Notes open',
+      detail: `${input.notesCount} saved note${input.notesCount === 1 ? '' : 's'}`,
+    };
+  }
+
+  if (input.activePanel === 'settings') {
+    return {
+      kind: 'settings',
+      label: 'Settings',
+      detail: 'Voice and display controls',
+    };
+  }
+
+  if (input.activePanel === 'status') {
+    return {
+      kind: 'status',
+      label: 'Status',
+      detail: 'System dashboard open',
+    };
+  }
+
+  if (input.activePanel === 'menu') {
+    return {
+      kind: 'navigation',
+      label: 'Menu',
+      detail: 'Choose a QMeet tool',
+    };
+  }
+
+  return {
+    kind: 'idle',
+    label: input.chatActive ? 'Ready' : 'Tap to speak',
+    detail: input.chatActive ? 'Ask a follow-up' : 'Voice-first mode',
+  };
+}
 
 function getLocalDateKey(offsetDays = 0): string {
   const date = new Date();
@@ -1432,6 +1557,7 @@ export default function App() {
       const confirmationMsg: Message = {
         id: `a-${now}`,
         role: 'assistant',
+        variant: 'tool',
         content: confirmationContent,
         timestamp: new Date(),
       };
@@ -1727,6 +1853,7 @@ export default function App() {
         {
           id: `a-${Date.now()}`,
           role: 'assistant',
+          variant: 'tool',
           content: 'Cancelled.',
           timestamp: new Date(),
         },
@@ -1973,10 +2100,22 @@ export default function App() {
     const pendingInterpreterLabel = pendingInterpreterCommand
       ? pendingInterpreterCommand.frontendCommand
       : 'None';
+    const assistantActivity = getAssistantActivity({
+      orbState,
+      activePanel,
+      chatActive,
+      searchLoading,
+      googleCalendarLoading,
+      pendingCommand: pendingInterpreterCommand,
+      searchQuery: trimmedSearchQuery,
+      hasSearchResult: Boolean(searchResult),
+      notesCount: statusNotesCount,
+      calendarCount: calendarEvents.length,
+    });
 
   return (
     <div className="agent-screen">
-      <TopStatusBar orbState={orbState} chatActive={chatActive} onEnd={handleEndChat} backendStatus={backendStatus} />
+      <TopStatusBar orbState={orbState} chatActive={chatActive} onEnd={handleEndChat} backendStatus={backendStatus} activity={assistantActivity} />
 
       <div className="agent-body">
         {/* Orb area: full width when idle, 38% when chat active */}
@@ -1988,7 +2127,7 @@ export default function App() {
           tabIndex={0}
           aria-label="QMeet orb — tap to activate"
         >
-          <Orb state={orbState} active={chatActive} />
+          <Orb state={orbState} active={chatActive} activity={assistantActivity} />
 
           {!chatActive && (
             <div className="idle-hint">
@@ -2011,6 +2150,7 @@ export default function App() {
           <ChatPanel
             messages={messages}
             orbState={showThinkingBubble ? orbState : orbState === 'thinking' ? 'idle' : orbState}
+            activity={assistantActivity}
           />
           <PromptBar onSend={handleSend} disabled={false} />
         </div>

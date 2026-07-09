@@ -1,14 +1,15 @@
 import { useState, useEffect } from 'react';
-import { OrbState, BackendStatus } from '../types';
+import { AssistantActivity, OrbState, BackendStatus } from '../types';
 
 interface TopStatusBarProps {
   orbState: OrbState;
   chatActive: boolean;
   onEnd: () => void;
   backendStatus: BackendStatus | null;
+  activity?: AssistantActivity | null;
 }
 
-export function TopStatusBar({ orbState, chatActive, onEnd, backendStatus }: TopStatusBarProps) {
+export function TopStatusBar({ orbState, chatActive, onEnd, backendStatus, activity }: TopStatusBarProps) {
   const [time, setTime] = useState(() => new Date());
 
   useEffect(() => {
@@ -37,6 +38,14 @@ export function TopStatusBar({ orbState, chatActive, onEnd, backendStatus }: Top
         <span className={`status-state state-${orbState}`}>
           {stateLabel[orbState]}
         </span>
+        {activity && (
+          <>
+            <span className="status-divider status-activity-divider">|</span>
+            <span className={`status-activity status-activity-${activity.kind}`}>
+              {activity.label}
+            </span>
+          </>
+        )}
       </div>
       <div className="status-right">
         <span className="status-time">
