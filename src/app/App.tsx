@@ -243,6 +243,115 @@ function getBriefToolSpeech(command: string, fullText: string): string {
   }
 }
 
+
+
+type ResultToastKind = 'success' | 'info' | 'warning' | 'error' | 'search' | 'calendar' | 'notes';
+
+type ResultToast = {
+  id: string;
+  kind: ResultToastKind;
+  title: string;
+  detail: string;
+  createdAt: number;
+};
+
+function compactToastDetail(text: string, maxLength = 88): string {
+  const cleaned = text
+    .replace(/\s+/g, ' ')
+    .replace(/^I understood that as:\s*/i, '')
+    .trim();
+
+  if (cleaned.length <= maxLength) return cleaned;
+  return `${cleaned.slice(0, maxLength - 1).trim()}…`;
+}
+
+function getResultToastForCommand(command: string, fullText: string): Omit<ResultToast, 'id' | 'createdAt'> | null {
+  const trimmed = fullText.trim();
+
+  if (!trimmed) return null;
+
+  if (hasFailureLanguage(trimmed)) {
+    return {
+      kind: 'error',
+      title: 'Needs attention',
+      detail: compactToastDetail(trimmed, 96),
+    };
+  }
+
+  switch (command) {
+    case 'save-note':
+      return { kind: 'notes', title: 'Saved note', detail: 'Added to Notes.' };
+    case 'delete-last-note':
+      return { kind: 'notes', title: 'Deleted note', detail: 'Removed the latest note.' };
+    case 'clear-notes':
+      return { kind: 'notes', title: 'Notes cleared', detail: 'All local notes were removed.' };
+    case 'read-notes':
+      return { kind: 'notes', title: 'Notes open', detail: 'Readout is available in the chat.' };
+    case 'open-notes':
+    case 'new-note':
+      return { kind: 'notes', title: 'Notes open', detail: 'Ready for local notes.' };
+
+    case 'add-calendar-event':
+      return { kind: 'calendar', title: 'Event added', detail: compactToastDetail(trimmed) };
+    case 'edit-last-event':
+      return { kind: 'calendar', title: 'Event updated', detail: compactToastDetail(trimmed) };
+    case 'delete-last-event':
+      return { kind: 'calendar', title: 'Event deleted', detail: compactToastDetail(trimmed) };
+    case 'refresh-calendar':
+      return { kind: 'calendar', title: 'Calendar refreshed', detail: compactToastDetail(trimmed) };
+    case 'read-calendar':
+      return { kind: 'calendar', title: 'Calendar readout', detail: 'Speaking calendar events now.' };
+    case 'clear-calendar':
+      return { kind: 'calendar', title: 'Local calendar cleared', detail: 'Local-only events were removed.' };
+    case 'open-calendar':
+    case 'show-today':
+    case 'show-tomorrow':
+      return { kind: 'calendar', title: 'Calendar open', detail: 'Calendar panel is visible.' };
+
+    case 'run-search':
+      return trimmed === 'Opening search.'
+        ? { kind: 'search', title: 'Search open', detail: 'Ready for a web query.' }
+        : { kind: 'search', title: 'Search complete', detail: 'Full result is open in Search.' };
+    case 'clear-search':
+      return { kind: 'search', title: 'Search cleared', detail: 'Previous result removed.' };
+    case 'open-search':
+      return { kind: 'search', title: 'Search open', detail: 'Ready for a web query.' };
+
+    case 'open-menu':
+      return { kind: 'info', title: 'Menu open', detail: 'Choose a QMeet tool.' };
+    case 'open-settings':
+      return { kind: 'info', title: 'Settings open', detail: 'Voice and display controls.' };
+    case 'show-status':
+      return { kind: 'info', title: 'Status open', detail: 'System dashboard visible.' };
+    case 'go-home':
+      return { kind: 'info', title: 'Home', detail: 'Returned to the orb.' };
+    case 'close-menu':
+    case 'close-settings':
+    case 'close-status':
+    case 'hide-status':
+    case 'close-notes':
+    case 'close-calendar':
+    case 'close-search':
+    case 'close-generic':
+      return { kind: 'info', title: 'Closed', detail: 'Panel dismissed.' };
+
+    case 'voice-output-on':
+    case 'voice-output-off':
+    case 'voice-output-toggle':
+    case 'voice-slower':
+    case 'voice-faster':
+    case 'voice-normal':
+      return { kind: 'info', title: 'Voice updated', detail: compactToastDetail(trimmed) };
+
+    case 'cancel-action':
+      return { kind: 'warning', title: 'Cancelled', detail: 'Current action stopped.' };
+    case 'clear-chat':
+      return { kind: 'info', title: 'Chat cleared', detail: 'Conversation reset locally.' };
+  }
+
+  return null;
+}
+
 function getLocalDateKey(offsetDays = 0): string {
   const date = new Date();
   date.setDate(date.getDate() + offsetDays);
@@ -505,6 +614,7 @@ export default function App() {
   const [searchResult, setSearchResult] = useState<SearchResponse | null>(null);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState('');
+  const [resultToasts, setResultToasts] = useState<ResultToast[]>([]);
   const [lastHeardTranscript, setLastHeardTranscript] = useState('');
   const [lastNormalizedTranscript, setLastNormalizedTranscript] = useState('');
   const [lastLocalCommand, setLastLocalCommand] = useState('None');
@@ -523,6 +633,30 @@ export default function App() {
   const listeningTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const suppressNextSpeechErrorRef = useRef(false);
   const orbAreaRef = useRef<HTMLDivElement | null>(null);
+  const resultToastTimeoutsRef = useRef<number[]>([]);
+
+  const dismissResultToast = useCallback((toastId: string) => {
+    setResultToasts((prev) => prev.filter((toast) => toast.id !== toastId));
+  }, []);
+
+  const pushResultToast = useCallback((toastInput: Omit<ResultToast, 'id' | 'createdAt'> | null) => {
+    if (!toastInput) return;
+
+    const toastId = `toast-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const nextToast: ResultToast = {
+      ...toastInput,
+      id: toastId,
+      createdAt: Date.now(),
+    };
+
+    setResultToasts((prev) => [nextToast, ...prev].slice(0, 3));
+
+    const timeoutId = window.setTimeout(() => {
+      setResultToasts((prev) => prev.filter((toast) => toast.id !== toastId));
+    }, toastInput.kind === 'error' ? 7000 : 4400);
+
+    resultToastTimeoutsRef.current.push(timeoutId);
+  }, []);
 
   const stopCurrentSpeech = useCallback(() => {
     speechTokenRef.current += 1;
@@ -599,6 +733,13 @@ export default function App() {
   useEffect(() => {
     return () => {
       stopSpeaking();
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      resultToastTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
+      resultToastTimeoutsRef.current = [];
     };
   }, []);
 
@@ -986,6 +1127,7 @@ export default function App() {
     setShowThinkingBubble(false);
     setActivePanel('none');
     setPendingInterpreterCommand(null);
+    setResultToasts([]);
     setChatActive(false);
     setMessages([]);
 
@@ -1233,6 +1375,7 @@ export default function App() {
             };
     
             setMessages((prev) => [...prev, userMsg, assistantMsg]);
+            pushResultToast({ kind: 'warning', title: 'Cancelled', detail: 'Pending command dismissed.' });
             speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
             return;
           }
@@ -1655,6 +1798,8 @@ export default function App() {
         setMessages((prev) => [...prev, userMsg, confirmationMsg]);
       }
 
+      pushResultToast(getResultToastForCommand(commandMatch.command, confirmationContent));
+
       speakAssistantText(speechConfirmationContent, {
         enabled: shouldSpeakConfirmation,
         rate: confirmationSpeechRate,
@@ -1925,7 +2070,7 @@ export default function App() {
         }
       }, 2000);
     }
-  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, getNextCalendarEventForDeletion, getNextCalendarEventForChange, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, runWebSearch, clearSearchState, searchError, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents]);
+  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, getNextCalendarEventForDeletion, getNextCalendarEventForChange, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, runWebSearch, clearSearchState, searchError, pushResultToast, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents]);
 
   const handleOrbClick = useCallback(() => {
     // If QMeet is actively generating/streaming, tapping the orb should cancel
@@ -2242,6 +2387,31 @@ export default function App() {
           <PromptBar onSend={handleSend} disabled={false} />
         </div>
       </div>
+
+      {resultToasts.length > 0 && (
+        <div className="result-toast-stack" aria-live="polite" aria-label="QMeet action updates">
+          {resultToasts.map((toast) => (
+            <div key={toast.id} className={`result-toast result-toast-${toast.kind}`}>
+              <div className="result-toast-glow" />
+              <div className="result-toast-icon">
+                {toast.kind === 'search' ? '⌕' : toast.kind === 'calendar' ? 'Cal' : toast.kind === 'notes' ? 'Note' : toast.kind === 'error' ? '!' : toast.kind === 'warning' ? '!' : '✓'}
+              </div>
+              <div className="result-toast-copy">
+                <div className="result-toast-title">{toast.title}</div>
+                <div className="result-toast-detail">{toast.detail}</div>
+              </div>
+              <button
+                className="result-toast-dismiss"
+                type="button"
+                aria-label="Dismiss update"
+                onClick={() => dismissResultToast(toast.id)}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Panel Overlays */}
       {activePanel === 'menu' && (

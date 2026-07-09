@@ -1925,3 +1925,204 @@
     bottom: auto;
   }
 }
+
+/* ---- Phase 8C Command / Result Toast Cards ---- */
+.result-toast-stack {
+  position: absolute;
+  left: 20px;
+  bottom: 18px;
+  z-index: 150;
+  width: min(340px, calc(100% - 40px));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.result-toast {
+  position: relative;
+  display: grid;
+  grid-template-columns: 42px 1fr 24px;
+  align-items: center;
+  gap: 10px;
+  min-height: 64px;
+  padding: 10px 10px 10px 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(0, 180, 255, 0.24);
+  background:
+    radial-gradient(ellipse 120% 140% at 0% 0%, rgba(0, 212, 255, 0.13), transparent 62%),
+    rgba(7, 9, 26, 0.92);
+  box-shadow:
+    0 16px 45px rgba(0, 0, 0, 0.42),
+    0 0 28px rgba(0, 180, 255, 0.10),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(18px);
+  overflow: hidden;
+  pointer-events: auto;
+  animation: result-toast-in 0.24s ease-out;
+}
+
+@keyframes result-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.result-toast-glow {
+  position: absolute;
+  inset: -40% auto -40% -22%;
+  width: 110px;
+  background: radial-gradient(ellipse at center, rgba(0, 212, 255, 0.16), transparent 70%);
+  pointer-events: none;
+}
+
+.result-toast-icon {
+  position: relative;
+  z-index: 1;
+  width: 38px;
+  height: 38px;
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(0, 212, 255, 0.28);
+  background: rgba(0, 180, 255, 0.08);
+  color: #00d4ff;
+  font-family: 'Exo 2', sans-serif;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  box-shadow: 0 0 18px rgba(0, 180, 255, 0.12);
+}
+
+.result-toast-copy {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+}
+
+.result-toast-title {
+  font-family: 'Exo 2', sans-serif;
+  font-size: 13px;
+  font-weight: 800;
+  color: #e8edf5;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.result-toast-detail {
+  font-size: 12px;
+  line-height: 1.35;
+  color: #9fb5ce;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.result-toast-dismiss {
+  position: relative;
+  z-index: 1;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(168, 188, 212, 0.72);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.16s ease, color 0.16s ease;
+}
+
+.result-toast-dismiss:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #e8edf5;
+}
+
+.result-toast-success .result-toast-icon,
+.result-toast-info .result-toast-icon {
+  border-color: rgba(0, 212, 255, 0.28);
+  background: rgba(0, 180, 255, 0.08);
+  color: #00d4ff;
+}
+
+.result-toast-search .result-toast-icon {
+  border-color: rgba(204, 68, 255, 0.34);
+  background: rgba(204, 68, 255, 0.09);
+  color: #dcaaff;
+}
+
+.result-toast-calendar .result-toast-icon {
+  border-color: rgba(0, 255, 179, 0.30);
+  background: rgba(0, 255, 179, 0.08);
+  color: #00ffb3;
+}
+
+.result-toast-notes .result-toast-icon {
+  border-color: rgba(255, 210, 90, 0.28);
+  background: rgba(255, 210, 90, 0.08);
+  color: #ffd25a;
+}
+
+.result-toast-warning .result-toast-icon {
+  border-color: rgba(255, 180, 90, 0.34);
+  background: rgba(255, 180, 90, 0.08);
+  color: #ffb45a;
+}
+
+.result-toast-error {
+  border-color: rgba(255, 68, 102, 0.32);
+  box-shadow:
+    0 16px 45px rgba(0, 0, 0, 0.42),
+    0 0 30px rgba(255, 68, 102, 0.10),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.result-toast-error .result-toast-icon {
+  border-color: rgba(255, 68, 102, 0.36);
+  background: rgba(255, 68, 102, 0.10);
+  color: #ff6688;
+}
+
+@media (max-height: 650px), (max-width: 1100px) {
+  .result-toast-stack {
+    left: 14px;
+    bottom: 12px;
+    width: 304px;
+    gap: 8px;
+  }
+
+  .result-toast {
+    min-height: 54px;
+    grid-template-columns: 34px 1fr 22px;
+    padding: 8px 8px 8px 10px;
+    border-radius: 14px;
+  }
+
+  .result-toast-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 12px;
+    font-size: 10px;
+  }
+
+  .result-toast-title {
+    font-size: 11px;
+    margin-bottom: 2px;
+  }
+
+  .result-toast-detail {
+    font-size: 11px;
+  }
+}
+
