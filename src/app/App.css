@@ -1837,3 +1837,91 @@
   text-transform: uppercase;
   color: rgba(204, 136, 255, 0.9);
 }
+
+
+/* ---- Phase 8C tablet fix: make Notes usable at 1024x600 ---- */
+@media (max-height: 650px), (max-width: 1100px) {
+  .notes-panel {
+    top: 14px;
+    bottom: 18px;
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .notes-panel .panel-header {
+    flex: 0 0 auto;
+    margin-bottom: 10px;
+    font-size: 22px;
+  }
+
+  .notes-panel-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    overflow: hidden;
+  }
+
+  .notes-panel .panel-section {
+    padding: 9px 10px 9px 12px;
+  }
+
+  .notes-panel .panel-section:first-child {
+    flex: 0 0 auto;
+  }
+
+  .notes-panel .panel-section-title {
+    margin-bottom: 5px;
+    font-size: 12px;
+  }
+
+  .notes-panel .note-input-section {
+    gap: 7px;
+  }
+
+  .notes-panel .note-input {
+    height: 48px;
+    padding: 9px 10px;
+    font-size: 13px;
+  }
+
+  .notes-panel .note-action-row {
+    gap: 6px;
+  }
+
+  .notes-panel .panel-action-btn {
+    padding: 6px 11px;
+  }
+
+  .notes-panel .notes-list-section {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .notes-panel .notes-panel-body > .panel-section:last-of-type {
+    display: none;
+  }
+
+  .notes-panel .note-item {
+    padding: 9px 10px;
+  }
+
+  .notes-panel .note-content {
+    font-size: 13px;
+    line-height: 1.4;
+  }
+
+  .notes-panel .close-panel-btn {
+    flex: 0 0 auto;
+    align-self: flex-end;
+    margin-top: 2px;
+    position: relative;
+    bottom: auto;
+  }
+}

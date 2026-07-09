@@ -161,6 +161,88 @@ function getAssistantActivity(input: ActivityInput): AssistantActivity {
   };
 }
 
+
+function hasFailureLanguage(text: string): boolean {
+  return /\b(?:could not|did not|failed|error|not connected|not supported|no |none|missing|unavailable|denied)\b/i.test(text);
+}
+
+function getBriefToolSpeech(command: string, fullText: string): string {
+  const trimmed = fullText.trim();
+
+  if (!trimmed) return '';
+
+  if (hasFailureLanguage(trimmed)) {
+    return trimmed;
+  }
+
+  switch (command) {
+    case 'open-menu':
+      return 'Menu open.';
+    case 'open-settings':
+      return 'Settings open.';
+    case 'show-status':
+      return 'Status open.';
+    case 'open-notes':
+    case 'new-note':
+      return 'Notes open.';
+    case 'open-calendar':
+    case 'show-today':
+    case 'show-tomorrow':
+      return 'Calendar open.';
+    case 'open-search':
+      return 'Search open.';
+    case 'close-menu':
+    case 'close-settings':
+    case 'close-status':
+    case 'hide-status':
+    case 'close-notes':
+    case 'close-calendar':
+    case 'close-search':
+    case 'close-generic':
+      return 'Closed.';
+    case 'go-home':
+      return trimmed;
+    case 'save-note':
+      return 'Saved.';
+    case 'delete-last-note':
+      return 'Deleted.';
+    case 'clear-notes':
+      return 'Notes cleared.';
+    case 'read-notes':
+      return 'Notes are open.';
+    case 'refresh-calendar':
+      return 'Calendar refreshed.';
+    case 'add-calendar-event':
+      return 'Event added.';
+    case 'edit-last-event':
+      return 'Event updated.';
+    case 'read-calendar':
+      // Calendar readouts should still be spoken aloud. Keep the chat/panel
+      // and voice output aligned here instead of using the short tool reply.
+      return trimmed;
+    case 'delete-last-event':
+      return 'Event deleted.';
+    case 'clear-calendar':
+      return 'Calendar cleared.';
+    case 'run-search':
+      return 'Search complete.';
+    case 'clear-search':
+      return 'Search cleared.';
+    case 'cancel-action':
+      return 'Cancelled.';
+    case 'voice-output-on':
+    case 'voice-output-off':
+    case 'voice-output-toggle':
+    case 'voice-slower':
+    case 'voice-faster':
+    case 'voice-normal':
+    case 'what-did-you-hear':
+      return trimmed;
+    default:
+      return trimmed;
+  }
+}
+
 function getLocalDateKey(offsetDays = 0): string {
   const date = new Date();
   date.setDate(date.getDate() + offsetDays);
@@ -844,7 +926,7 @@ export default function App() {
 
       const eventText = eventsForDate
         .slice(0, 5)
-        .map((event, index) => `${index + 1}. ${event.time}: ${event.title}${event.location ? ` at ${event.location}` : ''}`)
+        .map((event) => `${event.time}: ${event.title}${event.location ? ` at ${event.location}` : ''}`)
         .join(' ');
 
       const remainingCount = eventsForDate.length - 5;
@@ -902,6 +984,8 @@ export default function App() {
     cancelActiveResponse();
     finishListening();
     setShowThinkingBubble(false);
+    setActivePanel('none');
+    setPendingInterpreterCommand(null);
     setChatActive(false);
     setMessages([]);
 
@@ -1351,6 +1435,7 @@ export default function App() {
       let shouldSpeakConfirmation = voiceOutputEnabled;
       let confirmationSpeechRate = speechRate;
       let replaceMessages = false;
+      let speechConfirmationContent = getBriefToolSpeech(commandMatch.command, confirmationContent);
       
       if (commandMatch.command === 'open-menu') {
         setActivePanel('menu');
@@ -1553,6 +1638,8 @@ export default function App() {
         await handleEndChat();
         return;
       }
+
+      speechConfirmationContent = getBriefToolSpeech(commandMatch.command, confirmationContent);
       
       const confirmationMsg: Message = {
         id: `a-${now}`,
@@ -1568,7 +1655,7 @@ export default function App() {
         setMessages((prev) => [...prev, userMsg, confirmationMsg]);
       }
 
-      speakAssistantText(confirmationContent, {
+      speakAssistantText(speechConfirmationContent, {
         enabled: shouldSpeakConfirmation,
         rate: confirmationSpeechRate,
       });
