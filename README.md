@@ -27,13 +27,14 @@ QMeet currently supports:
 - Voice note creation, reading, deleting, and clearing
 - Local Search/Browser placeholder panel
 - Voice search query preparation without real web integration yet
-- Calendar panel with Google Calendar read/create/delete support
+- Calendar panel with Google Calendar read/create/delete/edit support
 - Calendar refresh/sync command and panel refresh button
 - Local calendar fallback with `localStorage` event persistence
 - Voice calendar event creation, reading, deleting, and clearing
 - Google Calendar OAuth through the FastAPI backend
 - Google Calendar event creation with confirmation
 - Google Calendar event deletion with confirmation for voice/text commands
+- Google Calendar event editing, renaming, and rescheduling with confirmation
 - Safer delete confirmation that names the exact event before deleting
 - Persistent voice output settings across reloads
 - Persistent speech speed across reloads
@@ -183,6 +184,11 @@ today's agenda
 tomorrow's agenda
 refresh calendar
 sync calendar
+reschedule last event to tomorrow at 4
+move last event to today at 6
+rename last event to edited QMeet test
+change last event title to renamed event
+edit last event to today at 6 called final edit test
 delete last event
 remove last event
 clear calendar
@@ -198,6 +204,7 @@ Google Calendar connected
 ├─ read events from Google Calendar
 ├─ refresh/sync events on demand
 ├─ create events in Google Calendar after confirmation
+├─ rename/reschedule/edit Google events after confirmation
 ├─ delete selected / last Google events after confirmation for voice/text commands
 └─ show clear Google/local source labels in the Calendar panel
 
@@ -214,6 +221,8 @@ qmeet-calendar-events
 `refresh calendar` / `sync calendar` reloads Google Calendar events from the backend without needing to close and reopen the panel.
 
 `clear calendar` clears only local fallback events and local context. It does not mass-delete Google Calendar events. Google deletion is intentionally event-specific for safety.
+
+Event editing is intentionally scoped to the selected/last event for now. QMeet asks for confirmation before changing the title, date, or time of a real Google Calendar event.
 
 ## Fuzzy Command Interpreter
 
@@ -572,10 +581,11 @@ GET    /api/calendar/auth/callback
 POST   /api/calendar/auth/reset
 GET    /api/calendar/events?view=today|tomorrow|week
 POST   /api/calendar/events
+PATCH  /api/calendar/events/{event_id}
 DELETE /api/calendar/events/{event_id}
 ```
 
-The frontend primarily uses `/api/chat/stream` for streamed responses, `/api/command/interpret` for fuzzy command classification, and the `/api/calendar/...` routes for Google Calendar read/create/delete support.
+The frontend primarily uses `/api/chat/stream` for streamed responses, `/api/command/interpret` for fuzzy command classification, and the `/api/calendar/...` routes for Google Calendar read/create/delete/edit support.
 
 ## Basic Backend Tests
 
@@ -666,6 +676,19 @@ Invoke-RestMethod `
   -Method POST `
   -ContentType "application/json" `
   -Body '{"title":"QMeet test event","day":"tomorrow","time":"3 PM"}'
+```
+
+Edit/reschedule a Google Calendar event after fetching one:
+
+```powershell
+$events = Invoke-RestMethod "http://localhost:8000/api/calendar/events?view=today"
+$eventId = $events.events[0].googleEventId
+
+Invoke-RestMethod `
+  -Uri "http://localhost:8000/api/calendar/events/$eventId" `
+  -Method PATCH `
+  -ContentType "application/json" `
+  -Body '{"title":"Updated QMeet test event","day":"tomorrow","time":"4 PM"}'
 ```
 
 Delete a Google Calendar event after fetching one:
@@ -763,17 +786,17 @@ Pending command is discarded
 ### Google Calendar command
 
 ```text
-User asks for calendar read/create/delete
+User asks for calendar read/create/edit/delete
 ↓
 Frontend command parser or fuzzy interpreter maps the phrase
 ↓
-For create/delete, QMeet asks for confirmation
+For create/edit/delete, QMeet asks for confirmation
 ↓
 Frontend calls FastAPI calendar endpoint
 ↓
 Backend uses saved Google OAuth token
 ↓
-Google Calendar read/create/delete runs
+Google Calendar read/create/edit/delete runs
 ↓
 QMeet refreshes calendar events and reports the real backend result
 
@@ -1061,6 +1084,22 @@ VITE_QMEET_API_URL=http://localhost:8000
 
 Restart Vite after changing `.env.local`.
 
+### QMeet cannot update or reschedule a Google Calendar event
+
+Check that Google Calendar is still connected and that the frontend is talking to the correct backend:
+
+```powershell
+Invoke-RestMethod http://localhost:8000/api/calendar/status
+```
+
+For same-laptop testing, `.env.local` should use:
+
+```env
+VITE_QMEET_API_URL=http://localhost:8000
+```
+
+If creation works but rescheduling fails, restart the backend and confirm the current calendar service patch is loaded. The current edit path avoids sending invalid local timezone strings when `GOOGLE_CALENDAR_TIMEZONE=local`.
+
 ### QMeet remembers old calendar events after clearing
 
 Use one of the local clear commands:
@@ -1179,6 +1218,12 @@ Completed prototype phases:
   - panel delete browser confirmation
   - clearer Google/local source labels
   - cleaner event sorting
+- Phase 6E: Google Calendar event editing
+  - rename last event
+  - reschedule last event
+  - edit last event title/date/time together
+  - confirmation before changing real Google Calendar events
+  - timezone fix for rescheduling when using local timezone config
 - Calendar parser fixes:
   - title-before-time event phrasing
   - speech artifacts such as `to at 5`
@@ -1189,8 +1234,7 @@ Useful future work:
 
 - Add command interpreter test coverage / command audit logs
 - Add real web/browser integration for Search
-- Add Google Calendar event editing
-- Add Google Calendar delete-by-title/date matching
+- Add Google Calendar edit/delete-by-title/date matching
 - Add safer event disambiguation when multiple matching events exist
 - Add richer date parsing beyond today/tomorrow
 - Add edit/search/delete-by-name for notes
