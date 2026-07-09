@@ -1,6 +1,6 @@
 # QMeet1-1
 
-QMeet is a React/Vite prototype for a tablet-style AI home screen. The interface centers on an animated AI orb that can listen, answer, speak aloud, and control local tablet panels through voice or typed commands.
+QMeet is a React/Vite prototype for a tablet-style AI home screen. The interface centers on an animated AI orb that can listen, answer, speak aloud, and control local tablet panels and Google Calendar through voice or typed commands.
 
 The current prototype targets a **1024×600 landscape Raspberry Pi/tablet display** and is currently tested primarily in **Google Chrome / Chromium**.
 
@@ -27,8 +27,12 @@ QMeet currently supports:
 - Voice note creation, reading, deleting, and clearing
 - Local Search/Browser placeholder panel
 - Voice search query preparation without real web integration yet
-- Local Calendar panel with `localStorage` event persistence
+- Calendar panel with Google Calendar read/create/delete support
+- Local calendar fallback with `localStorage` event persistence
 - Voice calendar event creation, reading, deleting, and clearing
+- Google Calendar OAuth through the FastAPI backend
+- Google Calendar event creation with confirmation
+- Google Calendar event deletion with confirmation for voice/text commands
 - Persistent voice output settings across reloads
 - Persistent speech speed across reloads
 - Voice output settings, including mute/unmute and speech speed control
@@ -36,6 +40,7 @@ QMeet currently supports:
 - “What did you hear?” voice debugging
 - QMeet name recognition normalization for common speech parser mistakes such as “cue meet,” “queue meet,” or “cute meet”
 - Cancel/stop behavior for speech, listening, and active streamed responses
+- Listening preview clears when QMeet moves from voice capture into command processing
 - Conversation reset and backend memory reset
 - Laptop-to-Raspberry-Pi LAN testing
 
@@ -51,8 +56,8 @@ Examples of local-only actions:
 - Saving notes
 - Reading saved notes
 - Preparing a search query
-- Adding local calendar events
-- Reading local calendar events
+- Adding calendar events locally or to Google Calendar when connected
+- Reading local or Google Calendar events
 - Muting/unmuting voice output
 - Changing voice speed
 - Going home
@@ -165,6 +170,7 @@ today
 tomorrow
 add event tomorrow at 3 called meeting
 add event today at 5 called test tablet
+add event today called QMeet test at 5
 schedule meeting tomorrow at 3
 remind me tomorrow at 3 to call bob
 what's on my calendar
@@ -180,13 +186,25 @@ clear calander events
 close calendar
 ```
 
-Calendar events are stored in browser `localStorage` under:
+Calendar behavior depends on whether Google Calendar is connected:
+
+```text
+Google Calendar connected
+├─ read events from Google Calendar
+├─ create events in Google Calendar after confirmation
+└─ delete selected / last Google events after confirmation for voice/text commands
+
+Google Calendar not connected
+└─ fall back to local browser calendar events
+```
+
+Local fallback calendar events are stored in browser `localStorage` under:
 
 ```text
 qmeet-calendar-events
 ```
 
-The calendar is currently local-only. It is not connected to Google Calendar yet.
+`clear calendar` clears only local fallback events and local context. It does not mass-delete Google Calendar events. Google deletion is intentionally event-specific for safety.
 
 ## Fuzzy Command Interpreter
 
@@ -273,8 +291,9 @@ QMeet1-1/
 ├── backend/
 │   ├── app/
 │   │   ├── main.py          # FastAPI app and routes
-│   │   ├── agent.py         # OpenAI/mock provider logic, streaming, and command interpreter
-│   │   └── schemas.py       # Request/response schemas, including command interpreter schema
+│   │   ├── agent.py            # OpenAI/mock provider logic, streaming, and command interpreter
+│   │   ├── calendar_service.py # Google Calendar OAuth/read/create/delete helpers
+│   │   └── schemas.py          # Request/response schemas, including command and calendar schemas
 │   ├── requirements.txt
 │   ├── .env.example
 │   └── .env                 # Must create locally using .env.example
@@ -326,7 +345,9 @@ Backend:
 
 - Python 3.10+
 - FastAPI dependencies from `backend/requirements.txt`
+- Google API client dependencies from `backend/requirements.txt` for Calendar integration
 - OpenAI API key if using `LLM_PROVIDER=openai`
+- Google OAuth credentials JSON if using Google Calendar
 
 Browser features:
 
@@ -384,6 +405,37 @@ OPENAI_MAX_OUTPUT_TOKENS=300
 FRONTEND_ORIGIN=http://LAPTOP_IP:5173
 ```
 
+### Google Calendar backend `.env`
+
+For Google Calendar read/create/delete support, add these values to `backend/.env` after creating Google OAuth credentials:
+
+```env
+GOOGLE_CALENDAR_ENABLED=true
+GOOGLE_CALENDAR_WRITE_ENABLED=true
+GOOGLE_CALENDAR_CREDENTIALS_FILE=google_credentials.json
+GOOGLE_CALENDAR_TOKEN_FILE=token_calendar_events.json
+GOOGLE_CALENDAR_REDIRECT_URI=http://localhost:8000/api/calendar/auth/callback
+GOOGLE_CALENDAR_ID=primary
+GOOGLE_CALENDAR_TIMEZONE=local
+```
+
+For local development, keep the Google OAuth redirect URI on `localhost` even if the Pi/tablet uses the backend over LAN. Authorize Google Calendar from the laptop once; after the token file is created, the Pi can use the already-authorized backend.
+
+Required Google Calendar OAuth scopes:
+
+```text
+https://www.googleapis.com/auth/calendar.readonly
+https://www.googleapis.com/auth/calendar.events
+```
+
+The OAuth client should include this exact redirect URI:
+
+```text
+http://localhost:8000/api/calendar/auth/callback
+```
+
+For a prototype, keep the app in Testing mode and add your Gmail account as a test user.
+
 ## Security Notes
 
 Do not commit secret files.
@@ -402,6 +454,11 @@ backend/.env
 backend/.env.*
 !backend/.env.example
 
+backend/google_credentials.json
+backend/token_calendar_readonly.json
+backend/token_calendar_events.json
+backend/calendar_auth_state.json
+
 backend/.venv/
 .venv/
 node_modules/
@@ -410,7 +467,7 @@ __pycache__/
 *.pyc
 ```
 
-If an API key was ever pushed to GitHub, rotate it from the provider dashboard and replace it locally.
+If an API key or Google OAuth credential/token file was ever pushed to GitHub, rotate/revoke it from the provider dashboard and replace it locally.
 
 ## Install and Run
 
@@ -493,15 +550,23 @@ FRONTEND_ORIGIN=http://LAPTOP_IP:5173
 ## Backend Endpoints
 
 ```text
-GET  /health
-GET  /api/status
-POST /api/chat
-POST /api/chat/stream
-POST /api/command/interpret
-POST /api/reset
+GET    /health
+GET    /api/status
+POST   /api/chat
+POST   /api/chat/stream
+POST   /api/command/interpret
+POST   /api/reset
+
+GET    /api/calendar/status
+POST   /api/calendar/auth/start
+GET    /api/calendar/auth/callback
+POST   /api/calendar/auth/reset
+GET    /api/calendar/events?view=today|tomorrow|week
+POST   /api/calendar/events
+DELETE /api/calendar/events/{event_id}
 ```
 
-The frontend primarily uses `/api/chat/stream` for streamed responses and `/api/command/interpret` for fuzzy command classification.
+The frontend primarily uses `/api/chat/stream` for streamed responses, `/api/command/interpret` for fuzzy command classification, and the `/api/calendar/...` routes for Google Calendar read/create/delete support.
 
 ## Basic Backend Tests
 
@@ -558,6 +623,51 @@ intent          : command
 action          : clear_calendar
 confidence      : 0.95
 frontendCommand : clear calendar
+```
+
+Calendar status:
+
+```powershell
+Invoke-RestMethod http://localhost:8000/api/calendar/status
+```
+
+Calendar read:
+
+```powershell
+Invoke-RestMethod "http://localhost:8000/api/calendar/events?view=today"
+Invoke-RestMethod "http://localhost:8000/api/calendar/events?view=tomorrow"
+Invoke-RestMethod "http://localhost:8000/api/calendar/events?view=week"
+```
+
+Start Google OAuth authorization:
+
+```powershell
+$auth = Invoke-RestMethod `
+  -Uri "http://localhost:8000/api/calendar/auth/start" `
+  -Method POST
+
+Start-Process $auth.authUrl
+```
+
+Create a Google Calendar event:
+
+```powershell
+Invoke-RestMethod `
+  -Uri "http://localhost:8000/api/calendar/events" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body '{"title":"QMeet test event","day":"tomorrow","time":"3 PM"}'
+```
+
+Delete a Google Calendar event after fetching one:
+
+```powershell
+$events = Invoke-RestMethod "http://localhost:8000/api/calendar/events?view=today"
+$eventId = $events.events[0].googleEventId
+
+Invoke-RestMethod `
+  -Uri "http://localhost:8000/api/calendar/events/$eventId" `
+  -Method DELETE
 ```
 
 ## Build
@@ -641,6 +751,24 @@ User says cancel / no / never mind
 Pending command is discarded
 ```
 
+### Google Calendar command
+
+```text
+User asks for calendar read/create/delete
+↓
+Frontend command parser or fuzzy interpreter maps the phrase
+↓
+For create/delete, QMeet asks for confirmation
+↓
+Frontend calls FastAPI calendar endpoint
+↓
+Backend uses saved Google OAuth token
+↓
+Google Calendar read/create/delete runs
+↓
+QMeet refreshes calendar events and reports the real backend result
+```
+
 ### Voice input
 
 ```text
@@ -686,7 +814,13 @@ qmeet-voice-output-enabled
 qmeet-speech-rate
 ```
 
-These are browser-local. Clearing site data or using a different browser/device will remove or hide the saved local data.
+These are browser-local. Clearing site data or using a different browser/device will remove or hide the saved local fallback data.
+
+Google Calendar OAuth tokens are backend-local files, not browser localStorage:
+
+```text
+backend/token_calendar_events.json
+```
 
 ## Voice Settings
 
@@ -727,6 +861,82 @@ VITE_QMEET_API_URL=http://localhost:8000
 ```
 
 For LAN testing, use the laptop IP instead of `localhost`.
+
+### Google Calendar is not connected
+
+Check backend calendar status:
+
+```powershell
+Invoke-RestMethod http://localhost:8000/api/calendar/status
+```
+
+Expected when connected:
+
+```text
+configured : True
+connected  : True
+writeEnabled : True
+```
+
+If disconnected, check that `backend/.env` points to the correct token file and that the token exists:
+
+```powershell
+cd backend
+dir token_calendar_events.json
+```
+
+If needed, reset and re-authorize:
+
+```powershell
+Invoke-RestMethod `
+  -Uri "http://localhost:8000/api/calendar/auth/reset" `
+  -Method POST
+
+$auth = Invoke-RestMethod `
+  -Uri "http://localhost:8000/api/calendar/auth/start" `
+  -Method POST
+
+Start-Process $auth.authUrl
+```
+
+Use `localhost` for Google OAuth authorization from the laptop. Do not use a raw LAN IP as an OAuth origin or redirect URI.
+
+### Google Calendar OAuth says the app is not verified
+
+For prototype development, keep the Google app in Testing mode and add your Gmail as a test user:
+
+```text
+Google Cloud Console
+└─ Google Auth Platform / OAuth consent screen
+   ├─ Audience
+   │  ├─ Publishing status: Testing
+   │  └─ Test users: your Gmail
+   └─ Data Access
+      ├─ https://www.googleapis.com/auth/calendar.readonly
+      └─ https://www.googleapis.com/auth/calendar.events
+```
+
+### Google Calendar scope changed / PKCE errors
+
+If authorization fails after changing scopes, reset auth and start from a fresh auth URL. The backend stores temporary OAuth state in:
+
+```text
+backend/calendar_auth_state.json
+```
+
+That file should not be committed. It is temporary and can be removed before retrying OAuth if the flow gets stuck.
+
+### Calendar creates an all-day event when you expected a time
+
+QMeet creates a timed event only when the parser extracts a time such as `5`, `5:00`, `3 PM`, or `at 3`. Good test phrases:
+
+```text
+add event today at 5 called QMeet test
+add event today called QMeet test at 5
+add event tomorrow at 3 PM called meeting
+```
+
+If the confirmation reads the wrong title or time, say `cancel` and rephrase before confirming.
 
 ### Microphone does not work
 
@@ -802,7 +1012,14 @@ no
 
 ### Calendar events are remembered but not visible
 
-Calendar data may exist in localStorage but the visible panel can hide events if the event date key does not match the current Today/Tomorrow view.
+For Google Calendar events, first check that the backend is connected and reading events:
+
+```powershell
+Invoke-RestMethod "http://localhost:8000/api/calendar/events?view=today"
+Invoke-RestMethod "http://localhost:8000/api/calendar/events?view=tomorrow"
+```
+
+For local fallback events, data may exist in localStorage but the visible panel can hide events if the event date key does not match the current Today/Tomorrow view.
 
 Try:
 
@@ -817,6 +1034,22 @@ tomorrow
 
 The current build includes fixes so old UTC-style date keys and current local date keys should both display correctly.
 
+### QMeet says a calendar event was deleted but it still exists
+
+This should not happen for the current Google Calendar delete path. Confirm backend connectivity first:
+
+```powershell
+Invoke-RestMethod http://localhost:8000/api/calendar/status
+```
+
+If the frontend was pointing to an old LAN IP in `.env.local`, it may not have been talking to the backend you expected. For same-laptop testing, use:
+
+```env
+VITE_QMEET_API_URL=http://localhost:8000
+```
+
+Restart Vite after changing `.env.local`.
+
 ### QMeet remembers old calendar events after clearing
 
 Use one of the local clear commands:
@@ -828,7 +1061,7 @@ clear calander events
 clear my schedule
 ```
 
-The local clear command should clear `qmeet-calendar-events` and reset backend conversation context so OpenAI does not repeat stale events from chat memory.
+The local clear command clears only `qmeet-calendar-events` and resets backend conversation context so OpenAI does not repeat stale local events from chat memory. It does not mass-delete Google Calendar events.
 
 ### Voice output does not work
 
@@ -867,10 +1100,13 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 - Frontend command execution should remain allowlisted and deterministic.
 - Destructive local commands should require confirmation.
 - Local command responses should not call normal OpenAI chat.
-- Notes, Calendar, Search, Settings, Status, and Menu should remain usable without OpenAI.
+- Notes, Calendar, Search, Settings, Status, and Menu should remain usable without normal OpenAI chat.
+- Google Calendar credentials and tokens must stay backend-only and ignored by git.
+- Calendar create/delete actions should keep confirmation or explicit user intent.
+- `clear calendar` should remain local-only unless a separate, heavily confirmed Google bulk-delete feature is intentionally added.
 - The UI is currently optimized for the 1024×600 tablet target.
 - Pi kiosk/autolaunch work is intentionally delayed until the prototype is more complete.
-- Real web search and Google Calendar integration are not implemented yet.
+- Real web search is not implemented yet.
 
 ## Current Status
 
@@ -901,13 +1137,24 @@ Completed prototype phases:
 - Phase 5A: Backend fuzzy command interpreter
 - Phase 5B: Command route/status debugging
 - Phase 5C: Confirmation for destructive local commands
+- Phase 6A: Google Calendar read integration
+- Phase 6B: Google Calendar event creation
+- Phase 6C: Google Calendar event deletion
+- Calendar parser fixes:
+  - title-before-time event phrasing
+  - speech artifacts such as `to at 5`
+  - prevents `today`/`tomorrow` from being treated as event time
+- Orb listening/processing state fix
 
 Useful future work:
 
 - Add command interpreter test coverage / command audit logs
 - Add real web/browser integration for Search
-- Add Google Calendar integration
-- Add edit/search/delete-by-name for notes and calendar events
+- Add Google Calendar event editing
+- Add Google Calendar delete-by-title/date matching
+- Add safer event disambiguation when multiple matching events exist
+- Add richer date parsing beyond today/tomorrow
+- Add edit/search/delete-by-name for notes
 - Improve Settings/Menu/Status visual design
 - Add persistent UI preferences beyond voice settings
 - Add optional wake-word-style behavior later
