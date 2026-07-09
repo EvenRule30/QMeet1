@@ -13,6 +13,7 @@ from app.agent import (
     reset_conversation,
     sse_event,
     stream_reply,
+    search_web,
 )
 
 from app.calendar_service import (
@@ -41,6 +42,8 @@ from app.schemas import (
     ChatResponse,
     CommandInterpretRequest,
     CommandInterpretResponse,
+    SearchRequest,
+    SearchResponse,
 )
 
 load_dotenv()
@@ -72,6 +75,24 @@ async def health():
 @app.get("/api/status")
 async def status():
     return get_public_status()
+
+
+@app.post("/api/search", response_model=SearchResponse)
+async def web_search(req: SearchRequest):
+    query = req.query.strip()
+
+    if not query:
+        raise HTTPException(status_code=400, detail="Search query cannot be empty.")
+
+    try:
+        return SearchResponse(**await search_web(query))
+    except AgentUserFacingError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet web search hit an unexpected error.",
+        )
 
 
 @app.get("/api/calendar/status", response_model=CalendarStatusResponse)

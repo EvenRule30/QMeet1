@@ -113,3 +113,23 @@ class CalendarDeleteEventResponse(BaseModel):
     source: Literal["google"] = "google"
     deletedEventId: str = ""
     message: str = ""
+
+
+
+class SearchRequest(BaseModel):
+    query: str
+
+
+class SearchSourceItem(BaseModel):
+    title: str = ""
+    url: str = ""
+    domain: str = ""
+
+
+class SearchResponse(BaseModel):
+    ok: bool = True
+    query: str = ""
+    summary: str = ""
+    sources: list[SearchSourceItem] = Field(default_factory=list)
+    provider: str = ""
+    message: str = ""

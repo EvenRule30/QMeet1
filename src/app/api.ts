@@ -1,4 +1,4 @@
-import { BackendStatus, CalendarAuthResetResponse, CalendarAuthStartResponse, CalendarBackendStatus, CalendarBackendView, CalendarCreateEventRequest, CalendarCreateEventResponse, CalendarDeleteEventResponse, CalendarEventsResponse, CalendarUpdateEventRequest, CalendarUpdateEventResponse, CommandIntentResponse } from "./types";
+import { BackendStatus, CalendarAuthResetResponse, CalendarAuthStartResponse, CalendarBackendStatus, CalendarBackendView, CalendarCreateEventRequest, CalendarCreateEventResponse, CalendarDeleteEventResponse, CalendarEventsResponse, CalendarUpdateEventRequest, CalendarUpdateEventResponse, CommandIntentResponse, SearchResponse } from "./types";
 
 export type ChatApiResponse = {
   reply: string;
@@ -171,6 +171,24 @@ export async function deleteGoogleCalendarEvent(googleEventId: string): Promise<
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || `Calendar delete event error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+
+export async function searchWeb(query: string): Promise<SearchResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/search`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ query }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Web search error: ${res.status}`);
   }
 
   return res.json();

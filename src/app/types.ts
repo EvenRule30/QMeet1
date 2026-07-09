@@ -89,7 +89,6 @@ export interface CalendarCreateEventResponse {
   message: string;
 }
 
-
 export interface CalendarUpdateEventRequest {
   title?: string;
   day?: 'today' | 'tomorrow';
@@ -116,7 +115,20 @@ export interface CalendarDeleteEventResponse {
   message: string;
 }
 
+export interface SearchSourceItem {
+  title: string;
+  url: string;
+  domain: string;
+}
 
+export interface SearchResponse {
+  ok: boolean;
+  query: string;
+  summary: string;
+  sources: SearchSourceItem[];
+  provider: string;
+  message: string;
+}
 
 export type CommandIntentName = 'command' | 'chat';
 
@@ -136,6 +148,7 @@ export type CommandAction =
   | 'add_calendar_event'
   | 'read_calendar'
   | 'delete_last_calendar_event'
+  | 'edit_calendar_event'
   | 'clear_calendar'
   | 'voice_output_on'
   | 'voice_output_off'

@@ -319,6 +319,219 @@ async def openai_interpret_command_intent(message: str, config: AgentConfig) -> 
 
 
 
+SEARCH_WEB_PROMPT = """
+You are QMeet's web search helper for a small 1024x600 tablet UI.
+
+Use web search for the user's query and return a concise, useful answer.
+Requirements:
+- Keep the answer compact: 3-6 short bullets or 1-2 short paragraphs.
+- Prefer current, concrete information.
+- Mention uncertainty if search results are mixed or incomplete.
+- Do not claim to perform local device actions.
+- Do not include raw JSON.
+""".strip()
+
+
+def _source_domain(url: str) -> str:
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        return parsed.netloc.replace("www.", "")
+    except Exception:
+        return ""
+
+
+def _dedupe_sources(sources: list[dict]) -> list[dict]:
+    seen: set[str] = set()
+    deduped: list[dict] = []
+
+    for source in sources:
+        url = str(source.get("url", "")).strip()
+        if not url or url in seen:
+            continue
+
+        title = str(source.get("title", "")).strip() or _source_domain(url) or url
+        domain = str(source.get("domain", "")).strip() or _source_domain(url)
+
+        seen.add(url)
+        deduped.append({
+            "title": title[:180],
+            "url": url,
+            "domain": domain[:120],
+        })
+
+        if len(deduped) >= 8:
+            break
+
+    return deduped
+
+
+def _collect_web_sources(response) -> list[dict]:
+    """Best-effort extraction for Responses API web-search sources/citations."""
+    sources: list[dict] = []
+
+    try:
+        data = response.model_dump()
+    except Exception:
+        data = {}
+
+    def add_source(candidate: dict) -> None:
+        if not isinstance(candidate, dict):
+            return
+
+        url = (
+            candidate.get("url")
+            or candidate.get("uri")
+            or candidate.get("link")
+        )
+        if not url:
+            return
+
+        sources.append({
+            "title": candidate.get("title") or candidate.get("name") or "",
+            "url": url,
+            "domain": candidate.get("domain") or candidate.get("site") or "",
+        })
+
+    # Top-level sources, if the SDK surfaces them.
+    for source in data.get("sources", []) if isinstance(data.get("sources"), list) else []:
+        add_source(source)
+
+    output = data.get("output", [])
+    if isinstance(output, list):
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+
+            # Search action sources from include=["web_search_call.action.sources"].
+            action = item.get("action")
+            if isinstance(action, dict):
+                for source in action.get("sources", []) if isinstance(action.get("sources"), list) else []:
+                    add_source(source)
+
+            # Inline URL citations on assistant message content.
+            content = item.get("content", [])
+            if isinstance(content, list):
+                for content_item in content:
+                    if not isinstance(content_item, dict):
+                        continue
+
+                    annotations = content_item.get("annotations", [])
+                    if not isinstance(annotations, list):
+                        continue
+
+                    for annotation in annotations:
+                        if not isinstance(annotation, dict):
+                            continue
+
+                        if annotation.get("type") == "url_citation":
+                            add_source({
+                                "title": annotation.get("title") or "",
+                                "url": annotation.get("url") or "",
+                            })
+
+    return _dedupe_sources(sources)
+
+
+async def search_web(query: str) -> dict:
+    config = get_agent_config()
+
+    if config.provider == "mock":
+        return mock_search_web(query)
+
+    if config.provider == "openai":
+        return await openai_search_web(query, config)
+
+    raise AgentUserFacingError(
+        f'Unsupported LLM_PROVIDER="{config.provider}". Use "mock" or "openai".'
+    )
+
+
+def mock_search_web(query: str) -> dict:
+    cleaned = query.strip()
+
+    if not cleaned:
+        raise AgentUserFacingError("Search query cannot be empty.")
+
+    return {
+        "ok": True,
+        "query": cleaned,
+        "summary": (
+            "Mock web search is active. In OpenAI mode, QMeet will use the backend "
+            f'to search the web for: "{cleaned}".'
+        ),
+        "sources": [],
+        "provider": "mock",
+        "message": "Mock search complete.",
+    }
+
+
+async def openai_search_web(query: str, config: AgentConfig) -> dict:
+    cleaned = query.strip()
+
+    if not cleaned:
+        raise AgentUserFacingError("Search query cannot be empty.")
+
+    api_key = os.getenv("OPENAI_API_KEY")
+
+    if not api_key:
+        raise AgentUserFacingError(
+            "OpenAI is selected, but OPENAI_API_KEY is missing in backend/.env."
+        )
+
+    client = AsyncOpenAI(api_key=api_key)
+
+    try:
+        response = await client.responses.create(
+            model=config.model,
+            tools=[{"type": "web_search"}],
+            tool_choice="required",
+            include=["web_search_call.action.sources"],
+            input=[
+                {
+                    "role": "developer",
+                    "content": SEARCH_WEB_PROMPT,
+                },
+                {
+                    "role": "user",
+                    "content": cleaned,
+                },
+            ],
+            max_output_tokens=max(300, min(config.max_output_tokens, 900)),
+        )
+    except openai.AuthenticationError as exc:
+        raise AgentUserFacingError(
+            "OpenAI authentication failed. Check backend/.env and verify the API key."
+        ) from exc
+    except openai.RateLimitError as exc:
+        raise AgentUserFacingError(
+            "OpenAI rate limit or quota was reached. Check API billing, limits, or try again later."
+        ) from exc
+    except openai.APIConnectionError as exc:
+        raise AgentUserFacingError(
+            "Could not connect to OpenAI for web search. Check your internet connection."
+        ) from exc
+    except openai.APIError as exc:
+        raise AgentUserFacingError(
+            "OpenAI returned a web search API error. Try again shortly."
+        ) from exc
+
+    summary = response.output_text.strip()
+
+    if not summary:
+        raise AgentUserFacingError("Web search returned an empty response.")
+
+    return {
+        "ok": True,
+        "query": cleaned,
+        "summary": summary,
+        "sources": _collect_web_sources(response),
+        "provider": "openai",
+        "message": "Search complete.",
+    }
+
+
 # Simple in-memory history for the current backend process.
 # This resets when the backend restarts.
 MESSAGE_HISTORY: list[dict[str, str]] = []

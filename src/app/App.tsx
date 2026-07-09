@@ -6,8 +6,8 @@ import { PromptBar } from './components/PromptBar';
 import { NotesPanel } from './components/NotesPanel';
 import { CalendarPanel } from './components/CalendarPanel';
 import { SearchPanel } from './components/SearchPanel';
-import { Message, OrbState, BackendStatus, ActivePanel, Note, CalendarEvent, CalendarBackendStatus, CalendarBackendView } from './types';
-import { streamChatMessage, getBackendStatus, resetConversation, interpretCommandIntent, getCalendarStatus, getCalendarEvents, createCalendarEvent, deleteGoogleCalendarEvent, updateGoogleCalendarEvent, startCalendarAuth, resetCalendarAuth } from "./api";
+import { Message, OrbState, BackendStatus, ActivePanel, Note, CalendarEvent, CalendarBackendStatus, CalendarBackendView, SearchResponse } from './types';
+import { streamChatMessage, getBackendStatus, resetConversation, interpretCommandIntent, getCalendarStatus, getCalendarEvents, createCalendarEvent, deleteGoogleCalendarEvent, updateGoogleCalendarEvent, startCalendarAuth, resetCalendarAuth, searchWeb } from "./api";
 import { getSpeechRecognition, isSpeechRecognitionSupported } from './speechRecognition';
 import { speakText, stopSpeaking } from './speechSynthesis';
 import { parseCommand, normalizeSpokenQMeet } from './commands';
@@ -75,6 +75,17 @@ function isEventForCalendarView(event: CalendarEvent, view: CalendarView): boole
 function getCalendarViewLabel(view: CalendarView): string {
   return view === 'tomorrow' ? 'tomorrow' : 'today';
 }
+
+function compactSearchSpeech(text: string, maxLength = 520): string {
+  const cleaned = text.trim().replace(/\s+/g, ' ');
+
+  if (cleaned.length <= maxLength) {
+    return cleaned;
+  }
+
+  return `${cleaned.slice(0, maxLength).trim()}...`;
+}
+
 
 const VOICE_OUTPUT_STORAGE_KEY = 'qmeet-voice-output-enabled';
 const SPEECH_RATE_STORAGE_KEY = 'qmeet-speech-rate';
@@ -294,6 +305,9 @@ export default function App() {
   const [googleCalendarLoading, setGoogleCalendarLoading] = useState(false);
   const [googleCalendarError, setGoogleCalendarError] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchResult, setSearchResult] = useState<SearchResponse | null>(null);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState('');
   const [lastHeardTranscript, setLastHeardTranscript] = useState('');
   const [lastNormalizedTranscript, setLastNormalizedTranscript] = useState('');
   const [lastLocalCommand, setLastLocalCommand] = useState('None');
@@ -915,6 +929,44 @@ export default function App() {
   }, [loadGoogleCalendarStatus]);
 
 
+  const clearSearchState = useCallback(() => {
+    setSearchQuery('');
+    setSearchResult(null);
+    setSearchError('');
+    setSearchLoading(false);
+  }, []);
+
+  const runWebSearch = useCallback(async (queryInput?: string): Promise<SearchResponse | null> => {
+    const query = (queryInput ?? searchQuery).trim();
+
+    setActivePanel('search');
+
+    if (!query) {
+      setSearchError('Enter a search query first.');
+      setSearchResult(null);
+      return null;
+    }
+
+    setSearchQuery(query);
+    setSearchLoading(true);
+    setSearchError('');
+
+    try {
+      const response = await searchWeb(query);
+      setSearchResult(response);
+      setSearchError(response.ok ? '' : response.message || 'Search failed.');
+      return response;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Web search failed.';
+      setSearchResult(null);
+      setSearchError(message);
+      return null;
+    } finally {
+      setSearchLoading(false);
+    }
+  }, [searchQuery]);
+
+
   // TODO: Backend integration
   // Replace this function body with actual FastAPI calls:
   //
@@ -1309,13 +1361,23 @@ export default function App() {
         setActivePanel('search');
       } else if (commandMatch.command === 'run-search') {
         const preparedSearchQuery = commandMatch.payload?.trim() ?? '';
-        setSearchQuery(preparedSearchQuery);
         setActivePanel('search');
-        confirmationContent = preparedSearchQuery
-          ? commandMatch.confirmation
-          : 'Opening search.';
+
+        if (preparedSearchQuery) {
+          const searchResponse = await runWebSearch(preparedSearchQuery);
+
+          if (searchResponse?.ok) {
+            confirmationContent = `Search complete. ${compactSearchSpeech(searchResponse.summary)}`;
+          } else {
+            confirmationContent = searchResponse?.message || searchError || 'Web search failed.';
+          }
+        } else {
+          confirmationContent = 'Opening search.';
+        }
+
+        shouldSpeakConfirmation = voiceOutputEnabled;
       } else if (commandMatch.command === 'clear-search') {
-        setSearchQuery('');
+        clearSearchState();
         setActivePanel('search');
         confirmationContent = 'Search cleared.';
       } else if (commandMatch.command === 'close-search') {
@@ -1652,7 +1714,7 @@ export default function App() {
         }
       }, 2000);
     }
-  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, getNextCalendarEventForDeletion, getNextCalendarEventForChange, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents]);
+  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, getNextCalendarEventForDeletion, getNextCalendarEventForChange, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, runWebSearch, clearSearchState, searchError, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents]);
 
   const handleOrbClick = useCallback(() => {
     // If QMeet is actively generating/streaming, tapping the orb should cancel
@@ -1892,6 +1954,16 @@ export default function App() {
         ? 'Needs auth'
         : 'Not configured';
     const trimmedSearchQuery = searchQuery.trim();
+    const searchStatusLabel = searchLoading
+      ? 'Searching'
+      : searchResult
+        ? 'Results'
+        : trimmedSearchQuery
+          ? 'Ready'
+          : 'Empty';
+    const searchStatusMeta = searchResult
+      ? `${searchResult.sources.length} source${searchResult.sources.length === 1 ? '' : 's'} · ${searchResult.provider || 'web'}`
+      : searchError || trimmedSearchQuery || 'No query';
     const voiceInputSupported = isSpeechRecognitionSupported();
     const activePanelLabel = getPanelLabel(activePanel);
     const interpreterConfidenceLabel = lastInterpreterConfidence === null
@@ -2210,8 +2282,8 @@ export default function App() {
 
                 <div className="status-card">
                   <div className="status-card-title">Search</div>
-                  <div className="status-card-value">{trimmedSearchQuery ? 'Prepared' : 'Empty'}</div>
-                  <div className="status-card-meta">{trimmedSearchQuery || 'No local query'}</div>
+                  <div className="status-card-value">{searchStatusLabel}</div>
+                  <div className="status-card-meta">{searchStatusMeta}</div>
                 </div>
               </div>
 
@@ -2314,7 +2386,12 @@ export default function App() {
       {activePanel === 'search' && (
         <SearchPanel
           query={searchQuery}
+          result={searchResult}
+          loading={searchLoading}
+          error={searchError}
           onQueryChange={setSearchQuery}
+          onRunSearch={runWebSearch}
+          onClearSearch={clearSearchState}
           onClose={closePanel}
         />
       )}

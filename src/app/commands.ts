@@ -67,7 +67,7 @@ export interface CommandMatch {
 }
 
 const HELP_MESSAGE =
-  "I'm QMeet, your local AI orb interface. I can control the local UI without sending those commands to OpenAI. I can open Menu, Settings, Status, Notes, Calendar, and Search. Notes: say \"note that buy milk,\" \"read my notes,\" or \"delete last note.\" Search: say \"search for raspberry pi kiosk mode,\" \"look up chromium flags,\" or \"clear search.\" Calendar: say \"add event tomorrow at 3 called meeting,\" \"reschedule last event to tomorrow at 4,\" \"rename last event to project sync,\" \"show today's events,\" \"what's on my calendar,\" \"refresh calendar,\" \"delete last event,\" or \"clear calendar.\" Voice: say \"mute voice,\" \"unmute voice,\" \"speak slower,\" \"speak faster,\" or \"normal voice.\" Navigation: say \"go home,\" \"close panel,\" \"cancel,\" or \"what did you hear.\"";
+  "I'm QMeet, your local AI orb interface. I can control the local UI without sending those commands to OpenAI. I can open Menu, Settings, Status, Notes, Calendar, and real Web Search. Notes: say \"note that buy milk,\" \"read my notes,\" or \"delete last note.\" Search: say \"search for raspberry pi kiosk mode,\" \"look up chromium flags,\" or \"clear search\" to run real web searches. Calendar: say \"add event tomorrow at 3 called meeting,\" \"reschedule last event to tomorrow at 4,\" \"rename last event to project sync,\" \"show today's events,\" \"what's on my calendar,\" \"refresh calendar,\" \"delete last event,\" or \"clear calendar.\" Voice: say \"mute voice,\" \"unmute voice,\" \"speak slower,\" \"speak faster,\" or \"normal voice.\" Navigation: say \"go home,\" \"close panel,\" \"cancel,\" or \"what did you hear.\"";
 
 const CONFIRMATIONS: Record<LocalCommand, string> = {
   help: HELP_MESSAGE,
@@ -98,7 +98,7 @@ const CONFIRMATIONS: Record<LocalCommand, string> = {
   'show-tomorrow': 'Showing tomorrow.',
   'close-calendar': 'Closed calendar.',
   'open-search': 'Opening search.',
-  'run-search': 'Searching locally.',
+  'run-search': 'Searching the web.',
   'clear-search': 'Search cleared.',
   'close-search': 'Closed search.',
   'voice-output-on': 'Voice output enabled.',
@@ -457,15 +457,15 @@ function extractNotePayload(normalized: string): string | null {
 
 function extractSearchPayload(normalized: string): { payload: string; confirmationPrefix: string } | null {
   const patterns: Array<{ pattern: RegExp; confirmationPrefix: string; rejectPayload?: (payload: string) => boolean }> = [
-    { pattern: /^(?:please\s+)?search\s+(?:the\s+)?(?:web|internet)\s+for\s+(.+)$/i, confirmationPrefix: 'Searching locally for' },
-    { pattern: /^(?:please\s+)?search\s+for\s+(.+)$/i, confirmationPrefix: 'Searching locally for' },
-    { pattern: /^(?:please\s+)?search\s+(.+)$/i, confirmationPrefix: 'Searching locally for' },
-    { pattern: /^(?:please\s+)?(?:web|internet)\s+search\s+(.+)$/i, confirmationPrefix: 'Searching locally for' },
-    { pattern: /^(?:please\s+)?look\s+(?:this\s+)?up\s+(.+)$/i, confirmationPrefix: 'Searching locally for' },
-    { pattern: /^(?:please\s+)?google\s+(.+)$/i, confirmationPrefix: 'Search query prepared' },
+    { pattern: /^(?:please\s+)?search\s+(?:the\s+)?(?:web|internet)\s+for\s+(.+)$/i, confirmationPrefix: 'Searching the web for' },
+    { pattern: /^(?:please\s+)?search\s+for\s+(.+)$/i, confirmationPrefix: 'Searching the web for' },
+    { pattern: /^(?:please\s+)?search\s+(.+)$/i, confirmationPrefix: 'Searching the web for' },
+    { pattern: /^(?:please\s+)?(?:web|internet)\s+search\s+(.+)$/i, confirmationPrefix: 'Searching the web for' },
+    { pattern: /^(?:please\s+)?look\s+(?:this\s+)?up\s+(.+)$/i, confirmationPrefix: 'Searching the web for' },
+    { pattern: /^(?:please\s+)?google\s+(.+)$/i, confirmationPrefix: 'Searching the web for' },
     {
       pattern: /^(?:please\s+)?find\s+(.+)$/i,
-      confirmationPrefix: 'Searching locally for',
+      confirmationPrefix: 'Searching the web for',
       rejectPayload: (payload) => /^(?:out|me|a\s+solution|a\s+way)\b/i.test(payload),
     },
   ];
