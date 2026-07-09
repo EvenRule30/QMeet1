@@ -21,6 +21,7 @@ export type LocalCommand =
   | 'read-calendar'
   | 'refresh-calendar'
   | 'edit-last-event'
+  | 'delete-calendar-event'
   | 'delete-last-event'
   | 'clear-calendar'
   | 'show-today'
@@ -57,12 +58,19 @@ export interface CalendarEditCommandPayload {
   title?: string;
 }
 
+export interface CalendarDeleteCommandPayload {
+  day?: 'today' | 'tomorrow';
+  time?: string;
+  title?: string;
+}
+
 export interface CommandMatch {
   command: LocalCommand;
   confirmation: string;
   payload?: string;
   calendarEvent?: CalendarCommandPayload;
   calendarEdit?: CalendarEditCommandPayload;
+  calendarDelete?: CalendarDeleteCommandPayload;
   calendarView?: 'today' | 'tomorrow' | 'all';
 }
 
@@ -92,6 +100,7 @@ const CONFIRMATIONS: Record<LocalCommand, string> = {
   'read-calendar': 'Reading calendar.',
   'refresh-calendar': 'Refreshing calendar.',
   'edit-last-event': 'Updated the last event.',
+  'delete-calendar-event': 'Deleted event.',
   'delete-last-event': 'Deleted the last event.',
   'clear-calendar': 'Cleared calendar.',
   'show-today': 'Showing today.',
@@ -605,6 +614,90 @@ function extractCalendarEventPayload(normalized: string): CalendarCommandPayload
   return null;
 }
 
+
+
+function normalizeCalendarDeleteTime(rawTime: string | undefined): string {
+  return rawTime
+    ? cleanCommandPayload(rawTime)
+        .replace(/\b([ap])\.\s*m\.?\b/gi, '$1m')
+        .replace(/\b([ap])\s+m\b/gi, '$1m')
+        .replace(/\s+/g, ' ')
+        .trim()
+    : '';
+}
+
+function makeCalendarDeletePayload(
+  rawDay?: string,
+  rawTime?: string,
+  rawTitle?: string
+): CalendarDeleteCommandPayload | null {
+  const dayCandidate = rawDay?.toLowerCase();
+  const day = isCalendarDay(dayCandidate) ? dayCandidate : undefined;
+  const time = normalizeCalendarDeleteTime(rawTime);
+  const title = rawTitle ? cleanCommandPayload(rawTitle) : '';
+
+  if (!day && !time && !title) return null;
+
+  return {
+    ...(day ? { day } : {}),
+    ...(time ? { time } : {}),
+    ...(title ? { title } : {}),
+  };
+}
+
+function extractCalendarDeletePayload(normalized: string): CalendarDeleteCommandPayload | null {
+  const timeToken = String.raw`(?:\d{1,2})(?::\d{2})?\s*(?:a\.?\s*m\.?|p\.?\s*m\.?|am|pm)?|noon|midnight`;
+  const eventWord = String.raw`(?:calendar\s+)?(?:event|appointment|meeting)`;
+  const deleteVerb = String.raw`(?:delete|remove|erase|cancel)`;
+
+  const patterns: Array<{
+    pattern: RegExp;
+    read: (match: RegExpMatchArray) => CalendarDeleteCommandPayload | null;
+  }> = [
+    // "delete the 12:00 p.m. event tomorrow"
+    {
+      pattern: new RegExp(String.raw`^(?:please\s+)?${deleteVerb}\s+(?:the\s+)?(${timeToken})\s+${eventWord}(?:\s+(today|tomorrow))?$`, 'i'),
+      read: (match) => makeCalendarDeletePayload(match[2], match[1]),
+    },
+
+    // "delete the event tomorrow at 12:00 p.m."
+    {
+      pattern: new RegExp(String.raw`^(?:please\s+)?${deleteVerb}\s+(?:the\s+)?${eventWord}\s+(today|tomorrow)\s+(?:at\s+)?(${timeToken})(?:\s+(?:called|named|titled|for|about)\s+(.+))?$`, 'i'),
+      read: (match) => makeCalendarDeletePayload(match[1], match[2], match[3]),
+    },
+
+    // "delete the event at 12:00 p.m. tomorrow"
+    {
+      pattern: new RegExp(String.raw`^(?:please\s+)?${deleteVerb}\s+(?:the\s+)?${eventWord}\s+(?:at\s+)?(${timeToken})\s+(today|tomorrow)(?:\s+(?:called|named|titled|for|about)\s+(.+))?$`, 'i'),
+      read: (match) => makeCalendarDeletePayload(match[2], match[1], match[3]),
+    },
+
+    // "delete tomorrow's 12 pm event"
+    {
+      pattern: new RegExp(String.raw`^(?:please\s+)?${deleteVerb}\s+(?:the\s+)?(?:today(?:'s)?|tomorrow(?:'s)?)\s+(${timeToken})\s+${eventWord}$`, 'i'),
+      read: (match) => {
+        const dayMatch = normalized.match(/\b(tomorrow|today)(?:'s)?\b/i);
+        return makeCalendarDeletePayload(dayMatch?.[1], match[1]);
+      },
+    },
+
+    // "delete the calendar event tomorrow called dentist"
+    {
+      pattern: new RegExp(String.raw`^(?:please\s+)?${deleteVerb}\s+(?:the\s+)?${eventWord}\s+(today|tomorrow)\s+(?:called|named|titled|for|about)\s+(.+)$`, 'i'),
+      read: (match) => makeCalendarDeletePayload(match[1], undefined, match[2]),
+    },
+  ];
+
+  for (const { pattern, read } of patterns) {
+    const match = normalized.match(pattern);
+    const payload = match ? read(match) : null;
+
+    if (payload) return payload;
+  }
+
+  return null;
+}
+
 function normalizeCalendarEditTail(tail: string): string {
   return tail
     .replace(/\b(?:two|too|to)\s+at\b/gi, 'at')
@@ -770,6 +863,19 @@ export function debugCommandParse(text: string): {
           command: 'save-note',
           confirmation: CONFIRMATIONS['save-note'],
           payload: notePayload,
+        },
+      };
+    }
+
+    const calendarDelete = extractCalendarDeletePayload(payloadSource);
+    if (calendarDelete) {
+      return {
+        rawText: text,
+        normalizedText: normalized,
+        match: {
+          command: 'delete-calendar-event',
+          confirmation: CONFIRMATIONS['delete-calendar-event'],
+          calendarDelete,
         },
       };
     }
