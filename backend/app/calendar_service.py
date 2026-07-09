@@ -507,6 +507,55 @@ def create_calendar_event(title: str, day: str = "today", time: str = "Later", d
         "message": f"Created Google Calendar event: {normalized_event['time']}: {normalized_event['title']}.",
     }
 
+
+def delete_calendar_event(event_id: str) -> dict:
+    config = get_calendar_config()
+    status = get_calendar_status()
+
+    if not status["configured"] or not status["connected"]:
+        raise CalendarIntegrationError(status["message"])
+
+    if not config.write_enabled:
+        raise CalendarIntegrationError(
+            "Google Calendar event deletion is disabled. Set GOOGLE_CALENDAR_WRITE_ENABLED=true in backend/.env."
+        )
+
+    clean_event_id = (event_id or "").strip()
+    if clean_event_id.startswith("google-"):
+        clean_event_id = clean_event_id.removeprefix("google-")
+
+    if not clean_event_id:
+        raise CalendarIntegrationError("Google Calendar event id cannot be empty.")
+
+    creds = _load_credentials(config)
+    if not creds:
+        raise CalendarIntegrationError("Google Calendar needs authorization with event write access.")
+
+    try:
+        service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+        service.events().delete(
+            calendarId=config.calendar_id,
+            eventId=clean_event_id,
+        ).execute()
+    except HttpError as exc:
+        status_code = getattr(getattr(exc, "resp", None), "status", None)
+        if status_code == 404:
+            raise CalendarIntegrationError("Google Calendar event was not found. Refresh the calendar and try again.") from exc
+        raise CalendarIntegrationError(
+            "Google Calendar event deletion failed. Refresh or reconnect Calendar and try again."
+        ) from exc
+    except Exception as exc:
+        raise CalendarIntegrationError("Could not delete Google Calendar event.") from exc
+
+    return {
+        "ok": True,
+        "configured": True,
+        "connected": True,
+        "source": "google",
+        "deletedEventId": clean_event_id,
+        "message": "Deleted Google Calendar event.",
+    }
+
 def list_calendar_events(view: str = "today") -> dict:
     requested_view = view if view in {"today", "tomorrow", "week"} else "today"
     config = get_calendar_config()

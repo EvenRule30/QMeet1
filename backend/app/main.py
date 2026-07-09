@@ -21,6 +21,7 @@ from app.calendar_service import (
     get_calendar_status,
     list_calendar_events,
     create_calendar_event,
+    delete_calendar_event,
     reset_calendar_auth,
     start_calendar_auth,
 )
@@ -30,6 +31,7 @@ from app.schemas import (
     CalendarAuthStartResponse,
     CalendarCreateEventRequest,
     CalendarCreateEventResponse,
+    CalendarDeleteEventResponse,
     CalendarEventsResponse,
     CalendarStatusResponse,
     ChatRequest,
@@ -204,6 +206,19 @@ async def calendar_create_event(req: CalendarCreateEventRequest):
         raise HTTPException(
             status_code=500,
             detail="QMeet could not create the Google Calendar event.",
+        )
+
+
+@app.delete("/api/calendar/events/{event_id}", response_model=CalendarDeleteEventResponse)
+async def calendar_delete_event(event_id: str):
+    try:
+        return CalendarDeleteEventResponse(**delete_calendar_event(event_id))
+    except CalendarIntegrationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not delete the Google Calendar event.",
         )
 
 

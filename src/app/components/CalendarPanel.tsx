@@ -214,7 +214,8 @@ export function CalendarPanel({
                     <CalendarEventRow
                       key={event.id}
                       event={event}
-                      canDelete={false}
+                      canDelete={Boolean(googleStatus?.writeEnabled)}
+                      onDelete={onDeleteEvent}
                     />
                   ))
                 )
@@ -265,7 +266,7 @@ export function CalendarPanel({
           <div className="panel-section">
             <div className="panel-section-title">Supported Commands</div>
             <p className="panel-section-text">
-               Say “what's on my calendar,” “show today's events,” or “show tomorrow's events” to read Google Calendar. When Google Calendar is connected with writing enabled, “add event tomorrow at 3 called meeting” creates a real Google event after confirmation. Delete/clear commands still affect only local prototype events.
+               Say “what's on my calendar,” “show today's events,” or “show tomorrow's events” to read Google Calendar. When Google Calendar is connected with writing enabled, “add event tomorrow at 3 called meeting” creates a real Google event after confirmation, and “delete last event” deletes the next visible Google event after confirmation. Clear calendar still affects only local prototype events.
             </p>
           </div>
 

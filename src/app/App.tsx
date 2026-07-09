@@ -7,7 +7,7 @@ import { NotesPanel } from './components/NotesPanel';
 import { CalendarPanel } from './components/CalendarPanel';
 import { SearchPanel } from './components/SearchPanel';
 import { Message, OrbState, BackendStatus, ActivePanel, Note, CalendarEvent, CalendarBackendStatus, CalendarBackendView } from './types';
-import { streamChatMessage, getBackendStatus, resetConversation, interpretCommandIntent, getCalendarStatus, getCalendarEvents, createCalendarEvent, startCalendarAuth, resetCalendarAuth } from "./api";
+import { streamChatMessage, getBackendStatus, resetConversation, interpretCommandIntent, getCalendarStatus, getCalendarEvents, createCalendarEvent, deleteGoogleCalendarEvent, startCalendarAuth, resetCalendarAuth } from "./api";
 import { getSpeechRecognition, isSpeechRecognitionSupported } from './speechRecognition';
 import { speakText, stopSpeaking } from './speechSynthesis';
 import { parseCommand, normalizeSpokenQMeet } from './commands';
@@ -486,9 +486,46 @@ export default function App() {
     return event;
   }, [googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled]);
 
-  const deleteCalendarEvent = useCallback((eventId: string) => {
+  const deleteCalendarEvent = useCallback(async (eventId: string): Promise<CalendarEvent | null> => {
+    const googleEvent = googleCalendarEvents.find(
+      (event) => event.id === eventId || event.googleEventId === eventId
+    );
+
+    if (googleEvent?.source === 'google') {
+      const googleEventId = googleEvent.googleEventId || googleEvent.id.replace(/^google-/, '');
+
+      if (!googleEventId) {
+        setGoogleCalendarError('Could not identify the Google Calendar event to delete.');
+        return null;
+      }
+
+      setGoogleCalendarLoading(true);
+      setGoogleCalendarError('');
+
+      try {
+        const response = await deleteGoogleCalendarEvent(googleEventId);
+        setGoogleCalendarEvents((prev) =>
+          prev.filter((event) =>
+            event.id !== googleEvent.id &&
+            event.googleEventId !== googleEvent.googleEventId &&
+            event.googleEventId !== googleEventId
+          )
+        );
+        setGoogleCalendarError(response.message || 'Deleted Google Calendar event.');
+        return googleEvent;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Could not delete Google Calendar event.';
+        setGoogleCalendarError(message);
+        return null;
+      } finally {
+        setGoogleCalendarLoading(false);
+      }
+    }
+
+    const localEvent = calendarEvents.find((event) => event.id === eventId) ?? null;
     setCalendarEvents((prev) => prev.filter((event) => event.id !== eventId));
-  }, []);
+    return localEvent;
+  }, [calendarEvents, googleCalendarEvents]);
 
   const clearCalendarEvents = useCallback(() => {
     setCalendarEvents([]);
@@ -504,13 +541,22 @@ export default function App() {
     }
   }, []);
 
-  const deleteLastCalendarEvent = useCallback((): CalendarEvent | null => {
+  const deleteLastCalendarEvent = useCallback(async (): Promise<CalendarEvent | null> => {
+      if (googleCalendarStatus?.connected) {
+        const visibleGoogleEvents = googleCalendarEvents.filter((event) => isEventForCalendarView(event, calendarView));
+        const targetGoogleEvent = visibleGoogleEvents[0] ?? googleCalendarEvents[0] ?? null;
+  
+        if (targetGoogleEvent) {
+          return deleteCalendarEvent(targetGoogleEvent.id);
+        }
+      }
+
     if (calendarEvents.length === 0) return null;
 
     const deletedEvent = calendarEvents[0];
     setCalendarEvents((prev) => prev.slice(1));
     return deletedEvent;
-  }, [calendarEvents]);
+  }, [calendarEvents, calendarView, deleteCalendarEvent, googleCalendarEvents, googleCalendarStatus?.connected]);
 
   const getCalendarReadout = useCallback((view: CalendarView | 'all' = 'all', remoteEvents: CalendarEvent[] = googleCalendarEvents) => {
     const googleConnected = Boolean(googleCalendarStatus?.connected);
@@ -998,11 +1044,13 @@ export default function App() {
         confirmationContent = getCalendarReadout(requestedCalendarView, remoteEvents);
         shouldSpeakConfirmation = voiceOutputEnabled;
       } else if (commandMatch.command === 'delete-last-event') {
-        const deletedEvent = deleteLastCalendarEvent();
+        const deletedEvent = await deleteLastCalendarEvent();
         setActivePanel('calendar');
         confirmationContent = deletedEvent
-          ? `Deleted the last event: ${deletedEvent.time}: ${deletedEvent.title}.`
-          : 'No calendar events to delete.';
+          ? `Deleted ${deletedEvent.source === 'google' ? 'Google Calendar' : 'local'} event: ${deletedEvent.time}: ${deletedEvent.title}.`
+          : googleCalendarStatus?.connected
+            ? 'No Google Calendar events to delete for the current view.'
+            : 'No local calendar events to delete.';
         shouldSpeakConfirmation = voiceOutputEnabled;
       } else if (commandMatch.command === 'clear-calendar') {
         clearCalendarEvents();

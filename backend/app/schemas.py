@@ -87,3 +87,12 @@ class CalendarCreateEventResponse(BaseModel):
     source: Literal["google"] = "google"
     event: CalendarEventItem | None = None
     message: str = ""
+
+
+class CalendarDeleteEventResponse(BaseModel):
+    ok: bool = True
+    configured: bool = False
+    connected: bool = False
+    source: Literal["google"] = "google"
+    deletedEventId: str = ""
+    message: str = ""

@@ -90,6 +90,17 @@ export interface CalendarCreateEventResponse {
 }
 
 
+export interface CalendarDeleteEventResponse {
+  ok: boolean;
+  configured: boolean;
+  connected: boolean;
+  source: 'google';
+  deletedEventId: string;
+  message: string;
+}
+
+
+
 export type CommandIntentName = 'command' | 'chat';
 
 export type CommandAction =

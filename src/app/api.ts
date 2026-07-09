@@ -1,4 +1,4 @@
-import { BackendStatus, CalendarAuthResetResponse, CalendarAuthStartResponse, CalendarBackendStatus, CalendarBackendView, CalendarCreateEventRequest, CalendarCreateEventResponse, CalendarEventsResponse, CommandIntentResponse } from "./types";
+import { BackendStatus, CalendarAuthResetResponse, CalendarAuthStartResponse, CalendarBackendStatus, CalendarBackendView, CalendarCreateEventRequest, CalendarCreateEventResponse, CalendarDeleteEventResponse, CalendarEventsResponse, CommandIntentResponse } from "./types";
 
 export type ChatApiResponse = {
   reply: string;
@@ -133,6 +133,22 @@ export async function createCalendarEvent(event: CalendarCreateEventRequest): Pr
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || `Calendar create event error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+
+
+export async function deleteGoogleCalendarEvent(googleEventId: string): Promise<CalendarDeleteEventResponse> {
+  const encodedId = encodeURIComponent(googleEventId);
+  const res = await fetch(`${API_BASE_URL}/api/calendar/events/${encodedId}`, {
+    method: "DELETE",
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Calendar delete event error: ${res.status}`);
   }
 
   return res.json();
