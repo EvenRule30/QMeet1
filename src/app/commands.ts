@@ -19,6 +19,7 @@ export type LocalCommand =
   | 'open-calendar'
   | 'add-calendar-event'
   | 'read-calendar'
+  | 'refresh-calendar'
   | 'delete-last-event'
   | 'clear-calendar'
   | 'show-today'
@@ -58,7 +59,7 @@ export interface CommandMatch {
 }
 
 const HELP_MESSAGE =
-  "I'm QMeet, your local AI orb interface. I can control the local UI without sending those commands to OpenAI. I can open Menu, Settings, Status, Notes, Calendar, and Search. Notes: say \"note that buy milk,\" \"read my notes,\" or \"delete last note.\" Search: say \"search for raspberry pi kiosk mode,\" \"look up chromium flags,\" or \"clear search.\" Calendar: say \"add event tomorrow at 3 called meeting,\" \"show today's events,\" \"what's on my calendar,\" \"delete last event,\" or \"clear calendar.\" Voice: say \"mute voice,\" \"unmute voice,\" \"speak slower,\" \"speak faster,\" or \"normal voice.\" Navigation: say \"go home,\" \"close panel,\" \"cancel,\" or \"what did you hear.\"";
+  "I'm QMeet, your local AI orb interface. I can control the local UI without sending those commands to OpenAI. I can open Menu, Settings, Status, Notes, Calendar, and Search. Notes: say \"note that buy milk,\" \"read my notes,\" or \"delete last note.\" Search: say \"search for raspberry pi kiosk mode,\" \"look up chromium flags,\" or \"clear search.\" Calendar: say \"add event tomorrow at 3 called meeting,\" \"show today's events,\" \"what's on my calendar,\" \"refresh calendar,\" \"delete last event,\" or \"clear calendar.\" Voice: say \"mute voice,\" \"unmute voice,\" \"speak slower,\" \"speak faster,\" or \"normal voice.\" Navigation: say \"go home,\" \"close panel,\" \"cancel,\" or \"what did you hear.\"";
 
 const CONFIRMATIONS: Record<LocalCommand, string> = {
   help: HELP_MESSAGE,
@@ -81,6 +82,7 @@ const CONFIRMATIONS: Record<LocalCommand, string> = {
   'open-calendar': 'Opening calendar.',
   'add-calendar-event': 'Added event.',
   'read-calendar': 'Reading calendar.',
+  'refresh-calendar': 'Refreshing calendar.',
   'delete-last-event': 'Deleted the last event.',
   'clear-calendar': 'Cleared calendar.',
   'show-today': 'Showing today.',
@@ -235,6 +237,14 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
       rx(`^${REQUEST_PREFIX}(?:show|read|list|display)\\s+(?:my\\s+)?(?:calendar|calender|calander|schedule|agenda)?\\s*events$`),
       rx(`^${REQUEST_PREFIX}(?:what\\s+events\\s+do\\s+i\\s+have|what\\s+is\\s+my\\s+schedule|what\\s+are\\s+my\\s+events)$`),
       /^(?:calendar events|calender events|calander events|my events|my schedule|agenda)$/i,
+    ],
+  ],
+
+  [
+    'refresh-calendar',
+    [
+      rx(`^${REQUEST_PREFIX}(?:refresh|reload|sync|update)\s+(?:my\s+)?(?:calendar|calender|calander|schedule|agenda)(?:\s+(?:events?|view|panel))?$`),
+      /^(?:refresh calendar|reload calendar|sync calendar|update calendar|refresh schedule|reload schedule|sync schedule)$/i,
     ],
   ],
   [

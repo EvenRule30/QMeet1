@@ -76,6 +76,32 @@ function formatEventCreatedAt(createdAt: string): string {
   });
 }
 
+function getEventSortValue(event: CalendarEvent): number {
+  if (event.start) {
+    const startDate = new Date(event.start);
+    if (!Number.isNaN(startDate.getTime())) return startDate.getTime();
+  }
+
+  const time = (event.time || '').toLowerCase().trim();
+  if (!time || time === 'later' || time === 'all day') return Number.MAX_SAFE_INTEGER;
+
+  const match = time.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+  if (!match) return Number.MAX_SAFE_INTEGER - 1;
+
+  let hour = Number(match[1]);
+  const minute = Number(match[2] ?? '0');
+  const meridiem = match[3]?.toLowerCase();
+
+  if (meridiem === 'pm' && hour < 12) hour += 12;
+  if (meridiem === 'am' && hour === 12) hour = 0;
+
+  return hour * 60 + minute;
+}
+
+function sortCalendarEvents(events: CalendarEvent[]): CalendarEvent[] {
+  return [...events].sort((a, b) => getEventSortValue(a) - getEventSortValue(b));
+}
+
 function getGoogleStatusLabel(status?: CalendarBackendStatus | null): string {
   if (!status) return 'Checking';
   if (!status.configured) return 'Not configured';
@@ -107,7 +133,15 @@ function CalendarEventRow({
         {canDelete && onDelete && (
           <button
             className="calendar-event-delete-btn"
-            onClick={() => onDelete(event.id)}
+            onClick={() => {
+              const confirmed = window.confirm(
+                `Delete ${sourceLabel}: ${event.time || '—'}: ${event.title}?`
+              );
+
+              if (confirmed) {
+                onDelete(event.id);
+              }
+            }}
           >
             Delete
           </button>
@@ -133,8 +167,8 @@ export function CalendarPanel({
 }: CalendarPanelProps) {
   const title = view === 'today' ? "Today's Calendar" : "Tomorrow's Calendar";
   const acceptedDateKeys = getAcceptedDateKeysForView(view);
-  const visibleLocalEvents = events.filter((event) => acceptedDateKeys.has(event.dateKey));
-  const visibleGoogleEvents = googleEvents.filter((event) => acceptedDateKeys.has(event.dateKey));
+  const visibleLocalEvents = sortCalendarEvents(events.filter((event) => acceptedDateKeys.has(event.dateKey)));
+  const visibleGoogleEvents = sortCalendarEvents(googleEvents.filter((event) => acceptedDateKeys.has(event.dateKey)));
   const googleConnected = Boolean(googleStatus?.connected);
 
   return (
@@ -181,15 +215,15 @@ export function CalendarPanel({
             )}
             <div className="panel-action-row">
               {!googleConnected && (
-                <button className="panel-action-btn" onClick={onConnectGoogleCalendar}>
+                <button className="panel-action-btn" onClick={onConnectGoogleCalendar} disabled={googleLoading}>
                   Connect
                 </button>
               )}
-              <button className="panel-action-btn" onClick={onRefreshGoogleCalendar}>
-                Refresh
+              <button className="panel-action-btn" onClick={onRefreshGoogleCalendar} disabled={googleLoading}>
+                {googleLoading ? 'Refreshing…' : 'Refresh'}
               </button>
               {googleStatus?.connected && (
-                <button className="panel-action-btn" onClick={onResetGoogleCalendar}>
+                <button className="panel-action-btn" onClick={onResetGoogleCalendar} disabled={googleLoading}>
                   Disconnect
                 </button>
               )}
@@ -206,7 +240,7 @@ export function CalendarPanel({
                   <div className="calendar-agenda-item">
                     <span className="calendar-agenda-time">—</span>
                     <span className="calendar-agenda-text">
-                      No Google Calendar events found for {view === 'today' ? 'today' : 'tomorrow'}.
+                      No Google Calendar events found for {view === 'today' ? 'today' : 'tomorrow'}. Press Refresh after creating or deleting events from another device.
                     </span>
                   </div>
                 ) : (
@@ -230,7 +264,7 @@ export function CalendarPanel({
                   <div className="calendar-agenda-item">
                     <span className="calendar-agenda-time">Later</span>
                     <span className="calendar-agenda-text">
-                      Connect Google Calendar to read real events in Phase 6A.
+                      Connect Google Calendar to read, create, and delete real events. Local events stay on this device only.
                     </span>
                   </div>
                 </>
