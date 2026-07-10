@@ -7,8 +7,10 @@ QMeet is a voice-first AI tablet interface for the Chascii orb prototype. The fr
 - Text and browser voice input
 - Spoken responses through browser speech synthesis
 - OpenAI-backed chat streaming
+- Local command routing before normal chat
 - Web search result cards
 - Local notes
+- Local memory/tasks in browser storage
 - Google Calendar read/create/edit/delete with confirmations
 - 1024×600 tablet/kiosk layout polish
 - Raspberry Pi Chromium kiosk launcher in `scripts/pi-kiosk-start.sh`
@@ -98,6 +100,10 @@ Useful QMeet prompts:
 open menu
 note that test the tablet UI
 read my notes
+open memory
+remember to test the Pi kiosk as a task
+what was I working on
+mark task done
 search for raspberry pi chromium kiosk mode
 what's on my calendar tomorrow
 add event tomorrow at 3 called project sync
@@ -120,6 +126,21 @@ Basic Pi test:
 chmod +x scripts/pi-kiosk-start.sh
 QMEET_URL=http://YOUR_LAPTOP_IP:5173 ./scripts/pi-kiosk-start.sh
 ```
+
+## Local browser storage
+
+These are browser-local prototype stores. Clearing site data or switching browsers/devices can hide or remove them.
+
+```text
+qmeet-notes
+qmeet-calendar-events
+qmeet-memory-tasks
+qmeet-recent-actions
+qmeet-voice-output-enabled
+qmeet-speech-rate
+```
+
+Google Calendar OAuth tokens are backend-local files, not browser storage.
 
 ## Do not commit secrets
 

@@ -1,6 +1,6 @@
 # QMeet Development Notes
 
-This file keeps the detailed project/setup information out of the main README.
+This file keeps detailed project/setup information out of the main README.
 
 ## Architecture
 
@@ -10,7 +10,9 @@ QMeet
 │  ├─ interactive orb UI
 │  ├─ browser speech recognition
 │  ├─ browser speech synthesis
+│  ├─ local command parser
 │  ├─ local notes
+│  ├─ local memory/tasks
 │  ├─ Google Calendar panel
 │  └─ web search panel
 └─ FastAPI backend
@@ -95,6 +97,47 @@ Pi testing against laptop-hosted backend:
 VITE_QMEET_API_URL=http://YOUR_LAPTOP_IP:8000
 ```
 
+## Local frontend storage
+
+QMeet currently uses browser `localStorage` for prototype-local state.
+
+```text
+qmeet-notes                  saved local notes
+qmeet-calendar-events        local fallback calendar events
+qmeet-memory-tasks           local task/memory list
+qmeet-recent-actions         compact recent action log used by memory readout
+qmeet-voice-output-enabled   voice output setting
+qmeet-speech-rate            speech speed setting
+```
+
+Notes, local calendar events, memory tasks, voice settings, and recent actions are browser-local. They are not synchronized between laptop, Pi, or different browsers.
+
+## Local memory / tasks
+
+Phase 9A added local task persistence. It does not require a backend or database.
+
+Main commands:
+
+```text
+open memory
+what was I working on
+remember to test the Pi kiosk as a task
+mark task done
+mark task test the Pi done
+clear completed tasks
+close memory
+```
+
+Behavior:
+
+```text
+Open Tasks       visible in Memory panel
+Completed Tasks  visible in Memory panel until cleared
+Recent Actions   stored internally for summary context, hidden from panel UI
+```
+
+Destructive task actions are confirmation-gated through the existing command safety flow.
+
 ## Google Calendar setup
 
 Expected local files inside `backend/`:
@@ -155,6 +198,11 @@ open notes
 note that buy milk
 read my notes
 clear notes
+open memory
+remember to test the Pi as a task
+what was I working on
+mark task done
+clear completed tasks
 open calendar
 what's on my calendar
 what's on my calendar tomorrow
@@ -203,6 +251,16 @@ Vite was restarted after env changes
 
 Browser speech recognition depends on browser support and microphone permissions. Chrome/Chromium is the expected browser path.
 
+### Memory/tasks disappeared
+
+Memory/tasks are in browser localStorage. Check that you are using the same browser/profile and did not clear site data.
+
+Browser devtools check:
+
+```text
+Application → Local storage → qmeet-memory-tasks
+```
+
 ### Google Calendar says not connected
 
 Check:
@@ -242,16 +300,18 @@ backend/calendar_auth_state.json
 ## Completed phase summary
 
 ```text
-Phase 1  Browser speech input
-Phase 2  Local UI commands
-Phase 3  Browser speech output
-Phase 4  Notes / local tools / settings
-Phase 5  Fuzzy command interpreter + confirmations
-Phase 6  Google Calendar read/create/delete/edit
-Phase 7  Web search + result cards
-Phase 8A Voice-first orb activity UI
-Phase 8B Short spoken tool replies
-Phase 8C Command/result toast cards
-Phase 8D 1024×600 tablet/kiosk layout polish
-Phase 8E Raspberry Pi kiosk launcher/docs
+Phase 1   Browser speech input
+Phase 2   Local UI commands
+Phase 3   Browser speech output
+Phase 4   Notes / local tools / settings
+Phase 5   Fuzzy command interpreter + confirmations
+Phase 6   Google Calendar read/create/delete/edit
+Phase 7   Web search + result cards
+Phase 8A  Voice-first orb activity UI
+Phase 8B  Short spoken tool replies
+Phase 8C  Command/result toast cards
+Phase 8D  1024×600 tablet/kiosk layout polish
+Phase 8E  Raspberry Pi kiosk launcher/docs
+Phase 8F  Compact README/docs cleanup
+Phase 9A  Local memory/task persistence
 ```
