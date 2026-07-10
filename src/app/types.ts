@@ -1,5 +1,5 @@
 export type OrbState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'error';
-export type ActivePanel = 'none' | 'menu' | 'settings' | 'status' | 'notes' | 'calendar' | 'search';
+export type ActivePanel = 'none' | 'menu' | 'settings' | 'status' | 'notes' | 'calendar' | 'search' | 'memory';
 
 export type AssistantActivityKind =
   | 'idle'
@@ -12,6 +12,7 @@ export type AssistantActivityKind =
   | 'settings'
   | 'status'
   | 'navigation'
+  | 'memory'
   | 'confirmation'
   | 'error';
 
@@ -40,6 +41,20 @@ export interface BackendStatus {
 export interface Note {
   id: string;
   content: string;
+  createdAt: string;
+}
+
+export interface MemoryTask {
+  id: string;
+  title: string;
+  createdAt: string;
+  completedAt?: string;
+}
+
+export interface RecentAction {
+  id: string;
+  label: string;
+  detail: string;
   createdAt: string;
 }
 
@@ -175,6 +190,9 @@ export type CommandAction =
   | 'clear_notes'
   | 'prepare_search'
   | 'clear_search'
+  | 'read_memory'
+  | 'save_task'
+  | 'mark_task_done'
   | 'add_calendar_event'
   | 'read_calendar'
   | 'delete_last_calendar_event'

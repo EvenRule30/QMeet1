@@ -6,7 +6,7 @@ import { PromptBar } from './components/PromptBar';
 import { NotesPanel } from './components/NotesPanel';
 import { CalendarPanel } from './components/CalendarPanel';
 import { SearchPanel } from './components/SearchPanel';
-import { Message, OrbState, BackendStatus, ActivePanel, Note, CalendarEvent, CalendarBackendStatus, CalendarBackendView, SearchResponse, AssistantActivity } from './types';
+import { Message, OrbState, BackendStatus, ActivePanel, Note, CalendarEvent, CalendarBackendStatus, CalendarBackendView, SearchResponse, AssistantActivity, MemoryTask, RecentAction } from './types';
 import { streamChatMessage, getBackendStatus, resetConversation, interpretCommandIntent, getCalendarStatus, getCalendarEvents, createCalendarEvent, deleteGoogleCalendarEvent, updateGoogleCalendarEvent, startCalendarAuth, resetCalendarAuth, searchWeb } from "./api";
 import { getSpeechRecognition, isSpeechRecognitionSupported } from './speechRecognition';
 import { speakText, stopSpeaking } from './speechSynthesis';
@@ -28,6 +28,8 @@ function getPanelLabel(panel: ActivePanel): string {
       return 'Calendar';
     case 'search':
       return 'Search';
+    case 'memory':
+      return 'Memory';
     default:
       return 'Home';
   }
@@ -53,6 +55,7 @@ type ActivityInput = {
   hasSearchResult: boolean;
   notesCount: number;
   calendarCount: number;
+  taskCount: number;
 };
 
 function getAssistantActivity(input: ActivityInput): AssistantActivity {
@@ -136,6 +139,14 @@ function getAssistantActivity(input: ActivityInput): AssistantActivity {
     };
   }
 
+  if (input.activePanel === 'memory') {
+    return {
+      kind: 'memory',
+      label: 'Memory open',
+      detail: `${input.taskCount} open task${input.taskCount === 1 ? '' : 's'}`,
+    };
+  }
+
   if (input.activePanel === 'settings') {
     return {
       kind: 'settings',
@@ -191,6 +202,8 @@ function getBriefToolSpeech(command: string, fullText: string): string {
     case 'open-notes':
     case 'new-note':
       return 'Notes open.';
+    case 'open-memory':
+      return 'Memory open.';
     case 'open-calendar':
     case 'show-today':
     case 'show-tomorrow':
@@ -202,6 +215,7 @@ function getBriefToolSpeech(command: string, fullText: string): string {
     case 'close-status':
     case 'hide-status':
     case 'close-notes':
+    case 'close-memory':
     case 'close-calendar':
     case 'close-search':
     case 'close-generic':
@@ -216,6 +230,14 @@ function getBriefToolSpeech(command: string, fullText: string): string {
       return 'Notes cleared.';
     case 'read-notes':
       return 'Notes are open.';
+    case 'read-memory':
+      return trimmed;
+    case 'remember-task':
+      return 'Task saved.';
+    case 'mark-task-done':
+      return 'Task marked done.';
+    case 'clear-done-tasks':
+      return 'Completed tasks cleared.';
     case 'refresh-calendar':
       return 'Calendar refreshed.';
     case 'add-calendar-event':
@@ -299,6 +321,19 @@ function getResultToastForCommand(command: string, fullText: string): Omit<Resul
     case 'new-note':
       return { kind: 'notes', title: 'Notes open', detail: 'Ready for local notes.' };
 
+    case 'open-memory':
+      return { kind: 'info', title: 'Memory open', detail: 'Tasks and recent actions are visible.' };
+    case 'read-memory':
+      return { kind: 'info', title: 'Memory summary', detail: 'Current tasks and recent work summarized.' };
+    case 'remember-task':
+      return { kind: 'success', title: 'Task saved', detail: compactToastDetail(trimmed) };
+    case 'mark-task-done':
+      return { kind: 'success', title: 'Task complete', detail: compactToastDetail(trimmed) };
+    case 'clear-done-tasks':
+      return { kind: 'warning', title: 'Completed tasks cleared', detail: compactToastDetail(trimmed) };
+    case 'close-memory':
+      return { kind: 'info', title: 'Memory closed', detail: 'Panel dismissed.' };
+
     case 'add-calendar-event':
       return { kind: 'calendar', title: 'Event added', detail: compactToastDetail(trimmed) };
     case 'edit-last-event':
@@ -313,6 +348,8 @@ function getResultToastForCommand(command: string, fullText: string): Omit<Resul
       return { kind: 'calendar', title: 'Calendar readout', detail: 'Speaking calendar events now.' };
     case 'clear-calendar':
       return { kind: 'calendar', title: 'Local calendar cleared', detail: 'Local-only events were removed.' };
+    case 'open-memory':
+      return 'Memory open.';
     case 'open-calendar':
     case 'show-today':
     case 'show-tomorrow':
@@ -340,6 +377,7 @@ function getResultToastForCommand(command: string, fullText: string): Omit<Resul
     case 'close-status':
     case 'hide-status':
     case 'close-notes':
+    case 'close-memory':
     case 'close-calendar':
     case 'close-search':
     case 'close-generic':
@@ -406,6 +444,8 @@ function getCalendarViewLabel(view: CalendarView): string {
 const VOICE_OUTPUT_STORAGE_KEY = 'qmeet-voice-output-enabled';
 const SPEECH_RATE_STORAGE_KEY = 'qmeet-speech-rate';
 const CALENDAR_EVENTS_STORAGE_KEY = 'qmeet-calendar-events';
+const MEMORY_TASKS_STORAGE_KEY = 'qmeet-memory-tasks';
+const RECENT_ACTIONS_STORAGE_KEY = 'qmeet-recent-actions';
 const LEGACY_CALENDAR_EVENTS_STORAGE_KEYS = [
   'qmeet-calendar',
   'qmeet-events',
@@ -428,6 +468,8 @@ const DESTRUCTIVE_FRONTEND_COMMANDS = new Set([
   'end chat',
   'delete last note',
   'clear notes',
+  'mark task done',
+  'clear completed tasks',
   'delete last event',
   'delete event',
   'edit last event',
@@ -439,6 +481,8 @@ const DESTRUCTIVE_LOCAL_COMMANDS = new Set([
   'end-chat',
   'delete-last-note',
   'clear-notes',
+  'mark-task-done',
+  'clear-done-tasks',
   'delete-last-event',
   'delete-calendar-event',
   'edit-last-event',
@@ -450,6 +494,8 @@ const LOCAL_COMMAND_TO_FRONTEND_COMMAND: Record<string, string> = {
   'end-chat': 'end chat',
   'delete-last-note': 'delete last note',
   'clear-notes': 'clear notes',
+  'mark-task-done': 'mark task done',
+  'clear-done-tasks': 'clear completed tasks',
   'delete-last-event': 'delete last event',
   'delete-calendar-event': 'delete event',
   'edit-last-event': 'edit last event',
@@ -681,6 +727,113 @@ function readStoredSpeechRate(): number {
   }
 }
 
+
+function readStoredMemoryTasks(): MemoryTask[] {
+  if (typeof window === 'undefined') return [];
+
+  try {
+    const rawTasks = window.localStorage.getItem(MEMORY_TASKS_STORAGE_KEY);
+    if (!rawTasks) return [];
+
+    const parsedTasks = JSON.parse(rawTasks);
+    if (!Array.isArray(parsedTasks)) return [];
+
+    return parsedTasks
+      .filter((task) => task && typeof task.title === 'string')
+      .map((task) => ({
+        id: typeof task.id === 'string' ? task.id : `task-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        title: task.title,
+        createdAt: typeof task.createdAt === 'string' ? task.createdAt : new Date().toISOString(),
+        ...(typeof task.completedAt === 'string' ? { completedAt: task.completedAt } : {}),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function readStoredRecentActions(): RecentAction[] {
+  if (typeof window === 'undefined') return [];
+
+  try {
+    const rawActions = window.localStorage.getItem(RECENT_ACTIONS_STORAGE_KEY);
+    if (!rawActions) return [];
+
+    const parsedActions = JSON.parse(rawActions);
+    if (!Array.isArray(parsedActions)) return [];
+
+    return parsedActions
+      .filter((action) => action && typeof action.label === 'string')
+      .map((action) => ({
+        id: typeof action.id === 'string' ? action.id : `action-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        label: action.label,
+        detail: typeof action.detail === 'string' ? action.detail : '',
+        createdAt: typeof action.createdAt === 'string' ? action.createdAt : new Date().toISOString(),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function normalizeMemoryLookup(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function formatMemoryTime(value: string): string {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return 'Saved';
+  }
+
+  return date.toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function getCommandActionLabel(command: string): string {
+  switch (command) {
+    case 'save-note':
+      return 'Saved note';
+    case 'delete-last-note':
+      return 'Deleted note';
+    case 'clear-notes':
+      return 'Cleared notes';
+    case 'remember-task':
+      return 'Saved task';
+    case 'mark-task-done':
+      return 'Completed task';
+    case 'clear-done-tasks':
+      return 'Cleared completed tasks';
+    case 'run-search':
+      return 'Searched web';
+    case 'clear-search':
+      return 'Cleared search';
+    case 'add-calendar-event':
+      return 'Added calendar event';
+    case 'edit-last-event':
+      return 'Edited calendar event';
+    case 'delete-calendar-event':
+    case 'delete-last-event':
+      return 'Deleted calendar event';
+    case 'read-calendar':
+      return 'Read calendar';
+    case 'read-notes':
+      return 'Read notes';
+    case 'read-memory':
+      return 'Read memory';
+    default:
+      return command.replace(/-/g, ' ');
+  }
+}
+
+
 export default function App() {
   const [chatActive, setChatActive] = useState(false);
   const [orbState, setOrbState] = useState<OrbState>('idle');
@@ -745,6 +898,8 @@ export default function App() {
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState('');
   const [resultToasts, setResultToasts] = useState<ResultToast[]>([]);
+  const [memoryTasks, setMemoryTasks] = useState<MemoryTask[]>(readStoredMemoryTasks);
+  const [recentActions, setRecentActions] = useState<RecentAction[]>(readStoredRecentActions);
   const [lastHeardTranscript, setLastHeardTranscript] = useState('');
   const [lastNormalizedTranscript, setLastNormalizedTranscript] = useState('');
   const [lastLocalCommand, setLastLocalCommand] = useState('None');
@@ -905,6 +1060,22 @@ export default function App() {
     }
   }, [calendarEvents]);
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(MEMORY_TASKS_STORAGE_KEY, JSON.stringify(memoryTasks));
+    } catch (error) {
+      console.error('Failed to save memory tasks:', error);
+    }
+  }, [memoryTasks]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(RECENT_ACTIONS_STORAGE_KEY, JSON.stringify(recentActions));
+    } catch (error) {
+      console.error('Failed to save recent actions:', error);
+    }
+  }, [recentActions]);
+
   const saveNote = useCallback((content: string): Note | null => {
     const trimmedContent = content.trim();
 
@@ -958,6 +1129,133 @@ export default function App() {
 
     return `You have ${notes.length} saved note${notes.length === 1 ? '' : 's'}: ${noteLines.join(' ')}${suffix}`;
   }, [notes]);
+
+  const addRecentAction = useCallback((label: string, detail: string) => {
+    const cleanedDetail = detail.replace(/\s+/g, ' ').trim();
+
+    const action: RecentAction = {
+      id: `action-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      label,
+      detail: cleanedDetail.length > 140 ? `${cleanedDetail.slice(0, 137).trim()}...` : cleanedDetail,
+      createdAt: new Date().toISOString(),
+    };
+
+    setRecentActions((prev) => [action, ...prev].slice(0, 12));
+  }, []);
+
+  const saveMemoryTask = useCallback((title: string): MemoryTask | null => {
+    const trimmedTitle = title.trim();
+
+    if (!trimmedTitle) {
+      return null;
+    }
+
+    const task: MemoryTask = {
+      id: `task-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      title: trimmedTitle,
+      createdAt: new Date().toISOString(),
+    };
+
+    setMemoryTasks((prev) => [task, ...prev]);
+    return task;
+  }, []);
+
+  const markMemoryTaskDone = useCallback((lookup?: string): MemoryTask | null => {
+    const openTasks = memoryTasks.filter((task) => !task.completedAt);
+
+    if (openTasks.length === 0) {
+      return null;
+    }
+
+    const normalizedLookup = normalizeMemoryLookup(lookup ?? '');
+    const targetTask = normalizedLookup
+      ? openTasks.find((task) => {
+          const normalizedTitle = normalizeMemoryLookup(task.title);
+          return normalizedTitle.includes(normalizedLookup) || normalizedLookup.includes(normalizedTitle);
+        })
+      : openTasks[0];
+
+    if (!targetTask) {
+      return null;
+    }
+
+    const completedTask: MemoryTask = {
+      ...targetTask,
+      completedAt: new Date().toISOString(),
+    };
+
+    setMemoryTasks((prev) =>
+      prev.map((task) => (task.id === targetTask.id ? completedTask : task))
+    );
+
+    return completedTask;
+  }, [memoryTasks]);
+
+  const clearCompletedTasks = useCallback((): number => {
+    const completedTasks = memoryTasks.filter((task) => task.completedAt);
+    const removedCount = completedTasks.length;
+
+    if (removedCount === 0) {
+      return 0;
+    }
+
+    const completedTaskTitles = completedTasks
+      .map((task) => normalizeMemoryLookup(task.title))
+      .filter(Boolean);
+
+    setMemoryTasks((prev) => prev.filter((task) => !task.completedAt));
+
+    // Treat Clear Done as cleanup, not as another memory action.
+    // Remove task-related history too so the Memory panel does not still look like
+    // the completed task exists after the completed task list has been cleared.
+    setRecentActions((prev) =>
+      prev.filter((action) => {
+        const normalizedLabel = normalizeMemoryLookup(action.label);
+        const normalizedDetail = normalizeMemoryLookup(action.detail);
+        const actionText = `${normalizedLabel} ${normalizedDetail}`.trim();
+
+        const isTaskAction =
+          normalizedLabel === 'saved task' ||
+          normalizedLabel === 'completed task' ||
+          normalizedLabel === 'cleared completed tasks' ||
+          /\btask\b/.test(actionText) ||
+          completedTaskTitles.some(
+            (title) => actionText.includes(title) || title.includes(normalizedDetail)
+          );
+
+        return !isTaskAction;
+      })
+    );
+
+    return removedCount;
+  }, [memoryTasks]);
+
+  const getMemoryReadout = useCallback(() => {
+    const openTasks = memoryTasks.filter((task) => !task.completedAt);
+    const completedTasks = memoryTasks.filter((task) => task.completedAt);
+    const latestNote = notes[0]?.content;
+    const latestCalendarEvent = googleCalendarEvents[0] ?? calendarEvents[0];
+    const latestSearch = searchResult?.query || searchQuery.trim();
+    const latestAction = recentActions[0];
+
+    const taskText = openTasks.length > 0
+      ? `Open tasks: ${openTasks.slice(0, 4).map((task) => task.title).join('; ')}.`
+      : 'No open tasks.';
+
+    const completedText = completedTasks.length > 0
+      ? `${completedTasks.length} completed task${completedTasks.length === 1 ? '' : 's'} saved.`
+      : 'No completed tasks saved.';
+
+    const noteText = latestNote ? `Latest note: ${latestNote}.` : 'No notes yet.';
+    const calendarText = latestCalendarEvent
+      ? `Latest calendar item: ${latestCalendarEvent.time}: ${latestCalendarEvent.title}.`
+      : 'No calendar items loaded.';
+    const searchText = latestSearch ? `Latest search: ${latestSearch}.` : 'No search yet.';
+    const actionText = latestAction ? `Last action: ${latestAction.label}.` : 'No recent actions yet.';
+
+    return `${taskText} ${completedText} ${noteText} ${calendarText} ${searchText} ${actionText}`;
+  }, [calendarEvents, googleCalendarEvents, memoryTasks, notes, recentActions, searchQuery, searchResult?.query]);
+
 
   const saveCalendarEvent = useCallback(async (eventInput?: { day?: CalendarView; time?: string; title?: string }): Promise<CalendarEvent | null> => {
     const title = eventInput?.title?.trim() ?? '';
@@ -1791,6 +2089,35 @@ export default function App() {
         closePanel();
       } else if (commandMatch.command === 'clear-notes') {
         clearNotes();
+      } else if (commandMatch.command === 'open-memory') {
+        setActivePanel('memory');
+      } else if (commandMatch.command === 'close-memory') {
+        closePanel();
+      } else if (commandMatch.command === 'read-memory') {
+        setActivePanel('memory');
+        confirmationContent = getMemoryReadout();
+        shouldSpeakConfirmation = voiceOutputEnabled;
+      } else if (commandMatch.command === 'remember-task') {
+        const savedTask = saveMemoryTask(commandMatch.payload ?? '');
+        setActivePanel('memory');
+        confirmationContent = savedTask ? `Saved task: ${savedTask.title}.` : 'I did not catch the task text.';
+        shouldSpeakConfirmation = voiceOutputEnabled;
+      } else if (commandMatch.command === 'mark-task-done') {
+        const completedTask = markMemoryTaskDone(commandMatch.payload);
+        setActivePanel('memory');
+        confirmationContent = completedTask
+          ? `Marked task done: ${completedTask.title}.`
+          : commandMatch.payload
+            ? `I could not find an open task matching "${commandMatch.payload}".`
+            : 'No open tasks to complete.';
+        shouldSpeakConfirmation = voiceOutputEnabled;
+      } else if (commandMatch.command === 'clear-done-tasks') {
+        const removedCount = clearCompletedTasks();
+        setActivePanel('memory');
+        confirmationContent = removedCount > 0
+          ? `Cleared ${removedCount} completed task${removedCount === 1 ? '' : 's'}.`
+          : 'No completed tasks to clear.';
+        shouldSpeakConfirmation = voiceOutputEnabled;
       } else if (commandMatch.command === 'open-calendar') {
         setCalendarView('today');
         setActivePanel('calendar');
@@ -1981,6 +2308,9 @@ export default function App() {
         setMessages((prev) => [...prev, userMsg, confirmationMsg]);
       }
 
+      if (commandMatch.command !== 'clear-done-tasks') {
+        addRecentAction(getCommandActionLabel(commandMatch.command), confirmationContent);
+      }
       pushResultToast(getResultToastForCommand(commandMatch.command, confirmationContent));
 
       speakAssistantText(speechConfirmationContent, {
@@ -2253,7 +2583,7 @@ export default function App() {
         }
       }, 2000);
     }
-  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, deleteCalendarEventByCriteria, findCalendarEventForDeletion, getNextCalendarEventForDeletion, getNextCalendarEventForChange, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, runWebSearch, clearSearchState, searchError, pushResultToast, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents]);
+  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveMemoryTask, markMemoryTaskDone, clearCompletedTasks, getMemoryReadout, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, deleteCalendarEventByCriteria, findCalendarEventForDeletion, getNextCalendarEventForDeletion, getNextCalendarEventForChange, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, runWebSearch, clearSearchState, searchError, pushResultToast, addRecentAction, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents]);
 
   const handleOrbClick = useCallback(() => {
     // If QMeet is actively generating/streaming, tapping the orb should cancel
@@ -2485,6 +2815,8 @@ export default function App() {
       minute: '2-digit',
     });
     const statusNotesCount = notes.length;
+    const statusOpenTasksCount = memoryTasks.filter((task) => !task.completedAt).length;
+    const statusCompletedTasksCount = memoryTasks.filter((task) => task.completedAt).length;
     const statusTodayEventsCount = calendarEvents.filter((event) => event.dateKey === getDateKeyForCalendarView('today')).length;
     const statusTomorrowEventsCount = calendarEvents.filter((event) => event.dateKey === getDateKeyForCalendarView('tomorrow')).length;
     const statusGoogleEventsCount = googleCalendarEvents.length;
@@ -2526,6 +2858,7 @@ export default function App() {
       hasSearchResult: Boolean(searchResult),
       notesCount: statusNotesCount,
       calendarCount: calendarEvents.length,
+      taskCount: statusOpenTasksCount,
     });
 
   return (
@@ -2615,6 +2948,12 @@ export default function App() {
                   <span className="launcher-command">Say: open notes</span>
                 </button>
 
+                <button className="launcher-card" onClick={() => openLauncherPanel('memory')}>
+                  <span className="launcher-title">Memory</span>
+                  <span className="launcher-description">Review tasks and recent work.</span>
+                  <span className="launcher-command">Say: what was I working on</span>
+                </button>
+
                 <button className="launcher-card" onClick={() => openLauncherPanel('calendar')}>
                   <span className="launcher-title">Calendar</span>
                   <span className="launcher-description">View today or tomorrow placeholders.</span>
@@ -2643,7 +2982,7 @@ export default function App() {
               <div className="panel-section launcher-help-section">
                 <div className="panel-section-title">Quick Commands</div>
                 <p className="panel-section-text">
-                  Try "what can you do", "note that buy milk", "search for kiosk mode", "add event tomorrow at 3 called meeting", "what's on my calendar", "what did you hear", "cancel", "go home", or "mute voice".
+                  Try "what can you do", "note that buy milk", "remember to test the Pi as a task", "what was I working on", "search for kiosk mode", "add event tomorrow at 3 called meeting", "what's on my calendar", "what did you hear", "cancel", "go home", or "mute voice".
                 </p>
               </div>
 
@@ -2835,6 +3174,12 @@ export default function App() {
                 </div>
 
                 <div className="status-card">
+                  <div className="status-card-title">Open Tasks</div>
+                  <div className="status-card-value">{statusOpenTasksCount}</div>
+                  <div className="status-card-meta">{statusCompletedTasksCount} completed</div>
+                </div>
+
+                <div className="status-card">
                   <div className="status-card-title">Calendar</div>
                   <div className="status-card-value">{calendarEvents.length}</div>
                   <div className="status-card-meta">Local events total</div>
@@ -2922,7 +3267,99 @@ export default function App() {
               <div className="panel-section">
                 <div className="panel-section-title">Supported Status Commands</div>
                 <p className="panel-section-text">
-                  Say “show status,” “system status,” “diagnostics,” “what did you hear,” “read my notes,” “what's on my calendar,” “close status,” or “go home.” This panel also shows whether the last input used the exact parser, fuzzy command interpreter, or normal chat.
+                  Say “show status,” “system status,” “diagnostics,” “what did you hear,” “read my notes,” “what was I working on,” “what's on my calendar,” “close status,” or “go home.” This panel also shows whether the last input used the exact parser, fuzzy command interpreter, or normal chat.
+                </p>
+              </div>
+
+              <button className="close-panel-btn" onClick={closePanel}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+
+      {activePanel === 'memory' && (
+        <div className="panel-overlay">
+          <div className="panel-content memory-panel">
+            <div className="panel-header">Memory</div>
+            <div className="panel-body memory-panel-body">
+              <div className="memory-hero">
+                <div>
+                  <div className="memory-kicker">Local Memory</div>
+                  <div className="memory-title">Tasks saved in this browser.</div>
+                </div>
+                <div className="memory-chip">
+                  {memoryTasks.filter((task) => !task.completedAt).length} Open
+                </div>
+              </div>
+
+              <div className="panel-section">
+                <div className="panel-section-title">Open Tasks</div>
+                {memoryTasks.filter((task) => !task.completedAt).length === 0 ? (
+                  <p className="panel-section-text">No open tasks. Say “remember to test the Pi as a task.”</p>
+                ) : (
+                  <div className="memory-list">
+                    {memoryTasks.filter((task) => !task.completedAt).map((task) => (
+                      <div className="memory-task-item" key={task.id}>
+                        <div>
+                          <div className="memory-task-title">{task.title}</div>
+                          <div className="memory-task-meta">Saved {formatMemoryTime(task.createdAt)}</div>
+                        </div>
+                        <button
+                          className="memory-task-done-btn"
+                          type="button"
+                          onClick={() => {
+                            const completedTask = markMemoryTaskDone(task.title);
+                            if (completedTask) {
+                              addRecentAction('Completed task', completedTask.title);
+                              pushResultToast({ kind: 'success', title: 'Task complete', detail: completedTask.title });
+                            }
+                          }}
+                        >
+                          Done
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {memoryTasks.some((task) => task.completedAt) && (
+                <div className="panel-section">
+                  <div className="panel-section-title">Completed Tasks</div>
+                  <div className="memory-list">
+                    {memoryTasks.filter((task) => task.completedAt).slice(0, 5).map((task) => (
+                      <div className="memory-action-item memory-completed-task" key={task.id}>
+                        <div className="memory-action-title">{task.title}</div>
+                        <div className="memory-task-meta">Done {task.completedAt ? formatMemoryTime(task.completedAt) : 'recently'}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="panel-action-row">
+                    <button
+                      className="panel-action-btn panel-action-btn-danger"
+                      type="button"
+                      onClick={() => {
+                        const removedCount = clearCompletedTasks();
+                        pushResultToast({
+                          kind: 'warning',
+                          title: 'Completed tasks cleared',
+                          detail: removedCount > 0 ? `${removedCount} removed.` : 'No completed tasks to clear.',
+                        });
+                      }}
+                    >
+                      Clear Done
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div className="panel-section">
+                <div className="panel-section-title">Supported Commands</div>
+                <p className="panel-section-text">
+                  Say “what was I working on,” “remember to test the Pi as a task,” “mark task done,” “mark test the Pi done,” “clear completed tasks,” or “close memory.”
                 </p>
               </div>
 

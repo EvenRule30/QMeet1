@@ -14,6 +14,12 @@ export type LocalCommand =
   | 'save-note'
   | 'read-notes'
   | 'delete-last-note'
+  | 'open-memory'
+  | 'close-memory'
+  | 'read-memory'
+  | 'remember-task'
+  | 'mark-task-done'
+  | 'clear-done-tasks'
   | 'close-notes'
   | 'clear-notes'
   | 'open-calendar'
@@ -44,7 +50,7 @@ export type LocalCommand =
   | 'end-chat'
   | 'close-generic';
 
-export type ActivePanel = 'none' | 'menu' | 'settings' | 'status' | 'notes' | 'calendar' | 'search';
+export type ActivePanel = 'none' | 'menu' | 'settings' | 'status' | 'notes' | 'calendar' | 'search' | 'memory';
 
 export interface CalendarCommandPayload {
   day: 'today' | 'tomorrow';
@@ -75,7 +81,7 @@ export interface CommandMatch {
 }
 
 const HELP_MESSAGE =
-  "I'm QMeet, your local AI orb interface. I can control the local UI without sending those commands to OpenAI. I can open Menu, Settings, Status, Notes, Calendar, and real Web Search. Notes: say \"note that buy milk,\" \"read my notes,\" or \"delete last note.\" Search: say \"search for raspberry pi kiosk mode,\" \"look up chromium flags,\" or \"clear search\" to run real web searches. Calendar: say \"add event tomorrow at 3 called meeting,\" \"reschedule last event to tomorrow at 4,\" \"rename last event to project sync,\" \"show today's events,\" \"what's on my calendar,\" \"refresh calendar,\" \"delete last event,\" or \"clear calendar.\" Voice: say \"mute voice,\" \"unmute voice,\" \"speak slower,\" \"speak faster,\" or \"normal voice.\" Navigation: say \"go home,\" \"close panel,\" \"cancel,\" or \"what did you hear.\"";
+  "I'm QMeet, your local AI orb interface. I can control the local UI without sending those commands to OpenAI. I can open Menu, Settings, Status, Notes, Memory, Calendar, and real Web Search. Notes: say \"note that buy milk,\" \"read my notes,\" or \"delete last note.\" Memory/tasks: say \"what was I working on,\" \"remember to test the Pi as a task,\" \"mark task done,\" or \"open memory.\" Search: say \"search for raspberry pi kiosk mode,\" \"look up chromium flags,\" or \"clear search\" to run real web searches. Calendar: say \"add event tomorrow at 3 called meeting,\" \"reschedule last event to tomorrow at 4,\" \"rename last event to project sync,\" \"show today's events,\" \"what's on my calendar,\" \"refresh calendar,\" \"delete last event,\" or \"clear calendar.\" Voice: say \"mute voice,\" \"unmute voice,\" \"speak slower,\" \"speak faster,\" or \"normal voice.\" Navigation: say \"go home,\" \"close panel,\" \"cancel,\" or \"what did you hear.\"";
 
 const CONFIRMATIONS: Record<LocalCommand, string> = {
   help: HELP_MESSAGE,
@@ -95,6 +101,12 @@ const CONFIRMATIONS: Record<LocalCommand, string> = {
   'delete-last-note': 'Deleted the last note.',
   'close-notes': 'Closed notes.',
   'clear-notes': 'Cleared notes.',
+  'open-memory': 'Opening memory.',
+  'close-memory': 'Closed memory.',
+  'read-memory': 'Reading memory.',
+  'remember-task': 'Saved task.',
+  'mark-task-done': 'Marked task done.',
+  'clear-done-tasks': 'Cleared completed tasks.',
   'open-calendar': 'Opening calendar.',
   'add-calendar-event': 'Added event.',
   'read-calendar': 'Reading calendar.',
@@ -247,6 +259,35 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
       rx(`^${REQUEST_PREFIX}(?:clear|delete|wipe)\\s+(?:all\\s+)?notes?$`),
     ],
   ],
+
+  [
+    'open-memory',
+    [
+      rx(`^${REQUEST_PREFIX}${OPEN_VERB}\\s+(?:me\\s+)?(?:the\\s+)?(?:memory|tasks?|task\\s+list|work\\s+log)(?:\\s+(?:panel|screen|menu))?$`),
+      /^(?:memory|memory panel|tasks|task list|work log)$/i,
+    ],
+  ],
+  [
+    'close-memory',
+    [
+      rx(`^${REQUEST_PREFIX}${CLOSE_VERB}\\s+(?:the\\s+)?(?:memory|tasks?|task\\s+list|work\\s+log)(?:\\s+(?:panel|screen|menu))?$`),
+    ],
+  ],
+  [
+    'read-memory',
+    [
+      /^(?:what was i working on|what am i working on|what were we working on|what are my tasks|read memory|show memory|memory summary|project memory|what is in memory)$/i,
+      rx(`^${REQUEST_PREFIX}(?:read|show|summarize|display|tell\\s+me)\\s+(?:my\\s+)?(?:memory|tasks?|task\\s+list|work\\s+log)$`),
+    ],
+  ],
+  [
+    'clear-done-tasks',
+    [
+      rx(`^${REQUEST_PREFIX}(?:clear|remove|delete)\\s+(?:completed|done|finished)\\s+tasks?$`),
+      /^(?:clear completed tasks|clear done tasks|remove done tasks)$/i,
+    ],
+  ],
+
   [
     'read-calendar',
     [
@@ -457,12 +498,59 @@ function extractNotePayload(normalized: string): string | null {
 
   for (const pattern of patterns) {
     const match = normalized.match(pattern);
+    const payload = match?.[1]
+      ? cleanCommandPayload(match[1]).replace(/\s+as\s+(?:a\s+)?task$/i, '').trim()
+      : '';
+    if (payload) return payload;
+  }
+
+  return null;
+}
+
+
+function extractTaskPayload(normalized: string): string | null {
+  const patterns = [
+    /^(?:please\s+)?(?:remember|save|add)\s+(?:this\s+)?(?:as\s+)?(?:a\s+)?task\s*(?:to|that|called|named|:)?\s+(.+)$/i,
+    /^(?:please\s+)?(?:remember|remind\s+me)\s+to\s+(.+)$/i,
+    /^(?:please\s+)?(?:add|create|make|save)\s+(?:a\s+)?task\s+(?:to\s+|that\s+|called\s+|named\s+)?(.+)$/i,
+    /^(?:please\s+)?task\s+(?:to\s+|that\s+|called\s+|named\s+)?(.+)$/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+    const payload = match?.[1]
+      ? cleanCommandPayload(match[1]).replace(/\s+as\s+(?:a\s+)?task$/i, '').trim()
+      : '';
+    if (payload) return payload;
+  }
+
+  return null;
+}
+
+function extractTaskDonePayload(normalized: string): string | null {
+  const broadDonePatterns = [
+    /^(?:please\s+)?(?:mark|set)\s+(?:the\s+)?(?:task\s+)?(?:as\s+)?(?:done|complete|completed|finished)$/i,
+    /^(?:please\s+)?(?:complete|finish)\s+(?:the\s+)?(?:next|latest|last|current)?\s*task$/i,
+  ];
+
+  if (broadDonePatterns.some((pattern) => pattern.test(normalized))) {
+    return '';
+  }
+
+  const patterns = [
+    /^(?:please\s+)?(?:mark|set|complete|finish)\s+(?:the\s+)?(?:task\s+)?(?:called|named|about)?\s*(.+?)\s+(?:as\s+)?(?:done|complete|completed|finished)$/i,
+    /^(?:please\s+)?(?:mark|set)\s+(?:the\s+)?(?:task\s+)?(.+?)\s+(?:as\s+)?(?:done|complete|completed|finished)$/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
     const payload = match?.[1] ? cleanCommandPayload(match[1]) : '';
     if (payload) return payload;
   }
 
   return null;
 }
+
 
 function extractSearchPayload(normalized: string): { payload: string; confirmationPrefix: string } | null {
   const patterns: Array<{ pattern: RegExp; confirmationPrefix: string; rejectPayload?: (payload: string) => boolean }> = [
@@ -854,6 +942,32 @@ export function debugCommandParse(text: string): {
       .replace(/^(?:hey\s+)?(?:qmeet|orb|assistant)\s+/i, '')
       .trim();
   
+    const taskPayload = extractTaskPayload(payloadSource);
+    if (taskPayload) {
+      return {
+        rawText: text,
+        normalizedText: normalized,
+        match: {
+          command: 'remember-task',
+          confirmation: CONFIRMATIONS['remember-task'],
+          payload: taskPayload,
+        },
+      };
+    }
+
+    const taskDonePayload = extractTaskDonePayload(payloadSource);
+    if (taskDonePayload !== null) {
+      return {
+        rawText: text,
+        normalizedText: normalized,
+        match: {
+          command: 'mark-task-done',
+          confirmation: CONFIRMATIONS['mark-task-done'],
+          payload: taskDonePayload,
+        },
+      };
+    }
+
     const notePayload = extractNotePayload(payloadSource);
     if (notePayload) {
       return {
