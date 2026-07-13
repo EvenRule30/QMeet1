@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { Orb } from './components/Orb';
 import { TopStatusBar } from './components/TopStatusBar';
 import { ChatPanel } from './components/ChatPanel';
@@ -7,9 +7,8 @@ import { NotesPanel } from './components/NotesPanel';
 import { CalendarPanel } from './components/CalendarPanel';
 import { SearchPanel } from './components/SearchPanel';
 import { Message, OrbState, ActivePanel, CalendarBackendView } from './types';
-import { streamChatMessage, resetConversation, interpretCommandIntent } from "./api";
+import { resetConversation, interpretCommandIntent } from "./api";
 import { getSpeechRecognition, isSpeechRecognitionSupported } from './speechRecognition';
-import { speakText, stopSpeaking } from './speechSynthesis';
 import { parseCommand, normalizeSpokenQMeet } from './commands';
 import { getAssistantActivity, getPanelLabel } from './lib/activityUtils';
 import {
@@ -36,11 +35,11 @@ import { useResultToasts } from './hooks/useResultToasts';
 import { useMemoryContext } from './hooks/useMemoryContext';
 import { useSearchController } from './hooks/useSearchController';
 import { useCalendarController } from './hooks/useCalendarController';
+import { useSpeechOutput } from './hooks/useSpeechOutput';
+import { useChatStreamController } from './hooks/useChatStreamController';
 import './App.css';
 
 
-const VOICE_OUTPUT_STORAGE_KEY = 'qmeet-voice-output-enabled';
-const SPEECH_RATE_STORAGE_KEY = 'qmeet-speech-rate';
 const COMMAND_INTERPRETER_EXECUTE_THRESHOLD = 0.8;
 const COMMAND_INTERPRETER_CLARIFY_THRESHOLD = 0.5;
 
@@ -125,49 +124,35 @@ function isRejectingPendingCommand(text: string): boolean {
   );
 }
 
-function clampSpeechRate(rate: number): number {
-  return Math.min(1.35, Math.max(0.75, rate));
-}
-
-function readStoredVoiceOutputEnabled(): boolean {
-  if (typeof window === 'undefined') return true;
-
-  try {
-    const storedValue = window.localStorage.getItem(VOICE_OUTPUT_STORAGE_KEY);
-
-    if (storedValue === 'false') return false;
-    if (storedValue === 'true') return true;
-
-    return true;
-  } catch {
-    return true;
-  }
-}
-
-function readStoredSpeechRate(): number {
-  if (typeof window === 'undefined') return 1;
-
-  try {
-    const storedValue = window.localStorage.getItem(SPEECH_RATE_STORAGE_KEY);
-    if (!storedValue) return 1;
-
-    const parsedRate = Number(storedValue);
-    return Number.isFinite(parsedRate) ? clampSpeechRate(parsedRate) : 1;
-  } catch {
-    return 1;
-  }
-}
 
 
 export default function App() {
   const [chatActive, setChatActive] = useState(false);
   const [orbState, setOrbState] = useState<OrbState>('idle');
-  const [messages, setMessages] = useState<Message[]>([]);
   const backendStatus = useBackendStatus();
   const [activePanel, setActivePanel] = useState<ActivePanel>('none');
-  const [voiceOutputEnabled, setVoiceOutputEnabled] = useState(readStoredVoiceOutputEnabled);
-  const [speechRate, setSpeechRate] = useState(readStoredSpeechRate);
-  const [showThinkingBubble, setShowThinkingBubble] = useState(false);
+  const {
+    voiceOutputEnabled,
+    speechRate,
+    stopCurrentSpeech,
+    speakAssistantText,
+    setVoiceOutput,
+    adjustSpeechRate,
+  } = useSpeechOutput({ setOrbState });
+  const {
+    messages,
+    setMessages,
+    showThinkingBubble,
+    setShowThinkingBubble,
+    responseActive,
+    cancelActiveResponse,
+    sendStreamingChat,
+    clearMessages,
+  } = useChatStreamController({
+    setOrbState,
+    setChatActive,
+    speakAssistantText,
+  });
   const {
     calendarView,
     setCalendarView,
@@ -254,94 +239,11 @@ export default function App() {
   const [lastInterpreterReason, setLastInterpreterReason] = useState('No interpreter request has run yet.');
   const [pendingInterpreterCommand, setPendingInterpreterCommand] = useState<PendingInterpreterCommand | null>(null);
   const [listeningTranscript, setListeningTranscript] = useState('');
-  const speechTokenRef = useRef(0);
-  const responseTokenRef = useRef(0);
-  const activeStreamAbortRef = useRef<AbortController | null>(null);
   const recognitionRef = useRef<InstanceType<ReturnType<typeof getSpeechRecognition>> | null>(null);
   const transcriptSentRef = useRef(false);
   const listeningTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const suppressNextSpeechErrorRef = useRef(false);
   const orbAreaRef = useRef<HTMLDivElement | null>(null);
-
-  const stopCurrentSpeech = useCallback(() => {
-    speechTokenRef.current += 1;
-    stopSpeaking();
-  }, []);
-
-  const cancelActiveResponse = useCallback(() => {
-    responseTokenRef.current += 1;
-
-    if (activeStreamAbortRef.current) {
-      activeStreamAbortRef.current.abort();
-      activeStreamAbortRef.current = null;
-    }
-
-    setShowThinkingBubble(false);
-    setOrbState('idle');
-  }, []);
-
-  const speakAssistantText = useCallback((text: string, options: { enabled?: boolean; rate?: number } = {}) => {
-    const trimmed = text.trim();
-    const shouldSpeak = options.enabled ?? voiceOutputEnabled;
-    const rate = options.rate ?? speechRate;
-
-    if (!trimmed || !shouldSpeak) {
-      setOrbState('idle');
-      return;
-    }
-
-    const speechToken = speechTokenRef.current + 1;
-    speechTokenRef.current = speechToken;
-
-    const didStart = speakText(trimmed, {
-      rate,
-      onStart: () => {
-        if (speechTokenRef.current === speechToken) {
-          setOrbState('speaking');
-        }
-      },
-      onEnd: () => {
-        if (speechTokenRef.current === speechToken) {
-          setOrbState('idle');
-        }
-      },
-      onError: () => {
-        if (speechTokenRef.current === speechToken) {
-          setOrbState('idle');
-        }
-      },
-    });
-
-    if (!didStart) {
-      setOrbState('idle');
-    }
-  }, [voiceOutputEnabled, speechRate]);
-
-
-
-  useEffect(() => {
-    return () => {
-      stopSpeaking();
-    };
-  }, []);
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(VOICE_OUTPUT_STORAGE_KEY, String(voiceOutputEnabled));
-    } catch (error) {
-      console.error('Failed to save voice output setting:', error);
-    }
-  }, [voiceOutputEnabled]);
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(SPEECH_RATE_STORAGE_KEY, String(speechRate));
-    } catch (error) {
-      console.error('Failed to save speech rate setting:', error);
-    }
-  }, [speechRate]);
-
-
   const finishListening = useCallback(() => {
     if (listeningTimeoutRef.current) {
       clearTimeout(listeningTimeoutRef.current);
@@ -373,14 +275,14 @@ export default function App() {
     setPendingInterpreterCommand(null);
     clearResultToasts();
     setChatActive(false);
-    setMessages([]);
+    clearMessages();
 
     try {
       await resetConversation();
     } catch (error) {
       console.error('Reset conversation error:', error);
     }
-  }, [cancelActiveResponse, clearResultToasts, finishListening, stopCurrentSpeech]);
+  }, [cancelActiveResponse, clearMessages, clearResultToasts, finishListening, stopCurrentSpeech]);
 
   const closePanel = useCallback(() => {
     setActivePanel('none');
@@ -411,18 +313,7 @@ export default function App() {
     setActivePanel(panel);
   }, [setCalendarView, setSearchQuery]);
 
-  const setVoiceOutput = useCallback((enabled: boolean) => {
-    if (!enabled) {
-      stopCurrentSpeech();
-    }
-    setVoiceOutputEnabled(enabled);
-  }, [stopCurrentSpeech]);
 
-  const adjustSpeechRate = useCallback((nextRate: number) => {
-    const clampedRate = clampSpeechRate(nextRate);
-    setSpeechRate(clampedRate);
-    return clampedRate;
-  }, []);
 
 
   // Calendar state and Google Calendar actions live in useCalendarController.
@@ -1133,123 +1024,13 @@ export default function App() {
       setLastInterpreterReason(error instanceof Error ? error.message : 'Interpreter request failed.');
     }
 
-    if (!chatActive) setChatActive(true);
-
-    const now = Date.now();
-    const assistantId = `a-${now}`;
-
-    const userMsg: Message = {
-      id: `u-${now}`,
-      role: 'user',
-      content: visibleUserText,
-      timestamp: new Date(),
-    };
-
-    cancelActiveResponse();
-
-    setMessages((prev) => [...prev, userMsg]);
-    setOrbState('thinking');
-    setShowThinkingBubble(true);
-
-    const responseToken = responseTokenRef.current + 1;
-    responseTokenRef.current = responseToken;
-    const abortController = new AbortController();
-    activeStreamAbortRef.current = abortController;
-
-    let assistantReply = '';
-
-    const upsertAssistantMessage = (content: string, mode: 'replace' | 'append' = 'append') => {
-      setMessages((prev) => {
-        const existingMessage = prev.find((msg) => msg.id === assistantId);
-
-        if (existingMessage) {
-          return prev.map((msg) =>
-            msg.id === assistantId
-              ? {
-                  ...msg,
-                  content: mode === 'replace' ? content : msg.content + content,
-                }
-              : msg
-          );
-        }
-
-        return [
-          ...prev,
-          {
-            id: assistantId,
-            role: 'assistant',
-            content,
-            timestamp: new Date(),
-          },
-        ];
-      });
-    };
-
-    try {
-      await streamChatMessage(trimmed, {
-        onStart: () => {
-          if (responseTokenRef.current !== responseToken) return;
-          setOrbState('thinking');
-        },
-
-        onChunk: (chunk) => {
-          if (responseTokenRef.current !== responseToken || !chunk) return;
-
-          setShowThinkingBubble(false);
-          assistantReply += chunk;
-          upsertAssistantMessage(chunk, 'append');
-        },
-
-        onDone: () => {
-          if (responseTokenRef.current !== responseToken) return;
-          setShowThinkingBubble(false);
-          activeStreamAbortRef.current = null;
-          speakAssistantText(assistantReply);
-        },
-
-        onError: (message) => {
-          if (responseTokenRef.current !== responseToken) return;
-          setShowThinkingBubble(false);
-          activeStreamAbortRef.current = null;
-          setOrbState('error');
-          upsertAssistantMessage(message, 'replace');
-
-          window.setTimeout(() => {
-            if (responseTokenRef.current === responseToken) {
-              setOrbState('idle');
-            }
-          }, 2000);
-        },
-      }, { signal: abortController.signal });
-    } catch (error) {
-      if (abortController.signal.aborted || responseTokenRef.current !== responseToken) {
-        return;
-      }
-
-      console.error('QMeet streaming error:', error);
-
-      activeStreamAbortRef.current = null;
-      setShowThinkingBubble(false);
-      setOrbState('error');
-      upsertAssistantMessage(
-        'Streaming connection failed. Make sure the QMeet backend is running on http://localhost:8000.',
-        'replace'
-      );
-
-      window.setTimeout(() => {
-        if (responseTokenRef.current === responseToken) {
-          setOrbState('idle');
-        }
-      }, 2000);
-    }
-  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveMemoryTask, markMemoryTaskDone, clearCompletedTasks, getMemoryReadout, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, deleteCalendarEventByCriteria, findCalendarEventForDeletion, getNextCalendarEventForDeletion, getNextCalendarEventForChange, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, runWebSearch, clearSearchState, searchError, pushResultToast, addRecentAction, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents]);
+    await sendStreamingChat(trimmed, visibleUserText);
+  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveMemoryTask, markMemoryTaskDone, clearCompletedTasks, getMemoryReadout, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, deleteCalendarEventByCriteria, findCalendarEventForDeletion, getNextCalendarEventForDeletion, getNextCalendarEventForChange, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, runWebSearch, clearSearchState, searchError, pushResultToast, addRecentAction, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents, sendStreamingChat]);
 
   const handleOrbClick = useCallback(() => {
     // If QMeet is actively generating/streaming, tapping the orb should cancel
-    // that response instead of starting a new listening session. Checking the
-    // active stream ref covers the period after the first text chunk appears,
-    // when the thinking bubble is hidden but the response is still in progress.
-    if (activeStreamAbortRef.current || orbState === 'thinking') {
+    // that response instead of starting a new listening session.
+    if (responseActive || orbState === 'thinking') {
       cancelActiveResponse();
       setChatActive(true);
       setMessages((prev) => [
@@ -1460,7 +1241,7 @@ export default function App() {
       setListeningTranscript('');
       setOrbState('idle');
     }
-  }, [orbState, handleSend, stopCurrentSpeech, cancelActiveResponse]);
+  }, [orbState, responseActive, handleSend, stopCurrentSpeech, cancelActiveResponse, setMessages]);
 
   const statusSnapshot = new Date();
     const statusDateLabel = statusSnapshot.toLocaleDateString([], {
