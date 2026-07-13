@@ -899,7 +899,7 @@ export default function App() {
   const [memoryTasks, setMemoryTasks] = useState<MemoryTask[]>(readStoredMemoryTasks);
   const [memoryTaskDraft, setMemoryTaskDraft] = useState('');
   const [memorySyncState, setMemorySyncState] = useState<MemorySyncState>('local');
-  const [memorySyncMessage, setMemorySyncMessage] = useState('Using browser fallback until backend memory loads.');
+  const [memorySyncMessage, setMemorySyncMessage] = useState('Using browser fallback until backend memory and notes load.');
   const [recentActions, setRecentActions] = useState<RecentAction[]>(readStoredRecentActions);
   const [lastHeardTranscript, setLastHeardTranscript] = useState('');
   const [lastNormalizedTranscript, setLastNormalizedTranscript] = useState('');
@@ -922,6 +922,8 @@ export default function App() {
   const resultToastTimeoutsRef = useRef<number[]>([]);
   const initialMemoryTasksRef = useRef<MemoryTask[]>(memoryTasks);
   const initialRecentActionsRef = useRef<RecentAction[]>(recentActions);
+  const initialNotesRef = useRef<Note[]>(notes);
+  const memoryContextHydratedRef = useRef(false);
 
   const dismissResultToast = useCallback((toastId: string) => {
     setResultToasts((prev) => prev.filter((toast) => toast.id !== toastId));
@@ -1135,16 +1137,17 @@ export default function App() {
   }, [notes]);
 
 
-  const persistMemoryContextToBackend = useCallback(async (tasksToSave: MemoryTask[], actionsToSave: RecentAction[]) => {
+  const persistMemoryContextToBackend = useCallback(async (tasksToSave: MemoryTask[], actionsToSave: RecentAction[], notesToSave: Note[]) => {
     setMemorySyncState('syncing');
 
     try {
       const response = await replaceMemoryContext({
         tasks: tasksToSave,
         recentActions: actionsToSave,
+        notes: notesToSave,
       });
       setMemorySyncState('synced');
-      setMemorySyncMessage(response.message || 'Memory context synced to backend.');
+      setMemorySyncMessage(response.message || 'Memory, notes, and work context synced to backend.');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Backend memory sync failed.';
       setMemorySyncState('error');
@@ -1153,8 +1156,8 @@ export default function App() {
   }, []);
 
   const persistMemoryTasksToBackend = useCallback(async (tasksToSave: MemoryTask[]) => {
-    await persistMemoryContextToBackend(tasksToSave, recentActions);
-  }, [persistMemoryContextToBackend, recentActions]);
+    await persistMemoryContextToBackend(tasksToSave, recentActions, notes);
+  }, [notes, persistMemoryContextToBackend, recentActions]);
 
   const loadMemoryContextFromBackend = useCallback(async () => {
     setMemorySyncState('syncing');
@@ -1163,26 +1166,26 @@ export default function App() {
       const response = await getMemoryContext();
       const backendTasks = response.tasks ?? [];
       const backendActions = response.recentActions ?? [];
+      const backendNotes = response.notes ?? [];
       const browserTasks = initialMemoryTasksRef.current;
       const browserActions = initialRecentActionsRef.current;
+      const browserNotes = initialNotesRef.current;
       const nextTasks = backendTasks.length > 0 || browserTasks.length === 0 ? backendTasks : browserTasks;
       const nextActions = backendActions.length > 0 || browserActions.length === 0 ? backendActions : browserActions;
+      const nextNotes = backendNotes.length > 0 || browserNotes.length === 0 ? backendNotes : browserNotes;
       const copiedBrowserTasks = backendTasks.length === 0 && browserTasks.length > 0;
       const copiedBrowserActions = backendActions.length === 0 && browserActions.length > 0;
+      const copiedBrowserNotes = backendNotes.length === 0 && browserNotes.length > 0;
 
       setMemoryTasks(nextTasks);
       setRecentActions(nextActions);
+      setNotes(nextNotes);
+      memoryContextHydratedRef.current = true;
 
-      if (copiedBrowserTasks || copiedBrowserActions) {
-        await replaceMemoryContext({ tasks: nextTasks, recentActions: nextActions });
+      if (copiedBrowserTasks || copiedBrowserActions || copiedBrowserNotes) {
+        await replaceMemoryContext({ tasks: nextTasks, recentActions: nextActions, notes: nextNotes });
         setMemorySyncState('synced');
-        setMemorySyncMessage(
-          copiedBrowserTasks && copiedBrowserActions
-            ? 'Browser memory and work context were copied into the backend.'
-            : copiedBrowserTasks
-              ? 'Browser memory tasks were copied into the backend.'
-              : 'Browser work context was copied into the backend.'
-        );
+        setMemorySyncMessage('Browser memory, notes, and work context were copied into the backend.');
         return;
       }
 
@@ -1190,6 +1193,7 @@ export default function App() {
       setMemorySyncMessage(response.message || 'Memory context loaded from backend.');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Backend memory unavailable.';
+      memoryContextHydratedRef.current = true;
       setMemorySyncState('error');
       setMemorySyncMessage(`${message} Using browser fallback.`);
     }
@@ -1200,6 +1204,17 @@ export default function App() {
   useEffect(() => {
     loadMemoryContextFromBackend();
   }, [loadMemoryContextFromBackend]);
+
+  useEffect(() => {
+    if (!memoryContextHydratedRef.current) return;
+
+    const timeoutId = window.setTimeout(() => {
+      persistMemoryContextToBackend(memoryTasks, recentActions, notes);
+    }, 250);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [memoryTasks, notes, persistMemoryContextToBackend, recentActions]);
+
   const addRecentAction = useCallback((label: string, detail: string) => {
     const cleanedDetail = detail.replace(/\s+/g, ' ').trim();
 
@@ -1212,10 +1227,10 @@ export default function App() {
 
     setRecentActions((prev) => {
       const nextActions = [action, ...prev].slice(0, 12);
-      persistMemoryContextToBackend(memoryTasks, nextActions);
+      persistMemoryContextToBackend(memoryTasks, nextActions, notes);
       return nextActions;
     });
-  }, [memoryTasks, persistMemoryContextToBackend]);
+  }, [memoryTasks, notes, persistMemoryContextToBackend]);
 
   const saveMemoryTask = useCallback((title: string): MemoryTask | null => {
     const trimmedTitle = title.trim();
@@ -1356,12 +1371,12 @@ export default function App() {
         return !isTaskAction;
       });
 
-      persistMemoryContextToBackend(nextTasks, nextActions);
+      persistMemoryContextToBackend(nextTasks, nextActions, notes);
       return nextActions;
     });
 
     return removedCount;
-  }, [memoryTasks, persistMemoryContextToBackend, persistMemoryTasksToBackend]);
+  }, [memoryTasks, notes, persistMemoryContextToBackend, persistMemoryTasksToBackend]);
 
   const handleSaveMemoryTaskDraft = useCallback(() => {
     const savedTask = saveMemoryTask(memoryTaskDraft);
@@ -3436,7 +3451,7 @@ export default function App() {
               <div className="memory-hero">
                 <div>
                   <div className="memory-kicker">Backend Memory</div>
-                  <div className="memory-title">Tasks and work context sync to FastAPI, with browser fallback.</div>
+                  <div className="memory-title">Tasks, notes, and work context sync to FastAPI, with browser fallback.</div>
                 </div>
                 <div className={`memory-chip memory-sync-${memorySyncState}`}>
                   {memorySyncState === 'synced' ? 'Synced' : memorySyncState === 'syncing' ? 'Syncing' : 'Local'}
@@ -3579,7 +3594,7 @@ export default function App() {
               <div className="panel-section">
                 <div className="panel-section-title">Supported Commands</div>
                 <p className="panel-section-text">
-                  Say “what was I working on,” “remember to test the Pi as a task,” “mark task done,” “mark test the Pi done,” “clear completed tasks,” or use the task buttons above. Recent actions stay hidden but are saved for work summaries.
+                  Say “what was I working on,” “remember to test the Pi as a task,” “mark task done,” “mark test the Pi done,” “clear completed tasks,” or use the task buttons above. Notes and recent actions sync in the background.
                 </p>
               </div>
 

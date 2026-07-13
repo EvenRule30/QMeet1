@@ -32,16 +32,21 @@ from app.calendar_service import (
 from app.memory_store import (
     MemoryStoreError,
     clear_completed_memory_tasks,
+    clear_memory_notes,
     clear_recent_actions,
+    create_memory_note,
     create_memory_task,
     create_recent_action,
+    delete_memory_note,
     delete_memory_task,
     delete_recent_action,
     get_memory_context,
     get_memory_status,
+    list_memory_notes,
     list_memory_tasks,
     list_recent_actions,
     replace_memory_context,
+    replace_memory_notes,
     replace_memory_tasks,
     replace_recent_actions,
     update_memory_task,
@@ -64,6 +69,11 @@ from app.schemas import (
     MemoryClearCompletedResponse,
     MemoryContextReplaceRequest,
     MemoryContextResponse,
+    MemoryNoteCreateRequest,
+    MemoryNoteDeleteResponse,
+    MemoryNotesClearResponse,
+    MemoryNotesReplaceRequest,
+    MemoryNotesResponse,
     MemoryStatusResponse,
     MemoryTaskCreateRequest,
     MemoryTaskDeleteResponse,
@@ -331,6 +341,7 @@ async def memory_replace_context(req: MemoryContextReplaceRequest):
         return MemoryContextResponse(**replace_memory_context(
             tasks=[task.dict(exclude_none=True) for task in req.tasks],
             recent_actions=[action.dict(exclude_none=True) for action in req.recentActions],
+            notes=[note.dict(exclude_none=True) for note in req.notes],
         ))
     except MemoryStoreError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -422,6 +433,73 @@ async def memory_clear_completed_tasks():
         raise HTTPException(
             status_code=500,
             detail="QMeet could not clear completed memory tasks.",
+        )
+
+
+@app.get("/api/memory/notes", response_model=MemoryNotesResponse)
+async def memory_notes():
+    try:
+        return MemoryNotesResponse(**list_memory_notes())
+    except MemoryStoreError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not read memory notes.",
+        )
+
+
+@app.put("/api/memory/notes", response_model=MemoryNotesResponse)
+async def memory_replace_notes(req: MemoryNotesReplaceRequest):
+    try:
+        return MemoryNotesResponse(**replace_memory_notes(
+            [note.dict(exclude_none=True) for note in req.notes]
+        ))
+    except MemoryStoreError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not save memory notes.",
+        )
+
+
+@app.post("/api/memory/notes", response_model=MemoryNotesResponse)
+async def memory_create_note(req: MemoryNoteCreateRequest):
+    try:
+        return MemoryNotesResponse(**create_memory_note(req.content))
+    except MemoryStoreError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not create memory note.",
+        )
+
+
+@app.delete("/api/memory/notes/{note_id}", response_model=MemoryNoteDeleteResponse)
+async def memory_delete_note(note_id: str):
+    try:
+        return MemoryNoteDeleteResponse(**delete_memory_note(note_id))
+    except MemoryStoreError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not delete memory note.",
+        )
+
+
+@app.post("/api/memory/notes/clear", response_model=MemoryNotesClearResponse)
+async def memory_clear_notes():
+    try:
+        return MemoryNotesClearResponse(**clear_memory_notes())
+    except MemoryStoreError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not clear memory notes.",
         )
 
 

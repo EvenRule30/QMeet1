@@ -123,6 +123,12 @@ class MemoryTaskItem(BaseModel):
     completedAt: str | None = None
 
 
+class MemoryNoteItem(BaseModel):
+    id: str
+    content: str
+    createdAt: str
+
+
 class RecentActionItem(BaseModel):
     id: str
     label: str
@@ -138,6 +144,7 @@ class MemoryStatusResponse(BaseModel):
     taskCount: int = 0
     completedCount: int = 0
     actionCount: int = 0
+    noteCount: int = 0
     message: str = ""
 
 
@@ -179,6 +186,7 @@ class MemoryClearCompletedResponse(BaseModel):
 class MemoryContextReplaceRequest(BaseModel):
     tasks: list[MemoryTaskItem] = Field(default_factory=list)
     recentActions: list[RecentActionItem] = Field(default_factory=list)
+    notes: list[MemoryNoteItem] = Field(default_factory=list)
 
 
 class MemoryContextResponse(BaseModel):
@@ -186,6 +194,7 @@ class MemoryContextResponse(BaseModel):
     provider: Literal["local-json"] = "local-json"
     tasks: list[MemoryTaskItem] = Field(default_factory=list)
     recentActions: list[RecentActionItem] = Field(default_factory=list)
+    notes: list[MemoryNoteItem] = Field(default_factory=list)
     message: str = ""
 
 
@@ -217,6 +226,36 @@ class RecentActionsClearResponse(BaseModel):
     provider: Literal["local-json"] = "local-json"
     removedCount: int = 0
     recentActions: list[RecentActionItem] = Field(default_factory=list)
+    message: str = ""
+
+
+class MemoryNoteCreateRequest(BaseModel):
+    content: str
+
+
+class MemoryNotesReplaceRequest(BaseModel):
+    notes: list[MemoryNoteItem] = Field(default_factory=list)
+
+
+class MemoryNotesResponse(BaseModel):
+    ok: bool = True
+    provider: Literal["local-json"] = "local-json"
+    notes: list[MemoryNoteItem] = Field(default_factory=list)
+    message: str = ""
+
+
+class MemoryNoteDeleteResponse(BaseModel):
+    ok: bool = True
+    provider: Literal["local-json"] = "local-json"
+    deletedNoteId: str = ""
+    message: str = ""
+
+
+class MemoryNotesClearResponse(BaseModel):
+    ok: bool = True
+    provider: Literal["local-json"] = "local-json"
+    removedCount: int = 0
+    notes: list[MemoryNoteItem] = Field(default_factory=list)
     message: str = ""
 
 

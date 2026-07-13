@@ -1,4 +1,37 @@
-import { BackendStatus, CalendarAuthResetResponse, CalendarAuthStartResponse, CalendarBackendStatus, CalendarBackendView, CalendarCreateEventRequest, CalendarCreateEventResponse, CalendarDeleteEventResponse, CalendarEventsResponse, CalendarUpdateEventRequest, CalendarUpdateEventResponse, CommandIntentResponse, MemoryStatusResponse, MemoryTaskCreateRequest, MemoryTaskDeleteResponse, MemoryTaskUpdateRequest, MemoryTasksReplaceRequest, MemoryTasksResponse, MemoryClearCompletedResponse, MemoryContextReplaceRequest, MemoryContextResponse, RecentActionCreateRequest, RecentActionDeleteResponse, RecentActionsClearResponse, RecentActionsReplaceRequest, RecentActionsResponse, SearchResponse } from "./types";
+import {
+  BackendStatus,
+  CalendarAuthResetResponse,
+  CalendarAuthStartResponse,
+  CalendarBackendStatus,
+  CalendarBackendView,
+  CalendarCreateEventRequest,
+  CalendarCreateEventResponse,
+  CalendarDeleteEventResponse,
+  CalendarEventsResponse,
+  CalendarUpdateEventRequest,
+  CalendarUpdateEventResponse,
+  CommandIntentResponse,
+  MemoryStatusResponse,
+  MemoryTaskCreateRequest,
+  MemoryTaskDeleteResponse,
+  MemoryTaskUpdateRequest,
+  MemoryTasksReplaceRequest,
+  MemoryTasksResponse,
+  MemoryClearCompletedResponse,
+  MemoryContextReplaceRequest,
+  MemoryContextResponse,
+  MemoryNoteCreateRequest,
+  MemoryNoteDeleteResponse,
+  MemoryNotesClearResponse,
+  MemoryNotesReplaceRequest,
+  MemoryNotesResponse,
+  RecentActionCreateRequest,
+  RecentActionDeleteResponse,
+  RecentActionsClearResponse,
+  RecentActionsReplaceRequest,
+  RecentActionsResponse,
+  SearchResponse,
+} from "./types";
 
 export type ChatApiResponse = {
   reply: string;
@@ -15,7 +48,9 @@ export type ChatStreamHandlers = {
 const API_BASE_URL =
   import.meta.env.VITE_QMEET_API_URL ?? "http://localhost:8000";
 
-export async function sendChatMessage(message: string): Promise<ChatApiResponse> {
+export async function sendChatMessage(
+  message: string,
+): Promise<ChatApiResponse> {
   const res = await fetch(`${API_BASE_URL}/api/chat`, {
     method: "POST",
     headers: {
@@ -52,8 +87,9 @@ export async function resetConversation(): Promise<void> {
   }
 }
 
-
-export async function interpretCommandIntent(message: string): Promise<CommandIntentResponse> {
+export async function interpretCommandIntent(
+  message: string,
+): Promise<CommandIntentResponse> {
   const res = await fetch(`${API_BASE_URL}/api/command/interpret`, {
     method: "POST",
     headers: {
@@ -69,7 +105,6 @@ export async function interpretCommandIntent(message: string): Promise<CommandIn
 
   return res.json();
 }
-
 
 export async function getCalendarStatus(): Promise<CalendarBackendStatus> {
   const res = await fetch(`${API_BASE_URL}/api/calendar/status`);
@@ -108,9 +143,13 @@ export async function resetCalendarAuth(): Promise<CalendarAuthResetResponse> {
   return res.json();
 }
 
-export async function getCalendarEvents(view: CalendarBackendView = "today"): Promise<CalendarEventsResponse> {
+export async function getCalendarEvents(
+  view: CalendarBackendView = "today",
+): Promise<CalendarEventsResponse> {
   const params = new URLSearchParams({ view });
-  const res = await fetch(`${API_BASE_URL}/api/calendar/events?${params.toString()}`);
+  const res = await fetch(
+    `${API_BASE_URL}/api/calendar/events?${params.toString()}`,
+  );
 
   if (!res.ok) {
     const text = await res.text();
@@ -120,8 +159,9 @@ export async function getCalendarEvents(view: CalendarBackendView = "today"): Pr
   return res.json();
 }
 
-
-export async function createCalendarEvent(event: CalendarCreateEventRequest): Promise<CalendarCreateEventResponse> {
+export async function createCalendarEvent(
+  event: CalendarCreateEventRequest,
+): Promise<CalendarCreateEventResponse> {
   const res = await fetch(`${API_BASE_URL}/api/calendar/events`, {
     method: "POST",
     headers: {
@@ -138,12 +178,9 @@ export async function createCalendarEvent(event: CalendarCreateEventRequest): Pr
   return res.json();
 }
 
-
-
-
 export async function updateGoogleCalendarEvent(
   googleEventId: string,
-  event: CalendarUpdateEventRequest
+  event: CalendarUpdateEventRequest,
 ): Promise<CalendarUpdateEventResponse> {
   const encodedId = encodeURIComponent(googleEventId);
   const res = await fetch(`${API_BASE_URL}/api/calendar/events/${encodedId}`, {
@@ -162,7 +199,9 @@ export async function updateGoogleCalendarEvent(
   return res.json();
 }
 
-export async function deleteGoogleCalendarEvent(googleEventId: string): Promise<CalendarDeleteEventResponse> {
+export async function deleteGoogleCalendarEvent(
+  googleEventId: string,
+): Promise<CalendarDeleteEventResponse> {
   const encodedId = encodeURIComponent(googleEventId);
   const res = await fetch(`${API_BASE_URL}/api/calendar/events/${encodedId}`, {
     method: "DELETE",
@@ -175,7 +214,6 @@ export async function deleteGoogleCalendarEvent(googleEventId: string): Promise<
 
   return res.json();
 }
-
 
 export async function getMemoryStatus(): Promise<MemoryStatusResponse> {
   const res = await fetch(`${API_BASE_URL}/api/memory/status`);
@@ -199,7 +237,9 @@ export async function getMemoryContext(): Promise<MemoryContextResponse> {
   return res.json();
 }
 
-export async function replaceMemoryContext(request: MemoryContextReplaceRequest): Promise<MemoryContextResponse> {
+export async function replaceMemoryContext(
+  request: MemoryContextReplaceRequest,
+): Promise<MemoryContextResponse> {
   const res = await fetch(`${API_BASE_URL}/api/memory/context`, {
     method: "PUT",
     headers: {
@@ -227,7 +267,9 @@ export async function getMemoryTasks(): Promise<MemoryTasksResponse> {
   return res.json();
 }
 
-export async function replaceMemoryTasks(request: MemoryTasksReplaceRequest): Promise<MemoryTasksResponse> {
+export async function replaceMemoryTasks(
+  request: MemoryTasksReplaceRequest,
+): Promise<MemoryTasksResponse> {
   const res = await fetch(`${API_BASE_URL}/api/memory/tasks`, {
     method: "PUT",
     headers: {
@@ -244,7 +286,9 @@ export async function replaceMemoryTasks(request: MemoryTasksReplaceRequest): Pr
   return res.json();
 }
 
-export async function createMemoryTask(request: MemoryTaskCreateRequest): Promise<MemoryTasksResponse> {
+export async function createMemoryTask(
+  request: MemoryTaskCreateRequest,
+): Promise<MemoryTasksResponse> {
   const res = await fetch(`${API_BASE_URL}/api/memory/tasks`, {
     method: "POST",
     headers: {
@@ -261,7 +305,10 @@ export async function createMemoryTask(request: MemoryTaskCreateRequest): Promis
   return res.json();
 }
 
-export async function updateMemoryTask(taskId: string, request: MemoryTaskUpdateRequest): Promise<MemoryTasksResponse> {
+export async function updateMemoryTask(
+  taskId: string,
+  request: MemoryTaskUpdateRequest,
+): Promise<MemoryTasksResponse> {
   const encodedId = encodeURIComponent(taskId);
   const res = await fetch(`${API_BASE_URL}/api/memory/tasks/${encodedId}`, {
     method: "PATCH",
@@ -279,7 +326,9 @@ export async function updateMemoryTask(taskId: string, request: MemoryTaskUpdate
   return res.json();
 }
 
-export async function deleteMemoryTaskById(taskId: string): Promise<MemoryTaskDeleteResponse> {
+export async function deleteMemoryTaskById(
+  taskId: string,
+): Promise<MemoryTaskDeleteResponse> {
   const encodedId = encodeURIComponent(taskId);
   const res = await fetch(`${API_BASE_URL}/api/memory/tasks/${encodedId}`, {
     method: "DELETE",
@@ -306,6 +355,83 @@ export async function clearCompletedMemoryTasks(): Promise<MemoryClearCompletedR
   return res.json();
 }
 
+export async function getMemoryNotes(): Promise<MemoryNotesResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/memory/notes`);
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Memory notes error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+export async function replaceMemoryNotes(
+  request: MemoryNotesReplaceRequest,
+): Promise<MemoryNotesResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/memory/notes`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Memory notes replace error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+export async function createMemoryNote(
+  request: MemoryNoteCreateRequest,
+): Promise<MemoryNotesResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/memory/notes`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Memory note create error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+export async function deleteMemoryNote(
+  noteId: string,
+): Promise<MemoryNoteDeleteResponse> {
+  const encodedId = encodeURIComponent(noteId);
+  const res = await fetch(`${API_BASE_URL}/api/memory/notes/${encodedId}`, {
+    method: "DELETE",
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Memory note delete error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+export async function clearMemoryNotes(): Promise<MemoryNotesClearResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/memory/notes/clear`, {
+    method: "POST",
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Memory notes clear error: ${res.status}`);
+  }
+
+  return res.json();
+}
 
 export async function getRecentActions(): Promise<RecentActionsResponse> {
   const res = await fetch(`${API_BASE_URL}/api/memory/actions`);
@@ -318,7 +444,9 @@ export async function getRecentActions(): Promise<RecentActionsResponse> {
   return res.json();
 }
 
-export async function replaceRecentActions(request: RecentActionsReplaceRequest): Promise<RecentActionsResponse> {
+export async function replaceRecentActions(
+  request: RecentActionsReplaceRequest,
+): Promise<RecentActionsResponse> {
   const res = await fetch(`${API_BASE_URL}/api/memory/actions`, {
     method: "PUT",
     headers: {
@@ -335,7 +463,9 @@ export async function replaceRecentActions(request: RecentActionsReplaceRequest)
   return res.json();
 }
 
-export async function createRecentAction(request: RecentActionCreateRequest): Promise<RecentActionsResponse> {
+export async function createRecentAction(
+  request: RecentActionCreateRequest,
+): Promise<RecentActionsResponse> {
   const res = await fetch(`${API_BASE_URL}/api/memory/actions`, {
     method: "POST",
     headers: {
@@ -352,7 +482,9 @@ export async function createRecentAction(request: RecentActionCreateRequest): Pr
   return res.json();
 }
 
-export async function deleteRecentActionById(actionId: string): Promise<RecentActionDeleteResponse> {
+export async function deleteRecentActionById(
+  actionId: string,
+): Promise<RecentActionDeleteResponse> {
   const encodedId = encodeURIComponent(actionId);
   const res = await fetch(`${API_BASE_URL}/api/memory/actions/${encodedId}`, {
     method: "DELETE",
@@ -379,7 +511,6 @@ export async function clearRecentActions(): Promise<RecentActionsClearResponse> 
   return res.json();
 }
 
-
 export async function searchWeb(query: string): Promise<SearchResponse> {
   const res = await fetch(`${API_BASE_URL}/api/search`, {
     method: "POST",
@@ -400,7 +531,7 @@ export async function searchWeb(query: string): Promise<SearchResponse> {
 export async function streamChatMessage(
   message: string,
   handlers: ChatStreamHandlers,
-  options: { signal?: AbortSignal } = {}
+  options: { signal?: AbortSignal } = {},
 ): Promise<void> {
   const res = await fetch(`${API_BASE_URL}/api/chat/stream`, {
     method: "POST",
