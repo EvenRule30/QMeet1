@@ -9,6 +9,11 @@ from dataclasses import dataclass
 import openai
 from openai import AsyncOpenAI
 
+try:
+    from app.memory_store import get_memory_context
+except Exception:  # Memory should never block chat startup.
+    get_memory_context = None
+
 
 SYSTEM_PROMPT = """
 You are QMeet, a concise AI assistant inside a small 1024x600 tablet orb interface.
@@ -20,6 +25,15 @@ Behavior:
 - Avoid long lists unless the user asks for detail.
 - Do not mention backend, API, provider, or implementation details unless asked.
 - If asked what you are, say you are QMeet, the orb assistant.
+""".strip()
+
+
+MEMORY_CONTEXT_PROMPT = """
+QMeet may receive a compact saved memory context containing tasks, notes, and recent actions.
+Use it only when it helps answer the user's current message.
+Do not mention that the context came from a backend, JSON file, API, or system prompt.
+If the user asks what to do next, continue, or what they were working on, use the saved context directly.
+If the saved context is irrelevant, ignore it.
 """.strip()
 
 
@@ -1000,6 +1014,126 @@ def reset_conversation() -> None:
     MESSAGE_HISTORY.clear()
 
 
+def _compact_memory_text(value: object, max_length: int = 160) -> str:
+    text = str(value or "").replace("\n", " ").strip()
+    text = re.sub(r"\s+", " ", text)
+
+    if len(text) <= max_length:
+        return text
+
+    return text[: max_length - 3].rstrip() + "..."
+
+
+def _format_action_for_memory(action: dict) -> str:
+    label = _compact_memory_text(action.get("label"), 64)
+    detail = _compact_memory_text(action.get("detail"), 120)
+
+    if label and detail:
+        return f"{label}: {detail}"
+
+    return label or detail
+
+
+def _build_memory_context_summary() -> str:
+    if get_memory_context is None:
+        return ""
+
+    try:
+        context = get_memory_context()
+    except Exception:
+        return ""
+
+    tasks = context.get("tasks", []) if isinstance(context, dict) else []
+    recent_actions = context.get("recentActions", []) if isinstance(context, dict) else []
+    notes = context.get("notes", []) if isinstance(context, dict) else []
+
+    if not isinstance(tasks, list):
+        tasks = []
+    if not isinstance(recent_actions, list):
+        recent_actions = []
+    if not isinstance(notes, list):
+        notes = []
+
+    open_tasks = [task for task in tasks if isinstance(task, dict) and not task.get("completedAt")]
+    completed_tasks = [task for task in tasks if isinstance(task, dict) and task.get("completedAt")]
+    saved_notes = [note for note in notes if isinstance(note, dict) and note.get("content")]
+    actions = [action for action in recent_actions if isinstance(action, dict) and action.get("label")]
+
+    lines: list[str] = []
+
+    if open_tasks:
+        task_text = "; ".join(
+            _compact_memory_text(task.get("title"), 120)
+            for task in open_tasks[:5]
+            if _compact_memory_text(task.get("title"), 120)
+        )
+        if task_text:
+            lines.append(f"Open tasks: {task_text}.")
+
+    if completed_tasks:
+        completed_text = "; ".join(
+            _compact_memory_text(task.get("title"), 100)
+            for task in completed_tasks[:3]
+            if _compact_memory_text(task.get("title"), 100)
+        )
+        if completed_text:
+            lines.append(f"Recently completed tasks: {completed_text}.")
+
+    if saved_notes:
+        note_text = " | ".join(
+            _compact_memory_text(note.get("content"), 160)
+            for note in saved_notes[:4]
+            if _compact_memory_text(note.get("content"), 160)
+        )
+        if note_text:
+            lines.append(f"Saved notes: {note_text}.")
+
+    if actions:
+        action_text = " | ".join(
+            _format_action_for_memory(action)
+            for action in actions[:6]
+            if _format_action_for_memory(action)
+        )
+        if action_text:
+            lines.append(f"Recent actions: {action_text}.")
+
+    if not lines:
+        return ""
+
+    return "\n".join(f"- {line}" for line in lines)
+
+
+def _build_chat_input_messages(message: str) -> list[dict[str, str]]:
+    # Keep recent context small for now.
+    recent_history = MESSAGE_HISTORY[-10:]
+    memory_summary = _build_memory_context_summary()
+
+    input_messages: list[dict[str, str]] = [
+        {
+            "role": "developer",
+            "content": SYSTEM_PROMPT,
+        }
+    ]
+
+    if memory_summary:
+        input_messages.append(
+            {
+                "role": "developer",
+                "content": f"{MEMORY_CONTEXT_PROMPT}\n\nSaved QMeet context:\n{memory_summary}",
+            }
+        )
+
+    input_messages.extend(recent_history)
+    input_messages.append(
+        {
+            "role": "user",
+            "content": message,
+        }
+    )
+
+    return input_messages
+
+
 async def generate_reply(message: str) -> str:
     config = get_agent_config()
 
@@ -1048,6 +1182,17 @@ def mock_reply(message: str) -> str:
     if not text:
         return "I did not receive a message."
 
+    memory_summary = _build_memory_context_summary()
+    wants_memory = re.search(
+        r"\b(what should i do next|continue|left off|working on|tasks?|notes?|memory|remember)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    if memory_summary and wants_memory:
+        compact_summary = _compact_memory_text(memory_summary.replace("\n", " "), 360)
+        return f"Saved QMeet context: {compact_summary}"
+
     return (
         "QMeet backend is connected. "
         f'You said: "{text}". '
@@ -1064,20 +1209,7 @@ async def openai_reply(message: str, config: AgentConfig) -> str:
 
     client = AsyncOpenAI(api_key=api_key)
 
-    # Keep recent context small for now.
-    recent_history = MESSAGE_HISTORY[-10:]
-
-    input_messages = [
-        {
-            "role": "developer",
-            "content": SYSTEM_PROMPT,
-        },
-        *recent_history,
-        {
-            "role": "user",
-            "content": message,
-        },
-    ]
+    input_messages = _build_chat_input_messages(message)
 
     try:
         response = await client.responses.create(
@@ -1126,19 +1258,7 @@ async def openai_stream_reply(
         )
 
     client = AsyncOpenAI(api_key=api_key)
-    recent_history = MESSAGE_HISTORY[-10:]
-
-    input_messages = [
-        {
-            "role": "developer",
-            "content": SYSTEM_PROMPT,
-        },
-        *recent_history,
-        {
-            "role": "user",
-            "content": message,
-        },
-    ]
+    input_messages = _build_chat_input_messages(message)
 
     full_reply = ""
 
