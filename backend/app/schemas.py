@@ -116,6 +116,59 @@ class CalendarDeleteEventResponse(BaseModel):
 
 
 
+class MemoryTaskItem(BaseModel):
+    id: str
+    title: str
+    createdAt: str
+    completedAt: str | None = None
+
+
+class MemoryStatusResponse(BaseModel):
+    ok: bool = True
+    provider: Literal["local-json"] = "local-json"
+    configured: bool = True
+    path: str = ""
+    taskCount: int = 0
+    completedCount: int = 0
+    message: str = ""
+
+
+class MemoryTaskCreateRequest(BaseModel):
+    title: str
+
+
+class MemoryTaskUpdateRequest(BaseModel):
+    title: str = ""
+    completedAt: str | None = None
+
+
+class MemoryTasksReplaceRequest(BaseModel):
+    tasks: list[MemoryTaskItem] = Field(default_factory=list)
+
+
+class MemoryTasksResponse(BaseModel):
+    ok: bool = True
+    provider: Literal["local-json"] = "local-json"
+    tasks: list[MemoryTaskItem] = Field(default_factory=list)
+    message: str = ""
+
+
+class MemoryTaskDeleteResponse(BaseModel):
+    ok: bool = True
+    provider: Literal["local-json"] = "local-json"
+    deletedTaskId: str = ""
+    message: str = ""
+
+
+class MemoryClearCompletedResponse(BaseModel):
+    ok: bool = True
+    provider: Literal["local-json"] = "local-json"
+    removedCount: int = 0
+    tasks: list[MemoryTaskItem] = Field(default_factory=list)
+    message: str = ""
+
+
+
 class SearchRequest(BaseModel):
     query: str
 

@@ -7,7 +7,7 @@ import { NotesPanel } from './components/NotesPanel';
 import { CalendarPanel } from './components/CalendarPanel';
 import { SearchPanel } from './components/SearchPanel';
 import { Message, OrbState, BackendStatus, ActivePanel, Note, CalendarEvent, CalendarBackendStatus, CalendarBackendView, SearchResponse, AssistantActivity, MemoryTask, RecentAction } from './types';
-import { streamChatMessage, getBackendStatus, resetConversation, interpretCommandIntent, getCalendarStatus, getCalendarEvents, createCalendarEvent, deleteGoogleCalendarEvent, updateGoogleCalendarEvent, startCalendarAuth, resetCalendarAuth, searchWeb } from "./api";
+import { streamChatMessage, getBackendStatus, resetConversation, interpretCommandIntent, getCalendarStatus, getCalendarEvents, createCalendarEvent, deleteGoogleCalendarEvent, updateGoogleCalendarEvent, startCalendarAuth, resetCalendarAuth, searchWeb, getMemoryTasks, replaceMemoryTasks } from "./api";
 import { getSpeechRecognition, isSpeechRecognitionSupported } from './speechRecognition';
 import { speakText, stopSpeaking } from './speechSynthesis';
 import { parseCommand, normalizeSpokenQMeet } from './commands';
@@ -282,6 +282,8 @@ type ResultToast = {
   detail: string;
   createdAt: number;
 };
+
+type MemorySyncState = 'local' | 'syncing' | 'synced' | 'error';
 
 function compactToastDetail(text: string, maxLength = 88): string {
   const cleaned = text
@@ -896,6 +898,8 @@ export default function App() {
   const [resultToasts, setResultToasts] = useState<ResultToast[]>([]);
   const [memoryTasks, setMemoryTasks] = useState<MemoryTask[]>(readStoredMemoryTasks);
   const [memoryTaskDraft, setMemoryTaskDraft] = useState('');
+  const [memorySyncState, setMemorySyncState] = useState<MemorySyncState>('local');
+  const [memorySyncMessage, setMemorySyncMessage] = useState('Using browser fallback until backend memory loads.');
   const [recentActions, setRecentActions] = useState<RecentAction[]>(readStoredRecentActions);
   const [lastHeardTranscript, setLastHeardTranscript] = useState('');
   const [lastNormalizedTranscript, setLastNormalizedTranscript] = useState('');
@@ -916,6 +920,7 @@ export default function App() {
   const suppressNextSpeechErrorRef = useRef(false);
   const orbAreaRef = useRef<HTMLDivElement | null>(null);
   const resultToastTimeoutsRef = useRef<number[]>([]);
+  const initialMemoryTasksRef = useRef<MemoryTask[]>(memoryTasks);
 
   const dismissResultToast = useCallback((toastId: string) => {
     setResultToasts((prev) => prev.filter((toast) => toast.id !== toastId));
@@ -1073,6 +1078,7 @@ export default function App() {
     }
   }, [recentActions]);
 
+
   const saveNote = useCallback((content: string): Note | null => {
     const trimmedContent = content.trim();
 
@@ -1127,6 +1133,52 @@ export default function App() {
     return `You have ${notes.length} saved note${notes.length === 1 ? '' : 's'}: ${noteLines.join(' ')}${suffix}`;
   }, [notes]);
 
+
+  const persistMemoryTasksToBackend = useCallback(async (tasksToSave: MemoryTask[]) => {
+    setMemorySyncState('syncing');
+
+    try {
+      const response = await replaceMemoryTasks({ tasks: tasksToSave });
+      setMemorySyncState('synced');
+      setMemorySyncMessage(response.message || 'Memory synced to backend.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Backend memory sync failed.';
+      setMemorySyncState('error');
+      setMemorySyncMessage(`${message} Browser fallback is still active.`);
+    }
+  }, []);
+
+  const loadMemoryTasksFromBackend = useCallback(async () => {
+    setMemorySyncState('syncing');
+
+    try {
+      const response = await getMemoryTasks();
+      const backendTasks = response.tasks ?? [];
+      const browserTasks = initialMemoryTasksRef.current;
+
+      if (backendTasks.length > 0 || browserTasks.length === 0) {
+        setMemoryTasks(backendTasks);
+        setMemorySyncState('synced');
+        setMemorySyncMessage(response.message || 'Memory loaded from backend.');
+        return;
+      }
+
+      setMemoryTasks(browserTasks);
+      await replaceMemoryTasks({ tasks: browserTasks });
+      setMemorySyncState('synced');
+      setMemorySyncMessage('Browser memory was copied into the backend.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Backend memory unavailable.';
+      setMemorySyncState('error');
+      setMemorySyncMessage(`${message} Using browser fallback.`);
+    }
+  }, []);
+
+
+
+  useEffect(() => {
+    loadMemoryTasksFromBackend();
+  }, [loadMemoryTasksFromBackend]);
   const addRecentAction = useCallback((label: string, detail: string) => {
     const cleanedDetail = detail.replace(/\s+/g, ' ').trim();
 
@@ -1153,9 +1205,11 @@ export default function App() {
       createdAt: new Date().toISOString(),
     };
 
-    setMemoryTasks((prev) => [task, ...prev]);
+    const nextTasks = [task, ...memoryTasks];
+    setMemoryTasks(nextTasks);
+    persistMemoryTasksToBackend(nextTasks);
     return task;
-  }, []);
+  }, [memoryTasks, persistMemoryTasksToBackend]);
 
   const markMemoryTaskDone = useCallback((lookup?: string): MemoryTask | null => {
     const openTasks = memoryTasks.filter((task) => !task.completedAt);
@@ -1181,12 +1235,12 @@ export default function App() {
       completedAt: new Date().toISOString(),
     };
 
-    setMemoryTasks((prev) =>
-      prev.map((task) => (task.id === targetTask.id ? completedTask : task))
-    );
+    const nextTasks = memoryTasks.map((task) => (task.id === targetTask.id ? completedTask : task));
+    setMemoryTasks(nextTasks);
+    persistMemoryTasksToBackend(nextTasks);
 
     return completedTask;
-  }, [memoryTasks]);
+  }, [memoryTasks, persistMemoryTasksToBackend]);
 
   const markMemoryTaskDoneById = useCallback((taskId: string): MemoryTask | null => {
     const targetTask = memoryTasks.find((task) => task.id === taskId && !task.completedAt);
@@ -1200,12 +1254,12 @@ export default function App() {
       completedAt: new Date().toISOString(),
     };
 
-    setMemoryTasks((prev) =>
-      prev.map((task) => (task.id === targetTask.id ? completedTask : task))
-    );
+    const nextTasks = memoryTasks.map((task) => (task.id === targetTask.id ? completedTask : task));
+    setMemoryTasks(nextTasks);
+    persistMemoryTasksToBackend(nextTasks);
 
     return completedTask;
-  }, [memoryTasks]);
+  }, [memoryTasks, persistMemoryTasksToBackend]);
 
   const deleteMemoryTask = useCallback((taskId: string): MemoryTask | null => {
     const targetTask = memoryTasks.find((task) => task.id === taskId) ?? null;
@@ -1214,9 +1268,11 @@ export default function App() {
       return null;
     }
 
-    setMemoryTasks((prev) => prev.filter((task) => task.id !== taskId));
+    const nextTasks = memoryTasks.filter((task) => task.id !== taskId);
+    setMemoryTasks(nextTasks);
+    persistMemoryTasksToBackend(nextTasks);
     return targetTask;
-  }, [memoryTasks]);
+  }, [memoryTasks, persistMemoryTasksToBackend]);
 
   const reopenMemoryTask = useCallback((taskId: string): MemoryTask | null => {
     const targetTask = memoryTasks.find((task) => task.id === taskId && task.completedAt);
@@ -1231,12 +1287,12 @@ export default function App() {
       createdAt: targetTask.createdAt,
     };
 
-    setMemoryTasks((prev) =>
-      prev.map((task) => (task.id === targetTask.id ? reopenedTask : task))
-    );
+    const nextTasks = memoryTasks.map((task) => (task.id === targetTask.id ? reopenedTask : task));
+    setMemoryTasks(nextTasks);
+    persistMemoryTasksToBackend(nextTasks);
 
     return reopenedTask;
-  }, [memoryTasks]);
+  }, [memoryTasks, persistMemoryTasksToBackend]);
 
   const clearCompletedTasks = useCallback((): number => {
     const completedTasks = memoryTasks.filter((task) => task.completedAt);
@@ -1250,7 +1306,9 @@ export default function App() {
       .map((task) => normalizeMemoryLookup(task.title))
       .filter(Boolean);
 
-    setMemoryTasks((prev) => prev.filter((task) => !task.completedAt));
+    const nextTasks = memoryTasks.filter((task) => !task.completedAt);
+    setMemoryTasks(nextTasks);
+    persistMemoryTasksToBackend(nextTasks);
 
     // Treat Clear Done as cleanup, not as another memory action.
     // Remove task-related history too so the Memory panel does not still look like
@@ -1275,7 +1333,7 @@ export default function App() {
     );
 
     return removedCount;
-  }, [memoryTasks]);
+  }, [memoryTasks, persistMemoryTasksToBackend]);
 
   const handleSaveMemoryTaskDraft = useCallback(() => {
     const savedTask = saveMemoryTask(memoryTaskDraft);
@@ -3235,7 +3293,7 @@ export default function App() {
                 <div className="status-card">
                   <div className="status-card-title">Open Tasks</div>
                   <div className="status-card-value">{statusOpenTasksCount}</div>
-                  <div className="status-card-meta">{statusCompletedTasksCount} completed</div>
+                  <div className="status-card-meta">{statusCompletedTasksCount} completed · {memorySyncState}</div>
                 </div>
 
                 <div className="status-card">
@@ -3346,12 +3404,17 @@ export default function App() {
             <div className="panel-body memory-panel-body">
               <div className="memory-hero">
                 <div>
-                  <div className="memory-kicker">Local Memory</div>
-                  <div className="memory-title">Tasks saved in this browser.</div>
+                  <div className="memory-kicker">Backend Memory</div>
+                  <div className="memory-title">Tasks sync to FastAPI, with browser fallback.</div>
                 </div>
-                <div className="memory-chip">
-                  {memoryTasks.filter((task) => !task.completedAt).length} Open
+                <div className={`memory-chip memory-sync-${memorySyncState}`}>
+                  {memorySyncState === 'synced' ? 'Synced' : memorySyncState === 'syncing' ? 'Syncing' : 'Local'}
                 </div>
+              </div>
+
+              <div className="panel-section memory-sync-section">
+                <div className="panel-section-title">Sync Status</div>
+                <p className="panel-section-text">{memorySyncMessage}</p>
               </div>
 
               <div className="panel-section memory-input-section">

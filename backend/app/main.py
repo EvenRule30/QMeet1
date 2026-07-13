@@ -28,6 +28,18 @@ from app.calendar_service import (
     start_calendar_auth,
 )
 
+
+from app.memory_store import (
+    MemoryStoreError,
+    clear_completed_memory_tasks,
+    create_memory_task,
+    delete_memory_task,
+    get_memory_status,
+    list_memory_tasks,
+    replace_memory_tasks,
+    update_memory_task,
+)
+
 from app.schemas import (
     CalendarAuthResetResponse,
     CalendarAuthStartResponse,
@@ -42,6 +54,13 @@ from app.schemas import (
     ChatResponse,
     CommandInterpretRequest,
     CommandInterpretResponse,
+    MemoryClearCompletedResponse,
+    MemoryStatusResponse,
+    MemoryTaskCreateRequest,
+    MemoryTaskDeleteResponse,
+    MemoryTasksReplaceRequest,
+    MemoryTasksResponse,
+    MemoryTaskUpdateRequest,
     SearchRequest,
     SearchResponse,
 )
@@ -263,6 +282,103 @@ async def calendar_delete_event(event_id: str):
         raise HTTPException(
             status_code=500,
             detail="QMeet could not delete the Google Calendar event.",
+        )
+
+
+@app.get("/api/memory/status", response_model=MemoryStatusResponse)
+async def memory_status():
+    try:
+        return MemoryStatusResponse(**get_memory_status())
+    except MemoryStoreError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not read memory status.",
+        )
+
+
+@app.get("/api/memory/tasks", response_model=MemoryTasksResponse)
+async def memory_tasks():
+    try:
+        return MemoryTasksResponse(**list_memory_tasks())
+    except MemoryStoreError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not read memory tasks.",
+        )
+
+
+@app.put("/api/memory/tasks", response_model=MemoryTasksResponse)
+async def memory_replace_tasks(req: MemoryTasksReplaceRequest):
+    try:
+        return MemoryTasksResponse(**replace_memory_tasks(
+            [task.dict(exclude_none=True) for task in req.tasks]
+        ))
+    except MemoryStoreError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not save memory tasks.",
+        )
+
+
+@app.post("/api/memory/tasks", response_model=MemoryTasksResponse)
+async def memory_create_task(req: MemoryTaskCreateRequest):
+    try:
+        return MemoryTasksResponse(**create_memory_task(req.title))
+    except MemoryStoreError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not create memory task.",
+        )
+
+
+@app.patch("/api/memory/tasks/{task_id}", response_model=MemoryTasksResponse)
+async def memory_update_task(task_id: str, req: MemoryTaskUpdateRequest):
+    try:
+        return MemoryTasksResponse(**update_memory_task(
+            task_id=task_id,
+            title=req.title,
+            completed_at=req.completedAt,
+        ))
+    except MemoryStoreError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not update memory task.",
+        )
+
+
+@app.delete("/api/memory/tasks/{task_id}", response_model=MemoryTaskDeleteResponse)
+async def memory_delete_task(task_id: str):
+    try:
+        return MemoryTaskDeleteResponse(**delete_memory_task(task_id))
+    except MemoryStoreError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not delete memory task.",
+        )
+
+
+@app.post("/api/memory/tasks/clear-completed", response_model=MemoryClearCompletedResponse)
+async def memory_clear_completed_tasks():
+    try:
+        return MemoryClearCompletedResponse(**clear_completed_memory_tasks())
+    except MemoryStoreError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not clear completed memory tasks.",
         )
 
 

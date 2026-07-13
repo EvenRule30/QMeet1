@@ -58,6 +58,52 @@ export interface RecentAction {
   createdAt: string;
 }
 
+export interface MemoryStatusResponse {
+  ok: boolean;
+  provider: 'local-json';
+  configured: boolean;
+  path: string;
+  taskCount: number;
+  completedCount: number;
+  message: string;
+}
+
+export interface MemoryTasksResponse {
+  ok: boolean;
+  provider: 'local-json';
+  tasks: MemoryTask[];
+  message: string;
+}
+
+export interface MemoryTaskCreateRequest {
+  title: string;
+}
+
+export interface MemoryTasksReplaceRequest {
+  tasks: MemoryTask[];
+}
+
+export interface MemoryTaskUpdateRequest {
+  title?: string;
+  completedAt?: string | null;
+}
+
+export interface MemoryTaskDeleteResponse {
+  ok: boolean;
+  provider: 'local-json';
+  deletedTaskId: string;
+  message: string;
+}
+
+export interface MemoryClearCompletedResponse {
+  ok: boolean;
+  provider: 'local-json';
+  removedCount: number;
+  tasks: MemoryTask[];
+  message: string;
+}
+
+
 export interface CalendarEvent {
   id: string;
   title: string;

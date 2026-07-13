@@ -32,7 +32,7 @@ Return JSON only. Do not use markdown. Do not explain. Do not claim that you per
 Allowed JSON shape:
 {
   "intent": "command" | "chat",
-  "action": "none" | "open_panel" | "close_panel" | "go_home" | "clear_chat" | "end_chat" | "save_note" | "read_notes" | "delete_last_note" | "clear_notes" | "prepare_search" | "clear_search" | "add_calendar_event" | "read_calendar" | "delete_last_calendar_event" | "edit_calendar_event" | "clear_calendar" | "voice_output_on" | "voice_output_off" | "voice_slower" | "voice_faster" | "voice_normal" | "cancel",
+  "action": "none" | "open_panel" | "close_panel" | "go_home" | "clear_chat" | "end_chat" | "save_note" | "read_notes" | "delete_last_note" | "clear_notes" | "read_memory" | "save_task" | "mark_task_done" | "prepare_search" | "clear_search" | "add_calendar_event" | "read_calendar" | "delete_last_calendar_event" | "edit_calendar_event" | "clear_calendar" | "voice_output_on" | "voice_output_off" | "voice_slower" | "voice_faster" | "voice_normal" | "cancel",
   "confidence": 0.0,
   "frontendCommand": "",
   "payload": {},
@@ -54,6 +54,12 @@ The frontend only executes the exact frontendCommand text. Use these exact front
 - read my notes
 - delete last note
 - clear notes
+- open memory
+- what was I working on
+- remember to <task text> as a task
+- mark task done
+- mark <task text> done
+- clear completed tasks
 - search for <query>
 - clear search
 - add event today at <time> called <title>
@@ -77,6 +83,10 @@ The frontend only executes the exact frontendCommand text. Use these exact front
 Rules:
 - Use intent "chat" for normal questions, explanations, coding help, opinions, or anything that should be answered by the AI.
 - Use intent "command" only for local QMeet UI/tool control.
+- Memory/task commands should map to memory frontend commands.
+- If the user asks what they were working on or what tasks they have, map to "what was I working on".
+- If the user asks to remember something as a task or reminds themselves to do something, map to "remember to <task text> as a task".
+- If the user asks to mark a task done or complete, map to "mark task done" or "mark <task text> done".
 - Calendar misspellings like "calender" and "calander" should still map to calendar commands.
 - If the user asks to clear/wipe/remove/delete their calendar/schedule/agenda/events, map to "clear calendar".
 - If the user asks to move/reschedule/edit/rename the last/current/next calendar event, map to the closest edit/reschedule/rename frontendCommand form above.
@@ -99,6 +109,9 @@ ALLOWED_COMMAND_ACTIONS = {
     "read_notes",
     "delete_last_note",
     "clear_notes",
+    "read_memory",
+    "save_task",
+    "mark_task_done",
     "prepare_search",
     "clear_search",
     "add_calendar_event",
@@ -209,6 +222,37 @@ def mock_interpret_command_intent(message: str) -> dict:
 
     if not text:
         return _empty_command_intent("Empty input.")
+
+    if re.search(r"\b(what was i working on|what am i working on|what are my tasks|read memory|memory summary)\b", lowered):
+        return {
+            "intent": "command",
+            "action": "read_memory",
+            "confidence": 0.95,
+            "frontendCommand": "what was I working on",
+            "payload": {},
+            "reason": "Mock matched memory read wording.",
+        }
+
+    task_match = re.search(r"\b(?:remember|remind me|add|save|create|make)\b.*\b(?:task|to)\b", lowered)
+    if task_match:
+        return {
+            "intent": "command",
+            "action": "save_task",
+            "confidence": 0.85,
+            "frontendCommand": text if "task" in lowered else f"{text} as a task",
+            "payload": {},
+            "reason": "Mock matched task save wording.",
+        }
+
+    if re.search(r"\b(mark|complete|finish)\b.*\b(task|done|complete|completed|finished)\b", lowered):
+        return {
+            "intent": "command",
+            "action": "mark_task_done",
+            "confidence": 0.9,
+            "frontendCommand": text,
+            "payload": {},
+            "reason": "Mock matched task completion wording.",
+        }
 
     if re.search(r"\b(reschedule|move)\b.*\b(last|latest|next|current|this)\b.*\b(event|appointment|meeting)\b", lowered):
         return {

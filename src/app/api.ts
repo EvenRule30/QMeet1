@@ -1,4 +1,4 @@
-import { BackendStatus, CalendarAuthResetResponse, CalendarAuthStartResponse, CalendarBackendStatus, CalendarBackendView, CalendarCreateEventRequest, CalendarCreateEventResponse, CalendarDeleteEventResponse, CalendarEventsResponse, CalendarUpdateEventRequest, CalendarUpdateEventResponse, CommandIntentResponse, SearchResponse } from "./types";
+import { BackendStatus, CalendarAuthResetResponse, CalendarAuthStartResponse, CalendarBackendStatus, CalendarBackendView, CalendarCreateEventRequest, CalendarCreateEventResponse, CalendarDeleteEventResponse, CalendarEventsResponse, CalendarUpdateEventRequest, CalendarUpdateEventResponse, CommandIntentResponse, MemoryStatusResponse, MemoryTaskCreateRequest, MemoryTaskDeleteResponse, MemoryTaskUpdateRequest, MemoryTasksReplaceRequest, MemoryTasksResponse, MemoryClearCompletedResponse, SearchResponse } from "./types";
 
 export type ChatApiResponse = {
   reply: string;
@@ -171,6 +171,108 @@ export async function deleteGoogleCalendarEvent(googleEventId: string): Promise<
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || `Calendar delete event error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+
+export async function getMemoryStatus(): Promise<MemoryStatusResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/memory/status`);
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Memory status error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+export async function getMemoryTasks(): Promise<MemoryTasksResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/memory/tasks`);
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Memory tasks error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+export async function replaceMemoryTasks(request: MemoryTasksReplaceRequest): Promise<MemoryTasksResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/memory/tasks`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Memory replace error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+export async function createMemoryTask(request: MemoryTaskCreateRequest): Promise<MemoryTasksResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/memory/tasks`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Memory create error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+export async function updateMemoryTask(taskId: string, request: MemoryTaskUpdateRequest): Promise<MemoryTasksResponse> {
+  const encodedId = encodeURIComponent(taskId);
+  const res = await fetch(`${API_BASE_URL}/api/memory/tasks/${encodedId}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Memory update error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+export async function deleteMemoryTaskById(taskId: string): Promise<MemoryTaskDeleteResponse> {
+  const encodedId = encodeURIComponent(taskId);
+  const res = await fetch(`${API_BASE_URL}/api/memory/tasks/${encodedId}`, {
+    method: "DELETE",
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Memory delete error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+export async function clearCompletedMemoryTasks(): Promise<MemoryClearCompletedResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/memory/tasks/clear-completed`, {
+    method: "POST",
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Memory clear completed error: ${res.status}`);
   }
 
   return res.json();

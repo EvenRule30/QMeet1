@@ -3070,3 +3070,31 @@ body,
     font-size: 9px;
   }
 }
+
+
+/* =====================================================
+   Phase 9B — backend memory sync status
+   ===================================================== */
+
+.memory-sync-section {
+  flex: 0 0 auto;
+}
+
+.memory-sync-synced {
+  border-color: rgba(0, 255, 179, 0.28);
+  background: rgba(0, 255, 179, 0.08);
+  color: rgba(0, 255, 179, 0.96);
+}
+
+.memory-sync-syncing {
+  border-color: rgba(0, 212, 255, 0.28);
+  background: rgba(0, 212, 255, 0.08);
+  color: rgba(0, 212, 255, 0.96);
+}
+
+.memory-sync-error,
+.memory-sync-local {
+  border-color: rgba(255, 210, 90, 0.30);
+  background: rgba(255, 210, 90, 0.08);
+  color: rgba(255, 220, 120, 0.96);
+}
