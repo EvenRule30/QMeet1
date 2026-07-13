@@ -7,7 +7,7 @@ import { NotesPanel } from './components/NotesPanel';
 import { CalendarPanel } from './components/CalendarPanel';
 import { SearchPanel } from './components/SearchPanel';
 import { Message, OrbState, BackendStatus, ActivePanel, Note, CalendarEvent, CalendarBackendStatus, CalendarBackendView, SearchResponse, AssistantActivity, MemoryTask, RecentAction } from './types';
-import { streamChatMessage, getBackendStatus, resetConversation, interpretCommandIntent, getCalendarStatus, getCalendarEvents, createCalendarEvent, deleteGoogleCalendarEvent, updateGoogleCalendarEvent, startCalendarAuth, resetCalendarAuth, searchWeb, getMemoryTasks, replaceMemoryTasks } from "./api";
+import { streamChatMessage, getBackendStatus, resetConversation, interpretCommandIntent, getCalendarStatus, getCalendarEvents, createCalendarEvent, deleteGoogleCalendarEvent, updateGoogleCalendarEvent, startCalendarAuth, resetCalendarAuth, searchWeb, getMemoryContext, replaceMemoryContext } from "./api";
 import { getSpeechRecognition, isSpeechRecognitionSupported } from './speechRecognition';
 import { speakText, stopSpeaking } from './speechSynthesis';
 import { parseCommand, normalizeSpokenQMeet } from './commands';
@@ -921,6 +921,7 @@ export default function App() {
   const orbAreaRef = useRef<HTMLDivElement | null>(null);
   const resultToastTimeoutsRef = useRef<number[]>([]);
   const initialMemoryTasksRef = useRef<MemoryTask[]>(memoryTasks);
+  const initialRecentActionsRef = useRef<RecentAction[]>(recentActions);
 
   const dismissResultToast = useCallback((toastId: string) => {
     setResultToasts((prev) => prev.filter((toast) => toast.id !== toastId));
@@ -1134,13 +1135,16 @@ export default function App() {
   }, [notes]);
 
 
-  const persistMemoryTasksToBackend = useCallback(async (tasksToSave: MemoryTask[]) => {
+  const persistMemoryContextToBackend = useCallback(async (tasksToSave: MemoryTask[], actionsToSave: RecentAction[]) => {
     setMemorySyncState('syncing');
 
     try {
-      const response = await replaceMemoryTasks({ tasks: tasksToSave });
+      const response = await replaceMemoryContext({
+        tasks: tasksToSave,
+        recentActions: actionsToSave,
+      });
       setMemorySyncState('synced');
-      setMemorySyncMessage(response.message || 'Memory synced to backend.');
+      setMemorySyncMessage(response.message || 'Memory context synced to backend.');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Backend memory sync failed.';
       setMemorySyncState('error');
@@ -1148,25 +1152,42 @@ export default function App() {
     }
   }, []);
 
-  const loadMemoryTasksFromBackend = useCallback(async () => {
+  const persistMemoryTasksToBackend = useCallback(async (tasksToSave: MemoryTask[]) => {
+    await persistMemoryContextToBackend(tasksToSave, recentActions);
+  }, [persistMemoryContextToBackend, recentActions]);
+
+  const loadMemoryContextFromBackend = useCallback(async () => {
     setMemorySyncState('syncing');
 
     try {
-      const response = await getMemoryTasks();
+      const response = await getMemoryContext();
       const backendTasks = response.tasks ?? [];
+      const backendActions = response.recentActions ?? [];
       const browserTasks = initialMemoryTasksRef.current;
+      const browserActions = initialRecentActionsRef.current;
+      const nextTasks = backendTasks.length > 0 || browserTasks.length === 0 ? backendTasks : browserTasks;
+      const nextActions = backendActions.length > 0 || browserActions.length === 0 ? backendActions : browserActions;
+      const copiedBrowserTasks = backendTasks.length === 0 && browserTasks.length > 0;
+      const copiedBrowserActions = backendActions.length === 0 && browserActions.length > 0;
 
-      if (backendTasks.length > 0 || browserTasks.length === 0) {
-        setMemoryTasks(backendTasks);
+      setMemoryTasks(nextTasks);
+      setRecentActions(nextActions);
+
+      if (copiedBrowserTasks || copiedBrowserActions) {
+        await replaceMemoryContext({ tasks: nextTasks, recentActions: nextActions });
         setMemorySyncState('synced');
-        setMemorySyncMessage(response.message || 'Memory loaded from backend.');
+        setMemorySyncMessage(
+          copiedBrowserTasks && copiedBrowserActions
+            ? 'Browser memory and work context were copied into the backend.'
+            : copiedBrowserTasks
+              ? 'Browser memory tasks were copied into the backend.'
+              : 'Browser work context was copied into the backend.'
+        );
         return;
       }
 
-      setMemoryTasks(browserTasks);
-      await replaceMemoryTasks({ tasks: browserTasks });
       setMemorySyncState('synced');
-      setMemorySyncMessage('Browser memory was copied into the backend.');
+      setMemorySyncMessage(response.message || 'Memory context loaded from backend.');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Backend memory unavailable.';
       setMemorySyncState('error');
@@ -1177,8 +1198,8 @@ export default function App() {
 
 
   useEffect(() => {
-    loadMemoryTasksFromBackend();
-  }, [loadMemoryTasksFromBackend]);
+    loadMemoryContextFromBackend();
+  }, [loadMemoryContextFromBackend]);
   const addRecentAction = useCallback((label: string, detail: string) => {
     const cleanedDetail = detail.replace(/\s+/g, ' ').trim();
 
@@ -1189,8 +1210,12 @@ export default function App() {
       createdAt: new Date().toISOString(),
     };
 
-    setRecentActions((prev) => [action, ...prev].slice(0, 12));
-  }, []);
+    setRecentActions((prev) => {
+      const nextActions = [action, ...prev].slice(0, 12);
+      persistMemoryContextToBackend(memoryTasks, nextActions);
+      return nextActions;
+    });
+  }, [memoryTasks, persistMemoryContextToBackend]);
 
   const saveMemoryTask = useCallback((title: string): MemoryTask | null => {
     const trimmedTitle = title.trim();
@@ -1313,8 +1338,8 @@ export default function App() {
     // Treat Clear Done as cleanup, not as another memory action.
     // Remove task-related history too so the Memory panel does not still look like
     // the completed task exists after the completed task list has been cleared.
-    setRecentActions((prev) =>
-      prev.filter((action) => {
+    setRecentActions((prev) => {
+      const nextActions = prev.filter((action) => {
         const normalizedLabel = normalizeMemoryLookup(action.label);
         const normalizedDetail = normalizeMemoryLookup(action.detail);
         const actionText = `${normalizedLabel} ${normalizedDetail}`.trim();
@@ -1329,11 +1354,14 @@ export default function App() {
           );
 
         return !isTaskAction;
-      })
-    );
+      });
+
+      persistMemoryContextToBackend(nextTasks, nextActions);
+      return nextActions;
+    });
 
     return removedCount;
-  }, [memoryTasks, persistMemoryTasksToBackend]);
+  }, [memoryTasks, persistMemoryContextToBackend, persistMemoryTasksToBackend]);
 
   const handleSaveMemoryTaskDraft = useCallback(() => {
     const savedTask = saveMemoryTask(memoryTaskDraft);
@@ -1353,7 +1381,10 @@ export default function App() {
     const latestNote = notes[0]?.content;
     const latestCalendarEvent = googleCalendarEvents[0] ?? calendarEvents[0];
     const latestSearch = searchResult?.query || searchQuery.trim();
-    const latestAction = recentActions[0];
+    const recentActionText = recentActions
+      .slice(0, 3)
+      .map((action) => action.detail ? `${action.label}: ${action.detail}` : action.label)
+      .join('; ');
 
     const taskText = openTasks.length > 0
       ? `Open tasks: ${openTasks.slice(0, 4).map((task) => task.title).join('; ')}.`
@@ -1368,7 +1399,7 @@ export default function App() {
       ? `Latest calendar item: ${latestCalendarEvent.time}: ${latestCalendarEvent.title}.`
       : 'No calendar items loaded.';
     const searchText = latestSearch ? `Latest search: ${latestSearch}.` : 'No search yet.';
-    const actionText = latestAction ? `Last action: ${latestAction.label}.` : 'No recent actions yet.';
+    const actionText = recentActionText ? `Recent actions: ${recentActionText}.` : 'No recent actions yet.';
 
     return `${taskText} ${completedText} ${noteText} ${calendarText} ${searchText} ${actionText}`;
   }, [calendarEvents, googleCalendarEvents, memoryTasks, notes, recentActions, searchQuery, searchResult?.query]);
@@ -3405,7 +3436,7 @@ export default function App() {
               <div className="memory-hero">
                 <div>
                   <div className="memory-kicker">Backend Memory</div>
-                  <div className="memory-title">Tasks sync to FastAPI, with browser fallback.</div>
+                  <div className="memory-title">Tasks and work context sync to FastAPI, with browser fallback.</div>
                 </div>
                 <div className={`memory-chip memory-sync-${memorySyncState}`}>
                   {memorySyncState === 'synced' ? 'Synced' : memorySyncState === 'syncing' ? 'Syncing' : 'Local'}
@@ -3548,7 +3579,7 @@ export default function App() {
               <div className="panel-section">
                 <div className="panel-section-title">Supported Commands</div>
                 <p className="panel-section-text">
-                  Say “what was I working on,” “remember to test the Pi as a task,” “mark task done,” “mark test the Pi done,” “clear completed tasks,” or use the task buttons above.
+                  Say “what was I working on,” “remember to test the Pi as a task,” “mark task done,” “mark test the Pi done,” “clear completed tasks,” or use the task buttons above. Recent actions stay hidden but are saved for work summaries.
                 </p>
               </div>
 

@@ -32,11 +32,18 @@ from app.calendar_service import (
 from app.memory_store import (
     MemoryStoreError,
     clear_completed_memory_tasks,
+    clear_recent_actions,
     create_memory_task,
+    create_recent_action,
     delete_memory_task,
+    delete_recent_action,
+    get_memory_context,
     get_memory_status,
     list_memory_tasks,
+    list_recent_actions,
+    replace_memory_context,
     replace_memory_tasks,
+    replace_recent_actions,
     update_memory_task,
 )
 
@@ -55,12 +62,19 @@ from app.schemas import (
     CommandInterpretRequest,
     CommandInterpretResponse,
     MemoryClearCompletedResponse,
+    MemoryContextReplaceRequest,
+    MemoryContextResponse,
     MemoryStatusResponse,
     MemoryTaskCreateRequest,
     MemoryTaskDeleteResponse,
     MemoryTasksReplaceRequest,
     MemoryTasksResponse,
     MemoryTaskUpdateRequest,
+    RecentActionCreateRequest,
+    RecentActionDeleteResponse,
+    RecentActionsClearResponse,
+    RecentActionsReplaceRequest,
+    RecentActionsResponse,
     SearchRequest,
     SearchResponse,
 )
@@ -298,6 +312,35 @@ async def memory_status():
         )
 
 
+@app.get("/api/memory/context", response_model=MemoryContextResponse)
+async def memory_context():
+    try:
+        return MemoryContextResponse(**get_memory_context())
+    except MemoryStoreError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not read memory context.",
+        )
+
+
+@app.put("/api/memory/context", response_model=MemoryContextResponse)
+async def memory_replace_context(req: MemoryContextReplaceRequest):
+    try:
+        return MemoryContextResponse(**replace_memory_context(
+            tasks=[task.dict(exclude_none=True) for task in req.tasks],
+            recent_actions=[action.dict(exclude_none=True) for action in req.recentActions],
+        ))
+    except MemoryStoreError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not save memory context.",
+        )
+
+
 @app.get("/api/memory/tasks", response_model=MemoryTasksResponse)
 async def memory_tasks():
     try:
@@ -379,6 +422,76 @@ async def memory_clear_completed_tasks():
         raise HTTPException(
             status_code=500,
             detail="QMeet could not clear completed memory tasks.",
+        )
+
+
+@app.get("/api/memory/actions", response_model=RecentActionsResponse)
+async def memory_recent_actions():
+    try:
+        return RecentActionsResponse(**list_recent_actions())
+    except MemoryStoreError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not read recent actions.",
+        )
+
+
+@app.put("/api/memory/actions", response_model=RecentActionsResponse)
+async def memory_replace_recent_actions(req: RecentActionsReplaceRequest):
+    try:
+        return RecentActionsResponse(**replace_recent_actions(
+            [action.dict(exclude_none=True) for action in req.recentActions]
+        ))
+    except MemoryStoreError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not save recent actions.",
+        )
+
+
+@app.post("/api/memory/actions", response_model=RecentActionsResponse)
+async def memory_create_recent_action(req: RecentActionCreateRequest):
+    try:
+        return RecentActionsResponse(**create_recent_action(
+            label=req.label,
+            detail=req.detail,
+        ))
+    except MemoryStoreError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not save recent action.",
+        )
+
+
+@app.delete("/api/memory/actions/{action_id}", response_model=RecentActionDeleteResponse)
+async def memory_delete_recent_action(action_id: str):
+    try:
+        return RecentActionDeleteResponse(**delete_recent_action(action_id))
+    except MemoryStoreError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not delete recent action.",
+        )
+
+
+@app.post("/api/memory/actions/clear", response_model=RecentActionsClearResponse)
+async def memory_clear_recent_actions():
+    try:
+        return RecentActionsClearResponse(**clear_recent_actions())
+    except MemoryStoreError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not clear recent actions.",
         )
 
 

@@ -123,6 +123,13 @@ class MemoryTaskItem(BaseModel):
     completedAt: str | None = None
 
 
+class RecentActionItem(BaseModel):
+    id: str
+    label: str
+    detail: str = ""
+    createdAt: str
+
+
 class MemoryStatusResponse(BaseModel):
     ok: bool = True
     provider: Literal["local-json"] = "local-json"
@@ -130,6 +137,7 @@ class MemoryStatusResponse(BaseModel):
     path: str = ""
     taskCount: int = 0
     completedCount: int = 0
+    actionCount: int = 0
     message: str = ""
 
 
@@ -165,6 +173,50 @@ class MemoryClearCompletedResponse(BaseModel):
     provider: Literal["local-json"] = "local-json"
     removedCount: int = 0
     tasks: list[MemoryTaskItem] = Field(default_factory=list)
+    message: str = ""
+
+
+class MemoryContextReplaceRequest(BaseModel):
+    tasks: list[MemoryTaskItem] = Field(default_factory=list)
+    recentActions: list[RecentActionItem] = Field(default_factory=list)
+
+
+class MemoryContextResponse(BaseModel):
+    ok: bool = True
+    provider: Literal["local-json"] = "local-json"
+    tasks: list[MemoryTaskItem] = Field(default_factory=list)
+    recentActions: list[RecentActionItem] = Field(default_factory=list)
+    message: str = ""
+
+
+class RecentActionCreateRequest(BaseModel):
+    label: str
+    detail: str = ""
+
+
+class RecentActionsReplaceRequest(BaseModel):
+    recentActions: list[RecentActionItem] = Field(default_factory=list)
+
+
+class RecentActionsResponse(BaseModel):
+    ok: bool = True
+    provider: Literal["local-json"] = "local-json"
+    recentActions: list[RecentActionItem] = Field(default_factory=list)
+    message: str = ""
+
+
+class RecentActionDeleteResponse(BaseModel):
+    ok: bool = True
+    provider: Literal["local-json"] = "local-json"
+    deletedActionId: str = ""
+    message: str = ""
+
+
+class RecentActionsClearResponse(BaseModel):
+    ok: bool = True
+    provider: Literal["local-json"] = "local-json"
+    removedCount: int = 0
+    recentActions: list[RecentActionItem] = Field(default_factory=list)
     message: str = ""
 
 

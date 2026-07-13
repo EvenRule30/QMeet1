@@ -1,4 +1,4 @@
-import { BackendStatus, CalendarAuthResetResponse, CalendarAuthStartResponse, CalendarBackendStatus, CalendarBackendView, CalendarCreateEventRequest, CalendarCreateEventResponse, CalendarDeleteEventResponse, CalendarEventsResponse, CalendarUpdateEventRequest, CalendarUpdateEventResponse, CommandIntentResponse, MemoryStatusResponse, MemoryTaskCreateRequest, MemoryTaskDeleteResponse, MemoryTaskUpdateRequest, MemoryTasksReplaceRequest, MemoryTasksResponse, MemoryClearCompletedResponse, SearchResponse } from "./types";
+import { BackendStatus, CalendarAuthResetResponse, CalendarAuthStartResponse, CalendarBackendStatus, CalendarBackendView, CalendarCreateEventRequest, CalendarCreateEventResponse, CalendarDeleteEventResponse, CalendarEventsResponse, CalendarUpdateEventRequest, CalendarUpdateEventResponse, CommandIntentResponse, MemoryStatusResponse, MemoryTaskCreateRequest, MemoryTaskDeleteResponse, MemoryTaskUpdateRequest, MemoryTasksReplaceRequest, MemoryTasksResponse, MemoryClearCompletedResponse, MemoryContextReplaceRequest, MemoryContextResponse, RecentActionCreateRequest, RecentActionDeleteResponse, RecentActionsClearResponse, RecentActionsReplaceRequest, RecentActionsResponse, SearchResponse } from "./types";
 
 export type ChatApiResponse = {
   reply: string;
@@ -188,6 +188,34 @@ export async function getMemoryStatus(): Promise<MemoryStatusResponse> {
   return res.json();
 }
 
+export async function getMemoryContext(): Promise<MemoryContextResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/memory/context`);
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Memory context error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+export async function replaceMemoryContext(request: MemoryContextReplaceRequest): Promise<MemoryContextResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/memory/context`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Memory context replace error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
 export async function getMemoryTasks(): Promise<MemoryTasksResponse> {
   const res = await fetch(`${API_BASE_URL}/api/memory/tasks`);
 
@@ -273,6 +301,79 @@ export async function clearCompletedMemoryTasks(): Promise<MemoryClearCompletedR
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || `Memory clear completed error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+
+export async function getRecentActions(): Promise<RecentActionsResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/memory/actions`);
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Recent actions error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+export async function replaceRecentActions(request: RecentActionsReplaceRequest): Promise<RecentActionsResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/memory/actions`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Recent actions replace error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+export async function createRecentAction(request: RecentActionCreateRequest): Promise<RecentActionsResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/memory/actions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Recent action create error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+export async function deleteRecentActionById(actionId: string): Promise<RecentActionDeleteResponse> {
+  const encodedId = encodeURIComponent(actionId);
+  const res = await fetch(`${API_BASE_URL}/api/memory/actions/${encodedId}`, {
+    method: "DELETE",
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Recent action delete error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+export async function clearRecentActions(): Promise<RecentActionsClearResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/memory/actions/clear`, {
+    method: "POST",
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Recent actions clear error: ${res.status}`);
   }
 
   return res.json();

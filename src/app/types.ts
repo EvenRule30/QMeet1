@@ -65,6 +65,7 @@ export interface MemoryStatusResponse {
   path: string;
   taskCount: number;
   completedCount: number;
+  actionCount: number;
   message: string;
 }
 
@@ -100,6 +101,50 @@ export interface MemoryClearCompletedResponse {
   provider: 'local-json';
   removedCount: number;
   tasks: MemoryTask[];
+  message: string;
+}
+
+export interface MemoryContextReplaceRequest {
+  tasks: MemoryTask[];
+  recentActions: RecentAction[];
+}
+
+export interface MemoryContextResponse {
+  ok: boolean;
+  provider: 'local-json';
+  tasks: MemoryTask[];
+  recentActions: RecentAction[];
+  message: string;
+}
+
+export interface RecentActionCreateRequest {
+  label: string;
+  detail?: string;
+}
+
+export interface RecentActionsReplaceRequest {
+  recentActions: RecentAction[];
+}
+
+export interface RecentActionsResponse {
+  ok: boolean;
+  provider: 'local-json';
+  recentActions: RecentAction[];
+  message: string;
+}
+
+export interface RecentActionDeleteResponse {
+  ok: boolean;
+  provider: 'local-json';
+  deletedActionId: string;
+  message: string;
+}
+
+export interface RecentActionsClearResponse {
+  ok: boolean;
+  provider: 'local-json';
+  removedCount: number;
+  recentActions: RecentAction[];
   message: string;
 }
 
