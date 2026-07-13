@@ -526,3 +526,58 @@ def clear_memory_notes() -> dict:
         "notes": [],
         "message": f"Cleared {removed_count} note{'s' if removed_count != 1 else ''}.",
     }
+
+
+def clear_memory_context() -> dict:
+    payload = _read_payload()
+    removed_tasks = len(payload["tasks"])
+    removed_actions = len(payload["recentActions"])
+    removed_notes = len(payload["notes"])
+
+    _write_payload([], [], [])
+
+    return {
+        "ok": True,
+        "provider": "local-json",
+        "tasks": [],
+        "recentActions": [],
+        "notes": [],
+        "removedTaskCount": removed_tasks,
+        "removedActionCount": removed_actions,
+        "removedNoteCount": removed_notes,
+        "message": "Cleared all backend memory, notes, and work context.",
+    }
+
+
+def export_memory_context() -> dict:
+    payload = _read_payload()
+
+    return {
+        "ok": True,
+        "provider": "local-json",
+        "version": 4,
+        "exportedAt": _now_iso(),
+        "tasks": payload["tasks"],
+        "recentActions": payload["recentActions"],
+        "notes": payload["notes"],
+        "message": "Memory export loaded from the backend.",
+    }
+
+
+def import_memory_context(tasks: list[dict], recent_actions: list[dict], notes: list[dict]) -> dict:
+    clean_tasks = [_task for _task in (_sanitize_task(task) for task in tasks) if _task]
+    clean_actions = [
+        _action for _action in (_sanitize_action(action) for action in recent_actions) if _action
+    ][:24]
+    clean_notes = [_note for _note in (_sanitize_note(note) for note in notes) if _note]
+
+    _write_payload(clean_tasks, clean_actions, clean_notes)
+
+    return {
+        "ok": True,
+        "provider": "local-json",
+        "tasks": clean_tasks,
+        "recentActions": clean_actions,
+        "notes": clean_notes,
+        "message": "Imported memory, notes, and work context into the backend.",
+    }

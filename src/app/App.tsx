@@ -7,7 +7,7 @@ import { NotesPanel } from './components/NotesPanel';
 import { CalendarPanel } from './components/CalendarPanel';
 import { SearchPanel } from './components/SearchPanel';
 import { Message, OrbState, BackendStatus, ActivePanel, Note, CalendarEvent, CalendarBackendStatus, CalendarBackendView, SearchResponse, AssistantActivity, MemoryTask, RecentAction } from './types';
-import { streamChatMessage, getBackendStatus, resetConversation, interpretCommandIntent, getCalendarStatus, getCalendarEvents, createCalendarEvent, deleteGoogleCalendarEvent, updateGoogleCalendarEvent, startCalendarAuth, resetCalendarAuth, searchWeb, getMemoryContext, replaceMemoryContext } from "./api";
+import { streamChatMessage, getBackendStatus, resetConversation, interpretCommandIntent, getCalendarStatus, getCalendarEvents, createCalendarEvent, deleteGoogleCalendarEvent, updateGoogleCalendarEvent, startCalendarAuth, resetCalendarAuth, searchWeb, getMemoryContext, replaceMemoryContext, exportMemoryContext, importMemoryContext, clearAllMemoryContext } from "./api";
 import { getSpeechRecognition, isSpeechRecognitionSupported } from './speechRecognition';
 import { speakText, stopSpeaking } from './speechSynthesis';
 import { parseCommand, normalizeSpokenQMeet } from './commands';
@@ -924,6 +924,7 @@ export default function App() {
   const initialRecentActionsRef = useRef<RecentAction[]>(recentActions);
   const initialNotesRef = useRef<Note[]>(notes);
   const memoryContextHydratedRef = useRef(false);
+  const memoryImportInputRef = useRef<HTMLInputElement | null>(null);
 
   const dismissResultToast = useCallback((toastId: string) => {
     setResultToasts((prev) => prev.filter((toast) => toast.id !== toastId));
@@ -1389,6 +1390,166 @@ export default function App() {
     addRecentAction('Saved task', savedTask.title);
     pushResultToast({ kind: 'success', title: 'Task saved', detail: savedTask.title });
   }, [addRecentAction, memoryTaskDraft, pushResultToast, saveMemoryTask]);
+
+
+  const handleExportMemory = useCallback(async () => {
+    try {
+      const exportPayload = await exportMemoryContext();
+      const payload = {
+        version: exportPayload.version || 4,
+        exportedAt: exportPayload.exportedAt || new Date().toISOString(),
+        tasks: exportPayload.tasks ?? memoryTasks,
+        recentActions: exportPayload.recentActions ?? recentActions,
+        notes: exportPayload.notes ?? notes,
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `qmeet-memory-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setMemorySyncState('synced');
+      setMemorySyncMessage('Memory export downloaded from backend memory.');
+      pushResultToast({ kind: 'success', title: 'Memory exported', detail: 'Downloaded QMeet memory JSON.' });
+    } catch (error) {
+      const payload = {
+        version: 4,
+        exportedAt: new Date().toISOString(),
+        tasks: memoryTasks,
+        recentActions,
+        notes,
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `qmeet-memory-local-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setMemorySyncState('error');
+      setMemorySyncMessage('Backend export failed, so QMeet exported the browser fallback memory.');
+      pushResultToast({ kind: 'warning', title: 'Local export', detail: 'Backend unavailable; exported browser fallback.' });
+    }
+  }, [memoryTasks, notes, pushResultToast, recentActions]);
+
+  const handleImportMemoryFile = useCallback(async (event: any) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+
+    if (!file) {
+      return;
+    }
+
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const importedTasks = Array.isArray(parsed.tasks) ? parsed.tasks : [];
+      const importedActions = Array.isArray(parsed.recentActions) ? parsed.recentActions : [];
+      const importedNotes = Array.isArray(parsed.notes) ? parsed.notes : [];
+
+      const response = await importMemoryContext({
+        tasks: importedTasks,
+        recentActions: importedActions,
+        notes: importedNotes,
+      });
+
+      setMemoryTasks(response.tasks ?? importedTasks);
+      setRecentActions(response.recentActions ?? importedActions);
+      setNotes(response.notes ?? importedNotes);
+      setMemorySyncState('synced');
+      setMemorySyncMessage(response.message || 'Imported memory JSON into backend memory.');
+      pushResultToast({ kind: 'success', title: 'Memory imported', detail: 'Tasks, notes, and work context replaced.' });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not import memory JSON.';
+      setMemorySyncState('error');
+      setMemorySyncMessage(`${message} Existing memory was left unchanged.`);
+      pushResultToast({ kind: 'error', title: 'Import failed', detail: 'Memory JSON was not imported.' });
+    }
+  }, [pushResultToast]);
+
+  const handleClearAllMemory = useCallback(async () => {
+    const confirmed = window.confirm('Clear all QMeet tasks, completed tasks, notes, and hidden recent work context? This cannot be undone unless you exported a backup.');
+
+    if (!confirmed) {
+      return;
+    }
+
+    setMemoryTasks([]);
+    setRecentActions([]);
+    setNotes([]);
+    setMemoryTaskDraft('');
+
+    try {
+      window.localStorage.removeItem(MEMORY_TASKS_STORAGE_KEY);
+      window.localStorage.removeItem(RECENT_ACTIONS_STORAGE_KEY);
+      window.localStorage.removeItem('qmeet-notes');
+    } catch (error) {
+      console.error('Failed to clear local memory fallback:', error);
+    }
+
+    try {
+      const response = await clearAllMemoryContext();
+      setMemorySyncState('synced');
+      setMemorySyncMessage(response.message || 'Cleared all backend memory.');
+      pushResultToast({ kind: 'warning', title: 'Memory cleared', detail: 'Tasks, notes, and work context removed.' });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Backend memory clear failed.';
+      setMemorySyncState('error');
+      setMemorySyncMessage(`${message} Browser fallback was cleared locally.`);
+      pushResultToast({ kind: 'warning', title: 'Local memory cleared', detail: 'Backend clear failed; browser fallback was cleared.' });
+    }
+  }, [pushResultToast]);
+
+  const handleResetTasksOnly = useCallback(() => {
+    const confirmed = window.confirm('Clear open and completed tasks only? Notes and recent work context will stay.');
+
+    if (!confirmed) {
+      return;
+    }
+
+    setMemoryTasks([]);
+    persistMemoryContextToBackend([], recentActions, notes);
+    pushResultToast({ kind: 'warning', title: 'Tasks reset', detail: 'Open and completed tasks cleared.' });
+  }, [notes, persistMemoryContextToBackend, pushResultToast, recentActions]);
+
+  const handleResetNotesOnly = useCallback(() => {
+    const confirmed = window.confirm('Clear notes only? Tasks and recent work context will stay.');
+
+    if (!confirmed) {
+      return;
+    }
+
+    setNotes([]);
+    try {
+      window.localStorage.removeItem('qmeet-notes');
+    } catch (error) {
+      console.error('Failed to clear notes fallback:', error);
+    }
+    persistMemoryContextToBackend(memoryTasks, recentActions, []);
+    pushResultToast({ kind: 'warning', title: 'Notes reset', detail: 'Backend and browser notes cleared.' });
+  }, [memoryTasks, persistMemoryContextToBackend, pushResultToast, recentActions]);
+
+  const handleResetRecentContextOnly = useCallback(() => {
+    const confirmed = window.confirm('Clear hidden recent work context only? Tasks and notes will stay.');
+
+    if (!confirmed) {
+      return;
+    }
+
+    setRecentActions([]);
+    try {
+      window.localStorage.removeItem(RECENT_ACTIONS_STORAGE_KEY);
+    } catch (error) {
+      console.error('Failed to clear recent actions fallback:', error);
+    }
+    persistMemoryContextToBackend(memoryTasks, [], notes);
+    pushResultToast({ kind: 'warning', title: 'Work context reset', detail: 'Hidden recent actions cleared.' });
+  }, [memoryTasks, notes, persistMemoryContextToBackend, pushResultToast]);
 
   const getMemoryReadout = useCallback(() => {
     const openTasks = memoryTasks.filter((task) => !task.completedAt);
@@ -3463,6 +3624,43 @@ export default function App() {
                 <p className="panel-section-text">{memorySyncMessage}</p>
               </div>
 
+
+              <div className="panel-section">
+                <div className="panel-section-title">Memory Controls</div>
+                <p className="panel-section-text">
+                  Export a backup, import a saved QMeet memory JSON file, or reset stored memory categories.
+                </p>
+                <input
+                  ref={memoryImportInputRef}
+                  type="file"
+                  accept="application/json,.json"
+                  style={{ display: 'none' }}
+                  onChange={handleImportMemoryFile}
+                />
+                <div className="panel-action-row">
+                  <button className="panel-action-btn" type="button" onClick={handleExportMemory}>
+                    Export JSON
+                  </button>
+                  <button className="panel-action-btn" type="button" onClick={() => memoryImportInputRef.current?.click()}>
+                    Import JSON
+                  </button>
+                  <button className="panel-action-btn panel-action-btn-danger" type="button" onClick={handleClearAllMemory}>
+                    Clear All
+                  </button>
+                </div>
+                <div className="panel-action-row">
+                  <button className="panel-action-btn panel-action-btn-danger" type="button" onClick={handleResetTasksOnly}>
+                    Reset Tasks
+                  </button>
+                  <button className="panel-action-btn panel-action-btn-danger" type="button" onClick={handleResetNotesOnly}>
+                    Reset Notes
+                  </button>
+                  <button className="panel-action-btn panel-action-btn-danger" type="button" onClick={handleResetRecentContextOnly}>
+                    Reset Context
+                  </button>
+                </div>
+              </div>
+
               <div className="panel-section memory-input-section">
                 <div className="panel-section-title">New Task</div>
                 <div className="memory-input-row">
@@ -3594,7 +3792,7 @@ export default function App() {
               <div className="panel-section">
                 <div className="panel-section-title">Supported Commands</div>
                 <p className="panel-section-text">
-                  Say “what was I working on,” “remember to test the Pi as a task,” “mark task done,” “mark test the Pi done,” “clear completed tasks,” or use the task buttons above. Notes and recent actions sync in the background.
+                  Say “what was I working on,” “remember to test the Pi as a task,” “mark task done,” “mark test the Pi done,” “clear completed tasks,” or use the task buttons above. Notes and recent actions sync in the background. Use Memory Controls to export, import, or reset stored memory.
                 </p>
               </div>
 

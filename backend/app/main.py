@@ -31,6 +31,7 @@ from app.calendar_service import (
 
 from app.memory_store import (
     MemoryStoreError,
+    clear_memory_context,
     clear_completed_memory_tasks,
     clear_memory_notes,
     clear_recent_actions,
@@ -40,7 +41,9 @@ from app.memory_store import (
     delete_memory_note,
     delete_memory_task,
     delete_recent_action,
+    export_memory_context,
     get_memory_context,
+    import_memory_context,
     get_memory_status,
     list_memory_notes,
     list_memory_tasks,
@@ -67,6 +70,9 @@ from app.schemas import (
     CommandInterpretRequest,
     CommandInterpretResponse,
     MemoryClearCompletedResponse,
+    MemoryContextClearResponse,
+    MemoryContextExportResponse,
+    MemoryContextImportRequest,
     MemoryContextReplaceRequest,
     MemoryContextResponse,
     MemoryNoteCreateRequest,
@@ -349,6 +355,49 @@ async def memory_replace_context(req: MemoryContextReplaceRequest):
         raise HTTPException(
             status_code=500,
             detail="QMeet could not save memory context.",
+        )
+
+
+@app.get("/api/memory/export", response_model=MemoryContextExportResponse)
+async def memory_export_context():
+    try:
+        return MemoryContextExportResponse(**export_memory_context())
+    except MemoryStoreError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not export memory context.",
+        )
+
+
+@app.post("/api/memory/import", response_model=MemoryContextResponse)
+async def memory_import_context(req: MemoryContextImportRequest):
+    try:
+        return MemoryContextResponse(**import_memory_context(
+            tasks=[task.dict(exclude_none=True) for task in req.tasks],
+            recent_actions=[action.dict(exclude_none=True) for action in req.recentActions],
+            notes=[note.dict(exclude_none=True) for note in req.notes],
+        ))
+    except MemoryStoreError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not import memory context.",
+        )
+
+
+@app.post("/api/memory/clear", response_model=MemoryContextClearResponse)
+async def memory_clear_context():
+    try:
+        return MemoryContextClearResponse(**clear_memory_context())
+    except MemoryStoreError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not clear memory context.",
         )
 
 

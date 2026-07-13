@@ -198,6 +198,37 @@ class MemoryContextResponse(BaseModel):
     message: str = ""
 
 
+
+
+class MemoryContextClearResponse(BaseModel):
+    ok: bool = True
+    provider: Literal["local-json"] = "local-json"
+    tasks: list[MemoryTaskItem] = Field(default_factory=list)
+    recentActions: list[RecentActionItem] = Field(default_factory=list)
+    notes: list[MemoryNoteItem] = Field(default_factory=list)
+    removedTaskCount: int = 0
+    removedActionCount: int = 0
+    removedNoteCount: int = 0
+    message: str = ""
+
+
+class MemoryContextExportResponse(BaseModel):
+    ok: bool = True
+    provider: Literal["local-json"] = "local-json"
+    version: int = 4
+    exportedAt: str = ""
+    tasks: list[MemoryTaskItem] = Field(default_factory=list)
+    recentActions: list[RecentActionItem] = Field(default_factory=list)
+    notes: list[MemoryNoteItem] = Field(default_factory=list)
+    message: str = ""
+
+
+class MemoryContextImportRequest(BaseModel):
+    tasks: list[MemoryTaskItem] = Field(default_factory=list)
+    recentActions: list[RecentActionItem] = Field(default_factory=list)
+    notes: list[MemoryNoteItem] = Field(default_factory=list)
+
+
 class RecentActionCreateRequest(BaseModel):
     label: str
     detail: str = ""

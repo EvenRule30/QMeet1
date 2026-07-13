@@ -18,6 +18,9 @@ import {
   MemoryTasksReplaceRequest,
   MemoryTasksResponse,
   MemoryClearCompletedResponse,
+  MemoryContextClearResponse,
+  MemoryContextExportResponse,
+  MemoryContextImportRequest,
   MemoryContextReplaceRequest,
   MemoryContextResponse,
   MemoryNoteCreateRequest,
@@ -255,6 +258,50 @@ export async function replaceMemoryContext(
 
   return res.json();
 }
+
+export async function exportMemoryContext(): Promise<MemoryContextExportResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/memory/export`);
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Memory export error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+export async function importMemoryContext(
+  request: MemoryContextImportRequest,
+): Promise<MemoryContextResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/memory/import`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Memory import error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
+export async function clearAllMemoryContext(): Promise<MemoryContextClearResponse> {
+  const res = await fetch(`${API_BASE_URL}/api/memory/clear`, {
+    method: "POST",
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Memory clear error: ${res.status}`);
+  }
+
+  return res.json();
+}
+
 
 export async function getMemoryTasks(): Promise<MemoryTasksResponse> {
   const res = await fetch(`${API_BASE_URL}/api/memory/tasks`);

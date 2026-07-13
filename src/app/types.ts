@@ -128,6 +128,37 @@ export interface MemoryContextResponse {
   message: string;
 }
 
+
+
+export interface MemoryContextExportResponse {
+  ok: boolean;
+  provider: "local-json";
+  version: number;
+  exportedAt: string;
+  tasks: MemoryTask[];
+  recentActions: RecentAction[];
+  notes: Note[];
+  message: string;
+}
+
+export interface MemoryContextImportRequest {
+  tasks: MemoryTask[];
+  recentActions: RecentAction[];
+  notes: Note[];
+}
+
+export interface MemoryContextClearResponse {
+  ok: boolean;
+  provider: "local-json";
+  tasks: MemoryTask[];
+  recentActions: RecentAction[];
+  notes: Note[];
+  removedTaskCount: number;
+  removedActionCount: number;
+  removedNoteCount: number;
+  message: string;
+}
+
 export interface MemoryNoteCreateRequest {
   content: string;
 }
