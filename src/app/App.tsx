@@ -202,8 +202,6 @@ function getBriefToolSpeech(command: string, fullText: string): string {
     case 'open-notes':
     case 'new-note':
       return 'Notes open.';
-    case 'open-memory':
-      return 'Memory open.';
     case 'open-calendar':
     case 'show-today':
     case 'show-tomorrow':
@@ -348,8 +346,6 @@ function getResultToastForCommand(command: string, fullText: string): Omit<Resul
       return { kind: 'calendar', title: 'Calendar readout', detail: 'Speaking calendar events now.' };
     case 'clear-calendar':
       return { kind: 'calendar', title: 'Local calendar cleared', detail: 'Local-only events were removed.' };
-    case 'open-memory':
-      return 'Memory open.';
     case 'open-calendar':
     case 'show-today':
     case 'show-tomorrow':
@@ -899,6 +895,7 @@ export default function App() {
   const [searchError, setSearchError] = useState('');
   const [resultToasts, setResultToasts] = useState<ResultToast[]>([]);
   const [memoryTasks, setMemoryTasks] = useState<MemoryTask[]>(readStoredMemoryTasks);
+  const [memoryTaskDraft, setMemoryTaskDraft] = useState('');
   const [recentActions, setRecentActions] = useState<RecentAction[]>(readStoredRecentActions);
   const [lastHeardTranscript, setLastHeardTranscript] = useState('');
   const [lastNormalizedTranscript, setLastNormalizedTranscript] = useState('');
@@ -1191,6 +1188,56 @@ export default function App() {
     return completedTask;
   }, [memoryTasks]);
 
+  const markMemoryTaskDoneById = useCallback((taskId: string): MemoryTask | null => {
+    const targetTask = memoryTasks.find((task) => task.id === taskId && !task.completedAt);
+
+    if (!targetTask) {
+      return null;
+    }
+
+    const completedTask: MemoryTask = {
+      ...targetTask,
+      completedAt: new Date().toISOString(),
+    };
+
+    setMemoryTasks((prev) =>
+      prev.map((task) => (task.id === targetTask.id ? completedTask : task))
+    );
+
+    return completedTask;
+  }, [memoryTasks]);
+
+  const deleteMemoryTask = useCallback((taskId: string): MemoryTask | null => {
+    const targetTask = memoryTasks.find((task) => task.id === taskId) ?? null;
+
+    if (!targetTask) {
+      return null;
+    }
+
+    setMemoryTasks((prev) => prev.filter((task) => task.id !== taskId));
+    return targetTask;
+  }, [memoryTasks]);
+
+  const reopenMemoryTask = useCallback((taskId: string): MemoryTask | null => {
+    const targetTask = memoryTasks.find((task) => task.id === taskId && task.completedAt);
+
+    if (!targetTask) {
+      return null;
+    }
+
+    const reopenedTask: MemoryTask = {
+      id: targetTask.id,
+      title: targetTask.title,
+      createdAt: targetTask.createdAt,
+    };
+
+    setMemoryTasks((prev) =>
+      prev.map((task) => (task.id === targetTask.id ? reopenedTask : task))
+    );
+
+    return reopenedTask;
+  }, [memoryTasks]);
+
   const clearCompletedTasks = useCallback((): number => {
     const completedTasks = memoryTasks.filter((task) => task.completedAt);
     const removedCount = completedTasks.length;
@@ -1229,6 +1276,18 @@ export default function App() {
 
     return removedCount;
   }, [memoryTasks]);
+
+  const handleSaveMemoryTaskDraft = useCallback(() => {
+    const savedTask = saveMemoryTask(memoryTaskDraft);
+
+    if (!savedTask) {
+      return;
+    }
+
+    setMemoryTaskDraft('');
+    addRecentAction('Saved task', savedTask.title);
+    pushResultToast({ kind: 'success', title: 'Task saved', detail: savedTask.title });
+  }, [addRecentAction, memoryTaskDraft, pushResultToast, saveMemoryTask]);
 
   const getMemoryReadout = useCallback(() => {
     const openTasks = memoryTasks.filter((task) => !task.completedAt);
@@ -3295,31 +3354,70 @@ export default function App() {
                 </div>
               </div>
 
+              <div className="panel-section memory-input-section">
+                <div className="panel-section-title">New Task</div>
+                <div className="memory-input-row">
+                  <input
+                    className="memory-task-input"
+                    value={memoryTaskDraft}
+                    onChange={(event) => setMemoryTaskDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' && memoryTaskDraft.trim()) {
+                        handleSaveMemoryTaskDraft();
+                      }
+                    }}
+                    placeholder="Add a task..."
+                  />
+                  <button
+                    className="panel-action-btn"
+                    type="button"
+                    disabled={!memoryTaskDraft.trim()}
+                    onClick={handleSaveMemoryTaskDraft}
+                  >
+                    Save
+                  </button>
+                </div>
+              </div>
+
               <div className="panel-section">
                 <div className="panel-section-title">Open Tasks</div>
                 {memoryTasks.filter((task) => !task.completedAt).length === 0 ? (
-                  <p className="panel-section-text">No open tasks. Say “remember to test the Pi as a task.”</p>
+                  <p className="panel-section-text">No open tasks. Say “remember to test the Pi as a task,” or type one above.</p>
                 ) : (
                   <div className="memory-list">
                     {memoryTasks.filter((task) => !task.completedAt).map((task) => (
                       <div className="memory-task-item" key={task.id}>
-                        <div>
+                        <div className="memory-task-copy">
                           <div className="memory-task-title">{task.title}</div>
                           <div className="memory-task-meta">Saved {formatMemoryTime(task.createdAt)}</div>
                         </div>
-                        <button
-                          className="memory-task-done-btn"
-                          type="button"
-                          onClick={() => {
-                            const completedTask = markMemoryTaskDone(task.title);
-                            if (completedTask) {
-                              addRecentAction('Completed task', completedTask.title);
-                              pushResultToast({ kind: 'success', title: 'Task complete', detail: completedTask.title });
-                            }
-                          }}
-                        >
-                          Done
-                        </button>
+                        <div className="memory-task-actions">
+                          <button
+                            className="memory-task-done-btn"
+                            type="button"
+                            onClick={() => {
+                              const completedTask = markMemoryTaskDoneById(task.id);
+                              if (completedTask) {
+                                addRecentAction('Completed task', completedTask.title);
+                                pushResultToast({ kind: 'success', title: 'Task complete', detail: completedTask.title });
+                              }
+                            }}
+                          >
+                            Done
+                          </button>
+                          <button
+                            className="memory-task-delete-btn"
+                            type="button"
+                            onClick={() => {
+                              const deletedTask = deleteMemoryTask(task.id);
+                              if (deletedTask) {
+                                pushResultToast({ kind: 'warning', title: 'Task deleted', detail: deletedTask.title });
+                              }
+                            }}
+                          >
+                            Delete
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -3330,10 +3428,38 @@ export default function App() {
                 <div className="panel-section">
                   <div className="panel-section-title">Completed Tasks</div>
                   <div className="memory-list">
-                    {memoryTasks.filter((task) => task.completedAt).slice(0, 5).map((task) => (
+                    {memoryTasks.filter((task) => task.completedAt).map((task) => (
                       <div className="memory-action-item memory-completed-task" key={task.id}>
-                        <div className="memory-action-title">{task.title}</div>
-                        <div className="memory-task-meta">Done {task.completedAt ? formatMemoryTime(task.completedAt) : 'recently'}</div>
+                        <div className="memory-task-copy">
+                          <div className="memory-action-title">{task.title}</div>
+                          <div className="memory-task-meta">Done {task.completedAt ? formatMemoryTime(task.completedAt) : 'recently'}</div>
+                        </div>
+                        <div className="memory-task-actions">
+                          <button
+                            className="memory-task-reopen-btn"
+                            type="button"
+                            onClick={() => {
+                              const reopenedTask = reopenMemoryTask(task.id);
+                              if (reopenedTask) {
+                                pushResultToast({ kind: 'info', title: 'Task reopened', detail: reopenedTask.title });
+                              }
+                            }}
+                          >
+                            Reopen
+                          </button>
+                          <button
+                            className="memory-task-delete-btn"
+                            type="button"
+                            onClick={() => {
+                              const deletedTask = deleteMemoryTask(task.id);
+                              if (deletedTask) {
+                                pushResultToast({ kind: 'warning', title: 'Task deleted', detail: deletedTask.title });
+                              }
+                            }}
+                          >
+                            Delete
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -3359,7 +3485,7 @@ export default function App() {
               <div className="panel-section">
                 <div className="panel-section-title">Supported Commands</div>
                 <p className="panel-section-text">
-                  Say “what was I working on,” “remember to test the Pi as a task,” “mark task done,” “mark test the Pi done,” “clear completed tasks,” or “close memory.”
+                  Say “what was I working on,” “remember to test the Pi as a task,” “mark task done,” “mark test the Pi done,” “clear completed tasks,” or use the task buttons above.
                 </p>
               </div>
 

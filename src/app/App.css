@@ -2955,3 +2955,118 @@ body,
     padding: 8px 10px;
   }
 }
+
+/* =====================================================
+   Phase 9A cleanup — task controls and manual entry
+   ===================================================== */
+
+.memory-input-section {
+  flex: 0 0 auto;
+}
+
+.memory-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.memory-task-input {
+  flex: 1;
+  min-width: 0;
+  height: 38px;
+  padding: 0 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(0, 180, 255, 0.15);
+  background: rgba(0, 180, 255, 0.045);
+  color: #e8edf5;
+  font-family: 'Inter', sans-serif;
+  font-size: 13px;
+  outline: none;
+}
+
+.memory-task-input::placeholder {
+  color: #3d5a80;
+}
+
+.memory-task-input:focus {
+  border-color: rgba(0, 212, 255, 0.38);
+  background: rgba(0, 180, 255, 0.075);
+  box-shadow: 0 0 0 3px rgba(0, 180, 255, 0.05);
+}
+
+.memory-task-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.memory-task-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.memory-task-done-btn,
+.memory-task-reopen-btn,
+.memory-task-delete-btn {
+  flex-shrink: 0;
+  padding: 6px 10px;
+  border-radius: 12px;
+  font-family: 'Exo 2', sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s, color 0.2s, box-shadow 0.2s;
+}
+
+.memory-task-reopen-btn {
+  border: 1px solid rgba(0, 212, 255, 0.26);
+  background: rgba(0, 180, 255, 0.06);
+  color: rgba(0, 212, 255, 0.92);
+}
+
+.memory-task-reopen-btn:hover {
+  background: rgba(0, 180, 255, 0.13);
+  border-color: rgba(0, 212, 255, 0.42);
+}
+
+.memory-task-delete-btn {
+  border: 1px solid rgba(255, 68, 102, 0.24);
+  background: rgba(255, 68, 102, 0.065);
+  color: rgba(255, 120, 140, 0.88);
+}
+
+.memory-task-delete-btn:hover {
+  background: rgba(255, 68, 102, 0.14);
+  border-color: rgba(255, 68, 102, 0.42);
+  color: rgba(255, 120, 140, 1);
+}
+
+.memory-completed-task {
+  flex-direction: row;
+  align-items: center;
+}
+
+@media (max-height: 650px), (max-width: 1100px) {
+  .memory-input-row {
+    gap: 6px;
+  }
+
+  .memory-task-input {
+    height: 34px;
+    font-size: 12px;
+  }
+
+  .memory-task-actions {
+    gap: 5px;
+  }
+
+  .memory-task-done-btn,
+  .memory-task-reopen-btn,
+  .memory-task-delete-btn {
+    padding: 5px 8px;
+    font-size: 9px;
+  }
+}
