@@ -6,8 +6,8 @@ import { PromptBar } from './components/PromptBar';
 import { NotesPanel } from './components/NotesPanel';
 import { CalendarPanel } from './components/CalendarPanel';
 import { SearchPanel } from './components/SearchPanel';
-import { Message, OrbState, ActivePanel, CalendarEvent, CalendarBackendStatus, CalendarBackendView, SearchResponse } from './types';
-import { streamChatMessage, resetConversation, interpretCommandIntent, getCalendarStatus, getCalendarEvents, createCalendarEvent, deleteGoogleCalendarEvent, updateGoogleCalendarEvent, startCalendarAuth, resetCalendarAuth, searchWeb } from "./api";
+import { Message, OrbState, ActivePanel, CalendarEvent, CalendarBackendStatus, CalendarBackendView } from './types';
+import { streamChatMessage, resetConversation, interpretCommandIntent, getCalendarStatus, getCalendarEvents, createCalendarEvent, deleteGoogleCalendarEvent, updateGoogleCalendarEvent, startCalendarAuth, resetCalendarAuth } from "./api";
 import { getSpeechRecognition, isSpeechRecognitionSupported } from './speechRecognition';
 import { speakText, stopSpeaking } from './speechSynthesis';
 import { parseCommand, normalizeSpokenQMeet } from './commands';
@@ -37,6 +37,7 @@ import {
 import { useBackendStatus } from './hooks/useBackendStatus';
 import { useResultToasts } from './hooks/useResultToasts';
 import { useMemoryContext } from './hooks/useMemoryContext';
+import { useSearchController } from './hooks/useSearchController';
 import './App.css';
 
 
@@ -205,10 +206,18 @@ export default function App() {
   const [googleCalendarEvents, setGoogleCalendarEvents] = useState<CalendarEvent[]>([]);
   const [googleCalendarLoading, setGoogleCalendarLoading] = useState(false);
   const [googleCalendarError, setGoogleCalendarError] = useState('');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchResult, setSearchResult] = useState<SearchResponse | null>(null);
-  const [searchLoading, setSearchLoading] = useState(false);
-  const [searchError, setSearchError] = useState('');
+  const openSearchPanel = useCallback(() => {
+    setActivePanel('search');
+  }, []);
+  const {
+    searchQuery,
+    setSearchQuery,
+    searchResult,
+    searchLoading,
+    searchError,
+    runWebSearch,
+    clearSearchState,
+  } = useSearchController({ openSearchPanel });
   const {
     resultToasts,
     pushResultToast,
@@ -822,43 +831,6 @@ export default function App() {
     }
   }, [loadGoogleCalendarStatus]);
 
-
-  const clearSearchState = useCallback(() => {
-    setSearchQuery('');
-    setSearchResult(null);
-    setSearchError('');
-    setSearchLoading(false);
-  }, []);
-
-  const runWebSearch = useCallback(async (queryInput?: string): Promise<SearchResponse | null> => {
-    const query = (queryInput ?? searchQuery).trim();
-
-    setActivePanel('search');
-
-    if (!query) {
-      setSearchError('Enter a search query first.');
-      setSearchResult(null);
-      return null;
-    }
-
-    setSearchQuery(query);
-    setSearchLoading(true);
-    setSearchError('');
-
-    try {
-      const response = await searchWeb(query);
-      setSearchResult(response);
-      setSearchError(response.ok ? '' : response.message || 'Search failed.');
-      return response;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Web search failed.';
-      setSearchResult(null);
-      setSearchError(message);
-      return null;
-    } finally {
-      setSearchLoading(false);
-    }
-  }, [searchQuery]);
 
 
   // TODO: Backend integration
