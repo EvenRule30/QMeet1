@@ -6,8 +6,8 @@ import { PromptBar } from './components/PromptBar';
 import { NotesPanel } from './components/NotesPanel';
 import { CalendarPanel } from './components/CalendarPanel';
 import { SearchPanel } from './components/SearchPanel';
-import { Message, OrbState, BackendStatus, ActivePanel, Note, CalendarEvent, CalendarBackendStatus, CalendarBackendView, SearchResponse, MemoryTask, RecentAction } from './types';
-import { streamChatMessage, getBackendStatus, resetConversation, interpretCommandIntent, getCalendarStatus, getCalendarEvents, createCalendarEvent, deleteGoogleCalendarEvent, updateGoogleCalendarEvent, startCalendarAuth, resetCalendarAuth, searchWeb, getMemoryContext, replaceMemoryContext, exportMemoryContext, importMemoryContext, clearAllMemoryContext } from "./api";
+import { Message, OrbState, ActivePanel, Note, CalendarEvent, CalendarBackendStatus, CalendarBackendView, SearchResponse, MemoryTask, RecentAction } from './types';
+import { streamChatMessage, resetConversation, interpretCommandIntent, getCalendarStatus, getCalendarEvents, createCalendarEvent, deleteGoogleCalendarEvent, updateGoogleCalendarEvent, startCalendarAuth, resetCalendarAuth, searchWeb, getMemoryContext, replaceMemoryContext, exportMemoryContext, importMemoryContext, clearAllMemoryContext } from "./api";
 import { getSpeechRecognition, isSpeechRecognitionSupported } from './speechRecognition';
 import { speakText, stopSpeaking } from './speechSynthesis';
 import { parseCommand, normalizeSpokenQMeet } from './commands';
@@ -29,13 +29,14 @@ import {
 import {
   getBriefToolSpeech,
   getResultToastForCommand,
-  type ResultToast,
 } from './lib/toastUtils';
 import {
   formatMemoryTime,
   getCommandActionLabel,
   normalizeMemoryLookup,
 } from './lib/memoryUtils';
+import { useBackendStatus } from './hooks/useBackendStatus';
+import { useResultToasts } from './hooks/useResultToasts';
 import './App.css';
 
 
@@ -220,7 +221,7 @@ export default function App() {
   const [chatActive, setChatActive] = useState(false);
   const [orbState, setOrbState] = useState<OrbState>('idle');
   const [messages, setMessages] = useState<Message[]>([]);
-  const [backendStatus, setBackendStatus] = useState<BackendStatus | null>(null);
+  const backendStatus = useBackendStatus();
   const [activePanel, setActivePanel] = useState<ActivePanel>('none');
   const [voiceOutputEnabled, setVoiceOutputEnabled] = useState(readStoredVoiceOutputEnabled);
   const [speechRate, setSpeechRate] = useState(readStoredSpeechRate);
@@ -279,7 +280,6 @@ export default function App() {
   const [searchResult, setSearchResult] = useState<SearchResponse | null>(null);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState('');
-  const [resultToasts, setResultToasts] = useState<ResultToast[]>([]);
   const [memoryTasks, setMemoryTasks] = useState<MemoryTask[]>(readStoredMemoryTasks);
   const [memoryTaskDraft, setMemoryTaskDraft] = useState('');
   const [memorySyncState, setMemorySyncState] = useState<MemorySyncState>('local');
@@ -303,35 +303,18 @@ export default function App() {
   const listeningTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const suppressNextSpeechErrorRef = useRef(false);
   const orbAreaRef = useRef<HTMLDivElement | null>(null);
-  const resultToastTimeoutsRef = useRef<number[]>([]);
   const initialMemoryTasksRef = useRef<MemoryTask[]>(memoryTasks);
   const initialRecentActionsRef = useRef<RecentAction[]>(recentActions);
   const initialNotesRef = useRef<Note[]>(notes);
   const memoryContextHydratedRef = useRef(false);
   const memoryImportInputRef = useRef<HTMLInputElement | null>(null);
 
-  const dismissResultToast = useCallback((toastId: string) => {
-    setResultToasts((prev) => prev.filter((toast) => toast.id !== toastId));
-  }, []);
-
-  const pushResultToast = useCallback((toastInput: Omit<ResultToast, 'id' | 'createdAt'> | null) => {
-    if (!toastInput) return;
-
-    const toastId = `toast-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const nextToast: ResultToast = {
-      ...toastInput,
-      id: toastId,
-      createdAt: Date.now(),
-    };
-
-    setResultToasts((prev) => [nextToast, ...prev].slice(0, 3));
-
-    const timeoutId = window.setTimeout(() => {
-      setResultToasts((prev) => prev.filter((toast) => toast.id !== toastId));
-    }, toastInput.kind === 'error' ? 7000 : 4400);
-
-    resultToastTimeoutsRef.current.push(timeoutId);
-  }, []);
+  const {
+    resultToasts,
+    pushResultToast,
+    dismissResultToast,
+    clearResultToasts,
+  } = useResultToasts();
 
   const stopCurrentSpeech = useCallback(() => {
     speechTokenRef.current += 1;
@@ -388,33 +371,10 @@ export default function App() {
   }, [voiceOutputEnabled, speechRate]);
 
 
-  // Fetch and poll backend status
-  useEffect(() => {
-    const fetchStatus = async () => {
-      try {
-        const status = await getBackendStatus();
-        setBackendStatus(status);
-      } catch (error) {
-        setBackendStatus(null);
-      }
-    };
-
-    fetchStatus();
-    const interval = setInterval(fetchStatus, 10000);
-    return () => clearInterval(interval);
-  }, []);
-
 
   useEffect(() => {
     return () => {
       stopSpeaking();
-    };
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      resultToastTimeoutsRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
-      resultToastTimeoutsRef.current = [];
     };
   }, []);
 
@@ -1263,7 +1223,7 @@ export default function App() {
     setShowThinkingBubble(false);
     setActivePanel('none');
     setPendingInterpreterCommand(null);
-    setResultToasts([]);
+    clearResultToasts();
     setChatActive(false);
     setMessages([]);
 
@@ -1272,7 +1232,7 @@ export default function App() {
     } catch (error) {
       console.error('Reset conversation error:', error);
     }
-  }, [cancelActiveResponse, finishListening, stopCurrentSpeech]);
+  }, [cancelActiveResponse, clearResultToasts, finishListening, stopCurrentSpeech]);
 
   const closePanel = useCallback(() => {
     setActivePanel('none');
