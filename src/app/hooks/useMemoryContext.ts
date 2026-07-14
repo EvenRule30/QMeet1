@@ -572,12 +572,18 @@ export function useMemoryContext({
   );
 
   const markMemoryTaskDone = useCallback(
-    (lookup?: string): MemoryTask | null => {
-      const openTasks = memoryTasks.filter(
-        (task) => !task.completedAt,
-      );
+    (
+      lookup?: string,
+      operation: 'complete' | 'delete' = 'complete',
+    ): MemoryTask | null => {
+      const candidateTasks =
+        operation === 'delete'
+          ? memoryTasks
+          : memoryTasks.filter(
+              (task) => !task.completedAt,
+            );
 
-      if (openTasks.length === 0) {
+      if (candidateTasks.length === 0) {
         return null;
       }
 
@@ -585,7 +591,7 @@ export function useMemoryContext({
         lookup ?? '',
       );
       const targetTask = normalizedLookup
-        ? openTasks.find((task) => {
+        ? candidateTasks.find((task) => {
             const normalizedTitle =
               normalizeMemoryLookup(task.title);
 
@@ -598,10 +604,19 @@ export function useMemoryContext({
               )
             );
           })
-        : openTasks[0];
+        : candidateTasks[0];
 
       if (!targetTask) {
         return null;
+      }
+
+      if (operation === 'delete') {
+        setMemoryTasks((prev) =>
+          prev.filter(
+            (task) => task.id !== targetTask.id,
+          ),
+        );
+        return targetTask;
       }
 
       const completedTask: MemoryTask = {
@@ -609,13 +624,13 @@ export function useMemoryContext({
         completedAt: new Date().toISOString(),
       };
 
-      const nextTasks = memoryTasks.map((task) =>
-        task.id === targetTask.id
-          ? completedTask
-          : task,
+      setMemoryTasks((prev) =>
+        prev.map((task) =>
+          task.id === targetTask.id
+            ? completedTask
+            : task,
+        ),
       );
-
-      setMemoryTasks(nextTasks);
       return completedTask;
     },
     [memoryTasks],

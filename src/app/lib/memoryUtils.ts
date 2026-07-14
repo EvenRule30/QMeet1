@@ -1,4 +1,6 @@
-export function normalizeMemoryLookup(value: string): string {
+export function normalizeMemoryLookup(
+  value: string,
+): string {
   return value
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, ' ')
@@ -6,7 +8,9 @@ export function normalizeMemoryLookup(value: string): string {
     .trim();
 }
 
-export function formatMemoryTime(value: string): string {
+export function formatMemoryTime(
+  value: string,
+): string {
   const date = new Date(value);
 
   if (Number.isNaN(date.getTime())) {
@@ -21,7 +25,9 @@ export function formatMemoryTime(value: string): string {
   });
 }
 
-export function getCommandActionLabel(command: string): string {
+export function getCommandActionLabel(
+  command: string,
+): string {
   switch (command) {
     case 'save-note':
       return 'Saved note';
@@ -33,6 +39,8 @@ export function getCommandActionLabel(command: string): string {
       return 'Saved task';
     case 'mark-task-done':
       return 'Completed task';
+    case 'delete-last-task':
+      return 'Deleted task';
     case 'clear-done-tasks':
       return 'Cleared completed tasks';
     case 'run-search':
@@ -56,5 +64,3 @@ export function getCommandActionLabel(command: string): string {
       return command.replace(/-/g, ' ');
   }
 }
-
-

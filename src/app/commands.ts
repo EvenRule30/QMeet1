@@ -19,6 +19,7 @@ export type LocalCommand =
   | 'read-memory'
   | 'remember-task'
   | 'mark-task-done'
+  | 'delete-last-task'
   | 'clear-done-tasks'
   | 'close-notes'
   | 'clear-notes'
@@ -106,6 +107,7 @@ const CONFIRMATIONS: Record<LocalCommand, string> = {
   'read-memory': 'Reading memory.',
   'remember-task': 'Saved task.',
   'mark-task-done': 'Marked task done.',
+  'delete-last-task': 'Deleted the last task.',
   'clear-done-tasks': 'Cleared completed tasks.',
   'open-calendar': 'Opening calendar.',
   'add-calendar-event': 'Added event.',
@@ -278,6 +280,13 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
     [
       /^(?:what was i working on|what am i working on|what were we working on|what are my tasks|read memory|show memory|memory summary|project memory|what is in memory)$/i,
       rx(`^${REQUEST_PREFIX}(?:read|show|summarize|display|tell\\s+me)\\s+(?:my\\s+)?(?:memory|tasks?|task\\s+list|work\\s+log)$`),
+    ],
+  ],
+  [
+    'delete-last-task',
+    [
+      rx(`^${REQUEST_PREFIX}(?:delete|remove|erase|clear)\\s+(?:the\\s+)?(?:last|latest|newest|most\\s+recent)\\s+task$`),
+      /^(?:delete last task|remove last task|delete latest task|remove latest task)$/i,
     ],
   ],
   [
@@ -735,13 +744,30 @@ function makeCalendarDeletePayload(
 
 function extractCalendarDeletePayload(normalized: string): CalendarDeleteCommandPayload | null {
   const timeToken = String.raw`(?:\d{1,2})(?::\d{2})?\s*(?:a\.?\s*m\.?|p\.?\s*m\.?|am|pm)?|noon|midnight`;
-  const eventWord = String.raw`(?:calendar\s+)?(?:event|appointment|meeting)`;
+  const calendarWord = String.raw`(?:calendar|calender|calander)`;
+  const eventWord = String.raw`(?:(?:${calendarWord})\s+)?(?:event|appointment|meeting)`;
   const deleteVerb = String.raw`(?:delete|remove|erase|cancel)`;
 
   const patterns: Array<{
     pattern: RegExp;
     read: (match: RegExpMatchArray) => CalendarDeleteCommandPayload | null;
   }> = [
+    // "delete the 1:00 p.m. calendar event Test Meeting"
+    // Also accepts an optional title marker:
+    // "delete the 1 PM calendar event called Test Meeting"
+    {
+      pattern: new RegExp(
+        String.raw`^(?:please\s+)?${deleteVerb}\s+(?:the\s+)?(${timeToken})\s+${eventWord}(?:\s+(today|tomorrow))?\s+(?:(?:called|named|titled|for|about)\s+)?(.+)$`,
+        'i',
+      ),
+      read: (match) =>
+        makeCalendarDeletePayload(
+          match[2],
+          match[1],
+          match[3],
+        ),
+    },
+
     // "delete the 12:00 p.m. event tomorrow"
     {
       pattern: new RegExp(String.raw`^(?:please\s+)?${deleteVerb}\s+(?:the\s+)?(${timeToken})\s+${eventWord}(?:\s+(today|tomorrow))?$`, 'i'),
@@ -749,8 +775,9 @@ function extractCalendarDeletePayload(normalized: string): CalendarDeleteCommand
     },
 
     // "delete the event tomorrow at 12:00 p.m."
+    // "delete the calendar event at 1 pm"
     {
-      pattern: new RegExp(String.raw`^(?:please\s+)?${deleteVerb}\s+(?:the\s+)?${eventWord}\s+(today|tomorrow)\s+(?:at\s+)?(${timeToken})(?:\s+(?:called|named|titled|for|about)\s+(.+))?$`, 'i'),
+      pattern: new RegExp(String.raw`^(?:please\s+)?${deleteVerb}\s+(?:the\s+)?${eventWord}(?:\s+(today|tomorrow))?\s+(?:at\s+)?(${timeToken})(?:\s+(?:called|named|titled|for|about)\s+(.+))?$`, 'i'),
       read: (match) => makeCalendarDeletePayload(match[1], match[2], match[3]),
     },
 
@@ -773,6 +800,26 @@ function extractCalendarDeletePayload(normalized: string): CalendarDeleteCommand
     {
       pattern: new RegExp(String.raw`^(?:please\s+)?${deleteVerb}\s+(?:the\s+)?${eventWord}\s+(today|tomorrow)\s+(?:called|named|titled|for|about)\s+(.+)$`, 'i'),
       read: (match) => makeCalendarDeletePayload(match[1], undefined, match[2]),
+    },
+
+    // Natural speech can place the title before the final event noun:
+    // "delete the 7 PM check my sock drawer for socks calendar event"
+    // "delete the 7 PM check my sock drawer for socks the calendar event"
+    //
+    // Keep this after the standard title-after-event and no-title patterns so
+    // phrases such as "delete the 1 PM calendar event called Test Meeting"
+    // continue to use their more specific parser first.
+    {
+      pattern: new RegExp(
+        String.raw`^(?:please\s+)?${deleteVerb}\s+(?:the\s+)?(${timeToken})\s+(.+?)\s+(?:(?:the\s+)?${calendarWord}\s+(?:event|appointment|meeting)|(?:the\s+)?(?:event|appointment))(?:\s+(today|tomorrow))?$`,
+        'i',
+      ),
+      read: (match) =>
+        makeCalendarDeletePayload(
+          match[3],
+          match[1],
+          match[2],
+        ),
     },
   ];
 

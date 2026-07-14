@@ -15,7 +15,10 @@ export function handleMemoryCommand(
     closePanel: () => void;
     getMemoryReadout: () => string;
     saveMemoryTask: (title: string) => MemoryTask | null;
-    markMemoryTaskDone: (lookup?: string) => MemoryTask | null;
+    markMemoryTaskDone: (
+      lookup?: string,
+      operation?: 'complete' | 'delete',
+    ) => MemoryTask | null;
     clearCompletedTasks: () => number;
   },
 ): MemoryCommandResult {
@@ -33,21 +36,29 @@ export function handleMemoryCommand(
       return {
         handled: true,
         confirmationContent: deps.getMemoryReadout(),
-        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+        shouldSpeakConfirmation:
+          deps.voiceOutputEnabled,
       };
 
     case 'remember-task': {
-      const savedTask = deps.saveMemoryTask(commandMatch.payload ?? '');
+      const savedTask = deps.saveMemoryTask(
+        commandMatch.payload ?? '',
+      );
       deps.setActivePanel('memory');
       return {
         handled: true,
-        confirmationContent: savedTask ? `Saved task: ${savedTask.title}.` : 'I did not catch the task text.',
-        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+        confirmationContent: savedTask
+          ? `Saved task: ${savedTask.title}.`
+          : 'I did not catch the task text.',
+        shouldSpeakConfirmation:
+          deps.voiceOutputEnabled,
       };
     }
 
     case 'mark-task-done': {
-      const completedTask = deps.markMemoryTaskDone(commandMatch.payload);
+      const completedTask = deps.markMemoryTaskDone(
+        commandMatch.payload,
+      );
       deps.setActivePanel('memory');
       return {
         handled: true,
@@ -56,19 +67,41 @@ export function handleMemoryCommand(
           : commandMatch.payload
             ? `I could not find an open task matching "${commandMatch.payload}".`
             : 'No open tasks to complete.',
-        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+        shouldSpeakConfirmation:
+          deps.voiceOutputEnabled,
+      };
+    }
+
+    case 'delete-last-task': {
+      const deletedTask = deps.markMemoryTaskDone(
+        undefined,
+        'delete',
+      );
+      deps.setActivePanel('memory');
+      return {
+        handled: true,
+        confirmationContent: deletedTask
+          ? `Deleted task: ${deletedTask.title}.`
+          : 'No tasks to delete.',
+        shouldSpeakConfirmation:
+          deps.voiceOutputEnabled,
       };
     }
 
     case 'clear-done-tasks': {
-      const removedCount = deps.clearCompletedTasks();
+      const removedCount =
+        deps.clearCompletedTasks();
       deps.setActivePanel('memory');
       return {
         handled: true,
-        confirmationContent: removedCount > 0
-          ? `Cleared ${removedCount} completed task${removedCount === 1 ? '' : 's'}.`
-          : 'No completed tasks to clear.',
-        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+        confirmationContent:
+          removedCount > 0
+            ? `Cleared ${removedCount} completed task${
+                removedCount === 1 ? '' : 's'
+              }.`
+            : 'No completed tasks to clear.',
+        shouldSpeakConfirmation:
+          deps.voiceOutputEnabled,
       };
     }
 

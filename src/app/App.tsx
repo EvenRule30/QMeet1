@@ -410,7 +410,7 @@ export default function App() {
           : getFrontendCommandForLocalCommand(commandMatch.command);
         const isCalendarDeleteCommand = commandMatch.command === 'delete-last-event' || commandMatch.command === 'delete-calendar-event';
         const targetDeleteEvent = commandMatch.command === 'delete-last-event'
-          ? getNextCalendarEventForDeletion()
+          ? await findCalendarEventForDeletion()
           : commandMatch.command === 'delete-calendar-event'
             ? await findCalendarEventForDeletion(commandMatch.calendarDelete)
             : null;
