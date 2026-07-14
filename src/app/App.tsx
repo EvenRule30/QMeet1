@@ -10,7 +10,7 @@ import { MemoryOverlay } from './panels/MemoryOverlay';
 import { NotesOverlay } from './panels/NotesOverlay';
 import { CalendarOverlay } from './panels/CalendarOverlay';
 import { SearchOverlay } from './panels/SearchOverlay';
-import { Message, OrbState, ActivePanel } from './types';
+import { OrbState, ActivePanel } from './types';
 import { resetConversation, interpretCommandIntent } from "./api";
 import { parseCommand } from './commands';
 import { getAssistantActivity, getPanelLabel } from './lib/activityUtils';
@@ -26,6 +26,15 @@ import {
   getResultToastForCommand,
 } from './lib/toastUtils';
 import { getCommandActionLabel } from './lib/memoryUtils';
+import {
+  buildInterpreterClarifyPrompt,
+  buildInterpreterDestructivePrompt,
+  createAssistantMessage,
+  createUserMessage,
+  getInterpreterUnavailableReason,
+  getLocalCommandRouteLabel,
+  type CommandRoute,
+} from './lib/chatFlowUtils';
 import { useBackendStatus } from './hooks/useBackendStatus';
 import { useResultToasts } from './hooks/useResultToasts';
 import { useMemoryContext } from './hooks/useMemoryContext';
@@ -241,29 +250,11 @@ export default function App() {
   // Calendar state and Google Calendar actions live in useCalendarController.
 
 
-  // TODO: Backend integration
-  // Replace this function body with actual FastAPI calls:
-  //
-  // Option 1: WebSocket streaming
-  //   const ws = useRef<WebSocket | null>(null);
-  //   useEffect(() => {
-  //     ws.current = new WebSocket('ws://localhost:8000/ws/chat');
-  //     ws.current.onmessage = (e) => {
-  //       const data = JSON.parse(e.data);
-  //       // Append assistant message chunks or complete message
-  //     };
-  //   }, []);
-  //
-  // Option 2: REST with polling
-  //   const res = await fetch('http://localhost:8000/api/chat', {
-  //     method: 'POST',
-  //     headers: { 'Content-Type': 'application/json' },
-  //     body: JSON.stringify({ message: text }),
-  //   });
-  //   const data = await res.json();
-  //   // data.reply contains the assistant response
-  //
-  const handleSend = useCallback(async (text: string, displayText?: string, commandRoute: 'exact' | 'interpreter' | 'confirmed' = 'exact') => {
+  const sendNormalChat = useCallback(async (messageText: string, visibleUserText: string) => {
+    await sendStreamingChat(messageText, visibleUserText);
+  }, [sendStreamingChat]);
+
+  const handleSend = useCallback(async (text: string, displayText?: string, commandRoute: CommandRoute = 'exact') => {
     const trimmed = text.trim();
     if (!trimmed) return;
 
@@ -294,18 +285,8 @@ export default function App() {
             if (!chatActive) setChatActive(true);
     
             const now = Date.now();
-            const userMsg: Message = {
-              id: `u-${now}`,
-              role: 'user',
-              content: visibleUserText,
-              timestamp: new Date(),
-            };
-            const assistantMsg: Message = {
-              id: `a-${now}`,
-              role: 'assistant',
-              content: 'Cancelled pending command.',
-              timestamp: new Date(),
-            };
+            const userMsg = createUserMessage(now, visibleUserText);
+            const assistantMsg = createAssistantMessage(now, 'Cancelled pending command.');
     
             setMessages((prev) => [...prev, userMsg, assistantMsg]);
             pushResultToast({ kind: 'warning', title: 'Cancelled', detail: 'Pending command dismissed.' });
@@ -332,24 +313,15 @@ export default function App() {
       setLastLocalCommand(commandMatch.command);
       setPendingInterpreterCommand(null);
       
-      if (commandRoute === 'interpreter') {
-        setLastInputRoute('Fuzzy interpreter command');
-      } else if (commandRoute === 'confirmed') {
-        setLastInputRoute('Confirmed destructive command');
-      } else {
-        setLastInputRoute('Exact local command');
+      setLastInputRoute(getLocalCommandRouteLabel(commandRoute));
+      if (commandRoute === 'exact') {
         setLastInterpreterAction('Not used');
         setLastInterpreterFrontendCommand('None');
         setLastInterpreterConfidence(null);
         setLastInterpreterReason('Exact frontend parser matched before the command interpreter was needed.');
       }
 
-      const userMsg: Message = {
-        id: `u-${now}`,
-        role: 'user',
-        content: visibleUserText,
-        timestamp: new Date(),
-      };
+      const userMsg = createUserMessage(now, visibleUserText);
       
       if (
         commandRoute !== 'confirmed' &&
@@ -379,12 +351,7 @@ export default function App() {
           setLastInterpreterConfidence(commandRoute === 'exact' ? 1 : 0.9);
           setLastInterpreterReason('Google Calendar event creation requires confirmation before writing to the real calendar.');
 
-          const assistantMsg: Message = {
-            id: `a-${now}`,
-            role: 'assistant',
-            content: confirmationPrompt,
-            timestamp: new Date(),
-          };
+          const assistantMsg = createAssistantMessage(now, confirmationPrompt);
 
           setMessages((prev) => [...prev, userMsg, assistantMsg]);
           speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
@@ -400,14 +367,12 @@ export default function App() {
                 setLastInputRoute('Edit command had no target');
                 setLastLocalCommand('No calendar event to edit');
       
-                const assistantMsg: Message = {
-                  id: `a-${now}`,
-                  role: 'assistant',
-                  content: googleCalendarStatus?.connected
+                const assistantMsg = createAssistantMessage(
+                  now,
+                  googleCalendarStatus?.connected
                     ? 'I did not find a Google Calendar event to edit for the current view.'
-                    : 'I did not find a local calendar event to edit.',
-                  timestamp: new Date(),
-                };
+                    : 'I did not find a local calendar event to edit.'
+                );
       
                 setMessages((prev) => [...prev, userMsg, assistantMsg]);
                 speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
@@ -432,12 +397,7 @@ export default function App() {
               setLastInterpreterConfidence(commandRoute === 'exact' ? 1 : 0.9);
               setLastInterpreterReason('Calendar event editing requires confirmation before changing the calendar.');
       
-              const assistantMsg: Message = {
-                id: `a-${now}`,
-                role: 'assistant',
-                content: confirmationPrompt,
-                timestamp: new Date(),
-              };
+              const assistantMsg = createAssistantMessage(now, confirmationPrompt);
       
               setMessages((prev) => [...prev, userMsg, assistantMsg]);
               speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
@@ -468,12 +428,7 @@ export default function App() {
           setLastInputRoute('Delete command had no target');
           setLastLocalCommand('No matching calendar event to delete');
 
-          const assistantMsg: Message = {
-            id: `a-${now}`,
-            role: 'assistant',
-            content: confirmationPrompt,
-            timestamp: new Date(),
-          };
+          const assistantMsg = createAssistantMessage(now, confirmationPrompt);
 
           setMessages((prev) => [...prev, userMsg, assistantMsg]);
           speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
@@ -501,12 +456,7 @@ export default function App() {
             : 'Command interpreter mapped the input to a destructive command, so QMeet paused for confirmation.'
         );
 
-        const assistantMsg: Message = {
-          id: `a-${now}`,
-          role: 'assistant',
-          content: confirmationPrompt,
-          timestamp: new Date(),
-        };
+        const assistantMsg = createAssistantMessage(now, confirmationPrompt);
 
         setMessages((prev) => [...prev, userMsg, assistantMsg]);
         speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
@@ -645,13 +595,7 @@ export default function App() {
 
       speechConfirmationContent = getBriefToolSpeech(commandMatch.command, confirmationContent);
       
-      const confirmationMsg: Message = {
-        id: `a-${now}`,
-        role: 'assistant',
-        variant: 'tool',
-        content: confirmationContent,
-        timestamp: new Date(),
-      };
+      const confirmationMsg = createAssistantMessage(now, confirmationContent, 'tool');
       
       if (replaceMessages) {
         setMessages([userMsg, confirmationMsg]);
@@ -682,18 +626,8 @@ export default function App() {
       if (!chatActive) setChatActive(true);
 
       const now = Date.now();
-      const userMsg: Message = {
-        id: `u-${now}`,
-        role: 'user',
-        content: visibleUserText,
-        timestamp: new Date(),
-      };
-      const assistantMsg: Message = {
-        id: `a-${now}`,
-        role: 'assistant',
-        content: 'I understood that as a command, but I could not match it to a local action.',
-        timestamp: new Date(),
-      };
+      const userMsg = createUserMessage(now, visibleUserText);
+      const assistantMsg = createAssistantMessage(now, 'I understood that as a command, but I could not match it to a local action.');
 
       setMessages((prev) => [...prev, userMsg, assistantMsg]);
       speakAssistantText(assistantMsg.content);
@@ -728,18 +662,8 @@ export default function App() {
         if (!chatActive) setChatActive(true);
 
         const now = Date.now();
-        const userMsg: Message = {
-          id: `u-${now}`,
-          role: 'user',
-          content: visibleUserText,
-          timestamp: new Date(),
-        };
-        const assistantMsg: Message = {
-          id: `a-${now}`,
-          role: 'assistant',
-          content: `I interpreted that as: ${interpretedCommand.frontendCommand}. This changes or deletes local data. Say "confirm" to run it, or "cancel" to stop.`,
-          timestamp: new Date(),
-        };
+        const userMsg = createUserMessage(now, visibleUserText);
+        const assistantMsg = createAssistantMessage(now, buildInterpreterDestructivePrompt(interpretedCommand.frontendCommand));
 
         setMessages((prev) => [...prev, userMsg, assistantMsg]);
         speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
@@ -787,20 +711,8 @@ export default function App() {
         if (!chatActive) setChatActive(true);
 
         const now = Date.now();
-        const userMsg: Message = {
-          id: `u-${now}`,
-          role: 'user',
-          content: visibleUserText,
-          timestamp: new Date(),
-        };
-        const assistantMsg: Message = {
-          id: `a-${now}`,
-          role: 'assistant',
-          content: destructiveCommand
-            ? `I think that may mean: ${interpretedCommand.frontendCommand}. This changes or deletes local data. Say "confirm" to run it, or "cancel" to stop.`
-            : `I think that may be a command, but I am not certain. Try saying: "${interpretedCommand.frontendCommand}".`,
-          timestamp: new Date(),
-        };
+        const userMsg = createUserMessage(now, visibleUserText);
+        const assistantMsg = createAssistantMessage(now, buildInterpreterClarifyPrompt(interpretedCommand.frontendCommand, destructiveCommand));
 
         setMessages((prev) => [...prev, userMsg, assistantMsg]);
         speakAssistantText(assistantMsg.content);
@@ -822,11 +734,11 @@ export default function App() {
       setLastInterpreterAction('Error');
       setLastInterpreterFrontendCommand('None');
       setLastInterpreterConfidence(null);
-      setLastInterpreterReason(error instanceof Error ? error.message : 'Interpreter request failed.');
+      setLastInterpreterReason(getInterpreterUnavailableReason(error));
     }
 
-    await sendStreamingChat(trimmed, visibleUserText);
-  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveMemoryTask, markMemoryTaskDone, clearCompletedTasks, getMemoryReadout, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, deleteCalendarEventByCriteria, findCalendarEventForDeletion, getNextCalendarEventForDeletion, getNextCalendarEventForChange, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, runWebSearch, clearSearchState, searchError, pushResultToast, addRecentAction, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents, sendStreamingChat]);
+    await sendNormalChat(trimmed, visibleUserText);
+  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveMemoryTask, markMemoryTaskDone, clearCompletedTasks, getMemoryReadout, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, deleteCalendarEventByCriteria, findCalendarEventForDeletion, getNextCalendarEventForDeletion, getNextCalendarEventForChange, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, runWebSearch, clearSearchState, searchError, pushResultToast, addRecentAction, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents, sendNormalChat]);
 
   const handleOrbClick = useCallback(() => {
     // If QMeet is actively generating/streaming, tapping the orb should cancel
