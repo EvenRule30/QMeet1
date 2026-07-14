@@ -69,6 +69,28 @@ Planning rules:
 """.strip()
 
 
+
+
+DAILY_BRIEFING_CONTEXT_PROMPT = """
+The user is asking for a daily briefing or agenda-style overview.
+Use calendar, tasks, notes, and recent actions together.
+
+Prefer this response shape:
+1. Start with a one-sentence overview of the day.
+2. Fixed schedule: mention the next immediate event first, then summarize the rest of today.
+3. Flexible work: choose one or two open tasks or recent project threads that fit around the schedule.
+4. Next action: give one concrete action the user can do now.
+
+Daily briefing rules:
+- Treat calendar events as fixed commitments.
+- Treat open tasks, notes, and recent actions as flexible work.
+- Do not list every event unless the user asks.
+- If today has no events, say the schedule looks open.
+- If calendar context is unavailable, say QMeet cannot see the calendar right now.
+- Keep the briefing compact enough for a small tablet screen.
+""".strip()
+
+
 COMMAND_INTERPRETER_PROMPT = """
 You are QMeet's command interpreter. Classify the user's text as either a local UI command or normal chat.
 
@@ -126,7 +148,9 @@ The frontend only executes the exact frontendCommand text. Use these exact front
 - cancel
 
 Rules:
-- Use intent "chat" for normal questions, explanations, coding help, opinions, or anything that should be answered by the AI.
+- Use intent "chat" for normal questions, explanations, coding help, opinions, planning requests, briefings, agenda summaries, or anything that should be answered by the AI.
+- Use intent "chat" for daily briefing phrases such as "brief me", "daily briefing", "start my day", "what's my day look like", "what's on deck", "what's my agenda", and "plan my day".
+- Never map "start my day" to "go home". It is a chat request for a daily briefing.
 - Use intent "command" only for local QMeet UI/tool control.
 - Memory/task commands should map to memory frontend commands.
 - If the user asks what they were working on or what tasks they have, map to "what was I working on".
@@ -267,6 +291,12 @@ def mock_interpret_command_intent(message: str) -> dict:
 
     if not text:
         return _empty_command_intent("Empty input.")
+
+    if re.search(
+        r"\b(brief me|daily brief|daily briefing|morning brief|morning briefing|start my day|plan my day|what's my day|whats my day|what's on deck|whats on deck|what's my agenda|whats my agenda)\b",
+        lowered,
+    ):
+        return _empty_command_intent("Mock treated daily briefing wording as normal chat.")
 
     if re.search(r"\b(what was i working on|what am i working on|what are my tasks|read memory|memory summary)\b", lowered):
         return {
@@ -1148,6 +1178,7 @@ def _message_wants_calendar_context(message: str) -> bool:
             r"calendar|schedule|agenda|event|events|meeting|meetings|appointment|appointments|"
             r"today|tomorrow|tonight|morning|afternoon|evening|busy|free|available|availability|"
             r"plan|plans|next|what should i do|what do i have|do i have anything|am i free|"
+            r"brief|briefing|daily brief|day look|today look|what's my day|whats my day|"
             r"continue|left off|working on"
             r")\b",
             text,
@@ -1175,6 +1206,26 @@ def _message_wants_planner_response(message: str) -> bool:
     )
 
 
+def _message_wants_daily_briefing_response(message: str) -> bool:
+    text = (message or "").strip().lower()
+
+    if not text:
+        return False
+
+    return bool(
+        re.search(
+            r"\b("
+            r"brief me|daily brief|daily briefing|morning brief|morning briefing|"
+            r"today's brief|todays brief|today's briefing|todays briefing|"
+            r"what's my day look like|whats my day look like|what does my day look like|"
+            r"what's my agenda|whats my agenda|show my agenda|agenda for today|"
+            r"what's on deck|whats on deck|start my day|overview of my day"
+            r")\b",
+            text,
+        )
+    )
+
+
 def _format_calendar_event_for_context(event: dict) -> str:
     title = _compact_memory_text(event.get("title") or "(No title)", 90)
     time = _compact_memory_text(event.get("time") or "Later", 32)
@@ -1184,6 +1235,22 @@ def _format_calendar_event_for_context(event: dict) -> str:
         return f"{time}: {title} at {location}"
 
     return f"{time}: {title}"
+
+
+def _next_calendar_event_line(events: list[dict]) -> str:
+    valid_events = [event for event in events if isinstance(event, dict)]
+
+    if not valid_events:
+        return "Next today event: none found."
+
+    timed_events = [
+        event
+        for event in valid_events
+        if not event.get("allDay") and str(event.get("time") or "").lower() != "all day"
+    ]
+    next_event = timed_events[0] if timed_events else valid_events[0]
+
+    return f"Next today event: {_format_calendar_event_for_context(next_event)}."
 
 
 def _calendar_day_line(label: str, events: list[dict]) -> str:
@@ -1240,6 +1307,7 @@ def _build_calendar_context_summary(message: str) -> str:
         return f"- Calendar status: {_compact_memory_text(status_message, 180)}"
 
     lines = [
+        _next_calendar_event_line(today_events),
         _calendar_day_line("Today", today_events),
         _calendar_day_line("Tomorrow", tomorrow_events),
     ]
@@ -1252,7 +1320,8 @@ def _build_chat_input_messages(message: str) -> list[dict[str, str]]:
     recent_history = MESSAGE_HISTORY[-10:]
     memory_summary = _build_memory_context_summary()
     calendar_summary = _build_calendar_context_summary(message)
-    planner_mode = _message_wants_planner_response(message)
+    daily_briefing_mode = _message_wants_daily_briefing_response(message)
+    planner_mode = _message_wants_planner_response(message) or daily_briefing_mode
 
     input_messages: list[dict[str, str]] = [
         {
@@ -1282,6 +1351,14 @@ def _build_chat_input_messages(message: str) -> list[dict[str, str]]:
             {
                 "role": "developer",
                 "content": PLANNER_CONTEXT_PROMPT,
+            }
+        )
+
+    if daily_briefing_mode:
+        input_messages.append(
+            {
+                "role": "developer",
+                "content": DAILY_BRIEFING_CONTEXT_PROMPT,
             }
         )
 
@@ -1352,7 +1429,18 @@ def mock_reply(message: str) -> str:
         flags=re.IGNORECASE,
     )
     wants_calendar = _message_wants_calendar_context(text)
-    wants_plan = _message_wants_planner_response(text)
+    wants_brief = _message_wants_daily_briefing_response(text)
+    wants_plan = _message_wants_planner_response(text) or wants_brief
+
+    if wants_brief and (memory_summary or calendar_summary):
+        fixed_schedule = _compact_memory_text(calendar_summary.replace(chr(10), " "), 320) if calendar_summary else "Calendar is not available or has no matching context."
+        flexible_work = _compact_memory_text(memory_summary.replace(chr(10), " "), 260) if memory_summary else "No saved task or note context found."
+        return (
+            "Briefing: start with the fixed schedule, then pick one flexible task. "
+            f"Fixed schedule: {fixed_schedule} "
+            f"Flexible work: {flexible_work} "
+            "Next action: handle the nearest event or choose the first open task."
+        )
 
     if wants_plan and (memory_summary or calendar_summary):
         context_bits: list[str] = []
