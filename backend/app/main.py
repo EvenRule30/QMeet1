@@ -6,7 +6,14 @@ from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
 
-from app.routers import calendar, chat, command, memory, search  # noqa: E402
+from app.routers import (  # noqa: E402
+    calendar,
+    chat,
+    command,
+    memory,
+    memory_state,
+    search,
+)
 
 app = FastAPI(title="QMeet Agent Backend")
 
@@ -38,3 +45,4 @@ app.include_router(command.router)
 app.include_router(search.router)
 app.include_router(calendar.router)
 app.include_router(memory.router)
+app.include_router(memory_state.router)
