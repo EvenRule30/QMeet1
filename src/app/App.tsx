@@ -260,7 +260,11 @@ export default function App() {
 
     const visibleUserText = (displayText ?? trimmed).trim() || trimmed;
 
+    // Any new input supersedes the response currently being generated.
+    // Local commands can return without reaching sendStreamingChat, so the
+    // existing stream must be cancelled before command routing begins.
     stopCurrentSpeech();
+    cancelActiveResponse();
 
     if (pendingInterpreterCommand) {
           if (isConfirmingPendingCommand(trimmed)) {
