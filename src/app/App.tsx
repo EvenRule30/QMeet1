@@ -3,13 +3,13 @@ import { Orb } from './components/Orb';
 import { TopStatusBar } from './components/TopStatusBar';
 import { ChatPanel } from './components/ChatPanel';
 import { PromptBar } from './components/PromptBar';
-import { NotesPanel } from './components/NotesPanel';
-import { CalendarPanel } from './components/CalendarPanel';
-import { SearchPanel } from './components/SearchPanel';
 import { MenuOverlay } from './panels/MenuOverlay';
 import { SettingsOverlay } from './panels/SettingsOverlay';
 import { StatusOverlay } from './panels/StatusOverlay';
 import { MemoryOverlay } from './panels/MemoryOverlay';
+import { NotesOverlay } from './panels/NotesOverlay';
+import { CalendarOverlay } from './panels/CalendarOverlay';
+import { SearchOverlay } from './panels/SearchOverlay';
 import { Message, OrbState, ActivePanel } from './types';
 import { resetConversation, interpretCommandIntent } from "./api";
 import { parseCommand } from './commands';
@@ -1072,7 +1072,7 @@ export default function App() {
       )}
 
       {activePanel === 'notes' && (
-        <NotesPanel 
+        <NotesOverlay
           notes={notes}
           onSaveNote={saveNote}
           onDeleteNote={deleteNote}
@@ -1082,7 +1082,7 @@ export default function App() {
       )}
 
       {activePanel === 'calendar' && (
-        <CalendarPanel
+        <CalendarOverlay
           view={calendarView}
           events={calendarEvents}
           googleEvents={googleCalendarEvents}
@@ -1099,7 +1099,7 @@ export default function App() {
       )}
 
       {activePanel === 'search' && (
-        <SearchPanel
+        <SearchOverlay
           query={searchQuery}
           result={searchResult}
           loading={searchLoading}
