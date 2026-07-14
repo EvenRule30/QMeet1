@@ -7,6 +7,7 @@ import {
   useState,
 } from 'react';
 import { streamChatMessage } from '../api';
+import { buildBriefingRequest, isBriefingRequest } from '../lib/briefingUtils';
 import { Message, OrbState } from '../types';
 
 const BRIEF_ME_EVENT = 'qmeet:brief-me';
@@ -19,35 +20,6 @@ type UseChatStreamControllerOptions = {
     options?: { enabled?: boolean; rate?: number }
   ) => void;
 };
-
-function buildBriefingRequest(): string {
-  const now = new Date();
-
-  let timeZone = 'local';
-  try {
-    timeZone =
-      Intl.DateTimeFormat().resolvedOptions().timeZone?.trim() || 'local';
-  } catch {
-    timeZone = 'local';
-  }
-
-  const localDateTime = now.toLocaleString([], {
-    weekday: 'long',
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
-
-  return [
-    'Brief me on my remaining day.',
-    `Current local date and time: ${localDateTime}.`,
-    `Current timezone: ${timeZone}.`,
-    'Treat calendar events scheduled earlier than the current time as past.',
-    'Focus on the next upcoming event, the remaining schedule, one or two useful flexible tasks, and one concrete action to take now.',
-  ].join('\n');
-}
 
 export function useChatStreamController({
   setOrbState,
@@ -83,6 +55,9 @@ export function useChatStreamController({
 
       const now = Date.now();
       const assistantId = `a-${now}`;
+      const requestText = isBriefingRequest(text)
+        ? buildBriefingRequest()
+        : text;
 
       const userMsg: Message = {
         id: `u-${now}`,
@@ -138,7 +113,7 @@ export function useChatStreamController({
 
       try {
         await streamChatMessage(
-          text,
+          requestText,
           {
             onStart: () => {
               if (responseTokenRef.current !== responseToken) return;
@@ -219,7 +194,7 @@ export function useChatStreamController({
 
   useEffect(() => {
     const handleBriefMe = () => {
-      void sendStreamingChat(buildBriefingRequest(), 'Brief me');
+      void sendStreamingChat('brief me', 'Brief me');
     };
 
     window.addEventListener(BRIEF_ME_EVENT, handleBriefMe);
