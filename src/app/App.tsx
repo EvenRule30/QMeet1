@@ -9,6 +9,7 @@ import { SearchPanel } from './components/SearchPanel';
 import { MenuOverlay } from './panels/MenuOverlay';
 import { SettingsOverlay } from './panels/SettingsOverlay';
 import { StatusOverlay } from './panels/StatusOverlay';
+import { MemoryOverlay } from './panels/MemoryOverlay';
 import { Message, OrbState, ActivePanel } from './types';
 import { resetConversation, interpretCommandIntent } from "./api";
 import { parseCommand } from './commands';
@@ -24,10 +25,7 @@ import {
   getBriefToolSpeech,
   getResultToastForCommand,
 } from './lib/toastUtils';
-import {
-  formatMemoryTime,
-  getCommandActionLabel,
-} from './lib/memoryUtils';
+import { getCommandActionLabel } from './lib/memoryUtils';
 import { useBackendStatus } from './hooks/useBackendStatus';
 import { useResultToasts } from './hooks/useResultToasts';
 import { useMemoryContext } from './hooks/useMemoryContext';
@@ -1049,203 +1047,28 @@ export default function App() {
 
 
       {activePanel === 'memory' && (
-        <div className="panel-overlay">
-          <div className="panel-content memory-panel">
-            <div className="panel-header">Memory</div>
-            <div className="panel-body memory-panel-body">
-              <div className="memory-hero">
-                <div>
-                  <div className="memory-kicker">Backend Memory</div>
-                  <div className="memory-title">Tasks, notes, and work context sync to FastAPI, with browser fallback.</div>
-                </div>
-                <div className={`memory-chip memory-sync-${memorySyncState}`}>
-                  {memorySyncState === 'synced' ? 'Synced' : memorySyncState === 'syncing' ? 'Syncing' : 'Local'}
-                </div>
-              </div>
-
-              <div className="panel-section memory-sync-section">
-                <div className="panel-section-title">Sync Status</div>
-                <p className="panel-section-text">{memorySyncMessage}</p>
-              </div>
-
-
-              <div className="panel-section">
-                <div className="panel-section-title">Memory Controls</div>
-                <p className="panel-section-text">
-                  Export a backup, import a saved QMeet memory JSON file, or reset stored memory categories.
-                </p>
-                <input
-                  ref={memoryImportInputRef}
-                  type="file"
-                  accept="application/json,.json"
-                  style={{ display: 'none' }}
-                  onChange={handleImportMemoryFile}
-                />
-                <div className="panel-action-row">
-                  <button className="panel-action-btn" type="button" onClick={handleExportMemory}>
-                    Export JSON
-                  </button>
-                  <button className="panel-action-btn" type="button" onClick={() => memoryImportInputRef.current?.click()}>
-                    Import JSON
-                  </button>
-                  <button className="panel-action-btn panel-action-btn-danger" type="button" onClick={handleClearAllMemory}>
-                    Clear All
-                  </button>
-                </div>
-                <div className="panel-action-row">
-                  <button className="panel-action-btn panel-action-btn-danger" type="button" onClick={handleResetTasksOnly}>
-                    Reset Tasks
-                  </button>
-                  <button className="panel-action-btn panel-action-btn-danger" type="button" onClick={handleResetNotesOnly}>
-                    Reset Notes
-                  </button>
-                  <button className="panel-action-btn panel-action-btn-danger" type="button" onClick={handleResetRecentContextOnly}>
-                    Reset Context
-                  </button>
-                </div>
-              </div>
-
-              <div className="panel-section memory-input-section">
-                <div className="panel-section-title">New Task</div>
-                <div className="memory-input-row">
-                  <input
-                    className="memory-task-input"
-                    value={memoryTaskDraft}
-                    onChange={(event) => setMemoryTaskDraft(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' && memoryTaskDraft.trim()) {
-                        handleSaveMemoryTaskDraft();
-                      }
-                    }}
-                    placeholder="Add a task..."
-                  />
-                  <button
-                    className="panel-action-btn"
-                    type="button"
-                    disabled={!memoryTaskDraft.trim()}
-                    onClick={handleSaveMemoryTaskDraft}
-                  >
-                    Save
-                  </button>
-                </div>
-              </div>
-
-              <div className="panel-section">
-                <div className="panel-section-title">Open Tasks</div>
-                {memoryTasks.filter((task) => !task.completedAt).length === 0 ? (
-                  <p className="panel-section-text">No open tasks. Say “remember to test the Pi as a task,” or type one above.</p>
-                ) : (
-                  <div className="memory-list">
-                    {memoryTasks.filter((task) => !task.completedAt).map((task) => (
-                      <div className="memory-task-item" key={task.id}>
-                        <div className="memory-task-copy">
-                          <div className="memory-task-title">{task.title}</div>
-                          <div className="memory-task-meta">Saved {formatMemoryTime(task.createdAt)}</div>
-                        </div>
-                        <div className="memory-task-actions">
-                          <button
-                            className="memory-task-done-btn"
-                            type="button"
-                            onClick={() => {
-                              const completedTask = markMemoryTaskDoneById(task.id);
-                              if (completedTask) {
-                                addRecentAction('Completed task', completedTask.title);
-                                pushResultToast({ kind: 'success', title: 'Task complete', detail: completedTask.title });
-                              }
-                            }}
-                          >
-                            Done
-                          </button>
-                          <button
-                            className="memory-task-delete-btn"
-                            type="button"
-                            onClick={() => {
-                              const deletedTask = deleteMemoryTask(task.id);
-                              if (deletedTask) {
-                                pushResultToast({ kind: 'warning', title: 'Task deleted', detail: deletedTask.title });
-                              }
-                            }}
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {memoryTasks.some((task) => task.completedAt) && (
-                <div className="panel-section">
-                  <div className="panel-section-title">Completed Tasks</div>
-                  <div className="memory-list">
-                    {memoryTasks.filter((task) => task.completedAt).map((task) => (
-                      <div className="memory-action-item memory-completed-task" key={task.id}>
-                        <div className="memory-task-copy">
-                          <div className="memory-action-title">{task.title}</div>
-                          <div className="memory-task-meta">Done {task.completedAt ? formatMemoryTime(task.completedAt) : 'recently'}</div>
-                        </div>
-                        <div className="memory-task-actions">
-                          <button
-                            className="memory-task-reopen-btn"
-                            type="button"
-                            onClick={() => {
-                              const reopenedTask = reopenMemoryTask(task.id);
-                              if (reopenedTask) {
-                                pushResultToast({ kind: 'info', title: 'Task reopened', detail: reopenedTask.title });
-                              }
-                            }}
-                          >
-                            Reopen
-                          </button>
-                          <button
-                            className="memory-task-delete-btn"
-                            type="button"
-                            onClick={() => {
-                              const deletedTask = deleteMemoryTask(task.id);
-                              if (deletedTask) {
-                                pushResultToast({ kind: 'warning', title: 'Task deleted', detail: deletedTask.title });
-                              }
-                            }}
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="panel-action-row">
-                    <button
-                      className="panel-action-btn panel-action-btn-danger"
-                      type="button"
-                      onClick={() => {
-                        const removedCount = clearCompletedTasks();
-                        pushResultToast({
-                          kind: 'warning',
-                          title: 'Completed tasks cleared',
-                          detail: removedCount > 0 ? `${removedCount} removed.` : 'No completed tasks to clear.',
-                        });
-                      }}
-                    >
-                      Clear Done
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              <div className="panel-section">
-                <div className="panel-section-title">Supported Commands</div>
-                <p className="panel-section-text">
-                  Say “what was I working on,” “remember to test the Pi as a task,” “mark task done,” “mark test the Pi done,” “clear completed tasks,” or use the task buttons above. Notes and recent actions sync in the background. Use Memory Controls to export, import, or reset stored memory.
-                </p>
-              </div>
-
-              <button className="close-panel-btn" onClick={closePanel}>
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
+        <MemoryOverlay
+          memorySyncState={memorySyncState}
+          memorySyncMessage={memorySyncMessage}
+          memoryImportInputRef={memoryImportInputRef}
+          memoryTaskDraft={memoryTaskDraft}
+          setMemoryTaskDraft={setMemoryTaskDraft}
+          memoryTasks={memoryTasks}
+          onExportMemory={handleExportMemory}
+          onImportMemoryFile={handleImportMemoryFile}
+          onClearAllMemory={handleClearAllMemory}
+          onResetTasksOnly={handleResetTasksOnly}
+          onResetNotesOnly={handleResetNotesOnly}
+          onResetRecentContextOnly={handleResetRecentContextOnly}
+          onSaveMemoryTaskDraft={handleSaveMemoryTaskDraft}
+          markMemoryTaskDoneById={markMemoryTaskDoneById}
+          deleteMemoryTask={deleteMemoryTask}
+          reopenMemoryTask={reopenMemoryTask}
+          clearCompletedTasks={clearCompletedTasks}
+          addRecentAction={addRecentAction}
+          pushResultToast={pushResultToast}
+          onClose={closePanel}
+        />
       )}
 
       {activePanel === 'notes' && (
