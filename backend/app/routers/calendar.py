@@ -79,7 +79,10 @@ async def calendar_auth_callback(
         )
 
     try:
-        complete_calendar_auth(code=code, authorization_response=str(request.url))
+        complete_calendar_auth(
+            code=code,
+            authorization_response=str(request.url),
+        )
         return HTMLResponse(
             """
             <html>
@@ -133,10 +136,21 @@ async def calendar_auth_reset():
 
 @router.get("/events", response_model=CalendarEventsResponse)
 async def calendar_events(
-    view: str = Query(default="today", pattern="^(today|tomorrow|week)$"),
+    view: str = Query(
+        default="today",
+        pattern="^(today|tomorrow|week)$",
+    ),
 ):
     try:
-        return CalendarEventsResponse(**list_calendar_events(view))
+        # The Calendar panel should retain completed events so the user can
+        # review the whole day. AI planning calls the service directly and
+        # leaves include_past at its False default.
+        return CalendarEventsResponse(
+            **list_calendar_events(
+                view,
+                include_past=True,
+            )
+        )
     except CalendarIntegrationError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     except Exception:
@@ -149,13 +163,15 @@ async def calendar_events(
 @router.post("/events", response_model=CalendarCreateEventResponse)
 async def calendar_create_event(req: CalendarCreateEventRequest):
     try:
-        return CalendarCreateEventResponse(**create_calendar_event(
-            title=req.title,
-            day=req.day,
-            time=req.time,
-            description=req.description,
-            location=req.location,
-        ))
+        return CalendarCreateEventResponse(
+            **create_calendar_event(
+                title=req.title,
+                day=req.day,
+                time=req.time,
+                description=req.description,
+                location=req.location,
+            )
+        )
     except CalendarIntegrationError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     except Exception:
@@ -165,17 +181,25 @@ async def calendar_create_event(req: CalendarCreateEventRequest):
         )
 
 
-@router.patch("/events/{event_id}", response_model=CalendarUpdateEventResponse)
-async def calendar_update_event(event_id: str, req: CalendarUpdateEventRequest):
+@router.patch(
+    "/events/{event_id}",
+    response_model=CalendarUpdateEventResponse,
+)
+async def calendar_update_event(
+    event_id: str,
+    req: CalendarUpdateEventRequest,
+):
     try:
-        return CalendarUpdateEventResponse(**update_calendar_event(
-            event_id=event_id,
-            title=req.title,
-            day=req.day,
-            time=req.time,
-            description=req.description,
-            location=req.location,
-        ))
+        return CalendarUpdateEventResponse(
+            **update_calendar_event(
+                event_id=event_id,
+                title=req.title,
+                day=req.day,
+                time=req.time,
+                description=req.description,
+                location=req.location,
+            )
+        )
     except CalendarIntegrationError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     except Exception:
@@ -185,10 +209,15 @@ async def calendar_update_event(event_id: str, req: CalendarUpdateEventRequest):
         )
 
 
-@router.delete("/events/{event_id}", response_model=CalendarDeleteEventResponse)
+@router.delete(
+    "/events/{event_id}",
+    response_model=CalendarDeleteEventResponse,
+)
 async def calendar_delete_event(event_id: str):
     try:
-        return CalendarDeleteEventResponse(**delete_calendar_event(event_id))
+        return CalendarDeleteEventResponse(
+            **delete_calendar_event(event_id)
+        )
     except CalendarIntegrationError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     except Exception:

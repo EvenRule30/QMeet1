@@ -1,5 +1,5 @@
-import os
 import json
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -49,13 +49,12 @@ def get_calendar_config() -> CalendarConfig:
     token_file = Path(
         os.getenv("GOOGLE_CALENDAR_TOKEN_FILE", "token_calendar_events.json")
     )
-
-    if not credentials_file.is_absolute():
-        credentials_file = backend_root / credentials_file
-
     auth_state_file = Path(
         os.getenv("GOOGLE_CALENDAR_AUTH_STATE_FILE", "calendar_auth_state.json")
     )
+
+    if not credentials_file.is_absolute():
+        credentials_file = backend_root / credentials_file
 
     if not token_file.is_absolute():
         token_file = backend_root / token_file
@@ -73,8 +72,11 @@ def get_calendar_config() -> CalendarConfig:
             "http://localhost:8000/api/calendar/auth/callback",
         ).strip(),
         calendar_id=os.getenv("GOOGLE_CALENDAR_ID", "primary").strip() or "primary",
-        timezone_name=os.getenv("GOOGLE_CALENDAR_TIMEZONE", "local").strip() or "local",
-        write_enabled=_truthy(os.getenv("GOOGLE_CALENDAR_WRITE_ENABLED", "false")),
+        timezone_name=os.getenv("GOOGLE_CALENDAR_TIMEZONE", "local").strip()
+        or "local",
+        write_enabled=_truthy(
+            os.getenv("GOOGLE_CALENDAR_WRITE_ENABLED", "false")
+        ),
     )
 
 
@@ -86,7 +88,8 @@ def _get_timezone(config: CalendarConfig):
         return ZoneInfo(config.timezone_name)
     except Exception as exc:
         raise CalendarIntegrationError(
-            f'Invalid GOOGLE_CALENDAR_TIMEZONE="{config.timezone_name}". Use "local" or an IANA timezone like "America/Los_Angeles".'
+            f'Invalid GOOGLE_CALENDAR_TIMEZONE="{config.timezone_name}". '
+            'Use "local" or an IANA timezone like "America/Los_Angeles".'
         ) from exc
 
 
@@ -94,12 +97,20 @@ def _credentials_configured(config: CalendarConfig) -> bool:
     return config.enabled and config.credentials_file.exists()
 
 
+def _save_credentials(config: CalendarConfig, creds: Credentials) -> None:
+    config.token_file.parent.mkdir(parents=True, exist_ok=True)
+    config.token_file.write_text(creds.to_json(), encoding="utf-8")
+
+
 def _load_credentials(config: CalendarConfig) -> Credentials | None:
     if not _credentials_configured(config) or not config.token_file.exists():
         return None
 
     try:
-        creds = Credentials.from_authorized_user_file(str(config.token_file), SCOPES)
+        creds = Credentials.from_authorized_user_file(
+            str(config.token_file),
+            SCOPES,
+        )
     except Exception:
         return None
 
@@ -113,12 +124,11 @@ def _load_credentials(config: CalendarConfig) -> Credentials | None:
     return creds if creds and creds.valid else None
 
 
-def _save_credentials(config: CalendarConfig, creds: Credentials) -> None:
-    config.token_file.parent.mkdir(parents=True, exist_ok=True)
-    config.token_file.write_text(creds.to_json(), encoding="utf-8")
-
-
-def _save_auth_state(config: CalendarConfig, state: str | None, code_verifier: str | None) -> None:
+def _save_auth_state(
+    config: CalendarConfig,
+    state: str | None,
+    code_verifier: str | None,
+) -> None:
     config.auth_state_file.parent.mkdir(parents=True, exist_ok=True)
     config.auth_state_file.write_text(
         json.dumps(
@@ -138,7 +148,9 @@ def _load_auth_state(config: CalendarConfig) -> dict:
         return {}
 
     try:
-        parsed = json.loads(config.auth_state_file.read_text(encoding="utf-8"))
+        parsed = json.loads(
+            config.auth_state_file.read_text(encoding="utf-8")
+        )
         return parsed if isinstance(parsed, dict) else {}
     except Exception:
         return {}
@@ -158,13 +170,23 @@ def get_calendar_status() -> dict:
     connected = _load_credentials(config) is not None
 
     if not config.enabled:
-        message = "Google Calendar integration is disabled. Set GOOGLE_CALENDAR_ENABLED=true in backend/.env."
+        message = (
+            "Google Calendar integration is disabled. "
+            "Set GOOGLE_CALENDAR_ENABLED=true in backend/.env."
+        )
     elif not config.credentials_file.exists():
-        message = f"Google Calendar credentials file was not found: {config.credentials_file}"
+        message = (
+            "Google Calendar credentials file was not found: "
+            f"{config.credentials_file}"
+        )
     elif not connected:
         message = "Google Calendar is configured but not authorized yet."
     else:
-        message = "Google Calendar is connected with event write access." if config.write_enabled else "Google Calendar is connected, but event writing is disabled."
+        message = (
+            "Google Calendar is connected with event write access."
+            if config.write_enabled
+            else "Google Calendar is connected, but event writing is disabled."
+        )
 
     return {
         "ok": True,
@@ -178,12 +200,13 @@ def get_calendar_status() -> dict:
     }
 
 
-
 def _allow_local_http_oauth(config: CalendarConfig) -> None:
-    """Allow OAuth redirects to localhost during local prototype development."""
+    """Allow OAuth redirects to localhost during prototype development."""
     redirect_uri = config.redirect_uri.lower()
 
-    if redirect_uri.startswith("http://localhost") or redirect_uri.startswith("http://127.0.0.1"):
+    if redirect_uri.startswith(
+        "http://localhost"
+    ) or redirect_uri.startswith("http://127.0.0.1"):
         os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
 
 
@@ -195,17 +218,20 @@ def _make_calendar_flow(config: CalendarConfig) -> Flow:
         redirect_uri=config.redirect_uri,
     )
 
+
 def start_calendar_auth() -> dict:
     config = get_calendar_config()
 
     if not config.enabled:
         raise CalendarIntegrationError(
-            "Google Calendar integration is disabled. Set GOOGLE_CALENDAR_ENABLED=true in backend/.env."
+            "Google Calendar integration is disabled. "
+            "Set GOOGLE_CALENDAR_ENABLED=true in backend/.env."
         )
 
     if not config.credentials_file.exists():
         raise CalendarIntegrationError(
-            f"Google Calendar credentials file was not found: {config.credentials_file}"
+            "Google Calendar credentials file was not found: "
+            f"{config.credentials_file}"
         )
 
     flow = _make_calendar_flow(config)
@@ -225,25 +251,35 @@ def start_calendar_auth() -> dict:
     return {
         "ok": True,
         "authUrl": auth_url,
-        "message": "Open this URL, sign into Google, and approve Calendar read/write access.",
+        "message": (
+            "Open this URL, sign into Google, and approve "
+            "Calendar read/write access."
+        ),
     }
 
 
-def complete_calendar_auth(code: str | None = None, authorization_response: str | None = None) -> dict:
+def complete_calendar_auth(
+    code: str | None = None,
+    authorization_response: str | None = None,
+) -> dict:
     config = get_calendar_config()
 
     if not config.enabled:
         raise CalendarIntegrationError(
-            "Google Calendar integration is disabled. Set GOOGLE_CALENDAR_ENABLED=true in backend/.env."
+            "Google Calendar integration is disabled. "
+            "Set GOOGLE_CALENDAR_ENABLED=true in backend/.env."
         )
 
     if not config.credentials_file.exists():
         raise CalendarIntegrationError(
-            f"Google Calendar credentials file was not found: {config.credentials_file}"
+            "Google Calendar credentials file was not found: "
+            f"{config.credentials_file}"
         )
 
     if not code and not authorization_response:
-        raise CalendarIntegrationError("Google OAuth callback did not include an authorization code.")
+        raise CalendarIntegrationError(
+            "Google OAuth callback did not include an authorization code."
+        )
 
     flow = _make_calendar_flow(config)
     saved_auth_state = _load_auth_state(config)
@@ -264,18 +300,26 @@ def complete_calendar_auth(code: str | None = None, authorization_response: str 
 
     try:
         if authorization_response:
-            flow.fetch_token(authorization_response=authorization_response)
+            flow.fetch_token(
+                authorization_response=authorization_response
+            )
         else:
             flow.fetch_token(code=code)
     except OAuth2Error as exc:
-        raise CalendarIntegrationError(f"Google OAuth token exchange failed: {exc}") from exc
+        raise CalendarIntegrationError(
+            f"Google OAuth token exchange failed: {exc}"
+        ) from exc
     except Exception as exc:
-        raise CalendarIntegrationError(f"Google OAuth callback failed: {exc}") from exc
+        raise CalendarIntegrationError(
+            f"Google OAuth callback failed: {exc}"
+        ) from exc
 
     creds = flow.credentials
 
     if not creds or not creds.valid:
-        raise CalendarIntegrationError("Google OAuth finished, but no valid Calendar token was returned.")
+        raise CalendarIntegrationError(
+            "Google OAuth finished, but no valid Calendar token was returned."
+        )
 
     _save_credentials(config, creds)
     _clear_auth_state(config)
@@ -301,10 +345,18 @@ def reset_calendar_auth() -> dict:
     }
 
 
-def _date_range_for_view(view: str, config: CalendarConfig) -> tuple[datetime, datetime]:
+def _date_range_for_view(
+    view: str,
+    config: CalendarConfig,
+) -> tuple[datetime, datetime]:
     tz = _get_timezone(config)
     now = datetime.now(tz)
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = now.replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
 
     if view == "tomorrow":
         start = today_start + timedelta(days=1)
@@ -319,20 +371,26 @@ def _date_range_for_view(view: str, config: CalendarConfig) -> tuple[datetime, d
     return start, end
 
 
-def _format_time(value: str | None, all_day: bool, config: CalendarConfig) -> str:
+def _format_time(
+    value: str | None,
+    all_day: bool,
+    config: CalendarConfig,
+) -> str:
     if all_day or not value:
         return "All day"
 
     try:
         dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        tz = _get_timezone(config)
-        dt = dt.astimezone(tz)
+        dt = dt.astimezone(_get_timezone(config))
         return dt.strftime("%I:%M %p").lstrip("0")
     except Exception:
         return "Later"
 
 
-def _date_key_from_start(start_data: dict, config: CalendarConfig) -> str:
+def _date_key_from_start(
+    start_data: dict,
+    config: CalendarConfig,
+) -> str:
     if start_data.get("date"):
         return start_data["date"]
 
@@ -341,17 +399,24 @@ def _date_key_from_start(start_data: dict, config: CalendarConfig) -> str:
         return datetime.now(_get_timezone(config)).strftime("%Y-%m-%d")
 
     try:
-        dt = datetime.fromisoformat(date_time.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(
+            date_time.replace("Z", "+00:00")
+        )
         dt = dt.astimezone(_get_timezone(config))
         return dt.strftime("%Y-%m-%d")
     except Exception:
         return datetime.now(_get_timezone(config)).strftime("%Y-%m-%d")
 
 
-def _normalize_google_event(item: dict, config: CalendarConfig) -> dict:
+def _normalize_google_event(
+    item: dict,
+    config: CalendarConfig,
+) -> dict:
     start_data = item.get("start", {})
     end_data = item.get("end", {})
-    all_day = bool(start_data.get("date") and not start_data.get("dateTime"))
+    all_day = bool(
+        start_data.get("date") and not start_data.get("dateTime")
+    )
 
     start_value = start_data.get("dateTime") or start_data.get("date")
     end_value = end_data.get("dateTime") or end_data.get("date")
@@ -362,7 +427,8 @@ def _normalize_google_event(item: dict, config: CalendarConfig) -> dict:
         "title": item.get("summary") or "(No title)",
         "dateKey": _date_key_from_start(start_data, config),
         "time": _format_time(start_value, all_day, config),
-        "createdAt": item.get("created") or datetime.now(_get_timezone(config)).isoformat(),
+        "createdAt": item.get("created")
+        or datetime.now(_get_timezone(config)).isoformat(),
         "source": "google",
         "start": start_value,
         "end": end_value,
@@ -373,11 +439,18 @@ def _normalize_google_event(item: dict, config: CalendarConfig) -> dict:
     }
 
 
-
-def _target_date_for_day(day: str, config: CalendarConfig) -> datetime:
+def _target_date_for_day(
+    day: str,
+    config: CalendarConfig,
+) -> datetime:
     tz = _get_timezone(config)
     now = datetime.now(tz)
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    start = now.replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
 
     if (day or "").strip().lower() == "tomorrow":
         start += timedelta(days=1)
@@ -385,12 +458,26 @@ def _target_date_for_day(day: str, config: CalendarConfig) -> datetime:
     return start
 
 
-def _parse_time_for_event(day: str, time_text: str | None, config: CalendarConfig) -> tuple[datetime, datetime, bool]:
+def _parse_time_for_event(
+    day: str,
+    time_text: str | None,
+    config: CalendarConfig,
+) -> tuple[datetime, datetime, bool]:
     start_of_day = _target_date_for_day(day, config)
     raw = (time_text or "").strip().lower()
 
-    if not raw or raw in {"later", "all day", "all-day", "sometime", "anytime"}:
-        return start_of_day, start_of_day + timedelta(days=1), True
+    if not raw or raw in {
+        "later",
+        "all day",
+        "all-day",
+        "sometime",
+        "anytime",
+    }:
+        return (
+            start_of_day,
+            start_of_day + timedelta(days=1),
+            True,
+        )
 
     normalized = (
         raw.replace(".", "")
@@ -410,23 +497,34 @@ def _parse_time_for_event(day: str, time_text: str | None, config: CalendarConfi
         hour = 0
         minute = 0
     else:
-        match = re.match(r"^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$", normalized)
+        match = re.match(
+            r"^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$",
+            normalized,
+        )
         if not match:
-            return start_of_day, start_of_day + timedelta(days=1), True
+            return (
+                start_of_day,
+                start_of_day + timedelta(days=1),
+                True,
+            )
 
         hour = int(match.group(1))
         minute = int(match.group(2) or "0")
         suffix = match.group(3)
 
         if minute > 59 or hour > 23:
-            return start_of_day, start_of_day + timedelta(days=1), True
+            return (
+                start_of_day,
+                start_of_day + timedelta(days=1),
+                True,
+            )
 
         if suffix == "pm" and hour < 12:
             hour += 12
         elif suffix == "am" and hour == 12:
             hour = 0
         elif suffix is None and 1 <= hour <= 7:
-            # Voice commands like "tomorrow at 3" usually mean afternoon in this prototype.
+            # In this prototype, "at 3" usually means 3 PM.
             hour += 12
 
     start = start_of_day.replace(hour=hour, minute=minute)
@@ -434,7 +532,40 @@ def _parse_time_for_event(day: str, time_text: str | None, config: CalendarConfi
     return start, end, False
 
 
-def create_calendar_event(title: str, day: str = "today", time: str = "Later", description: str = "", location: str = "") -> dict:
+def _event_body_for_time(
+    day: str,
+    time_text: str,
+    config: CalendarConfig,
+) -> tuple[dict, dict]:
+    start, end, all_day = _parse_time_for_event(
+        day,
+        time_text,
+        config,
+    )
+
+    if all_day:
+        return (
+            {"date": start.date().isoformat()},
+            {"date": end.date().isoformat()},
+        )
+
+    start_body = {"dateTime": start.isoformat()}
+    end_body = {"dateTime": end.isoformat()}
+
+    if config.timezone_name.lower() != "local":
+        start_body["timeZone"] = config.timezone_name
+        end_body["timeZone"] = config.timezone_name
+
+    return start_body, end_body
+
+
+def create_calendar_event(
+    title: str,
+    day: str = "today",
+    time: str = "Later",
+    description: str = "",
+    location: str = "",
+) -> dict:
     config = get_calendar_config()
     status = get_calendar_status()
 
@@ -443,38 +574,32 @@ def create_calendar_event(title: str, day: str = "today", time: str = "Later", d
 
     if not config.write_enabled:
         raise CalendarIntegrationError(
-            "Google Calendar event writing is disabled. Set GOOGLE_CALENDAR_WRITE_ENABLED=true in backend/.env."
+            "Google Calendar event writing is disabled. "
+            "Set GOOGLE_CALENDAR_WRITE_ENABLED=true in backend/.env."
         )
 
     clean_title = (title or "").strip()
     if not clean_title:
-        raise CalendarIntegrationError("Calendar event title cannot be empty.")
+        raise CalendarIntegrationError(
+            "Calendar event title cannot be empty."
+        )
 
     creds = _load_credentials(config)
     if not creds:
-        raise CalendarIntegrationError("Google Calendar needs authorization with event write access.")
+        raise CalendarIntegrationError(
+            "Google Calendar needs authorization with event write access."
+        )
 
-    start, end, all_day = _parse_time_for_event(day, time, config)
-
-    if all_day:
-        event_body = {
-            "summary": clean_title,
-            "start": {"date": start.date().isoformat()},
-            "end": {"date": end.date().isoformat()},
-        }
-    else:
-        event_body = {
-            "summary": clean_title,
-            "start": {"dateTime": start.isoformat()},
-            "end": {"dateTime": end.isoformat()},
-        }
-
-    if config.timezone_name.lower() != "local":
-        if all_day:
-            pass
-        else:
-            event_body["start"]["timeZone"] = config.timezone_name
-            event_body["end"]["timeZone"] = config.timezone_name
+    start_body, end_body = _event_body_for_time(
+        day,
+        time,
+        config,
+    )
+    event_body = {
+        "summary": clean_title,
+        "start": start_body,
+        "end": end_body,
+    }
 
     if description.strip():
         event_body["description"] = description.strip()
@@ -483,18 +608,29 @@ def create_calendar_event(title: str, day: str = "today", time: str = "Later", d
         event_body["location"] = location.strip()
 
     try:
-        service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+        service = build(
+            "calendar",
+            "v3",
+            credentials=creds,
+            cache_discovery=False,
+        )
         created = (
             service.events()
-            .insert(calendarId=config.calendar_id, body=event_body)
+            .insert(
+                calendarId=config.calendar_id,
+                body=event_body,
+            )
             .execute()
         )
     except HttpError as exc:
         raise CalendarIntegrationError(
-            "Google Calendar event creation failed. Reconnect Calendar and make sure the token has event write access."
+            "Google Calendar event creation failed. Reconnect Calendar "
+            "and make sure the token has event write access."
         ) from exc
     except Exception as exc:
-        raise CalendarIntegrationError("Could not create Google Calendar event.") from exc
+        raise CalendarIntegrationError(
+            "Could not create Google Calendar event."
+        ) from exc
 
     normalized_event = _normalize_google_event(created, config)
 
@@ -504,9 +640,12 @@ def create_calendar_event(title: str, day: str = "today", time: str = "Later", d
         "connected": True,
         "source": "google",
         "event": normalized_event,
-        "message": f"Created Google Calendar event: {normalized_event['time']}: {normalized_event['title']}.",
+        "message": (
+            "Created Google Calendar event: "
+            f"{normalized_event['time']}: "
+            f"{normalized_event['title']}."
+        ),
     }
-
 
 
 def update_calendar_event(
@@ -525,7 +664,8 @@ def update_calendar_event(
 
     if not config.write_enabled:
         raise CalendarIntegrationError(
-            "Google Calendar event editing is disabled. Set GOOGLE_CALENDAR_WRITE_ENABLED=true in backend/.env."
+            "Google Calendar event editing is disabled. "
+            "Set GOOGLE_CALENDAR_WRITE_ENABLED=true in backend/.env."
         )
 
     clean_event_id = (event_id or "").strip()
@@ -533,27 +673,49 @@ def update_calendar_event(
         clean_event_id = clean_event_id.removeprefix("google-")
 
     if not clean_event_id:
-        raise CalendarIntegrationError("Google Calendar event id cannot be empty.")
+        raise CalendarIntegrationError(
+            "Google Calendar event id cannot be empty."
+        )
 
     clean_title = (title or "").strip()
     clean_time = (time or "").strip()
     clean_day = (day or "").strip().lower()
+
     if clean_day not in {"today", "tomorrow", ""}:
         clean_day = ""
 
-    if not clean_title and not clean_time and not clean_day and not description and not location:
-        raise CalendarIntegrationError("No calendar event changes were provided.")
+    if (
+        not clean_title
+        and not clean_time
+        and not clean_day
+        and not description
+        and not location
+    ):
+        raise CalendarIntegrationError(
+            "No calendar event changes were provided."
+        )
 
     creds = _load_credentials(config)
     if not creds:
-        raise CalendarIntegrationError("Google Calendar needs authorization with event write access.")
+        raise CalendarIntegrationError(
+            "Google Calendar needs authorization with event write access."
+        )
 
     try:
-        service = build("calendar", "v3", credentials=creds, cache_discovery=False)
-        existing = service.events().get(
-            calendarId=config.calendar_id,
-            eventId=clean_event_id,
-        ).execute()
+        service = build(
+            "calendar",
+            "v3",
+            credentials=creds,
+            cache_discovery=False,
+        )
+        existing = (
+            service.events()
+            .get(
+                calendarId=config.calendar_id,
+                eventId=clean_event_id,
+            )
+            .execute()
+        )
 
         body: dict = {}
 
@@ -568,51 +730,72 @@ def update_calendar_event(
 
         if clean_day or clean_time:
             target_day = clean_day
+
             if not target_day:
                 existing_start = existing.get("start", {})
-                existing_start_text = existing_start.get("dateTime") or existing_start.get("date")
+                existing_start_text = (
+                    existing_start.get("dateTime")
+                    or existing_start.get("date")
+                )
+
                 if existing_start_text:
                     try:
-                        existing_start_dt = datetime.fromisoformat(existing_start_text.replace("Z", "+00:00"))
-                        today_key = _target_date_for_day("today", config).date().isoformat()
-                        target_day = "today" if existing_start_dt.date().isoformat() == today_key else "tomorrow"
+                        existing_start_dt = datetime.fromisoformat(
+                            existing_start_text.replace("Z", "+00:00")
+                        ).astimezone(_get_timezone(config))
+                        today_key = _target_date_for_day(
+                            "today",
+                            config,
+                        ).date().isoformat()
+                        target_day = (
+                            "today"
+                            if existing_start_dt.date().isoformat()
+                            == today_key
+                            else "tomorrow"
+                        )
                     except Exception:
                         target_day = "today"
                 else:
                     target_day = "today"
 
-            start_dt, end_dt, all_day = _parse_time_for_event(target_day or "today", clean_time or "Later", config)
+            start_body, end_body = _event_body_for_time(
+                target_day or "today",
+                clean_time or "Later",
+                config,
+            )
+            body["start"] = start_body
+            body["end"] = end_body
 
-            if all_day:
-                body["start"] = {"date": start_dt.date().isoformat()}
-                body["end"] = {"date": end_dt.date().isoformat()}
-            else:
-                # Match the create-event path: for local timezone mode, keep the
-                # timezone embedded in the ISO datetime and do not send a
-                # timeZone string. On Windows, str(local tzinfo) can be a
-                # display name/offset that Google Calendar rejects. Only send
-                # timeZone when the user explicitly configured an IANA zone.
-                body["start"] = {"dateTime": start_dt.isoformat()}
-                body["end"] = {"dateTime": end_dt.isoformat()}
-
-                if config.timezone_name.lower() != "local":
-                    body["start"]["timeZone"] = config.timezone_name
-                    body["end"]["timeZone"] = config.timezone_name
-
-        updated = service.events().patch(
-            calendarId=config.calendar_id,
-            eventId=clean_event_id,
-            body=body,
-        ).execute()
+        updated = (
+            service.events()
+            .patch(
+                calendarId=config.calendar_id,
+                eventId=clean_event_id,
+                body=body,
+            )
+            .execute()
+        )
     except HttpError as exc:
-        status_code = getattr(getattr(exc, "resp", None), "status", None)
+        status_code = getattr(
+            getattr(exc, "resp", None),
+            "status",
+            None,
+        )
+
         if status_code == 404:
-            raise CalendarIntegrationError("Google Calendar event was not found. Refresh the calendar and try again.") from exc
+            raise CalendarIntegrationError(
+                "Google Calendar event was not found. "
+                "Refresh the calendar and try again."
+            ) from exc
+
         raise CalendarIntegrationError(
-            "Google Calendar event update failed. Refresh or reconnect Calendar and try again."
+            "Google Calendar event update failed. "
+            "Refresh or reconnect Calendar and try again."
         ) from exc
     except Exception as exc:
-        raise CalendarIntegrationError("Could not update Google Calendar event.") from exc
+        raise CalendarIntegrationError(
+            "Could not update Google Calendar event."
+        ) from exc
 
     return {
         "ok": True,
@@ -633,7 +816,8 @@ def delete_calendar_event(event_id: str) -> dict:
 
     if not config.write_enabled:
         raise CalendarIntegrationError(
-            "Google Calendar event deletion is disabled. Set GOOGLE_CALENDAR_WRITE_ENABLED=true in backend/.env."
+            "Google Calendar event deletion is disabled. "
+            "Set GOOGLE_CALENDAR_WRITE_ENABLED=true in backend/.env."
         )
 
     clean_event_id = (event_id or "").strip()
@@ -641,27 +825,52 @@ def delete_calendar_event(event_id: str) -> dict:
         clean_event_id = clean_event_id.removeprefix("google-")
 
     if not clean_event_id:
-        raise CalendarIntegrationError("Google Calendar event id cannot be empty.")
+        raise CalendarIntegrationError(
+            "Google Calendar event id cannot be empty."
+        )
 
     creds = _load_credentials(config)
     if not creds:
-        raise CalendarIntegrationError("Google Calendar needs authorization with event write access.")
+        raise CalendarIntegrationError(
+            "Google Calendar needs authorization with event write access."
+        )
 
     try:
-        service = build("calendar", "v3", credentials=creds, cache_discovery=False)
-        service.events().delete(
-            calendarId=config.calendar_id,
-            eventId=clean_event_id,
-        ).execute()
+        service = build(
+            "calendar",
+            "v3",
+            credentials=creds,
+            cache_discovery=False,
+        )
+        (
+            service.events()
+            .delete(
+                calendarId=config.calendar_id,
+                eventId=clean_event_id,
+            )
+            .execute()
+        )
     except HttpError as exc:
-        status_code = getattr(getattr(exc, "resp", None), "status", None)
+        status_code = getattr(
+            getattr(exc, "resp", None),
+            "status",
+            None,
+        )
+
         if status_code == 404:
-            raise CalendarIntegrationError("Google Calendar event was not found. Refresh the calendar and try again.") from exc
+            raise CalendarIntegrationError(
+                "Google Calendar event was not found. "
+                "Refresh the calendar and try again."
+            ) from exc
+
         raise CalendarIntegrationError(
-            "Google Calendar event deletion failed. Refresh or reconnect Calendar and try again."
+            "Google Calendar event deletion failed. "
+            "Refresh or reconnect Calendar and try again."
         ) from exc
     except Exception as exc:
-        raise CalendarIntegrationError("Could not delete Google Calendar event.") from exc
+        raise CalendarIntegrationError(
+            "Could not delete Google Calendar event."
+        ) from exc
 
     return {
         "ok": True,
@@ -672,8 +881,22 @@ def delete_calendar_event(event_id: str) -> dict:
         "message": "Deleted Google Calendar event.",
     }
 
-def list_calendar_events(view: str = "today") -> dict:
-    requested_view = view if view in {"today", "tomorrow", "week"} else "today"
+
+def list_calendar_events(
+    view: str = "today",
+    include_past: bool = False,
+) -> dict:
+    """Read events for a calendar view.
+
+    The Calendar panel passes include_past=True so the user can review the
+    complete day. QMeet's agent uses the default False value, which makes its
+    planning context start at the current moment and prevents completed events
+    from being labeled as the next commitment.
+    """
+
+    requested_view = (
+        view if view in {"today", "tomorrow", "week"} else "today"
+    )
     config = get_calendar_config()
     status = get_calendar_status()
 
@@ -703,8 +926,18 @@ def list_calendar_events(view: str = "today") -> dict:
 
     start, end = _date_range_for_view(requested_view, config)
 
+    if requested_view in {"today", "week"} and not include_past:
+        now = datetime.now(_get_timezone(config))
+        if now < end:
+            start = max(start, now)
+
     try:
-        service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+        service = build(
+            "calendar",
+            "v3",
+            credentials=creds,
+            cache_discovery=False,
+        )
         response = (
             service.events()
             .list(
@@ -719,14 +952,18 @@ def list_calendar_events(view: str = "today") -> dict:
         )
     except HttpError as exc:
         raise CalendarIntegrationError(
-            "Google Calendar API request failed. Reconnect Calendar or check backend credentials."
+            "Google Calendar API request failed. "
+            "Reconnect Calendar or check backend credentials."
         ) from exc
     except Exception as exc:
         raise CalendarIntegrationError(
             "Could not read Google Calendar events."
         ) from exc
 
-    events = [_normalize_google_event(item, config) for item in response.get("items", [])]
+    events = [
+        _normalize_google_event(item, config)
+        for item in response.get("items", [])
+    ]
 
     return {
         "ok": True,
@@ -735,5 +972,8 @@ def list_calendar_events(view: str = "today") -> dict:
         "source": "google",
         "view": requested_view,
         "events": events,
-        "message": f"Loaded {len(events)} Google Calendar event{'s' if len(events) != 1 else ''}.",
+        "message": (
+            f"Loaded {len(events)} Google Calendar "
+            f"event{'s' if len(events) != 1 else ''}."
+        ),
     }
