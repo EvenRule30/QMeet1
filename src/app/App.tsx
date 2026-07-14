@@ -6,16 +6,12 @@ import { PromptBar } from './components/PromptBar';
 import { NotesPanel } from './components/NotesPanel';
 import { CalendarPanel } from './components/CalendarPanel';
 import { SearchPanel } from './components/SearchPanel';
-import { Message, OrbState, ActivePanel, CalendarBackendView } from './types';
+import { Message, OrbState, ActivePanel } from './types';
 import { resetConversation, interpretCommandIntent } from "./api";
 import { getSpeechRecognition, isSpeechRecognitionSupported } from './speechRecognition';
 import { parseCommand, normalizeSpokenQMeet } from './commands';
 import { getAssistantActivity, getPanelLabel } from './lib/activityUtils';
-import {
-  getCalendarViewLabel,
-  getDateKeyForCalendarView,
-  isEventForCalendarView,
-} from './lib/dateUtils';
+import { getDateKeyForCalendarView } from './lib/dateUtils';
 import {
   buildCalendarDeleteFrontendCommand,
   buildCalendarEditFrontendCommand,
@@ -41,6 +37,7 @@ import { handleNotesCommand } from './commandHandlers/notes';
 import { handleMemoryCommand } from './commandHandlers/memory';
 import { handleSearchCommand } from './commandHandlers/search';
 import { handleVoiceCommand } from './commandHandlers/voice';
+import { handleCalendarCommand } from './commandHandlers/calendar';
 import {
   COMMAND_INTERPRETER_CLARIFY_THRESHOLD,
   COMMAND_INTERPRETER_EXECUTE_THRESHOLD,
@@ -589,13 +586,36 @@ export default function App() {
             setOrbState,
           });
 
+      const calendarCommandResult: SplitCommandResult = notesCommandResult.handled || memoryCommandResult.handled || searchCommandResult.handled || voiceCommandResult.handled
+        ? { handled: false }
+        : await handleCalendarCommand(commandMatch, {
+            voiceOutputEnabled,
+            calendarView,
+            calendarEvents,
+            googleCalendarStatus,
+            googleCalendarEvents,
+            setCalendarView,
+            setActivePanel,
+            closePanel,
+            saveCalendarEvent,
+            editLastCalendarEvent,
+            deleteCalendarEventByCriteria,
+            deleteLastCalendarEvent,
+            clearCalendarEvents,
+            refreshGoogleCalendar,
+            getCalendarReadout,
+            resetConversation,
+          });
+
       const splitCommandResult: SplitCommandResult = notesCommandResult.handled
         ? notesCommandResult
         : memoryCommandResult.handled
           ? memoryCommandResult
           : searchCommandResult.handled
             ? searchCommandResult
-            : voiceCommandResult;
+            : voiceCommandResult.handled
+              ? voiceCommandResult
+              : calendarCommandResult;
 
       if (splitCommandResult.handled) {
         if (splitCommandResult.confirmationContent !== undefined) {
@@ -625,98 +645,6 @@ export default function App() {
       } else if (commandMatch.command === 'close-status') {
         closePanel();
       } else if (commandMatch.command === 'hide-status') {
-        closePanel();
-      } else if (commandMatch.command === 'open-calendar') {
-        setCalendarView('today');
-        setActivePanel('calendar');
-      } else if (commandMatch.command === 'refresh-calendar') {
-        const refreshedEvents = await refreshGoogleCalendar(calendarView);
-        setActivePanel('calendar');
-        confirmationContent = googleCalendarStatus?.connected
-          ? `Refreshed Google Calendar. ${refreshedEvents.length} event${refreshedEvents.length === 1 ? '' : 's'} loaded.`
-          : 'Calendar refreshed. Google Calendar is not connected, so QMeet is showing local calendar events.';
-        shouldSpeakConfirmation = voiceOutputEnabled;
-      } else if (commandMatch.command === 'edit-last-event') {
-        const updatedEvent = await editLastCalendarEvent(commandMatch.calendarEdit);
-        setActivePanel('calendar');
-        confirmationContent = updatedEvent
-          ? `Updated ${updatedEvent.source === 'google' ? 'Google Calendar' : 'local'} event: ${updatedEvent.time}: ${updatedEvent.title}.`
-          : googleCalendarStatus?.connected
-            ? 'I could not update the Google Calendar event. Check the Calendar panel status.'
-            : 'No local calendar events to update.';
-        shouldSpeakConfirmation = voiceOutputEnabled;
-      } else if (commandMatch.command === 'add-calendar-event') {
-        const addedEvent = await saveCalendarEvent(commandMatch.calendarEvent);
-        const targetView = commandMatch.calendarEvent?.day ?? 'today';
-        setCalendarView(targetView);
-        setActivePanel('calendar');
-        confirmationContent = addedEvent
-          ? `Added ${addedEvent.source === 'google' ? 'Google Calendar' : 'local'} event ${getCalendarViewLabel(targetView)} at ${addedEvent.time}: ${addedEvent.title}.`
-          : googleCalendarStatus?.connected && googleCalendarStatus?.writeEnabled
-            ? 'I could not create the Google Calendar event. Check the Calendar panel status.'
-            : 'I did not catch the event details.';
-        shouldSpeakConfirmation = voiceOutputEnabled;
-      } else if (commandMatch.command === 'read-calendar') {
-        const requestedCalendarView = commandMatch.calendarView ?? 'all';
-        const remoteCalendarView: CalendarBackendView =
-                  requestedCalendarView === 'all' ? 'week' : requestedCalendarView;
-                const remoteEvents = googleCalendarStatus?.connected
-                  ? await refreshGoogleCalendar(remoteCalendarView)
-                  : googleCalendarEvents;
-                const sourceEvents = googleCalendarStatus?.connected ? remoteEvents : calendarEvents;
-                const hasTodayEvents = sourceEvents.some((event) => isEventForCalendarView(event, 'today'));
-                const hasTomorrowEvents = sourceEvents.some((event) => isEventForCalendarView(event, 'tomorrow'));
-        const targetView = requestedCalendarView === 'today' || requestedCalendarView === 'tomorrow'
-          ? requestedCalendarView
-          : hasTodayEvents
-            ? 'today'
-            : hasTomorrowEvents
-              ? 'tomorrow'
-              : calendarView;
-
-        setCalendarView(targetView);
-        setActivePanel('calendar');
-        confirmationContent = getCalendarReadout(requestedCalendarView, remoteEvents);
-        shouldSpeakConfirmation = voiceOutputEnabled;
-      } else if (commandMatch.command === 'delete-calendar-event') {
-        const targetView = commandMatch.calendarDelete?.day ?? calendarView;
-        const deletedEvent = await deleteCalendarEventByCriteria(commandMatch.calendarDelete);
-        setCalendarView(targetView);
-        setActivePanel('calendar');
-        confirmationContent = deletedEvent
-          ? `Deleted ${deletedEvent.source === 'google' ? 'Google Calendar' : 'local'} event: ${deletedEvent.time}: ${deletedEvent.title}.`
-          : googleCalendarStatus?.connected
-            ? `No Google Calendar event matched ${describeCalendarDeletePayload(commandMatch.calendarDelete)}.`
-            : `No local calendar event matched ${describeCalendarDeletePayload(commandMatch.calendarDelete)}.`;
-        shouldSpeakConfirmation = voiceOutputEnabled;
-      } else if (commandMatch.command === 'delete-last-event') {
-        const deletedEvent = await deleteLastCalendarEvent();
-        setActivePanel('calendar');
-        confirmationContent = deletedEvent
-          ? `Deleted ${deletedEvent.source === 'google' ? 'Google Calendar' : 'local'} event: ${deletedEvent.time}: ${deletedEvent.title}.`
-          : googleCalendarStatus?.connected
-            ? 'No Google Calendar events to delete for the current view.'
-            : 'No local calendar events to delete.';
-        shouldSpeakConfirmation = voiceOutputEnabled;
-      } else if (commandMatch.command === 'clear-calendar') {
-        clearCalendarEvents();
-
-        try {
-          await resetConversation();
-        } catch (error) {
-          console.error('Reset conversation after clearing calendar error:', error);
-        }
-
-        setActivePanel('calendar');
-        confirmationContent = 'Cleared all local calendar events.';
-        shouldSpeakConfirmation = voiceOutputEnabled;
-      } else if (commandMatch.command === 'show-today') {
-        setCalendarView('today');
-        setActivePanel('calendar');
-      } else if (commandMatch.command === 'show-tomorrow') {
-        setCalendarView('tomorrow');
-        setActivePanel('calendar');
-      } else if (commandMatch.command === 'close-calendar') {
         closePanel();
       } else if (commandMatch.command === 'close-generic') {
         if (activePanel !== 'none') {
