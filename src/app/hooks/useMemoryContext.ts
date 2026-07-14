@@ -207,6 +207,28 @@ export function useMemoryContext({
   const memoryContextHydratedRef = useRef(false);
   const memoryImportInputRef =
     useRef<HTMLInputElement | null>(null);
+  const memoryWriteQueueRef = useRef<Promise<void>>(
+    Promise.resolve(),
+  );
+  const latestMemoryWriteIdRef = useRef(0);
+
+  const enqueueMemoryWrite = useCallback(
+    function enqueueMemoryWrite<T>(
+      operation: () => Promise<T>,
+    ): Promise<T> {
+      const queuedWrite = memoryWriteQueueRef.current
+        .catch(() => undefined)
+        .then(operation);
+
+      memoryWriteQueueRef.current = queuedWrite.then(
+        () => undefined,
+        () => undefined,
+      );
+
+      return queuedWrite;
+    },
+    [],
+  );
 
   useEffect(() => {
     try {
@@ -253,21 +275,33 @@ export function useMemoryContext({
       actionsToSave: RecentAction[],
       notesToSave: Note[],
     ) => {
+      const writeId = ++latestMemoryWriteIdRef.current;
       setMemorySyncState('syncing');
 
       try {
-        const response = await replaceMemoryContext({
-          tasks: tasksToSave,
-          recentActions: actionsToSave,
-          notes: notesToSave,
-        });
+        const response = await enqueueMemoryWrite(() =>
+          replaceMemoryContext({
+            tasks: tasksToSave,
+            recentActions: actionsToSave,
+            notes: notesToSave,
+          }),
+        );
+
+        if (writeId !== latestMemoryWriteIdRef.current) {
+          return false;
+        }
 
         setMemorySyncState('synced');
         setMemorySyncMessage(
           response.message ||
             'Memory, notes, and work context synced to backend.',
         );
+        return true;
       } catch (error) {
+        if (writeId !== latestMemoryWriteIdRef.current) {
+          return false;
+        }
+
         const message =
           error instanceof Error
             ? error.message
@@ -277,24 +311,10 @@ export function useMemoryContext({
         setMemorySyncMessage(
           `${message} Browser fallback is still active.`,
         );
+        return false;
       }
     },
-    [],
-  );
-
-  const persistMemoryTasksToBackend = useCallback(
-    async (tasksToSave: MemoryTask[]) => {
-      await persistMemoryContextToBackend(
-        tasksToSave,
-        recentActions,
-        notes,
-      );
-    },
-    [
-      notes,
-      persistMemoryContextToBackend,
-      recentActions,
-    ],
+    [enqueueMemoryWrite],
   );
 
   const loadMemoryContextFromBackend =
@@ -368,16 +388,18 @@ export function useMemoryContext({
           copiedBrowserActions ||
           copiedBrowserNotes
         ) {
-          await replaceMemoryContext({
-            tasks: nextTasks,
-            recentActions: nextActions,
-            notes: nextNotes,
-          });
+          const migrationSaved =
+            await persistMemoryContextToBackend(
+              nextTasks,
+              nextActions,
+              nextNotes,
+            );
 
-          setMemorySyncState('synced');
-          setMemorySyncMessage(
-            'First-run browser memory, notes, and work context were copied into the backend.',
-          );
+          if (migrationSaved) {
+            setMemorySyncMessage(
+              'First-run browser memory, notes, and work context were copied into the backend.',
+            );
+          }
           return;
         }
 
@@ -403,7 +425,7 @@ export function useMemoryContext({
           `${message} Using browser fallback.`,
         );
       }
-    }, []);
+    }, [persistMemoryContextToBackend]);
 
   useEffect(() => {
     loadMemoryContextFromBackend();
@@ -519,25 +541,11 @@ export function useMemoryContext({
         createdAt: new Date().toISOString(),
       };
 
-      setRecentActions((prev) => {
-        const nextActions = [action, ...prev].slice(
-          0,
-          12,
-        );
-
-        persistMemoryContextToBackend(
-          memoryTasks,
-          nextActions,
-          notes,
-        );
-        return nextActions;
-      });
+      setRecentActions((prev) =>
+        [action, ...prev].slice(0, 12),
+      );
     },
-    [
-      memoryTasks,
-      notes,
-      persistMemoryContextToBackend,
-    ],
+    [],
   );
 
   const saveMemoryTask = useCallback(
@@ -558,10 +566,9 @@ export function useMemoryContext({
 
       const nextTasks = [task, ...memoryTasks];
       setMemoryTasks(nextTasks);
-      persistMemoryTasksToBackend(nextTasks);
       return task;
     },
-    [memoryTasks, persistMemoryTasksToBackend],
+    [memoryTasks],
   );
 
   const markMemoryTaskDone = useCallback(
@@ -609,10 +616,9 @@ export function useMemoryContext({
       );
 
       setMemoryTasks(nextTasks);
-      persistMemoryTasksToBackend(nextTasks);
       return completedTask;
     },
-    [memoryTasks, persistMemoryTasksToBackend],
+    [memoryTasks],
   );
 
   const markMemoryTaskDoneById = useCallback(
@@ -638,10 +644,9 @@ export function useMemoryContext({
       );
 
       setMemoryTasks(nextTasks);
-      persistMemoryTasksToBackend(nextTasks);
       return completedTask;
     },
-    [memoryTasks, persistMemoryTasksToBackend],
+    [memoryTasks],
   );
 
   const deleteMemoryTask = useCallback(
@@ -660,10 +665,9 @@ export function useMemoryContext({
       );
 
       setMemoryTasks(nextTasks);
-      persistMemoryTasksToBackend(nextTasks);
       return targetTask;
     },
-    [memoryTasks, persistMemoryTasksToBackend],
+    [memoryTasks],
   );
 
   const reopenMemoryTask = useCallback(
@@ -690,10 +694,9 @@ export function useMemoryContext({
       );
 
       setMemoryTasks(nextTasks);
-      persistMemoryTasksToBackend(nextTasks);
       return reopenedTask;
     },
-    [memoryTasks, persistMemoryTasksToBackend],
+    [memoryTasks],
   );
 
   const clearCompletedTasks =
@@ -718,7 +721,6 @@ export function useMemoryContext({
       );
 
       setMemoryTasks(nextTasks);
-      persistMemoryTasksToBackend(nextTasks);
 
       setRecentActions((prev) => {
         const nextActions = prev.filter((action) => {
@@ -744,21 +746,11 @@ export function useMemoryContext({
           return !isTaskAction;
         });
 
-        persistMemoryContextToBackend(
-          nextTasks,
-          nextActions,
-          notes,
-        );
         return nextActions;
       });
 
       return removedCount;
-    }, [
-      memoryTasks,
-      notes,
-      persistMemoryContextToBackend,
-      persistMemoryTasksToBackend,
-    ]);
+    }, [memoryTasks]);
 
   const handleSaveMemoryTaskDraft =
     useCallback(() => {
@@ -786,6 +778,7 @@ export function useMemoryContext({
 
   const handleExportMemory = useCallback(async () => {
     try {
+      await memoryWriteQueueRef.current;
       const exportPayload =
         await exportMemoryContext();
       const payload = {
@@ -857,6 +850,8 @@ export function useMemoryContext({
         return;
       }
 
+      let writeId: number | null = null;
+
       try {
         const text = await file.text();
         const parsed = JSON.parse(text);
@@ -876,11 +871,16 @@ export function useMemoryContext({
           ? parsed.notes
           : [];
 
-        const response = await importMemoryContext({
-          tasks: importedTasks,
-          recentActions: importedActions,
-          notes: importedNotes,
-        });
+        writeId = ++latestMemoryWriteIdRef.current;
+        setMemorySyncState('syncing');
+
+        const response = await enqueueMemoryWrite(() =>
+          importMemoryContext({
+            tasks: importedTasks,
+            recentActions: importedActions,
+            notes: importedNotes,
+          }),
+        );
 
         setMemoryTasks(
           response.tasks ?? importedTasks,
@@ -890,11 +890,14 @@ export function useMemoryContext({
             importedActions,
         );
         setNotes(response.notes ?? importedNotes);
-        setMemorySyncState('synced');
-        setMemorySyncMessage(
-          response.message ||
-            'Imported memory JSON into backend memory.',
-        );
+
+        if (writeId === latestMemoryWriteIdRef.current) {
+          setMemorySyncState('synced');
+          setMemorySyncMessage(
+            response.message ||
+              'Imported memory JSON into backend memory.',
+          );
+        }
         pushResultToast({
           kind: 'success',
           title: 'Memory imported',
@@ -907,10 +910,15 @@ export function useMemoryContext({
             ? error.message
             : 'Could not import memory JSON.';
 
-        setMemorySyncState('error');
-        setMemorySyncMessage(
-          `${message} Existing memory was left unchanged.`,
-        );
+        if (
+          writeId === null ||
+          writeId === latestMemoryWriteIdRef.current
+        ) {
+          setMemorySyncState('error');
+          setMemorySyncMessage(
+            `${message} Existing memory was left unchanged.`,
+          );
+        }
         pushResultToast({
           kind: 'error',
           title: 'Import failed',
@@ -918,7 +926,7 @@ export function useMemoryContext({
         });
       }
     },
-    [pushResultToast],
+    [enqueueMemoryWrite, pushResultToast],
   );
 
   const handleClearAllMemory =
@@ -953,15 +961,23 @@ export function useMemoryContext({
         );
       }
 
-      try {
-        const response =
-          await clearAllMemoryContext();
+      let writeId: number | null = null;
 
-        setMemorySyncState('synced');
-        setMemorySyncMessage(
-          response.message ||
-            'Cleared all backend memory.',
+      try {
+        writeId = ++latestMemoryWriteIdRef.current;
+        setMemorySyncState('syncing');
+
+        const response = await enqueueMemoryWrite(() =>
+          clearAllMemoryContext(),
         );
+
+        if (writeId === latestMemoryWriteIdRef.current) {
+          setMemorySyncState('synced');
+          setMemorySyncMessage(
+            response.message ||
+              'Cleared all backend memory.',
+          );
+        }
         pushResultToast({
           kind: 'warning',
           title: 'Memory cleared',
@@ -974,10 +990,15 @@ export function useMemoryContext({
             ? error.message
             : 'Backend memory clear failed.';
 
-        setMemorySyncState('error');
-        setMemorySyncMessage(
-          `${message} Browser fallback was cleared locally.`,
-        );
+        if (
+          writeId === null ||
+          writeId === latestMemoryWriteIdRef.current
+        ) {
+          setMemorySyncState('error');
+          setMemorySyncMessage(
+            `${message} Browser fallback was cleared locally.`,
+          );
+        }
         pushResultToast({
           kind: 'warning',
           title: 'Local memory cleared',
@@ -985,7 +1006,7 @@ export function useMemoryContext({
             'Backend clear failed; browser fallback was cleared.',
         });
       }
-    }, [pushResultToast]);
+    }, [enqueueMemoryWrite, pushResultToast]);
 
   const handleResetTasksOnly = useCallback(() => {
     const confirmed = window.confirm(
@@ -997,22 +1018,12 @@ export function useMemoryContext({
     }
 
     setMemoryTasks([]);
-    persistMemoryContextToBackend(
-      [],
-      recentActions,
-      notes,
-    );
     pushResultToast({
       kind: 'warning',
       title: 'Tasks reset',
       detail: 'Open and completed tasks cleared.',
     });
-  }, [
-    notes,
-    persistMemoryContextToBackend,
-    pushResultToast,
-    recentActions,
-  ]);
+  }, [pushResultToast]);
 
   const handleResetNotesOnly = useCallback(() => {
     const confirmed = window.confirm(
@@ -1036,22 +1047,12 @@ export function useMemoryContext({
       );
     }
 
-    persistMemoryContextToBackend(
-      memoryTasks,
-      recentActions,
-      [],
-    );
     pushResultToast({
       kind: 'warning',
       title: 'Notes reset',
       detail: 'Backend and browser notes cleared.',
     });
-  }, [
-    memoryTasks,
-    persistMemoryContextToBackend,
-    pushResultToast,
-    recentActions,
-  ]);
+  }, [pushResultToast]);
 
   const handleResetRecentContextOnly =
     useCallback(() => {
@@ -1076,22 +1077,12 @@ export function useMemoryContext({
         );
       }
 
-      persistMemoryContextToBackend(
-        memoryTasks,
-        [],
-        notes,
-      );
       pushResultToast({
         kind: 'warning',
         title: 'Work context reset',
         detail: 'Hidden recent actions cleared.',
       });
-    }, [
-      memoryTasks,
-      notes,
-      persistMemoryContextToBackend,
-      pushResultToast,
-    ]);
+    }, [pushResultToast]);
 
   const getMemoryReadout = useCallback(() => {
     const openTasks = memoryTasks.filter(
