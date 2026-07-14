@@ -1,4 +1,11 @@
-import { Dispatch, SetStateAction, useCallback, useEffect, useRef, useState } from 'react';
+import {
+  Dispatch,
+  SetStateAction,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 import { OrbState } from '../types';
 import { speakText, stopSpeaking } from '../speechSynthesis';
 
@@ -13,7 +20,9 @@ function readStoredVoiceOutputEnabled(): boolean {
   if (typeof window === 'undefined') return true;
 
   try {
-    const storedValue = window.localStorage.getItem(VOICE_OUTPUT_STORAGE_KEY);
+    const storedValue = window.localStorage.getItem(
+      VOICE_OUTPUT_STORAGE_KEY,
+    );
 
     if (storedValue === 'false') return false;
     if (storedValue === 'true') return true;
@@ -28,11 +37,15 @@ function readStoredSpeechRate(): number {
   if (typeof window === 'undefined') return 1;
 
   try {
-    const storedValue = window.localStorage.getItem(SPEECH_RATE_STORAGE_KEY);
+    const storedValue = window.localStorage.getItem(
+      SPEECH_RATE_STORAGE_KEY,
+    );
     if (!storedValue) return 1;
 
     const parsedRate = Number(storedValue);
-    return Number.isFinite(parsedRate) ? clampSpeechRate(parsedRate) : 1;
+    return Number.isFinite(parsedRate)
+      ? clampSpeechRate(parsedRate)
+      : 1;
   } catch {
     return 1;
   }
@@ -42,65 +55,104 @@ type UseSpeechOutputOptions = {
   setOrbState: Dispatch<SetStateAction<OrbState>>;
 };
 
-export function useSpeechOutput({ setOrbState }: UseSpeechOutputOptions) {
-  const [voiceOutputEnabled, setVoiceOutputEnabled] = useState(readStoredVoiceOutputEnabled);
-  const [speechRate, setSpeechRate] = useState(readStoredSpeechRate);
+export function useSpeechOutput({
+  setOrbState,
+}: UseSpeechOutputOptions) {
+  const [voiceOutputEnabled, setVoiceOutputEnabled] =
+    useState(readStoredVoiceOutputEnabled);
+  const [speechRate, setSpeechRate] = useState(
+    readStoredSpeechRate,
+  );
   const speechTokenRef = useRef(0);
 
   const stopCurrentSpeech = useCallback(() => {
+    // Invalidate callbacks from the cancelled utterance first. Browsers may
+    // still emit onend/onerror after speechSynthesis.cancel(), and those stale
+    // callbacks must not affect a newer response.
     speechTokenRef.current += 1;
     stopSpeaking();
-  }, []);
 
-  const speakAssistantText = useCallback((text: string, options: { enabled?: boolean; rate?: number } = {}) => {
-    const trimmed = text.trim();
-    const shouldSpeak = options.enabled ?? voiceOutputEnabled;
-    const rate = options.rate ?? speechRate;
+    // Because the stale callbacks are intentionally ignored, cancellation
+    // must restore the visual state itself.
+    setOrbState('idle');
+  }, [setOrbState]);
 
-    if (!trimmed || !shouldSpeak) {
-      setOrbState('idle');
-      return;
-    }
+  const speakAssistantText = useCallback(
+    (
+      text: string,
+      options: {
+        enabled?: boolean;
+        rate?: number;
+      } = {},
+    ) => {
+      const trimmed = text.trim();
+      const shouldSpeak =
+        options.enabled ?? voiceOutputEnabled;
+      const rate = options.rate ?? speechRate;
 
-    const speechToken = speechTokenRef.current + 1;
-    speechTokenRef.current = speechToken;
+      if (!trimmed || !shouldSpeak) {
+        setOrbState('idle');
+        return;
+      }
 
-    const didStart = speakText(trimmed, {
-      rate,
-      onStart: () => {
-        if (speechTokenRef.current === speechToken) {
-          setOrbState('speaking');
-        }
-      },
-      onEnd: () => {
-        if (speechTokenRef.current === speechToken) {
-          setOrbState('idle');
-        }
-      },
-      onError: () => {
-        if (speechTokenRef.current === speechToken) {
-          setOrbState('idle');
-        }
-      },
-    });
+      const speechToken = speechTokenRef.current + 1;
+      speechTokenRef.current = speechToken;
 
-    if (!didStart) {
-      setOrbState('idle');
-    }
-  }, [setOrbState, speechRate, voiceOutputEnabled]);
+      const didStart = speakText(trimmed, {
+        rate,
+        onStart: () => {
+          if (
+            speechTokenRef.current === speechToken
+          ) {
+            setOrbState('speaking');
+          }
+        },
+        onEnd: () => {
+          if (
+            speechTokenRef.current === speechToken
+          ) {
+            setOrbState('idle');
+          }
+        },
+        onError: () => {
+          if (
+            speechTokenRef.current === speechToken
+          ) {
+            setOrbState('idle');
+          }
+        },
+      });
 
-  const setVoiceOutput = useCallback((enabled: boolean) => {
-    if (!enabled) {
-      stopCurrentSpeech();
-    }
-    setVoiceOutputEnabled(enabled);
-  }, [stopCurrentSpeech]);
+      if (!didStart) {
+        setOrbState('idle');
+      }
+    },
+    [
+      setOrbState,
+      speechRate,
+      voiceOutputEnabled,
+    ],
+  );
 
-  const adjustSpeechRate = useCallback((nextRate: number) => {
-    const clampedRate = clampSpeechRate(nextRate);
-    setSpeechRate(clampedRate);
-    return clampedRate;
-  }, []);
+  const setVoiceOutput = useCallback(
+    (enabled: boolean) => {
+      if (!enabled) {
+        stopCurrentSpeech();
+      }
+
+      setVoiceOutputEnabled(enabled);
+    },
+    [stopCurrentSpeech],
+  );
+
+  const adjustSpeechRate = useCallback(
+    (nextRate: number) => {
+      const clampedRate = clampSpeechRate(nextRate);
+      setSpeechRate(clampedRate);
+      return clampedRate;
+    },
+    [],
+  );
 
   useEffect(() => {
     return () => {
@@ -110,17 +162,29 @@ export function useSpeechOutput({ setOrbState }: UseSpeechOutputOptions) {
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(VOICE_OUTPUT_STORAGE_KEY, String(voiceOutputEnabled));
+      window.localStorage.setItem(
+        VOICE_OUTPUT_STORAGE_KEY,
+        String(voiceOutputEnabled),
+      );
     } catch (error) {
-      console.error('Failed to save voice output setting:', error);
+      console.error(
+        'Failed to save voice output setting:',
+        error,
+      );
     }
   }, [voiceOutputEnabled]);
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(SPEECH_RATE_STORAGE_KEY, String(speechRate));
+      window.localStorage.setItem(
+        SPEECH_RATE_STORAGE_KEY,
+        String(speechRate),
+      );
     } catch (error) {
-      console.error('Failed to save speech rate setting:', error);
+      console.error(
+        'Failed to save speech rate setting:',
+        error,
+      );
     }
   }, [speechRate]);
 
