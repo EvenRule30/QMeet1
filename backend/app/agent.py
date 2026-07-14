@@ -14,6 +14,11 @@ try:
 except Exception:  # Memory should never block chat startup.
     get_memory_context = None
 
+try:
+    from app.calendar_service import list_calendar_events
+except Exception:  # Calendar should never block chat startup.
+    list_calendar_events = None
+
 
 SYSTEM_PROMPT = """
 You are QMeet, a concise AI assistant inside a small 1024x600 tablet orb interface.
@@ -34,6 +39,15 @@ Use it only when it helps answer the user's current message.
 Do not mention that the context came from a backend, JSON file, API, or system prompt.
 If the user asks what to do next, continue, or what they were working on, use the saved context directly.
 If the saved context is irrelevant, ignore it.
+""".strip()
+
+
+CALENDAR_CONTEXT_PROMPT = """
+QMeet may receive a compact calendar context for today and tomorrow.
+Use it when the user asks about schedules, availability, plans, meetings, or what to do next.
+Do not mention that the context came from an API, backend route, or system prompt.
+If there are no events in the relevant window, say that plainly instead of inventing events.
+If calendar is unavailable or disconnected, say that QMeet cannot see the calendar right now.
 """.strip()
 
 
@@ -1103,10 +1117,104 @@ def _build_memory_context_summary() -> str:
     return "\n".join(f"- {line}" for line in lines)
 
 
+
+
+def _message_wants_calendar_context(message: str) -> bool:
+    text = (message or "").strip().lower()
+
+    if not text:
+        return False
+
+    return bool(
+        re.search(
+            r"\b("
+            r"calendar|schedule|agenda|event|events|meeting|meetings|appointment|appointments|"
+            r"today|tomorrow|tonight|morning|afternoon|evening|busy|free|available|availability|"
+            r"plan|plans|next|what should i do|what do i have|do i have anything|am i free|"
+            r"continue|left off|working on"
+            r")\b",
+            text,
+        )
+    )
+
+
+def _format_calendar_event_for_context(event: dict) -> str:
+    title = _compact_memory_text(event.get("title") or "(No title)", 90)
+    time = _compact_memory_text(event.get("time") or "Later", 32)
+    location = _compact_memory_text(event.get("location"), 60)
+
+    if location:
+        return f"{time}: {title} at {location}"
+
+    return f"{time}: {title}"
+
+
+def _calendar_day_line(label: str, events: list[dict]) -> str:
+    if not events:
+        return f"{label}: no events found."
+
+    event_text = "; ".join(
+        _format_calendar_event_for_context(event)
+        for event in events[:6]
+        if isinstance(event, dict)
+    )
+
+    remaining_count = max(0, len(events) - 6)
+    suffix = f"; plus {remaining_count} more" if remaining_count else ""
+
+    return f"{label}: {event_text}{suffix}."
+
+
+def _build_calendar_context_summary(message: str) -> str:
+    if list_calendar_events is None or not _message_wants_calendar_context(message):
+        return ""
+
+    try:
+        today_payload = list_calendar_events("today")
+        tomorrow_payload = list_calendar_events("tomorrow")
+    except Exception:
+        return ""
+
+    if not isinstance(today_payload, dict):
+        today_payload = {}
+    if not isinstance(tomorrow_payload, dict):
+        tomorrow_payload = {}
+
+    today_events = today_payload.get("events", [])
+    tomorrow_events = tomorrow_payload.get("events", [])
+
+    if not isinstance(today_events, list):
+        today_events = []
+    if not isinstance(tomorrow_events, list):
+        tomorrow_events = []
+
+    connected = bool(today_payload.get("connected") or tomorrow_payload.get("connected"))
+    configured = bool(today_payload.get("configured") or tomorrow_payload.get("configured"))
+
+    if not connected:
+        status_message = (
+            today_payload.get("message")
+            or tomorrow_payload.get("message")
+            or "Calendar is not connected."
+        )
+        if not configured:
+            status_message = status_message or "Calendar is not configured."
+
+        return f"- Calendar status: {_compact_memory_text(status_message, 180)}"
+
+    lines = [
+        _calendar_day_line("Today", today_events),
+        _calendar_day_line("Tomorrow", tomorrow_events),
+    ]
+
+    return "\n".join(f"- {line}" for line in lines if line)
+
+
 def _build_chat_input_messages(message: str) -> list[dict[str, str]]:
     # Keep recent context small for now.
     recent_history = MESSAGE_HISTORY[-10:]
     memory_summary = _build_memory_context_summary()
+    calendar_summary = _build_calendar_context_summary(message)
 
     input_messages: list[dict[str, str]] = [
         {
@@ -1120,6 +1228,14 @@ def _build_chat_input_messages(message: str) -> list[dict[str, str]]:
             {
                 "role": "developer",
                 "content": f"{MEMORY_CONTEXT_PROMPT}\n\nSaved QMeet context:\n{memory_summary}",
+            }
+        )
+
+    if calendar_summary:
+        input_messages.append(
+            {
+                "role": "developer",
+                "content": f"{CALENDAR_CONTEXT_PROMPT}\n\nQMeet calendar context:\n{calendar_summary}",
             }
         )
 
@@ -1183,15 +1299,28 @@ def mock_reply(message: str) -> str:
         return "I did not receive a message."
 
     memory_summary = _build_memory_context_summary()
+    calendar_summary = _build_calendar_context_summary(text)
     wants_memory = re.search(
         r"\b(what should i do next|continue|left off|working on|tasks?|notes?|memory|remember)\b",
         text,
         flags=re.IGNORECASE,
     )
+    wants_calendar = _message_wants_calendar_context(text)
 
-    if memory_summary and wants_memory:
-        compact_summary = _compact_memory_text(memory_summary.replace("\n", " "), 360)
-        return f"Saved QMeet context: {compact_summary}"
+    if (wants_memory or wants_calendar) and (memory_summary or calendar_summary):
+        parts: list[str] = []
+
+        if memory_summary:
+            parts.append(
+                f"Saved context: {_compact_memory_text(memory_summary.replace(chr(10), ' '), 360)}"
+            )
+
+        if calendar_summary:
+            parts.append(
+                f"Calendar: {_compact_memory_text(calendar_summary.replace(chr(10), ' '), 320)}"
+            )
+
+        return " ".join(parts)
 
     return (
         "QMeet backend is connected. "
