@@ -8,8 +8,7 @@ import { CalendarPanel } from './components/CalendarPanel';
 import { SearchPanel } from './components/SearchPanel';
 import { Message, OrbState, ActivePanel } from './types';
 import { resetConversation, interpretCommandIntent } from "./api";
-import { getSpeechRecognition, isSpeechRecognitionSupported } from './speechRecognition';
-import { parseCommand, normalizeSpokenQMeet } from './commands';
+import { parseCommand } from './commands';
 import { getAssistantActivity, getPanelLabel } from './lib/activityUtils';
 import { getDateKeyForCalendarView } from './lib/dateUtils';
 import {
@@ -33,6 +32,7 @@ import { useSearchController } from './hooks/useSearchController';
 import { useCalendarController } from './hooks/useCalendarController';
 import { useSpeechOutput } from './hooks/useSpeechOutput';
 import { useChatStreamController } from './hooks/useChatStreamController';
+import { useSpeechRecognitionController } from './hooks/useSpeechRecognitionController';
 import { handleNotesCommand } from './commandHandlers/notes';
 import { handleMemoryCommand } from './commandHandlers/memory';
 import { handleSearchCommand } from './commandHandlers/search';
@@ -174,32 +174,17 @@ export default function App() {
   const [lastInterpreterConfidence, setLastInterpreterConfidence] = useState<number | null>(null);
   const [lastInterpreterReason, setLastInterpreterReason] = useState('No interpreter request has run yet.');
   const [pendingInterpreterCommand, setPendingInterpreterCommand] = useState<PendingInterpreterCommand | null>(null);
-  const [listeningTranscript, setListeningTranscript] = useState('');
-  const recognitionRef = useRef<InstanceType<ReturnType<typeof getSpeechRecognition>> | null>(null);
-  const transcriptSentRef = useRef(false);
-  const listeningTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const suppressNextSpeechErrorRef = useRef(false);
   const orbAreaRef = useRef<HTMLDivElement | null>(null);
-  const finishListening = useCallback(() => {
-    if (listeningTimeoutRef.current) {
-      clearTimeout(listeningTimeoutRef.current);
-      listeningTimeoutRef.current = null;
-    }
-
-    if (recognitionRef.current) {
-      try {
-        suppressNextSpeechErrorRef.current = true;
-        recognitionRef.current.abort();
-      } catch (error) {
-        console.error('Error aborting recognition:', error);
-      }
-      recognitionRef.current = null;
-    }
-
-    transcriptSentRef.current = false;
-    setListeningTranscript('');
-    setOrbState('idle');
-  }, []);
+  const {
+    listeningTranscript,
+    finishListening,
+    startListening,
+    voiceInputSupported,
+  } = useSpeechRecognitionController({
+    setOrbState,
+    setChatActive,
+    setMessages,
+  });
 
   // End chat and return to idle state
   const handleEndChat = useCallback(async () => {
@@ -873,190 +858,12 @@ export default function App() {
       return;
     }
 
-    if (!isSpeechRecognitionSupported()) {
-      setChatActive(true);
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `a-${Date.now()}`,
-          role: 'assistant',
-          content: 'Voice input is not supported in this browser. Please use the text input instead.',
-          timestamp: new Date(),
-        },
-      ]);
-      return;
-    }
-
-    setOrbState('listening');
-    transcriptSentRef.current = false;
-    setListeningTranscript('');
-
-    const SpeechRecognitionClass = getSpeechRecognition();
-
-    if (!SpeechRecognitionClass) {
-      setOrbState('idle');
-      return;
-    }
-
-    const recognition = new SpeechRecognitionClass();
-    recognitionRef.current = recognition;
-
-    recognition.continuous = false;
-    recognition.interimResults = true;
-    recognition.lang = 'en-US';
-    
-    recognition.onstart = () => {
-      setOrbState('listening');
-
-      if (listeningTimeoutRef.current) {
-        clearTimeout(listeningTimeoutRef.current);
-      }
-
-      listeningTimeoutRef.current = setTimeout(() => {
-        if (recognitionRef.current) {
-          recognitionRef.current.abort();
-        }
-
-        if (!transcriptSentRef.current) {
-          setListeningTranscript('')
-          setChatActive(true);
-          setOrbState('idle');
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: `a-${Date.now()}`,
-              role: 'assistant',
-              content: 'I did not catch that. Tap the orb and try again.',
-              timestamp: new Date(),
-            },
-          ]);
-        }
-      }, 8000);
-    };
-    
-    recognition.onresult = (event: any) => {
-      let interimTranscript = '';
-      let finalTranscript = '';
-    
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcript = event.results[i][0]?.transcript ?? '';
-    
-        if (event.results[i].isFinal) {
-          finalTranscript += transcript;
-        } else {
-          interimTranscript += transcript;
-        }
-      }
-    
-      const previewText = (finalTranscript || interimTranscript).trim();
-      if (previewText) {
-        setListeningTranscript(previewText);
-      }
-
-      if (finalTranscript.trim()) {
-        if (transcriptSentRef.current) return;
-        transcriptSentRef.current = true;
-
-        if (listeningTimeoutRef.current) {
-          clearTimeout(listeningTimeoutRef.current);
-        }
-
-        const rawTranscript = finalTranscript.trim();
-        const normalizedTranscript = normalizeSpokenQMeet(rawTranscript);
-
-        setLastHeardTranscript(rawTranscript);
-        setLastNormalizedTranscript(normalizedTranscript);
-
-        // Speech recognition has finished capturing the user's phrase at this point.
-        // Clear the visible listening preview immediately so the UI does not keep
-        // showing "Heard: Listening..." while QMeet is actually parsing the command.
-        setListeningTranscript('');
-        setOrbState('thinking');
-
-        handleSend(normalizedTranscript);
-      }
-    };
-    
-    recognition.onerror = (event: any) => {
-      const errorCode = event.error;
-
-      // Suppress error if we intentionally aborted speech recognition
-      if (suppressNextSpeechErrorRef.current || errorCode === 'aborted') {
-        suppressNextSpeechErrorRef.current = false;
-        if (listeningTimeoutRef.current) {
-          clearTimeout(listeningTimeoutRef.current);
-        }
-        setListeningTranscript('');
-        return;
-      }
-
-      let errorMessage = 'Speech recognition failed. Please try again.';
-    
-      if (errorCode === 'no-speech') {
-        errorMessage = 'No speech detected. Please speak clearly and try again.';
-      } else if (errorCode === 'audio-capture') {
-        errorMessage = 'Microphone not found or permission denied.';
-      } else if (errorCode === 'not-allowed') {
-        errorMessage = 'Microphone permission denied. Please enable it in your browser settings.';
-      } else if (errorCode === 'network') {
-        errorMessage = 'Network error during speech recognition.';
-      }
-
-      if (listeningTimeoutRef.current) {
-        clearTimeout(listeningTimeoutRef.current);
-      }
-    
-      setListeningTranscript('');
-      setChatActive(true);
-      setOrbState('error');
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `a-${Date.now()}`,
-          role: 'assistant',
-          content: errorMessage,
-          timestamp: new Date(),
-        },
-      ]);
-    
-      setTimeout(() => {
-        setOrbState('idle');
-      }, 2000);
-    };
-    
-    recognition.onend = () => {
-      if (listeningTimeoutRef.current) {
-        clearTimeout(listeningTimeoutRef.current);
-        listeningTimeoutRef.current = null;
-      }
-
-      if (!transcriptSentRef.current) {
-        setListeningTranscript('');
-        setOrbState('idle');
-      } else {
-        window.setTimeout(() => {
-          setListeningTranscript('');
-        }, 300);
-      }
-
-      if (recognitionRef.current === recognition) {
-        recognitionRef.current = null;
-      }
-    };
-    
-    try {
-      recognition.start();
-    } catch (error) {
-      console.error('Speech recognition start error:', error);
-      
-      if (listeningTimeoutRef.current) {
-        clearTimeout(listeningTimeoutRef.current);
-      }
-      
-      setListeningTranscript('');
-      setOrbState('idle');
-    }
-  }, [orbState, responseActive, handleSend, stopCurrentSpeech, cancelActiveResponse, setMessages]);
+    startListening((rawTranscript, normalizedTranscript) => {
+      setLastHeardTranscript(rawTranscript);
+      setLastNormalizedTranscript(normalizedTranscript);
+      handleSend(normalizedTranscript);
+    });
+  }, [orbState, responseActive, handleSend, stopCurrentSpeech, cancelActiveResponse, setMessages, startListening]);
 
   const statusSnapshot = new Date();
     const statusDateLabel = statusSnapshot.toLocaleDateString([], {
@@ -1091,7 +898,6 @@ export default function App() {
     const searchStatusMeta = searchResult
       ? `${searchResult.sources.length} source${searchResult.sources.length === 1 ? '' : 's'} · ${searchResult.provider || 'web'}`
       : searchError || trimmedSearchQuery || 'No query';
-    const voiceInputSupported = isSpeechRecognitionSupported();
     const activePanelLabel = getPanelLabel(activePanel);
     const interpreterConfidenceLabel = lastInterpreterConfidence === null
       ? '—'
