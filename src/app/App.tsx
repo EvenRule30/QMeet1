@@ -6,6 +6,9 @@ import { PromptBar } from './components/PromptBar';
 import { NotesPanel } from './components/NotesPanel';
 import { CalendarPanel } from './components/CalendarPanel';
 import { SearchPanel } from './components/SearchPanel';
+import { MenuOverlay } from './panels/MenuOverlay';
+import { SettingsOverlay } from './panels/SettingsOverlay';
+import { StatusOverlay } from './panels/StatusOverlay';
 import { Message, OrbState, ActivePanel } from './types';
 import { resetConversation, interpretCommandIntent } from "./api";
 import { parseCommand } from './commands';
@@ -992,352 +995,56 @@ export default function App() {
 
       {/* Panel Overlays */}
       {activePanel === 'menu' && (
-        <div className="panel-overlay">
-          <div className="panel-content panel-content-launcher">
-            <div className="panel-header">Menu</div>
-            <div className="panel-body">
-              <div className="launcher-intro">
-                <p className="panel-section-text">
-                  Choose a local QMeet tool by touch, or use the same commands by voice.
-                </p>
-              </div>
-
-              <div className="launcher-grid" aria-label="QMeet app launcher">
-                <button className="launcher-card" onClick={() => openLauncherPanel('notes')}>
-                  <span className="launcher-title">Notes</span>
-                  <span className="launcher-description">Write and review local notes.</span>
-                  <span className="launcher-command">Say: open notes</span>
-                </button>
-
-                <button className="launcher-card" onClick={() => openLauncherPanel('memory')}>
-                  <span className="launcher-title">Memory</span>
-                  <span className="launcher-description">Review tasks and recent work.</span>
-                  <span className="launcher-command">Say: what was I working on</span>
-                </button>
-
-                <button className="launcher-card" onClick={() => openLauncherPanel('calendar')}>
-                  <span className="launcher-title">Calendar</span>
-                  <span className="launcher-description">View today or tomorrow placeholders.</span>
-                  <span className="launcher-command">Say: open calendar</span>
-                </button>
-
-                <button className="launcher-card" onClick={() => openLauncherPanel('search')}>
-                  <span className="launcher-title">Search</span>
-                  <span className="launcher-description">Open the local search/browser shell.</span>
-                  <span className="launcher-command">Say: open search</span>
-                </button>
-
-                <button className="launcher-card" onClick={() => openLauncherPanel('settings')}>
-                  <span className="launcher-title">Settings</span>
-                  <span className="launcher-description">Adjust voice output and interface options.</span>
-                  <span className="launcher-command">Say: show settings</span>
-                </button>
-
-                <button className="launcher-card" onClick={() => openLauncherPanel('status')}>
-                  <span className="launcher-title">Status</span>
-                  <span className="launcher-description">Check orb, backend, and voice state.</span>
-                  <span className="launcher-command">Say: show status</span>
-                </button>
-              </div>
-
-              <div className="panel-section launcher-help-section">
-                <div className="panel-section-title">Quick Commands</div>
-                <p className="panel-section-text">
-                  Try "what can you do", "note that buy milk", "remember to test the Pi as a task", "what was I working on", "search for kiosk mode", "add event tomorrow at 3 called meeting", "what's on my calendar", "what did you hear", "cancel", "go home", or "mute voice".
-                </p>
-              </div>
-
-              <button className="close-panel-btn" onClick={closePanel}>
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
+        <MenuOverlay openLauncherPanel={openLauncherPanel} onClose={closePanel} />
       )}
 
       {activePanel === 'settings' && (
-        <div className="panel-overlay">
-          <div className="panel-content">
-            <div className="panel-header">Settings</div>
-            <div className="panel-body">
-              <div className="panel-section">
-                <div className="panel-section-title">Voice Settings</div>
-                <p className="panel-section-text">
-                  Microphone: Enabled · Language: English (US) · Recognition: Online · Voice preferences persist across reloads
-                </p>
-                <div className="settings-control-row">
-                  <span className="settings-control-label">Spoken responses</span>
-                  <button
-                    className={`panel-action-btn ${voiceOutputEnabled ? 'panel-action-btn-active' : ''}`}
-                    onClick={() => {
-                      const nextEnabled = !voiceOutputEnabled;
-                      setVoiceOutput(nextEnabled);
-                      if (nextEnabled) {
-                        speakAssistantText('Voice output enabled.', { enabled: true });
-                      }
-                    }}
-                  >
-                    {voiceOutputEnabled ? 'On' : 'Muted'}
-                  </button>
-                </div>
-                <div className="settings-control-row">
-                  <span className="settings-control-label">Voice speed</span>
-                  <span className="settings-control-value">{speechRate.toFixed(2)}×</span>
-                </div>
-                <div className="panel-action-row">
-                  <button
-                    className="panel-action-btn"
-                    onClick={() => {
-                      const nextRate = adjustSpeechRate(speechRate - 0.15);
-                      speakAssistantText(`Voice speed is now ${nextRate.toFixed(2)}×.`, { rate: nextRate });
-                    }}
-                  >
-                    Slower
-                  </button>
-                  <button
-                    className="panel-action-btn"
-                    onClick={() => {
-                      const nextRate = adjustSpeechRate(1);
-                      speakAssistantText('Voice speed reset to normal.', { rate: nextRate });
-                    }}
-                  >
-                    Normal
-                  </button>
-                  <button
-                    className="panel-action-btn"
-                    onClick={() => {
-                      const nextRate = adjustSpeechRate(speechRate + 0.15);
-                      speakAssistantText(`Voice speed is now ${nextRate.toFixed(2)}×.`, { rate: nextRate });
-                    }}
-                  >
-                    Faster
-                  </button>
-                </div>
-              </div>
-              <div className="panel-section">
-                <div className="panel-section-title">Display</div>
-                <p className="panel-section-text">
-                  Theme: Dark · Resolution: 1024×600 · Interface: Optimized
-                </p>
-              </div>
-              <div className="panel-section">
-                <div className="panel-section-title">Backend</div>
-                <p className="panel-section-text">
-                  Status: {backendStatus?.ok ? 'Connected' : 'Disconnected'} · Provider: {backendStatus?.provider || 'Unknown'}
-                </p>
-              </div>
-              <button className="close-panel-btn" onClick={closePanel}>
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
+        <SettingsOverlay
+          backendStatus={backendStatus}
+          voiceOutputEnabled={voiceOutputEnabled}
+          speechRate={speechRate}
+          setVoiceOutput={setVoiceOutput}
+          speakAssistantText={speakAssistantText}
+          adjustSpeechRate={adjustSpeechRate}
+          onClose={closePanel}
+        />
       )}
       
       {activePanel === 'status' && (
-        <div className="panel-overlay">
-          <div className="panel-content panel-content-status">
-            <div className="panel-header">System Status</div>
-            <div className="panel-body status-panel-body">
-              <div className="status-hero">
-                <div>
-                  <div className="status-kicker">QMeet Prototype</div>
-                  <div className="status-title">Local tablet assistant dashboard</div>
-                </div>
-                <div className={`status-health-chip ${backendStatus?.ok ? 'status-health-good' : 'status-health-warn'}`}>
-                  {backendStatus?.ok ? 'Online' : 'Offline'}
-                </div>
-              </div>
-
-              <div className="status-grid">
-                <div className="status-card">
-                  <div className="status-card-title">Orb</div>
-                  <div className="status-card-value">{orbState.charAt(0).toUpperCase() + orbState.slice(1)}</div>
-                  <div className="status-card-meta">Current interaction state</div>
-                </div>
-
-                <div className="status-card">
-                  <div className="status-card-title">Active Panel</div>
-                  <div className="status-card-value">{activePanelLabel}</div>
-                  <div className="status-card-meta">Current UI surface</div>
-                </div>
-
-                <div className={`status-card ${backendStatus?.ok ? 'status-card-good' : 'status-card-warn'}`}>
-                  <div className="status-card-title">Backend</div>
-                  <div className="status-card-value">{backendStatus?.ok ? 'Connected' : 'Disconnected'}</div>
-                  <div className="status-card-meta">FastAPI agent service</div>
-                </div>
-
-                <div className="status-card">
-                  <div className="status-card-title">Provider</div>
-                  <div className="status-card-value">{backendStatus?.provider || 'Unknown'}</div>
-                  <div className="status-card-meta">Model: {backendStatus?.model || 'Unknown'}</div>
-                </div>
-
-                <div className="status-card">
-                  <div className="status-card-title">Voice Input</div>
-                  <div className="status-card-value">{voiceInputSupported ? 'Supported' : 'Unavailable'}</div>
-                  <div className="status-card-meta">Browser speech recognition</div>
-                </div>
-
-                <div className="status-card">
-                  <div className="status-card-title">Last Heard</div>
-                  <div className="status-card-value">{lastHeardTranscript || 'None'}</div>
-                  <div className="status-card-meta">{lastNormalizedTranscript ? `Normalized: ${lastNormalizedTranscript}` : 'Last voice transcript'}</div>
-                </div>
-
-                <div className="status-card">
-                  <div className="status-card-title">Last Command</div>
-                  <div className="status-card-value">{lastLocalCommand}</div>
-                  <div className="status-card-meta">Last local command matched</div>
-                </div>
-
-                <div className="status-card">
-                  <div className="status-card-title">Input Route</div>
-                  <div className="status-card-value">{lastInputRoute}</div>
-                  <div className="status-card-meta">Exact parser, interpreter, or chat</div>
-                </div>
-
-                <div className="status-card">
-                  <div className="status-card-title">Interpreter</div>
-                  <div className="status-card-value">{lastInterpreterAction}</div>
-                  <div className="status-card-meta">Confidence: {interpreterConfidenceLabel}</div>
-                </div>
-
-                <div className="status-card">
-                  <div className="status-card-title">Mapped Command</div>
-                  <div className="status-card-value">{lastInterpreterFrontendCommand}</div>
-                  <div className="status-card-meta">{interpreterReasonLabel}</div>
-                </div>
-
-                <div className="status-card">
-                  <div className="status-card-title">Pending Confirm</div>
-                  <div className="status-card-value">{pendingInterpreterLabel}</div>
-                  <div className="status-card-meta">Destructive fuzzy commands wait for confirm</div>
-                </div>
-
-                <div className="status-card">
-                  <div className="status-card-title">Voice Output</div>
-                  <div className="status-card-value">{voiceOutputEnabled ? 'On' : 'Muted'}</div>
-                  <div className="status-card-meta">Speed: {speechRate.toFixed(2)}×</div>
-                </div>
-
-                <div className="status-card">
-                  <div className="status-card-title">Chat</div>
-                  <div className="status-card-value">{chatActive ? 'Active' : 'Idle'}</div>
-                  <div className="status-card-meta">Messages: {messages.length}</div>
-                </div>
-
-                <div className="status-card">
-                  <div className="status-card-title">Notes</div>
-                  <div className="status-card-value">{statusNotesCount}</div>
-                  <div className="status-card-meta">Saved locally</div>
-                </div>
-
-                <div className="status-card">
-                  <div className="status-card-title">Open Tasks</div>
-                  <div className="status-card-value">{statusOpenTasksCount}</div>
-                  <div className="status-card-meta">{statusCompletedTasksCount} completed · {memorySyncState}</div>
-                </div>
-
-                <div className="status-card">
-                  <div className="status-card-title">Calendar</div>
-                  <div className="status-card-value">{calendarEvents.length}</div>
-                  <div className="status-card-meta">Local events total</div>
-                </div>
-
-                <div className="status-card">
-                  <div className="status-card-title">Today</div>
-                  <div className="status-card-value">{statusTodayEventsCount}</div>
-                  <div className="status-card-meta">Events saved for today</div>
-                </div>
-
-                <div className="status-card">
-                  <div className="status-card-title">Tomorrow</div>
-                  <div className="status-card-value">{statusTomorrowEventsCount}</div>
-                  <div className="status-card-meta">Events saved for tomorrow</div>
-                </div>
-
-                <div className="status-card">
-                  <div className="status-card-title">Google Calendar</div>
-                  <div className="status-card-value">{statusGoogleCalendarLabel}</div>
-                  <div className="status-card-meta">{statusGoogleEventsCount} loaded · {googleCalendarLoading ? 'Loading' : 'Idle'}</div>
-                </div>
-
-                <div className="status-card">
-                  <div className="status-card-title">Search</div>
-                  <div className="status-card-value">{searchStatusLabel}</div>
-                  <div className="status-card-meta">{searchStatusMeta}</div>
-                </div>
-              </div>
-
-              <div className="panel-section status-detail-section">
-                <div className="panel-section-title">Backend Details</div>
-                <div className="status-detail-list">
-                  <div className="status-detail-row">
-                    <span>OpenAI key</span>
-                    <strong>{backendStatus?.hasOpenAIKey ? 'Configured' : 'Missing / Unknown'}</strong>
-                  </div>
-                  <div className="status-detail-row">
-                    <span>Max output tokens</span>
-                    <strong>{backendStatus?.maxOutputTokens ?? 'Unknown'}</strong>
-                  </div>
-                  <div className="status-detail-row">
-                    <span>Status refresh</span>
-                    <strong>Every 10 seconds</strong>
-                  </div>
-                </div>
-              </div>
-
-              <div className="panel-section status-detail-section">
-                <div className="panel-section-title">Interface</div>
-                <div className="status-detail-list">
-                  <div className="status-detail-row">
-                    <span>Date</span>
-                    <strong>{statusDateLabel}</strong>
-                  </div>
-                  <div className="status-detail-row">
-                    <span>Time snapshot</span>
-                    <strong>{statusTimeLabel}</strong>
-                  </div>
-                  <div className="status-detail-row">
-                    <span>Display target</span>
-                    <strong>1024×600</strong>
-                  </div>
-                </div>
-              </div>
-
-              <div className="panel-section status-detail-section">
-                <div className="panel-section-title">Local Storage</div>
-                <div className="status-detail-list">
-                  <div className="status-detail-row">
-                    <span>Voice output preference</span>
-                    <strong>Saved</strong>
-                  </div>
-                  <div className="status-detail-row">
-                    <span>Voice speed preference</span>
-                    <strong>Saved</strong>
-                  </div>
-                  <div className="status-detail-row">
-                    <span>Notes and calendar events</span>
-                    <strong>Saved locally</strong>
-                  </div>
-                </div>
-              </div>
-
-              <div className="panel-section">
-                <div className="panel-section-title">Supported Status Commands</div>
-                <p className="panel-section-text">
-                  Say “show status,” “system status,” “diagnostics,” “what did you hear,” “read my notes,” “what was I working on,” “what's on my calendar,” “close status,” or “go home.” This panel also shows whether the last input used the exact parser, fuzzy command interpreter, or normal chat.
-                </p>
-              </div>
-
-              <button className="close-panel-btn" onClick={closePanel}>
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
+        <StatusOverlay
+          activePanelLabel={activePanelLabel}
+          backendStatus={backendStatus}
+          orbState={orbState}
+          voiceInputSupported={voiceInputSupported}
+          lastHeardTranscript={lastHeardTranscript}
+          lastNormalizedTranscript={lastNormalizedTranscript}
+          lastLocalCommand={lastLocalCommand}
+          lastInputRoute={lastInputRoute}
+          lastInterpreterAction={lastInterpreterAction}
+          lastInterpreterFrontendCommand={lastInterpreterFrontendCommand}
+          interpreterConfidenceLabel={interpreterConfidenceLabel}
+          interpreterReasonLabel={interpreterReasonLabel}
+          pendingInterpreterLabel={pendingInterpreterLabel}
+          voiceOutputEnabled={voiceOutputEnabled}
+          speechRate={speechRate}
+          chatActive={chatActive}
+          messagesCount={messages.length}
+          statusNotesCount={statusNotesCount}
+          statusOpenTasksCount={statusOpenTasksCount}
+          statusCompletedTasksCount={statusCompletedTasksCount}
+          memorySyncState={memorySyncState}
+          calendarEventsCount={calendarEvents.length}
+          statusTodayEventsCount={statusTodayEventsCount}
+          statusTomorrowEventsCount={statusTomorrowEventsCount}
+          statusGoogleCalendarLabel={statusGoogleCalendarLabel}
+          statusGoogleEventsCount={statusGoogleEventsCount}
+          googleCalendarLoading={googleCalendarLoading}
+          searchStatusLabel={searchStatusLabel}
+          searchStatusMeta={searchStatusMeta}
+          statusDateLabel={statusDateLabel}
+          statusTimeLabel={statusTimeLabel}
+          onClose={closePanel}
+        />
       )}
 
 
