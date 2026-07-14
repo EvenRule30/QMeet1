@@ -10,7 +10,8 @@ QMeet is a voice-first AI tablet interface for the Chascii orb prototype. The fr
 - Local command routing before normal chat
 - Web search result cards
 - Local notes
-- Local memory/tasks in browser storage
+- Backend-backed memory/tasks/notes/work context
+- Memory import/export/reset controls
 - Google Calendar read/create/edit/delete with confirmations
 - 1024×600 tablet/kiosk layout polish
 - Raspberry Pi Chromium kiosk launcher in `scripts/pi-kiosk-start.sh`
@@ -159,3 +160,60 @@ backend/calendar_auth_state.json
 
 - `docs/development.md` — setup details, API endpoints, Google Calendar notes, troubleshooting
 - `docs/pi-kiosk.md` — Raspberry Pi kiosk launch/autostart notes
+
+## Project structure
+
+```text
+QMeet1-1/
+├─ src/app/
+│  ├─ App.tsx
+│  ├─ api.ts
+│  ├─ commands.ts
+│  ├─ types.ts
+│  ├─ components/
+│  ├─ commandHandlers/
+│  │  ├─ calendar.ts
+│  │  ├─ memory.ts
+│  │  ├─ notes.ts
+│  │  ├─ search.ts
+│  │  └─ voice.ts
+│  ├─ hooks/
+│  │  ├─ useBackendStatus.ts
+│  │  ├─ useCalendarController.ts
+│  │  ├─ useChatStreamController.ts
+│  │  ├─ useMemoryContext.ts
+│  │  ├─ useResultToasts.ts
+│  │  ├─ useSearchController.ts
+│  │  ├─ useSpeechOutput.ts
+│  │  └─ useSpeechRecognitionController.ts
+│  ├─ lib/
+│  │  ├─ activityUtils.ts
+│  │  ├─ calendarUtils.ts
+│  │  ├─ chatFlowUtils.ts
+│  │  ├─ commandRouterUtils.ts
+│  │  ├─ dateUtils.ts
+│  │  ├─ memoryUtils.ts
+│  │  └─ toastUtils.ts
+│  └─ panels/
+│     ├─ CalendarOverlay.tsx
+│     ├─ MemoryOverlay.tsx
+│     ├─ MenuOverlay.tsx
+│     ├─ NotesOverlay.tsx
+│     ├─ SearchOverlay.tsx
+│     ├─ SettingsOverlay.tsx
+│     └─ StatusOverlay.tsx
+├─ backend/app/
+│  ├─ main.py
+│  ├─ agent.py
+│  ├─ calendar_service.py
+│  ├─ memory_store.py
+│  ├─ schemas.py
+│  └─ routers/
+│     ├─ calendar.py
+│     ├─ chat.py
+│     ├─ command.py
+│     ├─ memory.py
+│     └─ search.py
+├─ docs/
+└─ scripts/
+```
