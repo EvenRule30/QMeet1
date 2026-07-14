@@ -37,92 +37,19 @@ import { useSearchController } from './hooks/useSearchController';
 import { useCalendarController } from './hooks/useCalendarController';
 import { useSpeechOutput } from './hooks/useSpeechOutput';
 import { useChatStreamController } from './hooks/useChatStreamController';
+import {
+  COMMAND_INTERPRETER_CLARIFY_THRESHOLD,
+  COMMAND_INTERPRETER_EXECUTE_THRESHOLD,
+  getFrontendCommandForLocalCommand,
+  isConfirmingPendingCommand,
+  isDestructiveInterpreterCommand,
+  isDestructiveLocalCommand,
+  isRejectingPendingCommand,
+  type PendingInterpreterCommand,
+} from './lib/commandRouterUtils';
 import './App.css';
 
 
-const COMMAND_INTERPRETER_EXECUTE_THRESHOLD = 0.8;
-const COMMAND_INTERPRETER_CLARIFY_THRESHOLD = 0.5;
-
-type PendingInterpreterCommand = {
-  originalText: string;
-  frontendCommand: string;
-  action: string;
-  confidence: number;
-  reason: string;
-};
-
-const DESTRUCTIVE_FRONTEND_COMMANDS = new Set([
-  'clear chat',
-  'end chat',
-  'delete last note',
-  'clear notes',
-  'mark task done',
-  'clear completed tasks',
-  'delete last event',
-  'delete event',
-  'edit last event',
-  'clear calendar',
-]);
-
-const DESTRUCTIVE_LOCAL_COMMANDS = new Set([
-  'clear-chat',
-  'end-chat',
-  'delete-last-note',
-  'clear-notes',
-  'mark-task-done',
-  'clear-done-tasks',
-  'delete-last-event',
-  'delete-calendar-event',
-  'edit-last-event',
-  'clear-calendar',
-]);
-
-const LOCAL_COMMAND_TO_FRONTEND_COMMAND: Record<string, string> = {
-  'clear-chat': 'clear chat',
-  'end-chat': 'end chat',
-  'delete-last-note': 'delete last note',
-  'clear-notes': 'clear notes',
-  'mark-task-done': 'mark task done',
-  'clear-done-tasks': 'clear completed tasks',
-  'delete-last-event': 'delete last event',
-  'delete-calendar-event': 'delete event',
-  'edit-last-event': 'edit last event',
-  'clear-calendar': 'clear calendar',
-};
-
-function normalizePendingDecisionText(text: string): string {
-  return text
-    .trim()
-    .toLowerCase()
-    .replace(/[?!.,;:]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function isDestructiveInterpreterCommand(frontendCommand: string): boolean {
-  const normalizedCommand = normalizePendingDecisionText(frontendCommand);
-  return DESTRUCTIVE_FRONTEND_COMMANDS.has(normalizedCommand) || /^delete event/.test(normalizedCommand);
-}
-
-function isDestructiveLocalCommand(command: string): boolean {
-  return DESTRUCTIVE_LOCAL_COMMANDS.has(command);
-}
-
-function getFrontendCommandForLocalCommand(command: string): string {
-  return LOCAL_COMMAND_TO_FRONTEND_COMMAND[command] ?? command.replace(/-/g, ' ');
-}
-
-function isConfirmingPendingCommand(text: string): boolean {
-  return /^(?:yes|yeah|yep|correct|confirm|confirmed|do it|run it|execute it|go ahead|proceed|that is right|that's right)$/i.test(
-    normalizePendingDecisionText(text)
-  );
-}
-
-function isRejectingPendingCommand(text: string): boolean {
-  return /^(?:no|nope|cancel|cancel it|cancel that|stop|nevermind|never mind|do not|don't|dont|abort|forget it|forget that)$/i.test(
-    normalizePendingDecisionText(text)
-  );
-}
 
 
 
