@@ -20,6 +20,35 @@ type UseChatStreamControllerOptions = {
   ) => void;
 };
 
+function buildBriefingRequest(): string {
+  const now = new Date();
+
+  let timeZone = 'local';
+  try {
+    timeZone =
+      Intl.DateTimeFormat().resolvedOptions().timeZone?.trim() || 'local';
+  } catch {
+    timeZone = 'local';
+  }
+
+  const localDateTime = now.toLocaleString([], {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+
+  return [
+    'Brief me on my remaining day.',
+    `Current local date and time: ${localDateTime}.`,
+    `Current timezone: ${timeZone}.`,
+    'Treat calendar events scheduled earlier than the current time as past.',
+    'Focus on the next upcoming event, the remaining schedule, one or two useful flexible tasks, and one concrete action to take now.',
+  ].join('\n');
+}
+
 export function useChatStreamController({
   setOrbState,
   setChatActive,
@@ -190,7 +219,7 @@ export function useChatStreamController({
 
   useEffect(() => {
     const handleBriefMe = () => {
-      void sendStreamingChat('brief me', 'Brief me');
+      void sendStreamingChat(buildBriefingRequest(), 'Brief me');
     };
 
     window.addEventListener(BRIEF_ME_EVENT, handleBriefMe);
