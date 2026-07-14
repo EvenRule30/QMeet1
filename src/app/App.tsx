@@ -37,6 +37,10 @@ import { useSearchController } from './hooks/useSearchController';
 import { useCalendarController } from './hooks/useCalendarController';
 import { useSpeechOutput } from './hooks/useSpeechOutput';
 import { useChatStreamController } from './hooks/useChatStreamController';
+import { handleNotesCommand } from './commandHandlers/notes';
+import { handleMemoryCommand } from './commandHandlers/memory';
+import { handleSearchCommand } from './commandHandlers/search';
+import { handleVoiceCommand } from './commandHandlers/voice';
 import {
   COMMAND_INTERPRETER_CLARIFY_THRESHOLD,
   COMMAND_INTERPRETER_EXECUTE_THRESHOLD,
@@ -48,6 +52,14 @@ import {
   type PendingInterpreterCommand,
 } from './lib/commandRouterUtils';
 import './App.css';
+
+
+type SplitCommandResult = {
+  handled: boolean;
+  confirmationContent?: string;
+  shouldSpeakConfirmation?: boolean;
+  confirmationSpeechRate?: number;
+};
 
 
 
@@ -527,7 +539,77 @@ export default function App() {
       let replaceMessages = false;
       let speechConfirmationContent = getBriefToolSpeech(commandMatch.command, confirmationContent);
       
-      if (commandMatch.command === 'open-menu') {
+      const notesCommandResult: SplitCommandResult = handleNotesCommand(commandMatch, {
+        voiceOutputEnabled,
+        setActivePanel,
+        closePanel,
+        saveNote,
+        deleteLastNote,
+        clearNotes,
+        getNotesReadout,
+      });
+
+      const memoryCommandResult: SplitCommandResult = notesCommandResult.handled
+        ? { handled: false }
+        : handleMemoryCommand(commandMatch, {
+            voiceOutputEnabled,
+            setActivePanel,
+            closePanel,
+            getMemoryReadout,
+            saveMemoryTask,
+            markMemoryTaskDone,
+            clearCompletedTasks,
+          });
+
+      const searchCommandResult: SplitCommandResult = notesCommandResult.handled || memoryCommandResult.handled
+        ? { handled: false }
+        : await handleSearchCommand(commandMatch, {
+            voiceOutputEnabled,
+            searchError,
+            setActivePanel,
+            closePanel,
+            runWebSearch,
+            clearSearchState,
+          });
+
+      const voiceCommandResult: SplitCommandResult = notesCommandResult.handled || memoryCommandResult.handled || searchCommandResult.handled
+        ? { handled: false }
+        : handleVoiceCommand(commandMatch, {
+            voiceOutputEnabled,
+            speechRate,
+            previousLastHeardTranscript,
+            previousLastNormalizedTranscript,
+            previousLastLocalCommand,
+            setVoiceOutput,
+            adjustSpeechRate,
+            stopCurrentSpeech,
+            cancelActiveResponse,
+            finishListening,
+            setShowThinkingBubble,
+            setOrbState,
+          });
+
+      const splitCommandResult: SplitCommandResult = notesCommandResult.handled
+        ? notesCommandResult
+        : memoryCommandResult.handled
+          ? memoryCommandResult
+          : searchCommandResult.handled
+            ? searchCommandResult
+            : voiceCommandResult;
+
+      if (splitCommandResult.handled) {
+        if (splitCommandResult.confirmationContent !== undefined) {
+          confirmationContent = splitCommandResult.confirmationContent;
+        }
+
+        if (splitCommandResult.shouldSpeakConfirmation !== undefined) {
+          shouldSpeakConfirmation = splitCommandResult.shouldSpeakConfirmation;
+        }
+
+        if (splitCommandResult.confirmationSpeechRate !== undefined) {
+          confirmationSpeechRate = splitCommandResult.confirmationSpeechRate;
+        }
+      } else if (commandMatch.command === 'open-menu') {
         setActivePanel('menu');
       } else if (commandMatch.command === 'close-menu') {
         closePanel();
@@ -544,57 +626,6 @@ export default function App() {
         closePanel();
       } else if (commandMatch.command === 'hide-status') {
         closePanel();
-      } else if (commandMatch.command === 'open-notes') {
-        setActivePanel('notes');
-      } else if (commandMatch.command === 'new-note') {
-        setActivePanel('notes');
-      } else if (commandMatch.command === 'save-note') {
-        const savedNote = saveNote(commandMatch.payload ?? '');
-        setActivePanel('notes');
-        confirmationContent = savedNote ? 'Saved note.' : 'I did not catch the note text.';
-        shouldSpeakConfirmation = voiceOutputEnabled;
-      } else if (commandMatch.command === 'read-notes') {
-        setActivePanel('notes');
-        confirmationContent = getNotesReadout();
-        shouldSpeakConfirmation = voiceOutputEnabled;
-      } else if (commandMatch.command === 'delete-last-note') {
-        const deletedNote = deleteLastNote();
-        setActivePanel('notes');
-        confirmationContent = deletedNote ? 'Deleted the last note.' : 'No notes to delete.';
-        shouldSpeakConfirmation = voiceOutputEnabled;
-      } else if (commandMatch.command === 'close-notes') {
-        closePanel();
-      } else if (commandMatch.command === 'clear-notes') {
-        clearNotes();
-      } else if (commandMatch.command === 'open-memory') {
-        setActivePanel('memory');
-      } else if (commandMatch.command === 'close-memory') {
-        closePanel();
-      } else if (commandMatch.command === 'read-memory') {
-        setActivePanel('memory');
-        confirmationContent = getMemoryReadout();
-        shouldSpeakConfirmation = voiceOutputEnabled;
-      } else if (commandMatch.command === 'remember-task') {
-        const savedTask = saveMemoryTask(commandMatch.payload ?? '');
-        setActivePanel('memory');
-        confirmationContent = savedTask ? `Saved task: ${savedTask.title}.` : 'I did not catch the task text.';
-        shouldSpeakConfirmation = voiceOutputEnabled;
-      } else if (commandMatch.command === 'mark-task-done') {
-        const completedTask = markMemoryTaskDone(commandMatch.payload);
-        setActivePanel('memory');
-        confirmationContent = completedTask
-          ? `Marked task done: ${completedTask.title}.`
-          : commandMatch.payload
-            ? `I could not find an open task matching "${commandMatch.payload}".`
-            : 'No open tasks to complete.';
-        shouldSpeakConfirmation = voiceOutputEnabled;
-      } else if (commandMatch.command === 'clear-done-tasks') {
-        const removedCount = clearCompletedTasks();
-        setActivePanel('memory');
-        confirmationContent = removedCount > 0
-          ? `Cleared ${removedCount} completed task${removedCount === 1 ? '' : 's'}.`
-          : 'No completed tasks to clear.';
-        shouldSpeakConfirmation = voiceOutputEnabled;
       } else if (commandMatch.command === 'open-calendar') {
         setCalendarView('today');
         setActivePanel('calendar');
@@ -687,80 +718,9 @@ export default function App() {
         setActivePanel('calendar');
       } else if (commandMatch.command === 'close-calendar') {
         closePanel();
-      } else if (commandMatch.command === 'open-search') {
-        setActivePanel('search');
-      } else if (commandMatch.command === 'run-search') {
-        const preparedSearchQuery = commandMatch.payload?.trim() ?? '';
-        setActivePanel('search');
-
-        if (preparedSearchQuery) {
-          const searchResponse = await runWebSearch(preparedSearchQuery);
-
-          if (searchResponse?.ok) {
-            const sourceCount = searchResponse.sources?.length ?? 0;
-            const stepCount = searchResponse.steps?.length ?? 0;
-            const sourceText = sourceCount > 0
-              ? ` ${sourceCount} source${sourceCount === 1 ? '' : 's'} added.`
-              : '';
-            const stepText = stepCount > 0
-              ? ` ${stepCount} action step${stepCount === 1 ? '' : 's'} included.`
-              : '';
-            confirmationContent = `Search complete. I put the full result in the Search panel.${stepText}${sourceText}`;
-          } else {
-            confirmationContent = searchResponse?.message || searchError || 'Web search failed.';
-          }
-        } else {
-          confirmationContent = 'Opening search.';
-        }
-
-        shouldSpeakConfirmation = voiceOutputEnabled;
-      } else if (commandMatch.command === 'clear-search') {
-        clearSearchState();
-        setActivePanel('search');
-        confirmationContent = 'Search cleared.';
-      } else if (commandMatch.command === 'close-search') {
-        closePanel();
       } else if (commandMatch.command === 'close-generic') {
         if (activePanel !== 'none') {
           closePanel();
-        }
-      } else if (commandMatch.command === 'voice-output-on') {
-        setVoiceOutput(true);
-        shouldSpeakConfirmation = true;
-      } else if (commandMatch.command === 'voice-output-off') {
-        setVoiceOutput(false);
-        shouldSpeakConfirmation = false;
-      } else if (commandMatch.command === 'voice-output-toggle') {
-        const nextEnabled = !voiceOutputEnabled;
-        setVoiceOutput(nextEnabled);
-        confirmationContent = nextEnabled ? 'Voice output enabled.' : 'Voice output muted.';
-        shouldSpeakConfirmation = nextEnabled;
-      } else if (commandMatch.command === 'voice-slower') {
-        confirmationSpeechRate = adjustSpeechRate(speechRate - 0.15);
-        confirmationContent = `Speaking slower. Voice speed is now ${confirmationSpeechRate.toFixed(2)}×.`;
-      } else if (commandMatch.command === 'voice-faster') {
-        confirmationSpeechRate = adjustSpeechRate(speechRate + 0.15);
-        confirmationContent = `Speaking faster. Voice speed is now ${confirmationSpeechRate.toFixed(2)}×.`;
-      } else if (commandMatch.command === 'voice-normal') {
-        confirmationSpeechRate = adjustSpeechRate(1);
-        confirmationContent = 'Voice speed reset to normal.';
-      } else if (commandMatch.command === 'stop-speaking') {
-        stopCurrentSpeech();
-        setOrbState('idle');
-        shouldSpeakConfirmation = false;
-      } else if (commandMatch.command === 'cancel-action') {
-        stopCurrentSpeech();
-        cancelActiveResponse();
-        finishListening();
-        setShowThinkingBubble(false);
-        setOrbState('idle');
-        confirmationContent = 'Cancelled.';
-        shouldSpeakConfirmation = false;
-      } else if (commandMatch.command === 'what-did-you-hear') {
-        if (previousLastHeardTranscript) {
-          confirmationContent = `I last heard: "${previousLastHeardTranscript}". Normalized as: "${previousLastNormalizedTranscript || previousLastHeardTranscript}". Last local command: ${previousLastLocalCommand}.`;
-        } else {
-          confirmationContent = 'I have not heard a voice transcript yet.';
         }
       } else if (commandMatch.command === 'clear-chat') {
         replaceMessages = true;
