@@ -51,6 +51,23 @@ If calendar is unavailable or disconnected, say that QMeet cannot see the calend
 """.strip()
 
 
+PLANNER_CONTEXT_PROMPT = """
+The user is asking for planning, prioritization, or what to do next.
+Use saved tasks, notes, recent actions, and calendar context together.
+Prefer this response shape for planning answers:
+1. Start with the best next move in one short sentence.
+2. Mention the most important calendar constraint or that the calendar looks open.
+3. Give one concrete first step and, only if useful, one later step.
+4. Keep the whole answer short enough for the tablet UI.
+
+Planning rules:
+- Prioritize upcoming calendar events over optional tasks.
+- Prefer open tasks over completed tasks.
+- Use saved notes and recent actions to infer what project the user was working on.
+- If calendar context is unavailable, do not invent availability.
+- Do not claim to create, edit, delete, or complete anything unless the user used a command.
+""".strip()
+
 
 COMMAND_INTERPRETER_PROMPT = """
 You are QMeet's command interpreter. Classify the user's text as either a local UI command or normal chat.
@@ -1138,6 +1155,26 @@ def _message_wants_calendar_context(message: str) -> bool:
     )
 
 
+def _message_wants_planner_response(message: str) -> bool:
+    text = (message or "").strip().lower()
+
+    if not text:
+        return False
+
+    return bool(
+        re.search(
+            r"\b("
+            r"what should i do next|what should i work on|what's next|whats next|next thing|"
+            r"plan my day|plan today|plan tomorrow|make a plan|daily plan|"
+            r"prioritize|priority|where should i start|what should i focus on|focus on|"
+            r"continue|pick up where|left off|working on|do i have time|free time|"
+            r"am i free|am i busy|how should i spend"
+            r")\b",
+            text,
+        )
+    )
+
+
 def _format_calendar_event_for_context(event: dict) -> str:
     title = _compact_memory_text(event.get("title") or "(No title)", 90)
     time = _compact_memory_text(event.get("time") or "Later", 32)
@@ -1215,6 +1252,7 @@ def _build_chat_input_messages(message: str) -> list[dict[str, str]]:
     recent_history = MESSAGE_HISTORY[-10:]
     memory_summary = _build_memory_context_summary()
     calendar_summary = _build_calendar_context_summary(message)
+    planner_mode = _message_wants_planner_response(message)
 
     input_messages: list[dict[str, str]] = [
         {
@@ -1236,6 +1274,14 @@ def _build_chat_input_messages(message: str) -> list[dict[str, str]]:
             {
                 "role": "developer",
                 "content": f"{CALENDAR_CONTEXT_PROMPT}\n\nQMeet calendar context:\n{calendar_summary}",
+            }
+        )
+
+    if planner_mode:
+        input_messages.append(
+            {
+                "role": "developer",
+                "content": PLANNER_CONTEXT_PROMPT,
             }
         )
 
@@ -1306,6 +1352,25 @@ def mock_reply(message: str) -> str:
         flags=re.IGNORECASE,
     )
     wants_calendar = _message_wants_calendar_context(text)
+    wants_plan = _message_wants_planner_response(text)
+
+    if wants_plan and (memory_summary or calendar_summary):
+        context_bits: list[str] = []
+
+        if calendar_summary:
+            context_bits.append(
+                f"Calendar: {_compact_memory_text(calendar_summary.replace(chr(10), ' '), 260)}"
+            )
+
+        if memory_summary:
+            context_bits.append(
+                f"Memory: {_compact_memory_text(memory_summary.replace(chr(10), ' '), 260)}"
+            )
+
+        return (
+            "Next move: use the nearest calendar constraint first, then pick one open task. "
+            + " ".join(context_bits)
+        )
 
     if (wants_memory or wants_calendar) and (memory_summary or calendar_summary):
         parts: list[str] = []
