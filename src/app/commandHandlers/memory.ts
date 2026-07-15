@@ -22,74 +22,10 @@ type NormalizedFocusPayload = {
   goal?: string;
 };
 
-type FocusSafetyDeps = {
-  voiceOutputEnabled: boolean;
-  setActivePanel: (panel: ActivePanel) => void;
-};
-
 const ACTIVE_SESSION_STORAGE_KEY = 'qmeet-active-session';
 const ACTIVE_SESSION_SESSION_STORAGE_KEY = 'qmeet-active-session-live';
 const ACTIVE_SESSION_STATE_EVENT = 'qmeet-active-session-state';
-const ACTIVE_SESSION_COMMAND_HANDLER_MARKER = 'phase12c-v3-state-event-is-source-of-truth';
-
-// Phase 12D-v4: refuse harmful focus intents and describe first set-focus commands as starts.
-const HUMAN_HARM_FOCUS_REFUSAL =
-  "I can't create or update a focus session about harming a person. Please choose a safe work, planning, research, or personal goal instead.";
-const HARM_ACTION_PATTERN =
-  /\b(?:kill(?:ing)?|murder(?:ing)?|slaughter(?:ing)?|assassinat(?:e|ing)|execut(?:e|ing)|shoot(?:ing)?|stab(?:bing)?|strangl(?:e|ing)|poison(?:ing)?|tortur(?:e|ing)|maim(?:ing)?|dismember(?:ing)?|behead(?:ing)?|beat(?:ing)?\s+up|assault(?:ing)?|attack(?:ing)?|hurt(?:ing)?|harm(?:ing)?)\b/i;
-const SAFE_NON_PERSON_TARGET_PATTERN =
-  /\b(?:app|application|api|backend|frontend|server|service|process|processes|thread|threads|job|jobs|task|tasks|bug|bugs|issue|issues|ticket|tickets|warning|warnings|error|errors|test|tests|build|branch|repo|repository|code|script|command|cache|database|db|container|node|deployment|feature|latency|time|runtime|session|focus|memory|ui|style|css|animation|workflow|problem|problems|plan|backlog|roadmap|performance|leak|video|photo|photos|picture|pictures|scene|footage)\b/i;
-const DIRECT_HARM_PREAMBLE_PATTERN =
-  /(?:^|\b)(?:to|how\s+to|plan\s+to|planning\s+to|prepare\s+to|preparing\s+to|try\s+to|trying\s+to|help\s+me|help\s+me\s+to|helping\s+to|go\s+to|going\s+to|goal\s+to|goal\s+is\s+to)$/i;
-
-function isLikelyHumanHarmFocusText(text: string | undefined): boolean {
-  const normalized = text
-    ?.replace(/[“”]/g, '"')
-    .replace(/[‘’]/g, "'")
-    .replace(/[^a-z0-9'\s-]+/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  if (!normalized) return false;
-
-  const match = normalized.match(HARM_ACTION_PATTERN);
-  if (!match || typeof match.index !== 'number') return false;
-
-  const beforeAction = normalized.slice(0, match.index).trim();
-  const actionLooksIntentional =
-    beforeAction.length === 0 || DIRECT_HARM_PREAMBLE_PATTERN.test(beforeAction);
-
-  if (!actionLooksIntentional) return false;
-
-  const target = normalized
-    .slice(match.index + match[0].length)
-    .replace(/^(?:to|the|a|an|my|our|this|that)\s+/i, '')
-    .trim();
-
-  if (!target) return true;
-
-  const firstTargetWords = target.split(/\s+/).slice(0, 4).join(' ');
-  return !SAFE_NON_PERSON_TARGET_PATTERN.test(firstTargetWords);
-}
-
-function focusPayloadHasHumanHarmIntent(
-  payload: FocusSessionCommandPayload | undefined,
-): boolean {
-  return (
-    isLikelyHumanHarmFocusText(payload?.title) ||
-    isLikelyHumanHarmFocusText(payload?.goal)
-  );
-}
-
-function makeHumanHarmFocusRefusal(deps: FocusSafetyDeps): MemoryCommandResult {
-  deps.setActivePanel('memory');
-  return {
-    handled: true,
-    confirmationContent: HUMAN_HARM_FOCUS_REFUSAL,
-    shouldSpeakConfirmation: deps.voiceOutputEnabled,
-  };
-}
-
+const ACTIVE_SESSION_COMMAND_HANDLER_MARKER = 'phase12d-v7-neutral-focus-storage';
 
 function createId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -364,18 +300,22 @@ export function handleMemoryCommand(
       deps.closePanel();
       return { handled: true };
 
-    case 'read-focus-session':
+    case 'read-focus-session': {
       deps.setActivePanel('memory');
+      const activeSession = readStoredActiveSession();
+
       return {
         handled: true,
-        confirmationContent: describeActiveSession(readStoredActiveSession()),
+        confirmationContent: describeActiveSession(activeSession),
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
+    }
 
     case 'read-memory': {
       deps.setActivePanel('memory');
       const activeSession = readStoredActiveSession();
       const memoryReadout = deps.getMemoryReadout();
+
       const focusReadout = activeSession ? describeActiveSession(activeSession) : '';
       const normalizedMemoryReadout = activeSession
         ? memoryReadout.replace(/^No active focus session\.\s*/i, '')
@@ -398,10 +338,6 @@ export function handleMemoryCommand(
         title,
       };
 
-      if (focusPayloadHasHumanHarmIntent(focusPayload)) {
-        return makeHumanHarmFocusRefusal(deps);
-      }
-
       const session = createActiveSession(
         focusPayload,
         title,
@@ -421,11 +357,8 @@ export function handleMemoryCommand(
     case 'update-focus-session': {
       const payload = commandMatch.focusSession ?? {};
 
-      if (focusPayloadHasHumanHarmIntent(payload)) {
-        return makeHumanHarmFocusRefusal(deps);
-      }
-
-      const hadExistingSession = !!readStoredActiveSession();
+      const existingSession = readStoredActiveSession();
+      const hadExistingSession = !!existingSession;
       const updatedSession = updateLocalActiveSession(payload);
 
       applyActiveSession(updatedSession);

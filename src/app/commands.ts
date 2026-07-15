@@ -89,7 +89,7 @@ export interface FocusSessionCommandPayload {
   goal?: string;
 }
 
-// Phase 12D-v4: broaden focus parser so natural set/focus/end phrases stay local.
+// Phase 12D-v7: neutral focus storage plus tighter routing for planning requests.
 
 export interface CommandMatch {
   command: LocalCommand;
@@ -653,12 +653,88 @@ function makeFocusSessionIntent(
   };
 }
 
-function extractFocusSessionIntent(normalized: string): FocusSessionIntent | null {
-  const endPatterns = [
-    /^(?:please\s+)?(?:end|stop|clear|close|leave|exit|finish|wrap\s+up)\s+(?:(?:the|my|current|active)\s+)*(?:(?:general|coding|meeting|planning|research|personal)\s+)?(?:focus|focus\s+session|active\s+session|session|focus\s+mode)$/i,
-    /^(?:please\s+)?(?:i(?:'m|\s+am)|we(?:'re|\s+are))\s+(?:done|finished)\s+(?:with\s+)?(?:(?:the|my|current|active)\s+)*(?:(?:general|coding|meeting|planning|research|personal)\s+)?(?:focus|focus\s+session|active\s+session|session|focus\s+mode)$/i,
+function normalizeFocusCommandPhrase(value: string): string {
+  let text = value
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .replace(/[?!.,;:]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/^(?:hey\s+)?(?:qmeet|orb|assistant)\s+/i, '')
+    .trim();
+
+  for (let index = 0; index < 4; index += 1) {
+    const collapsed = text
+      .replace(/\b(the|my|our|current|active)\s+\1\b/gi, '$1')
+      .replace(/^(end|stop|finish|clear|close|wrap up)\s+\1\b/i, '$1')
+      .replace(/^(end|stop|finish|clear|close|wrap up)\s+(?:end|stop|finish|clear|close|wrap up)\b/i, '$1');
+
+    if (collapsed === text) break;
+    text = collapsed.trim();
+  }
+
+  return text;
+}
+
+function cleanFocusTitlePayload(value: string): string {
+  return cleanCommandPayload(value)
+    .replace(/\s+(?:please|thanks|thank you)$/i, '')
+    .trim();
+}
+
+
+function splitFocusTitleAndGoal(value: string): FocusSessionCommandPayload {
+  const cleaned = cleanFocusTitlePayload(value);
+  const goalPatterns: Array<{
+    pattern: RegExp;
+    readGoal: (match: RegExpMatchArray) => string;
+  }> = [
+    {
+      pattern: /^(.+?)\s+(?:with\s+(?:the\s+)?goal\s+(?:of|to)|goal\s+(?:is|to|of)|and\s+set\s+(?:a\s+)?goal\s+(?:to|of))\s+(.+)$/i,
+      readGoal: (match) => match[2],
+    },
+    {
+      pattern: /^(.+?)\s+(?:so\s+(?:i|we)\s+can|so\s+that\s+(?:i|we)\s+can)\s+(.+)$/i,
+      readGoal: (match) => match[2],
+    },
+    {
+      pattern: /^(.+?)\s+and\s+(tell\s+me|help\s+me|explain|figure\s+out|work\s+on)\s+(.+)$/i,
+      readGoal: (match) => `${match[2]} ${match[3]}`,
+    },
   ];
-  if (endPatterns.some((pattern) => pattern.test(normalized))) {
+
+  for (const { pattern, readGoal } of goalPatterns) {
+    const match = cleaned.match(pattern);
+    const title = match?.[1] ? cleanFocusTitlePayload(match[1]) : '';
+    const goal = match ? cleanFocusTitlePayload(readGoal(match)) : '';
+    if (title && goal) {
+      return { title, goal };
+    }
+  }
+
+  return { title: cleaned };
+}
+
+function maybePersonalMode(value: string): FocusSessionMode | undefined {
+  return /\bpersonal(?:ly)?\b|\bon a personal level\b/i.test(value)
+    ? 'personal'
+    : normalizeFocusSessionMode(value);
+}
+
+function isFocusPlanningQuestionPayload(value: string): boolean {
+  return /\b(?:tell\s+me\s+how|how\s+(?:should|can|do)\s+(?:i|we)|give\s+me\s+(?:a\s+)?plan|make\s+me\s+(?:a\s+)?plan|help\s+me\s+(?:to\s+)?(?:accomplish|complete|do|execute)|accomplish\s+(?:it|this|that|my\s+focus|my\s+goal|the\s+goal|the\s+focus)|doing\s+my\s+focus|do\s+my\s+focus)\b/i.test(value);
+}
+
+function extractFocusSessionIntent(normalized: string): FocusSessionIntent | null {
+  const focusText = normalizeFocusCommandPhrase(normalized);
+
+  const endPatterns = [
+    /^(?:please\s+)?(?:end|stop|clear|close|leave|exit|finish|wrap\s+up)\s+(?:(?:the|my|our|current|active)\s+)*(?:(?:general|coding|code|development|dev|programming|meeting|planning|research|personal)\s+)?(?:focus|focus\s+session|active\s+session|session|focus\s+mode)$/i,
+    /^(?:please\s+)?(?:end|stop|clear|close|leave|exit|finish|wrap\s+up)\s+(?:(?:the|my|our|current|active|this|that)\s+)*(?:(?:general|coding|code|development|dev|programming|meeting|planning|research|personal)\s+)?(?:focus|focus\s+session|active\s+session|session|focus\s+mode|matter|topic|work|thing)$/i,
+    /^(?:please\s+)?(?:i(?:'m|\s+am)|we(?:'re|\s+are))\s+(?:done|finished|complete|through)\s+(?:with\s+)?(?:(?:the|my|our|current|active|this|that)\s+)*(?:(?:general|coding|code|development|dev|programming|meeting|planning|research|personal)\s+)?(?:focus|focus\s+session|active\s+session|session|focus\s+mode|matter|topic|work|thing)$/i,
+    /^(?:please\s+)?(?:we\s+are|we're|i\s+am|i'm)\s+(?:done|finished|complete|through)\s+(?:with\s+)?(?:this|that|the|current)\s+(?:matter|topic|work|thing)$/i,
+    /^(?:please\s+)?(?:that|this)\s+(?:focus|session|matter|topic|work|thing)\s+(?:is\s+)?(?:done|finished|complete|over)$/i,
+  ];
+  if (endPatterns.some((pattern) => pattern.test(focusText))) {
     return makeFocusSessionIntent('end-focus-session');
   }
 
@@ -668,17 +744,34 @@ function extractFocusSessionIntent(normalized: string): FocusSessionIntent | nul
     /^(?:please\s+)?(?:read|show|tell\s+me|summarize|display)\s+(?:the\s+|my\s+|our\s+)?(?:current\s+|active\s+)?(?:focus|focus\s+session|active\s+session)$/i,
     /^(?:focus status|current focus|active focus|my focus|our focus|what's my focus|what's our focus|active session|session status)$/i,
   ];
-  if (readPatterns.some((pattern) => pattern.test(normalized))) {
+  if (readPatterns.some((pattern) => pattern.test(focusText))) {
     return makeFocusSessionIntent('read-focus-session');
   }
 
+  const modeShortcutMatch = focusText.match(
+    /^(general|coding|code|development|dev|programming|meeting|planning|research|personal)\s+(?:focus|focus\s+session|session|mode)$/i,
+  );
+  if (modeShortcutMatch) {
+    const mode = normalizeFocusSessionMode(modeShortcutMatch[1]);
+    if (mode) {
+      const title = defaultFocusSessionTitle(mode);
+      return makeFocusSessionIntent(
+        'start-focus-session',
+        { title, mode },
+        `Started ${mode} focus session: ${title}`,
+      );
+    }
+  }
+
   const goalPatterns = [
-    /^(?:please\s+)?(?:set|change|update)\s+(?:my\s+)?(?:focus\s+)?goal\s+(?:to|as)\s+(.+)$/i,
-    /^(?:please\s+)?(?:my\s+)?goal\s+is\s+(.+)$/i,
+    /^(?:please\s+)?(?:set|change|update)\s+(?:a\s+|the\s+|my\s+|our\s+)?(?:focus\s+)?goal\s+(?:to|as|on)\s+(.+)$/i,
+    /^(?:please\s+)?(?:let(?:'s|\s+us)|lets)\s+set\s+(?:a\s+|the\s+|my\s+|our\s+)?(?:focus\s+)?goal\s+(?:to|as|on)\s+(.+)$/i,
+    /^(?:please\s+)?(?:my|our|the)?\s*goal\s+(?:is|should\s+be|should\s+be\s+to)\s+(.+)$/i,
+    /^(?:please\s+)?(?:make|set)\s+(?:it|this|the\s+focus)\s+(?:my\s+|our\s+)?goal\s+(?:to|as)\s+(.+)$/i,
   ];
   for (const pattern of goalPatterns) {
-    const match = normalized.match(pattern);
-    const goal = match?.[1] ? cleanCommandPayload(match[1]) : '';
+    const match = focusText.match(pattern);
+    const goal = match?.[1] ? cleanFocusTitlePayload(match[1]) : '';
     if (goal) {
       return makeFocusSessionIntent(
         'update-focus-session',
@@ -698,13 +791,15 @@ function extractFocusSessionIntent(normalized: string): FocusSessionIntent | nul
     /^(?:please\s+)?(?:my|our|the|current)\s+focus\s+(?:is|should\s+be)\s+(.+)$/i,
   ];
   for (const pattern of titleUpdatePatterns) {
-    const match = normalized.match(pattern);
-    const title = match?.[1] ? cleanCommandPayload(match[1]) : '';
-    if (title) {
+    const match = focusText.match(pattern);
+    const title = match?.[1] ? cleanFocusTitlePayload(match[1]) : '';
+    if (title && !isFocusPlanningQuestionPayload(title)) {
+      const splitPayload = splitFocusTitleAndGoal(title);
+      const mode = maybePersonalMode(splitPayload.title ?? '') ?? maybePersonalMode(splitPayload.goal ?? '');
       return makeFocusSessionIntent(
         'update-focus-session',
-        { title },
-        `Updated focus: ${title}`,
+        { ...splitPayload, ...(mode ? { mode } : {}) },
+        `Updated focus: ${splitPayload.title ?? title}`,
       );
     }
   }
@@ -713,7 +808,7 @@ function extractFocusSessionIntent(normalized: string): FocusSessionIntent | nul
     /^(?:please\s+)?(?:set|change|update)\s+(?:the\s+)?(?:focus|session)\s+mode\s+(?:to|as)\s+(.+)$/i,
   ];
   for (const pattern of modeUpdatePatterns) {
-    const match = normalized.match(pattern);
+    const match = focusText.match(pattern);
     const mode = normalizeFocusSessionMode(match?.[1]);
     if (mode) {
       return makeFocusSessionIntent(
@@ -729,11 +824,15 @@ function extractFocusSessionIntent(normalized: string): FocusSessionIntent | nul
     read: (match: RegExpMatchArray) => FocusSessionCommandPayload | null;
   }> = [
     {
-      pattern: /^(?:please\s+)?(?:start|begin|create|open)\s+(?:a\s+|the\s+)?(?:(general|coding|meeting|planning|research|personal)\s+)?(?:focus\s+session|focus|session|focus\s+mode)(?:\s+(?:for|on|about|around|called|named|to|with(?:\s+the)?\s+goal\s+(?:of|to))\s+(.+))?$/i,
+      pattern: /^(?:please\s+)?(?:start|begin|create|open)\s+(?:a\s+|the\s+)?(?:(general|coding|code|development|dev|programming|meeting|planning|research|personal)\s+)?(?:focus\s+session|focus|session|focus\s+mode)(?:\s+(?:for|on|about|around|called|named|to|with(?:\s+the)?\s+goal\s+(?:of|to))\s+(.+))?$/i,
       read: (match) => {
         const mode = normalizeFocusSessionMode(match[1]);
-        const title = match[2] ? cleanCommandPayload(match[2]) : defaultFocusSessionTitle(mode);
-        return title ? { title, ...(mode ? { mode } : {}) } : null;
+        const title = match[2] ? cleanFocusTitlePayload(match[2]) : defaultFocusSessionTitle(mode);
+        const splitPayload = splitFocusTitleAndGoal(title);
+        const titleMode = maybePersonalMode(splitPayload.title ?? '') ?? maybePersonalMode(splitPayload.goal ?? '');
+        return splitPayload.title
+          ? { ...splitPayload, ...(mode || titleMode ? { mode: mode ?? titleMode } : {}) }
+          : null;
       },
     },
     {
@@ -741,21 +840,25 @@ function extractFocusSessionIntent(normalized: string): FocusSessionIntent | nul
       read: (match) => {
         const mode = normalizeFocusSessionMode(match[1]);
         if (!mode) return null;
-        const title = match[2] ? cleanCommandPayload(match[2]) : defaultFocusSessionTitle(mode);
-        return { title, mode };
+        const title = match[2] ? cleanFocusTitlePayload(match[2]) : defaultFocusSessionTitle(mode);
+        return { ...splitFocusTitleAndGoal(title), mode };
       },
     },
     {
       pattern: /^(?:please\s+)?(?:start|begin)\s+(?:me\s+|us\s+)?(?:focusing|working)\s+(?:on|around|about)\s+(.+)$/i,
       read: (match) => {
-        const title = match[1] ? cleanCommandPayload(match[1]) : '';
-        return title ? { title, mode: normalizeFocusSessionMode(title) ?? 'general' } : null;
+        const title = match[1] ? cleanFocusTitlePayload(match[1]) : '';
+        if (!title) return null;
+        const splitPayload = splitFocusTitleAndGoal(title);
+        return splitPayload.title
+          ? { ...splitPayload, mode: maybePersonalMode(splitPayload.title) ?? maybePersonalMode(splitPayload.goal ?? '') ?? 'general' }
+          : null;
       },
     },
     {
       pattern: /^(?:please\s+)?(?:switch|change)\s+(?:me\s+)?to\s+(.+?)\s+mode$/i,
       read: (match) => {
-        const title = cleanCommandPayload(match[1]);
+        const title = cleanFocusTitlePayload(match[1]);
         const mode = normalizeFocusSessionMode(title);
         if (!mode) return null;
         return { title: title || defaultFocusSessionTitle(mode), mode };
@@ -764,14 +867,14 @@ function extractFocusSessionIntent(normalized: string): FocusSessionIntent | nul
     {
       pattern: /^(?:i(?:'m|\s+am)|we(?:'re|\s+are))\s+(?:currently\s+)?(?:working|focusing)\s+(?:on|about)\s+(.+)$/i,
       read: (match) => {
-        const title = match[1] ? cleanCommandPayload(match[1]) : '';
-        return title ? { title, mode: normalizeFocusSessionMode(title) ?? 'general' } : null;
+        const title = match[1] ? cleanFocusTitlePayload(match[1]) : '';
+        return title ? { title, mode: maybePersonalMode(title) ?? 'general' } : null;
       },
     },
   ];
 
   for (const { pattern, read } of startPatterns) {
-    const match = normalized.match(pattern);
+    const match = focusText.match(pattern);
     const focusSession = match ? read(match) : null;
     if (focusSession?.title) {
       const modeText = focusSession.mode ? `${focusSession.mode} ` : '';
@@ -785,7 +888,6 @@ function extractFocusSessionIntent(normalized: string): FocusSessionIntent | nul
 
   return null;
 }
-
 
 function extractSearchPayload(normalized: string): { payload: string; confirmationPrefix: string } | null {
   const patterns: Array<{ pattern: RegExp; confirmationPrefix: string; rejectPayload?: (payload: string) => boolean }> = [
