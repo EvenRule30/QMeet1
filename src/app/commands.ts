@@ -89,6 +89,8 @@ export interface FocusSessionCommandPayload {
   goal?: string;
 }
 
+// Phase 12D-v4: broaden focus parser so natural set/focus/end phrases stay local.
+
 export interface CommandMatch {
   command: LocalCommand;
   confirmation: string;
@@ -317,8 +319,9 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
   [
     'end-focus-session',
     [
-      rx(`^${REQUEST_PREFIX}(?:end|stop|clear|close|leave|exit)\s+(?:the\s+)?(?:current\s+)?(?:focus|focus\s+session|active\s+session|session|focus\s+mode)$`),
-      /^(?:end focus|stop focus|clear focus|end session|stop session|exit focus mode)$/i,
+      rx(`^${REQUEST_PREFIX}(?:end|stop|clear|close|leave|exit|finish|wrap\s+up)\s+(?:(?:the|my|current|active)\s+)*(?:(?:general|coding|meeting|planning|research|personal)\s+)?(?:focus|focus\s+session|active\s+session|session|focus\s+mode)$`),
+      rx(`^${REQUEST_PREFIX}(?:i(?:'m|\s+am)|we(?:'re|\s+are))\s+(?:done|finished)\s+(?:with\s+)?(?:(?:the|my|current|active)\s+)*(?:(?:general|coding|meeting|planning|research|personal)\s+)?(?:focus|focus\s+session|active\s+session|session|focus\s+mode)$`),
+      /^(?:end focus|stop focus|clear focus|end session|stop session|exit focus mode|finish focus|wrap up focus)$/i,
     ],
   ],
 
@@ -652,17 +655,18 @@ function makeFocusSessionIntent(
 
 function extractFocusSessionIntent(normalized: string): FocusSessionIntent | null {
   const endPatterns = [
-    /^(?:please\s+)?(?:end|stop|clear|close|leave|exit)\s+(?:the\s+)?(?:current\s+)?(?:focus|focus\s+session|active\s+session|session|focus\s+mode)$/i,
+    /^(?:please\s+)?(?:end|stop|clear|close|leave|exit|finish|wrap\s+up)\s+(?:(?:the|my|current|active)\s+)*(?:(?:general|coding|meeting|planning|research|personal)\s+)?(?:focus|focus\s+session|active\s+session|session|focus\s+mode)$/i,
+    /^(?:please\s+)?(?:i(?:'m|\s+am)|we(?:'re|\s+are))\s+(?:done|finished)\s+(?:with\s+)?(?:(?:the|my|current|active)\s+)*(?:(?:general|coding|meeting|planning|research|personal)\s+)?(?:focus|focus\s+session|active\s+session|session|focus\s+mode)$/i,
   ];
   if (endPatterns.some((pattern) => pattern.test(normalized))) {
     return makeFocusSessionIntent('end-focus-session');
   }
 
   const readPatterns = [
-    /^(?:what(?:'s|\s+is)|what\s+is)\s+(?:my\s+)?(?:current\s+)?focus(?:\s+session)?$/i,
-    /^(?:what\s+am\s+i\s+focused\s+on(?:\s+right\s+now)?|what\s+are\s+we\s+focused\s+on(?:\s+right\s+now)?|what\s+is\s+my\s+focus\s+right\s+now|what\s+am\s+i\s+supposed\s+to\s+be\s+working\s+on|what\s+should\s+i\s+be\s+working\s+on)$/i,
-    /^(?:please\s+)?(?:read|show|tell\s+me|summarize|display)\s+(?:my\s+)?(?:current\s+)?(?:focus|focus\s+session|active\s+session)$/i,
-    /^(?:focus status|current focus|active focus|my focus|what's my focus|active session|session status)$/i,
+    /^(?:what(?:'s|\s+is)|what\s+is)\s+(?:the\s+|my\s+|our\s+)?(?:current\s+|active\s+)?focus(?:\s+session)?$/i,
+    /^(?:what\s+am\s+i\s+focused\s+on(?:\s+right\s+now)?|what\s+are\s+we\s+focused\s+on(?:\s+right\s+now)?|what\s+are\s+we\s+focusing\s+on(?:\s+right\s+now)?|what\s+is\s+my\s+focus\s+right\s+now|what\s+am\s+i\s+supposed\s+to\s+be\s+working\s+on|what\s+should\s+i\s+be\s+working\s+on)$/i,
+    /^(?:please\s+)?(?:read|show|tell\s+me|summarize|display)\s+(?:the\s+|my\s+|our\s+)?(?:current\s+|active\s+)?(?:focus|focus\s+session|active\s+session)$/i,
+    /^(?:focus status|current focus|active focus|my focus|our focus|what's my focus|what's our focus|active session|session status)$/i,
   ];
   if (readPatterns.some((pattern) => pattern.test(normalized))) {
     return makeFocusSessionIntent('read-focus-session');
@@ -686,8 +690,12 @@ function extractFocusSessionIntent(normalized: string): FocusSessionIntent | nul
 
   const titleUpdatePatterns = [
     /^(?:please\s+)?(?:rename|retitle)\s+(?:the\s+)?(?:focus|focus\s+session|active\s+session)\s+(?:to|as|called|named)\s+(.+)$/i,
+    /^(?:please\s+)?(?:set|change|update|make|switch)\s+(?:a\s+|the\s+|my\s+|our\s+|current\s+|active\s+)*(?:focus|focus\s+session|active\s+session)\s+(?:to|on|about|around|as)\s+(.+)$/i,
     /^(?:please\s+)?(?:set|change|update)\s+(?:the\s+)?(?:focus|session)\s+title\s+(?:to|as)\s+(.+)$/i,
-    /^(?:please\s+)?focus\s+(?:me\s+)?(?:on|around)\s+(.+)$/i,
+    /^(?:please\s+)?(?:focus|refocus)\s+(?:me\s+|us\s+)?(?:on|around|about)\s+(.+)$/i,
+    /^(?:please\s+)?(?:let(?:'s|\s+us)|lets)\s+focus\s+(?:on|around|about)\s+(.+)$/i,
+    /^(?:please\s+)?(?:i\s+want\s+to|i\s+need\s+to|we\s+should|we\s+need\s+to|we\s+want\s+to)\s+focus\s+(?:on|around|about)\s+(.+)$/i,
+    /^(?:please\s+)?(?:my|our|the|current)\s+focus\s+(?:is|should\s+be)\s+(.+)$/i,
   ];
   for (const pattern of titleUpdatePatterns) {
     const match = normalized.match(pattern);
@@ -721,7 +729,7 @@ function extractFocusSessionIntent(normalized: string): FocusSessionIntent | nul
     read: (match: RegExpMatchArray) => FocusSessionCommandPayload | null;
   }> = [
     {
-      pattern: /^(?:please\s+)?(?:start|begin|create|open)\s+(?:a\s+|the\s+)?(?:(general|coding|meeting|planning|research|personal)\s+)?(?:focus\s+session|focus|session|focus\s+mode)(?:\s+(?:for|on|about|called|named)\s+(.+))?$/i,
+      pattern: /^(?:please\s+)?(?:start|begin|create|open)\s+(?:a\s+|the\s+)?(?:(general|coding|meeting|planning|research|personal)\s+)?(?:focus\s+session|focus|session|focus\s+mode)(?:\s+(?:for|on|about|around|called|named|to|with(?:\s+the)?\s+goal\s+(?:of|to))\s+(.+))?$/i,
       read: (match) => {
         const mode = normalizeFocusSessionMode(match[1]);
         const title = match[2] ? cleanCommandPayload(match[2]) : defaultFocusSessionTitle(mode);
@@ -729,12 +737,19 @@ function extractFocusSessionIntent(normalized: string): FocusSessionIntent | nul
       },
     },
     {
-      pattern: /^(?:please\s+)?(?:start|begin|create|open)\s+(?:a\s+|the\s+)?(?:focus\s+session|focus|session|focus\s+mode)\s+(?:in|as)\s+(.+?)\s+mode(?:\s+(?:for|on|about)\s+(.+))?$/i,
+      pattern: /^(?:please\s+)?(?:start|begin|create|open)\s+(?:a\s+|the\s+)?(?:focus\s+session|focus|session|focus\s+mode)\s+(?:in|as)\s+(.+?)\s+mode(?:\s+(?:for|on|about|around|to|with(?:\s+the)?\s+goal\s+(?:of|to))\s+(.+))?$/i,
       read: (match) => {
         const mode = normalizeFocusSessionMode(match[1]);
         if (!mode) return null;
         const title = match[2] ? cleanCommandPayload(match[2]) : defaultFocusSessionTitle(mode);
         return { title, mode };
+      },
+    },
+    {
+      pattern: /^(?:please\s+)?(?:start|begin)\s+(?:me\s+|us\s+)?(?:focusing|working)\s+(?:on|around|about)\s+(.+)$/i,
+      read: (match) => {
+        const title = match[1] ? cleanCommandPayload(match[1]) : '';
+        return title ? { title, mode: normalizeFocusSessionMode(title) ?? 'general' } : null;
       },
     },
     {
