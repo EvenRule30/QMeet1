@@ -1,10 +1,28 @@
-import type { ChangeEvent, RefObject } from 'react';
-import type { MemoryTask } from '../types';
+import {
+  type ChangeEvent,
+  type RefObject,
+  useEffect,
+  useState,
+} from 'react';
+
+import type { ActiveSession, MemoryTask } from '../types';
 import type { ResultToast } from '../lib/toastUtils';
 import { formatMemoryTime } from '../lib/memoryUtils';
 
 type MemorySyncState = 'local' | 'syncing' | 'synced' | 'error';
+
 type ToastInput = Omit<ResultToast, 'id' | 'createdAt'> | null;
+
+type ActiveSessionCommandEventDetail = {
+  action: 'start' | 'update' | 'end';
+  title?: string;
+  mode?: ActiveSession['mode'];
+  goal?: string;
+};
+
+type ActiveSessionStateEventDetail = {
+  activeSession: ActiveSession | null;
+};
 
 type MemoryOverlayProps = {
   memorySyncState: MemorySyncState;
@@ -29,6 +47,111 @@ type MemoryOverlayProps = {
   onClose: () => void;
 };
 
+const ACTIVE_SESSION_STORAGE_KEY = 'qmeet-active-session';
+const ACTIVE_SESSION_SESSION_STORAGE_KEY = 'qmeet-active-session-live';
+const ACTIVE_SESSION_COMMAND_EVENT = 'qmeet-active-session-command';
+const ACTIVE_SESSION_STATE_EVENT = 'qmeet-active-session-state';
+const MEMORY_OVERLAY_FOCUS_MARKER = 'phase12c-v3-visible-focus-state-sync';
+
+function normalizeActiveSession(value: unknown): ActiveSession | null {
+  if (!value || typeof value !== 'object') return null;
+
+  const candidate = value as Partial<ActiveSession>;
+  if (typeof candidate.title !== 'string' || !candidate.title.trim()) {
+    return null;
+  }
+
+  const now = new Date().toISOString();
+  const mode =
+    candidate.mode === 'coding' ||
+    candidate.mode === 'meeting' ||
+    candidate.mode === 'planning' ||
+    candidate.mode === 'research' ||
+    candidate.mode === 'personal' ||
+    candidate.mode === 'general'
+      ? candidate.mode
+      : 'general';
+
+  return {
+    id:
+      typeof candidate.id === 'string' && candidate.id
+        ? candidate.id
+        : `session-${Date.now()}`,
+    title: candidate.title.trim(),
+    mode,
+    goal: typeof candidate.goal === 'string' ? candidate.goal : '',
+    startedAt:
+      typeof candidate.startedAt === 'string' ? candidate.startedAt : now,
+    updatedAt:
+      typeof candidate.updatedAt === 'string' ? candidate.updatedAt : now,
+    pinnedNoteIds: Array.isArray(candidate.pinnedNoteIds)
+      ? candidate.pinnedNoteIds.filter(
+          (item): item is string => typeof item === 'string',
+        )
+      : [],
+    linkedTaskIds: Array.isArray(candidate.linkedTaskIds)
+      ? candidate.linkedTaskIds.filter(
+          (item): item is string => typeof item === 'string',
+        )
+      : [],
+    ...(typeof candidate.summary === 'string'
+      ? { summary: candidate.summary }
+      : candidate.summary === null
+        ? { summary: null }
+        : {}),
+  };
+}
+
+function readStoredActiveSession(): ActiveSession | null {
+  if (typeof window === 'undefined') return null;
+
+  try {
+    const rawSession =
+      window.localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY) ??
+      window.sessionStorage.getItem(ACTIVE_SESSION_SESSION_STORAGE_KEY);
+    if (!rawSession) return null;
+    return normalizeActiveSession(JSON.parse(rawSession));
+  } catch {
+    return null;
+  }
+}
+
+function clearStoredActiveSession() {
+  if (typeof window === 'undefined') return;
+
+  try {
+    window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
+    window.sessionStorage.removeItem(ACTIVE_SESSION_SESSION_STORAGE_KEY);
+  } catch {
+    // Local/session storage can fail in restricted browser modes.
+  }
+}
+
+function dispatchActiveSessionState(activeSession: ActiveSession | null) {
+  if (typeof window === 'undefined') return;
+
+  window.dispatchEvent(
+    new CustomEvent<ActiveSessionStateEventDetail>(ACTIVE_SESSION_STATE_EVENT, {
+      detail: { activeSession },
+    }),
+  );
+}
+
+function dispatchActiveSessionCommand(detail: ActiveSessionCommandEventDetail) {
+  if (typeof window === 'undefined') return;
+
+  window.dispatchEvent(
+    new CustomEvent<ActiveSessionCommandEventDetail>(
+      ACTIVE_SESSION_COMMAND_EVENT,
+      { detail },
+    ),
+  );
+}
+
+function formatSessionMode(mode: ActiveSession['mode']) {
+  return mode.charAt(0).toUpperCase() + mode.slice(1);
+}
+
 export function MemoryOverlay({
   memorySyncState,
   memorySyncMessage,
@@ -51,22 +174,109 @@ export function MemoryOverlay({
   pushResultToast,
   onClose,
 }: MemoryOverlayProps) {
+  const [activeSession, setActiveSession] = useState(readStoredActiveSession);
   const openTasks = memoryTasks.filter((task) => !task.completedAt);
   const completedTasks = memoryTasks.filter((task) => task.completedAt);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const refreshStoredSession = () => {
+      setActiveSession(readStoredActiveSession());
+    };
+
+    const handleActiveSessionState = (event: Event) => {
+      const detail = (event as CustomEvent<ActiveSessionStateEventDetail>)
+        .detail;
+      setActiveSession(normalizeActiveSession(detail?.activeSession ?? null));
+    };
+
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === ACTIVE_SESSION_STORAGE_KEY) {
+        refreshStoredSession();
+      }
+    };
+
+    window.addEventListener(ACTIVE_SESSION_STATE_EVENT, handleActiveSessionState);
+    window.addEventListener('storage', handleStorage);
+
+    const intervalId = window.setInterval(refreshStoredSession, 750);
+
+    return () => {
+      window.removeEventListener(
+        ACTIVE_SESSION_STATE_EVENT,
+        handleActiveSessionState,
+      );
+      window.removeEventListener('storage', handleStorage);
+      window.clearInterval(intervalId);
+    };
+  }, []);
 
   return (
     <div className="panel-overlay">
       <div className="panel-content memory-panel">
         <div className="panel-header">Memory</div>
+
         <div className="panel-body memory-panel-body">
           <div className="memory-hero">
             <div>
               <div className="memory-kicker">Backend Memory</div>
-              <div className="memory-title">Tasks, notes, and work context sync to FastAPI, with browser fallback.</div>
+              <div className="memory-title">
+                Tasks, notes, work context, and active focus sync to FastAPI,
+                with browser fallback.
+              </div>
             </div>
+
             <div className={`memory-chip memory-sync-${memorySyncState}`}>
-              {memorySyncState === 'synced' ? 'Synced' : memorySyncState === 'syncing' ? 'Syncing' : 'Local'}
+              {memorySyncState === 'synced'
+                ? 'Synced'
+                : memorySyncState === 'syncing'
+                  ? 'Syncing'
+                  : 'Local'}
             </div>
+          </div>
+
+          <div className="panel-section memory-sync-section">
+            <div className="panel-section-title">Current Focus</div>
+            {activeSession ? (
+              <div className="memory-list">
+                <div className="memory-action-item">
+                  <div className="memory-task-copy">
+                    <div className="memory-action-title">
+                      {activeSession.title}
+                    </div>
+                    <div className="memory-task-meta">
+                      {formatSessionMode(activeSession.mode)} mode · Started{' '}
+                      {formatMemoryTime(activeSession.startedAt)}
+                    </div>
+                    <p className="panel-section-text">
+                      {activeSession.goal
+                        ? `Goal: ${activeSession.goal}`
+                        : 'No goal set yet. Say “set my goal to …” to add one.'}
+                    </p>
+                  </div>
+                  <div className="memory-task-actions">
+                    <button
+                      className="memory-task-delete-btn"
+                      type="button"
+                      onClick={() => {
+                        clearStoredActiveSession();
+                        setActiveSession(null);
+                        dispatchActiveSessionState(null);
+                        dispatchActiveSessionCommand({ action: 'end' });
+                      }}
+                    >
+                      End
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <p className="panel-section-text">
+                No active focus session. Say “start a coding focus session for
+                QMeet Phase 12” to create one.
+              </p>
+            )}
           </div>
 
           <div className="panel-section memory-sync-section">
@@ -77,8 +287,10 @@ export function MemoryOverlay({
           <div className="panel-section">
             <div className="panel-section-title">Memory Controls</div>
             <p className="panel-section-text">
-              Export a backup, import a saved QMeet memory JSON file, or reset stored memory categories.
+              Export a backup, import a saved QMeet memory JSON file, or reset
+              stored memory categories.
             </p>
+
             <input
               ref={memoryImportInputRef}
               type="file"
@@ -86,25 +298,51 @@ export function MemoryOverlay({
               style={{ display: 'none' }}
               onChange={onImportMemoryFile}
             />
+
             <div className="panel-action-row">
-              <button className="panel-action-btn" type="button" onClick={onExportMemory}>
+              <button
+                className="panel-action-btn"
+                type="button"
+                onClick={onExportMemory}
+              >
                 Export JSON
               </button>
-              <button className="panel-action-btn" type="button" onClick={() => memoryImportInputRef.current?.click()}>
+              <button
+                className="panel-action-btn"
+                type="button"
+                onClick={() => memoryImportInputRef.current?.click()}
+              >
                 Import JSON
               </button>
-              <button className="panel-action-btn panel-action-btn-danger" type="button" onClick={onClearAllMemory}>
+              <button
+                className="panel-action-btn panel-action-btn-danger"
+                type="button"
+                onClick={onClearAllMemory}
+              >
                 Clear All
               </button>
             </div>
+
             <div className="panel-action-row">
-              <button className="panel-action-btn panel-action-btn-danger" type="button" onClick={onResetTasksOnly}>
+              <button
+                className="panel-action-btn panel-action-btn-danger"
+                type="button"
+                onClick={onResetTasksOnly}
+              >
                 Reset Tasks
               </button>
-              <button className="panel-action-btn panel-action-btn-danger" type="button" onClick={onResetNotesOnly}>
+              <button
+                className="panel-action-btn panel-action-btn-danger"
+                type="button"
+                onClick={onResetNotesOnly}
+              >
                 Reset Notes
               </button>
-              <button className="panel-action-btn panel-action-btn-danger" type="button" onClick={onResetRecentContextOnly}>
+              <button
+                className="panel-action-btn panel-action-btn-danger"
+                type="button"
+                onClick={onResetRecentContextOnly}
+              >
                 Reset Context
               </button>
             </div>
@@ -138,14 +376,19 @@ export function MemoryOverlay({
           <div className="panel-section">
             <div className="panel-section-title">Open Tasks</div>
             {openTasks.length === 0 ? (
-              <p className="panel-section-text">No open tasks. Say “remember to test the Pi as a task,” or type one above.</p>
+              <p className="panel-section-text">
+                No open tasks. Say “remember to test the Pi as a task,” or type
+                one above.
+              </p>
             ) : (
               <div className="memory-list">
                 {openTasks.map((task) => (
                   <div className="memory-task-item" key={task.id}>
                     <div className="memory-task-copy">
                       <div className="memory-task-title">{task.title}</div>
-                      <div className="memory-task-meta">Saved {formatMemoryTime(task.createdAt)}</div>
+                      <div className="memory-task-meta">
+                        Saved {formatMemoryTime(task.createdAt)}
+                      </div>
                     </div>
                     <div className="memory-task-actions">
                       <button
@@ -155,7 +398,11 @@ export function MemoryOverlay({
                           const completedTask = markMemoryTaskDoneById(task.id);
                           if (completedTask) {
                             addRecentAction('Completed task', completedTask.title);
-                            pushResultToast({ kind: 'success', title: 'Task complete', detail: completedTask.title });
+                            pushResultToast({
+                              kind: 'success',
+                              title: 'Task complete',
+                              detail: completedTask.title,
+                            });
                           }
                         }}
                       >
@@ -167,7 +414,11 @@ export function MemoryOverlay({
                         onClick={() => {
                           const deletedTask = deleteMemoryTask(task.id);
                           if (deletedTask) {
-                            pushResultToast({ kind: 'warning', title: 'Task deleted', detail: deletedTask.title });
+                            pushResultToast({
+                              kind: 'warning',
+                              title: 'Task deleted',
+                              detail: deletedTask.title,
+                            });
                           }
                         }}
                       >
@@ -185,10 +436,18 @@ export function MemoryOverlay({
               <div className="panel-section-title">Completed Tasks</div>
               <div className="memory-list">
                 {completedTasks.map((task) => (
-                  <div className="memory-action-item memory-completed-task" key={task.id}>
+                  <div
+                    className="memory-action-item memory-completed-task"
+                    key={task.id}
+                  >
                     <div className="memory-task-copy">
                       <div className="memory-action-title">{task.title}</div>
-                      <div className="memory-task-meta">Done {task.completedAt ? formatMemoryTime(task.completedAt) : 'recently'}</div>
+                      <div className="memory-task-meta">
+                        Done{' '}
+                        {task.completedAt
+                          ? formatMemoryTime(task.completedAt)
+                          : 'recently'}
+                      </div>
                     </div>
                     <div className="memory-task-actions">
                       <button
@@ -197,7 +456,11 @@ export function MemoryOverlay({
                         onClick={() => {
                           const reopenedTask = reopenMemoryTask(task.id);
                           if (reopenedTask) {
-                            pushResultToast({ kind: 'info', title: 'Task reopened', detail: reopenedTask.title });
+                            pushResultToast({
+                              kind: 'info',
+                              title: 'Task reopened',
+                              detail: reopenedTask.title,
+                            });
                           }
                         }}
                       >
@@ -209,7 +472,11 @@ export function MemoryOverlay({
                         onClick={() => {
                           const deletedTask = deleteMemoryTask(task.id);
                           if (deletedTask) {
-                            pushResultToast({ kind: 'warning', title: 'Task deleted', detail: deletedTask.title });
+                            pushResultToast({
+                              kind: 'warning',
+                              title: 'Task deleted',
+                              detail: deletedTask.title,
+                            });
                           }
                         }}
                       >
@@ -219,6 +486,7 @@ export function MemoryOverlay({
                   </div>
                 ))}
               </div>
+
               <div className="panel-action-row">
                 <button
                   className="panel-action-btn panel-action-btn-danger"
@@ -228,7 +496,10 @@ export function MemoryOverlay({
                     pushResultToast({
                       kind: 'warning',
                       title: 'Completed tasks cleared',
-                      detail: removedCount > 0 ? `${removedCount} removed.` : 'No completed tasks to clear.',
+                      detail:
+                        removedCount > 0
+                          ? `${removedCount} removed.`
+                          : 'No completed tasks to clear.',
                     });
                   }}
                 >
@@ -241,7 +512,11 @@ export function MemoryOverlay({
           <div className="panel-section">
             <div className="panel-section-title">Supported Commands</div>
             <p className="panel-section-text">
-              Say “what was I working on,” “remember to test the Pi as a task,” “mark task done,” “mark test the Pi done,” “clear completed tasks,” or use the task buttons above. Notes and recent actions sync in the background. Use Memory Controls to export, import, or reset stored memory.
+              Say “start a coding focus session for QMeet Phase 12,” “what am I
+              focused on,” “set my goal to wire focus commands,” “end focus
+              session,” “remember to test the Pi as a task,” “mark task done,”
+              or “clear completed tasks.” Notes and recent actions sync in the
+              background.
             </p>
           </div>
 

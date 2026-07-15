@@ -1,4 +1,8 @@
 import {
+  ActiveSessionUpdateRequest,
+  ActiveSessionResponse,
+  ActiveSessionReplaceRequest,
+  ActiveSessionClearResponse,
   BackendStatus,
   CalendarAuthResetResponse,
   CalendarAuthStartResponse,
@@ -256,6 +260,54 @@ export async function getMemoryContext(): Promise<MemoryContextResponse> {
     '/api/memory/context',
     undefined,
     'Memory context error.',
+  );
+}
+
+export async function getActiveSession(): Promise<ActiveSessionResponse> {
+  return fetchJson<ActiveSessionResponse>(
+    '/api/memory/session',
+    undefined,
+    'Active session error.',
+  );
+}
+
+export async function replaceActiveSession(
+  request: ActiveSessionReplaceRequest,
+): Promise<ActiveSessionResponse> {
+  return fetchJson<ActiveSessionResponse>(
+    '/api/memory/session',
+    {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
+    },
+    'Active session replace error.',
+  );
+}
+
+export async function updateActiveSession(
+  request: ActiveSessionUpdateRequest,
+): Promise<ActiveSessionResponse> {
+  return fetchJson<ActiveSessionResponse>(
+    '/api/memory/session',
+    {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
+    },
+    'Active session update error.',
+  );
+}
+
+export async function clearActiveSession(): Promise<ActiveSessionClearResponse> {
+  return fetchJson<ActiveSessionClearResponse>(
+    '/api/memory/session',
+    { method: 'DELETE' },
+    'Active session clear error.',
   );
 }
 

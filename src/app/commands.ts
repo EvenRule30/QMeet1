@@ -17,6 +17,10 @@ export type LocalCommand =
   | 'open-memory'
   | 'close-memory'
   | 'read-memory'
+  | 'start-focus-session'
+  | 'update-focus-session'
+  | 'read-focus-session'
+  | 'end-focus-session'
   | 'remember-task'
   | 'mark-task-done'
   | 'delete-last-task'
@@ -71,6 +75,20 @@ export interface CalendarDeleteCommandPayload {
   title?: string;
 }
 
+export type FocusSessionMode =
+  | 'general'
+  | 'coding'
+  | 'meeting'
+  | 'planning'
+  | 'research'
+  | 'personal';
+
+export interface FocusSessionCommandPayload {
+  title?: string;
+  mode?: FocusSessionMode;
+  goal?: string;
+}
+
 export interface CommandMatch {
   command: LocalCommand;
   confirmation: string;
@@ -78,11 +96,12 @@ export interface CommandMatch {
   calendarEvent?: CalendarCommandPayload;
   calendarEdit?: CalendarEditCommandPayload;
   calendarDelete?: CalendarDeleteCommandPayload;
+  focusSession?: FocusSessionCommandPayload;
   calendarView?: 'today' | 'tomorrow' | 'all';
 }
 
 const HELP_MESSAGE =
-  "I'm QMeet, your local AI orb interface. I can control the local UI without sending those commands to OpenAI. I can open Menu, Settings, Status, Notes, Memory, Calendar, and real Web Search. Notes: say \"note that buy milk,\" \"read my notes,\" or \"delete last note.\" Memory/tasks: say \"what was I working on,\" \"remember to test the Pi as a task,\" \"mark task done,\" or \"open memory.\" Search: say \"search for raspberry pi kiosk mode,\" \"look up chromium flags,\" or \"clear search\" to run real web searches. Calendar: say \"add event tomorrow at 3 called meeting,\" \"reschedule last event to tomorrow at 4,\" \"rename last event to project sync,\" \"show today's events,\" \"what's on my calendar,\" \"refresh calendar,\" \"delete last event,\" or \"clear calendar.\" Voice: say \"mute voice,\" \"unmute voice,\" \"speak slower,\" \"speak faster,\" or \"normal voice.\" Navigation: say \"go home,\" \"close panel,\" \"cancel,\" or \"what did you hear.\"";
+  "I'm QMeet, your local AI orb interface. I can control the local UI without sending those commands to OpenAI. I can open Menu, Settings, Status, Notes, Memory, Calendar, and real Web Search. Notes: say \"note that buy milk,\" \"read my notes,\" or \"delete last note.\" Memory/tasks: say \"what was I working on,\" \"start a coding session for Phase 12,\" \"set my goal to wire focus commands,\" \"remember to test the Pi as a task,\" \"mark task done,\" or \"open memory.\" Search: say \"search for raspberry pi kiosk mode,\" \"look up chromium flags,\" or \"clear search\" to run real web searches. Calendar: say \"add event tomorrow at 3 called meeting,\" \"reschedule last event to tomorrow at 4,\" \"rename last event to project sync,\" \"show today's events,\" \"what's on my calendar,\" \"refresh calendar,\" \"delete last event,\" or \"clear calendar.\" Voice: say \"mute voice,\" \"unmute voice,\" \"speak slower,\" \"speak faster,\" or \"normal voice.\" Navigation: say \"go home,\" \"close panel,\" \"cancel,\" or \"what did you hear.\"";
 
 const CONFIRMATIONS: Record<LocalCommand, string> = {
   help: HELP_MESSAGE,
@@ -105,6 +124,10 @@ const CONFIRMATIONS: Record<LocalCommand, string> = {
   'open-memory': 'Opening memory.',
   'close-memory': 'Closed memory.',
   'read-memory': 'Reading memory.',
+  'start-focus-session': 'Started focus session.',
+  'update-focus-session': 'Updated focus session.',
+  'read-focus-session': 'Reading focus session.',
+  'end-focus-session': 'Ended focus session.',
   'remember-task': 'Saved task.',
   'mark-task-done': 'Marked task done.',
   'delete-last-task': 'Deleted the last task.',
@@ -282,6 +305,23 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
       rx(`^${REQUEST_PREFIX}(?:read|show|summarize|display|tell\\s+me)\\s+(?:my\\s+)?(?:memory|tasks?|task\\s+list|work\\s+log)$`),
     ],
   ],
+  [
+    'read-focus-session',
+    [
+      /^(?:what(?:'s|\s+is)|what\s+is)\s+(?:my\s+)?(?:current\s+)?focus(?:\s+session)?$/i,
+      /^(?:what\s+am\s+i\s+focused\s+on(?:\s+right\s+now)?|what\s+are\s+we\s+focused\s+on(?:\s+right\s+now)?|what\s+is\s+my\s+focus\s+right\s+now|what\s+am\s+i\s+supposed\s+to\s+be\s+working\s+on|what\s+should\s+i\s+be\s+working\s+on)$/i,
+      rx(`^${REQUEST_PREFIX}(?:read|show|tell\s+me|summarize|display)\s+(?:my\s+)?(?:current\s+)?(?:focus|focus\s+session|active\s+session)$`),
+      /^(?:focus status|current focus|active focus|my focus|what's my focus|active session|session status)$/i,
+    ],
+  ],
+  [
+    'end-focus-session',
+    [
+      rx(`^${REQUEST_PREFIX}(?:end|stop|clear|close|leave|exit)\s+(?:the\s+)?(?:current\s+)?(?:focus|focus\s+session|active\s+session|session|focus\s+mode)$`),
+      /^(?:end focus|stop focus|clear focus|end session|stop session|exit focus mode)$/i,
+    ],
+  ],
+
   [
     'delete-last-task',
     [
@@ -555,6 +595,177 @@ function extractTaskDonePayload(normalized: string): string | null {
     const match = normalized.match(pattern);
     const payload = match?.[1] ? cleanCommandPayload(match[1]) : '';
     if (payload) return payload;
+  }
+
+  return null;
+}
+
+
+function normalizeFocusSessionMode(value: string | undefined): FocusSessionMode | undefined {
+  const normalized = value ? cleanCommandPayload(value).toLowerCase() : '';
+  if (!normalized) return undefined;
+
+  if (/\b(?:code|coding|development|dev|programming)\b/.test(normalized)) return 'coding';
+  if (/\b(?:meeting|meetings|prep|standup|sync)\b/.test(normalized)) return 'meeting';
+  if (/\b(?:plan|planning|roadmap|strategy)\b/.test(normalized)) return 'planning';
+  if (/\b(?:research|search|investigation|study)\b/.test(normalized)) return 'research';
+  if (/\b(?:personal|life|home)\b/.test(normalized)) return 'personal';
+  if (/\b(?:general|default)\b/.test(normalized)) return 'general';
+
+  return undefined;
+}
+
+function defaultFocusSessionTitle(mode: FocusSessionMode | undefined): string {
+  switch (mode) {
+    case 'coding':
+      return 'Coding session';
+    case 'meeting':
+      return 'Meeting session';
+    case 'planning':
+      return 'Planning session';
+    case 'research':
+      return 'Research session';
+    case 'personal':
+      return 'Personal session';
+    default:
+      return 'Focus session';
+  }
+}
+
+type FocusSessionIntent = {
+  command: 'start-focus-session' | 'update-focus-session' | 'read-focus-session' | 'end-focus-session';
+  focusSession?: FocusSessionCommandPayload;
+  confirmation?: string;
+};
+
+function makeFocusSessionIntent(
+  command: FocusSessionIntent['command'],
+  focusSession?: FocusSessionCommandPayload,
+  confirmation?: string,
+): FocusSessionIntent {
+  return {
+    command,
+    ...(focusSession ? { focusSession } : {}),
+    ...(confirmation ? { confirmation } : {}),
+  };
+}
+
+function extractFocusSessionIntent(normalized: string): FocusSessionIntent | null {
+  const endPatterns = [
+    /^(?:please\s+)?(?:end|stop|clear|close|leave|exit)\s+(?:the\s+)?(?:current\s+)?(?:focus|focus\s+session|active\s+session|session|focus\s+mode)$/i,
+  ];
+  if (endPatterns.some((pattern) => pattern.test(normalized))) {
+    return makeFocusSessionIntent('end-focus-session');
+  }
+
+  const readPatterns = [
+    /^(?:what(?:'s|\s+is)|what\s+is)\s+(?:my\s+)?(?:current\s+)?focus(?:\s+session)?$/i,
+    /^(?:what\s+am\s+i\s+focused\s+on(?:\s+right\s+now)?|what\s+are\s+we\s+focused\s+on(?:\s+right\s+now)?|what\s+is\s+my\s+focus\s+right\s+now|what\s+am\s+i\s+supposed\s+to\s+be\s+working\s+on|what\s+should\s+i\s+be\s+working\s+on)$/i,
+    /^(?:please\s+)?(?:read|show|tell\s+me|summarize|display)\s+(?:my\s+)?(?:current\s+)?(?:focus|focus\s+session|active\s+session)$/i,
+    /^(?:focus status|current focus|active focus|my focus|what's my focus|active session|session status)$/i,
+  ];
+  if (readPatterns.some((pattern) => pattern.test(normalized))) {
+    return makeFocusSessionIntent('read-focus-session');
+  }
+
+  const goalPatterns = [
+    /^(?:please\s+)?(?:set|change|update)\s+(?:my\s+)?(?:focus\s+)?goal\s+(?:to|as)\s+(.+)$/i,
+    /^(?:please\s+)?(?:my\s+)?goal\s+is\s+(.+)$/i,
+  ];
+  for (const pattern of goalPatterns) {
+    const match = normalized.match(pattern);
+    const goal = match?.[1] ? cleanCommandPayload(match[1]) : '';
+    if (goal) {
+      return makeFocusSessionIntent(
+        'update-focus-session',
+        { goal },
+        `Updated focus goal: ${goal}`,
+      );
+    }
+  }
+
+  const titleUpdatePatterns = [
+    /^(?:please\s+)?(?:rename|retitle)\s+(?:the\s+)?(?:focus|focus\s+session|active\s+session)\s+(?:to|as|called|named)\s+(.+)$/i,
+    /^(?:please\s+)?(?:set|change|update)\s+(?:the\s+)?(?:focus|session)\s+title\s+(?:to|as)\s+(.+)$/i,
+    /^(?:please\s+)?focus\s+(?:me\s+)?(?:on|around)\s+(.+)$/i,
+  ];
+  for (const pattern of titleUpdatePatterns) {
+    const match = normalized.match(pattern);
+    const title = match?.[1] ? cleanCommandPayload(match[1]) : '';
+    if (title) {
+      return makeFocusSessionIntent(
+        'update-focus-session',
+        { title },
+        `Updated focus: ${title}`,
+      );
+    }
+  }
+
+  const modeUpdatePatterns = [
+    /^(?:please\s+)?(?:set|change|update)\s+(?:the\s+)?(?:focus|session)\s+mode\s+(?:to|as)\s+(.+)$/i,
+  ];
+  for (const pattern of modeUpdatePatterns) {
+    const match = normalized.match(pattern);
+    const mode = normalizeFocusSessionMode(match?.[1]);
+    if (mode) {
+      return makeFocusSessionIntent(
+        'update-focus-session',
+        { mode },
+        `Updated focus mode: ${mode}`,
+      );
+    }
+  }
+
+  const startPatterns: Array<{
+    pattern: RegExp;
+    read: (match: RegExpMatchArray) => FocusSessionCommandPayload | null;
+  }> = [
+    {
+      pattern: /^(?:please\s+)?(?:start|begin|create|open)\s+(?:a\s+|the\s+)?(?:(general|coding|meeting|planning|research|personal)\s+)?(?:focus\s+session|focus|session|focus\s+mode)(?:\s+(?:for|on|about|called|named)\s+(.+))?$/i,
+      read: (match) => {
+        const mode = normalizeFocusSessionMode(match[1]);
+        const title = match[2] ? cleanCommandPayload(match[2]) : defaultFocusSessionTitle(mode);
+        return title ? { title, ...(mode ? { mode } : {}) } : null;
+      },
+    },
+    {
+      pattern: /^(?:please\s+)?(?:start|begin|create|open)\s+(?:a\s+|the\s+)?(?:focus\s+session|focus|session|focus\s+mode)\s+(?:in|as)\s+(.+?)\s+mode(?:\s+(?:for|on|about)\s+(.+))?$/i,
+      read: (match) => {
+        const mode = normalizeFocusSessionMode(match[1]);
+        if (!mode) return null;
+        const title = match[2] ? cleanCommandPayload(match[2]) : defaultFocusSessionTitle(mode);
+        return { title, mode };
+      },
+    },
+    {
+      pattern: /^(?:please\s+)?(?:switch|change)\s+(?:me\s+)?to\s+(.+?)\s+mode$/i,
+      read: (match) => {
+        const title = cleanCommandPayload(match[1]);
+        const mode = normalizeFocusSessionMode(title);
+        if (!mode) return null;
+        return { title: title || defaultFocusSessionTitle(mode), mode };
+      },
+    },
+    {
+      pattern: /^(?:i(?:'m|\s+am)|we(?:'re|\s+are))\s+(?:currently\s+)?(?:working|focusing)\s+(?:on|about)\s+(.+)$/i,
+      read: (match) => {
+        const title = match[1] ? cleanCommandPayload(match[1]) : '';
+        return title ? { title, mode: normalizeFocusSessionMode(title) ?? 'general' } : null;
+      },
+    },
+  ];
+
+  for (const { pattern, read } of startPatterns) {
+    const match = normalized.match(pattern);
+    const focusSession = match ? read(match) : null;
+    if (focusSession?.title) {
+      const modeText = focusSession.mode ? `${focusSession.mode} ` : '';
+      return makeFocusSessionIntent(
+        'start-focus-session',
+        focusSession,
+        `Started ${modeText}focus session: ${focusSession.title}`,
+      );
+    }
   }
 
   return null;
@@ -989,6 +1200,21 @@ export function debugCommandParse(text: string): {
       .replace(/^(?:hey\s+)?(?:qmeet|orb|assistant)\s+/i, '')
       .trim();
   
+    const focusSessionIntent = extractFocusSessionIntent(payloadSource);
+    if (focusSessionIntent) {
+      return {
+        rawText: text,
+        normalizedText: normalized,
+        match: {
+          command: focusSessionIntent.command,
+          confirmation: focusSessionIntent.confirmation ?? CONFIRMATIONS[focusSessionIntent.command],
+          ...(focusSessionIntent.focusSession
+            ? { focusSession: focusSessionIntent.focusSession }
+            : {}),
+        },
+      };
+    }
+
     const taskPayload = extractTaskPayload(payloadSource);
     if (taskPayload) {
       return {
