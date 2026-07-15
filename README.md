@@ -1,20 +1,46 @@
 # QMeet
 
-QMeet is a voice-first AI tablet interface for the Chascii orb prototype. The frontend is a React/Vite app built around an interactive orb UI, and the backend is a FastAPI service for chat, web search, and Google Calendar actions.
+QMeet is a voice-first AI tablet interface for the Chascii orb prototype. The frontend is a React/Vite app built around an interactive orb UI, and the backend is a FastAPI service for chat, command interpretation, web search, Google Calendar actions, and persistent memory.
 
-## What works
+The current prototype target is a 1024x600 Raspberry Pi/tablet-style screen. Laptop development remains normal browser development, while Pi kiosk behavior is kept in the launcher script and Pi documentation.
+
+## Current status
+
+QMeet currently supports:
 
 - Text and browser voice input
 - Spoken responses through browser speech synthesis
 - OpenAI-backed chat streaming
-- Local command routing before normal chat
+- Immediate orb feedback while spoken prompts are routed
+- Local exact command routing before normal chat
+- Backend fuzzy command interpretation for natural phrasing
+- Command/result toast cards
 - Web search result cards
-- Local notes
-- Backend-backed memory/tasks/notes/work context
+- Notes
+- Backend-backed persistent memory for tasks, notes, and recent actions
 - Memory import/export/reset controls
-- Google Calendar read/create/edit/delete with confirmations
-- 1024×600 tablet/kiosk layout polish
+- Google Calendar read/create/edit/delete with confirmation gates
+- 1024x600 tablet/kiosk layout polish
 - Raspberry Pi Chromium kiosk launcher in `scripts/pi-kiosk-start.sh`
+
+## Phase status
+
+```text
+Phase 1   Browser speech input
+Phase 2   Local UI commands
+Phase 3   Browser speech output
+Phase 4   Notes, local tools, settings
+Phase 5   Fuzzy command interpreter and confirmations
+Phase 6   Google Calendar read/create/delete/edit
+Phase 7   Web search and result cards
+Phase 8   Orb activity UI, tablet/kiosk polish, Pi launcher, docs cleanup
+Phase 9   Local memory/task persistence and frontend refactor work
+Phase 10  Backend-backed persistent memory
+Phase 11  Regression audit and bug-fix hardening
+Phase 12  Planned: active context / focus sessions
+```
+
+Phase 12 is intended to add an active context layer so QMeet can understand the user's current work mode, goal, and session state. Future camera/video support should plug into that context layer as another perception source instead of being built as an isolated feature.
 
 ## Requirements
 
@@ -44,7 +70,6 @@ OPENAI_API_KEY=your_openai_key_here
 OPENAI_MODEL=gpt-4.1-mini
 OPENAI_MAX_OUTPUT_TOKENS=300
 FRONTEND_ORIGIN=http://localhost:5173
-
 GOOGLE_CALENDAR_ENABLED=true
 GOOGLE_CALENDAR_WRITE_ENABLED=true
 GOOGLE_CALENDAR_CREDENTIALS_FILE=google_credentials.json
@@ -93,6 +118,8 @@ npm run build
 Invoke-RestMethod http://localhost:8000/api/status
 Invoke-RestMethod http://localhost:8000/api/calendar/status
 Invoke-RestMethod "http://localhost:8000/api/calendar/events?view=today"
+Invoke-RestMethod http://localhost:8000/api/memory/status
+Invoke-RestMethod http://localhost:8000/api/memory/context
 ```
 
 Useful QMeet prompts:
@@ -112,6 +139,17 @@ delete the 12:00 PM event tomorrow
 go home
 ```
 
+Phase 12 planned prompts:
+
+```text
+start focus session on QMeet Phase 12
+set my goal to design camera support
+what is my current focus
+summarize this session
+save this session to memory
+end focus session
+```
+
 ## Raspberry Pi kiosk mode
 
 Laptop development is unchanged. The Pi kiosk setup is separate and documented in:
@@ -128,9 +166,35 @@ chmod +x scripts/pi-kiosk-start.sh
 QMEET_URL=http://YOUR_LAPTOP_IP:5173 ./scripts/pi-kiosk-start.sh
 ```
 
+For Pi testing against a laptop-hosted backend, make sure the frontend `.env.local` uses the laptop LAN IP, not `localhost`:
+
+```env
+VITE_QMEET_API_URL=http://YOUR_LAPTOP_IP:8000
+```
+
+Restart Vite after changing `.env.local`.
+
+## Persistent memory
+
+QMeet's primary memory store is backend-local JSON:
+
+```text
+backend/data/qmeet_memory.json
+```
+
+It currently stores:
+
+```text
+tasks
+notes
+recentActions
+```
+
+The frontend still keeps browser `localStorage` fallback copies so the UI can recover gracefully if the backend is unavailable. Backend memory is treated as primary after it has been initialized, including the case where the backend memory is intentionally empty.
+
 ## Local browser storage
 
-These are browser-local prototype stores. Clearing site data or switching browsers/devices can hide or remove them.
+These browser-local keys are still used for fallback state and UI preferences:
 
 ```text
 qmeet-notes
@@ -141,7 +205,7 @@ qmeet-voice-output-enabled
 qmeet-speech-rate
 ```
 
-Google Calendar OAuth tokens are backend-local files, not browser storage.
+Clearing site data or switching browsers/devices can affect fallback state and preferences. Google Calendar OAuth tokens are backend-local files, not browser storage.
 
 ## Do not commit secrets
 
@@ -154,17 +218,20 @@ backend/google_credentials.json
 backend/token_calendar_readonly.json
 backend/token_calendar_events.json
 backend/calendar_auth_state.json
+backend/data/qmeet_memory.json
 ```
 
 ## More docs
 
-- `docs/development.md` — setup details, API endpoints, Google Calendar notes, troubleshooting
-- `docs/pi-kiosk.md` — Raspberry Pi kiosk launch/autostart notes
+- `docs/development.md` - setup details, API endpoints, phase history, testing, troubleshooting
+- `docs/architecture.md` - current frontend/backend architecture snapshot
+- `docs/pi-kiosk.md` - Raspberry Pi kiosk launch/autostart notes
+- `docs/phase-12-context-engine.md` - planned active context/focus-session design
 
 ## Project structure
 
 ```text
-QMeet1-1/
+repo root
 ├─ src/app/
 │  ├─ App.tsx
 │  ├─ api.ts
@@ -213,7 +280,9 @@ QMeet1-1/
 │     ├─ chat.py
 │     ├─ command.py
 │     ├─ memory.py
+│     ├─ memory_state.py
 │     └─ search.py
 ├─ docs/
+├─ guidelines/
 └─ scripts/
 ```

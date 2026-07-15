@@ -2,6 +2,18 @@
 
 This file keeps detailed project/setup information out of the main README.
 
+## Current project state
+
+QMeet is currently past Phase 11 and ready to begin Phase 12.
+
+```text
+Phase 10 completed: backend-backed persistent memory
+Phase 11 completed/in progress: regression audit and bug hardening
+Phase 12 next: active context / focus sessions
+```
+
+The most important current architecture rule is that backend memory is primary after initialization. Browser `localStorage` is still used as a fallback and migration source, but it should not overwrite an intentionally empty backend memory file.
+
 ## Architecture
 
 ```text
@@ -10,16 +22,17 @@ QMeet
 │  ├─ interactive orb UI
 │  ├─ browser speech recognition
 │  ├─ browser speech synthesis
-│  ├─ local command parser
-│  ├─ local notes
-│  ├─ local memory/tasks
-│  ├─ Google Calendar panel
-│  └─ web search panel
+│  ├─ local exact command parser
+│  ├─ backend fuzzy command interpreter client
+│  ├─ command/result toast cards
+│  ├─ notes, memory, calendar, search, settings, status panels
+│  └─ chat streaming controller
 └─ FastAPI backend
    ├─ OpenAI chat streaming
    ├─ OpenAI web search wrapper
    ├─ command interpretation endpoint
-   └─ Google Calendar OAuth/API integration
+   ├─ Google Calendar OAuth/API integration
+   └─ backend-local JSON memory store
 ```
 
 ## Main local URLs
@@ -29,7 +42,7 @@ Frontend: http://localhost:5173
 Backend:  http://localhost:8000
 ```
 
-For testing from a Raspberry Pi on the same network, set the frontend API URL to the laptop IP:
+For testing from a Raspberry Pi or another device on the same network, set the frontend API URL to the laptop IP:
 
 ```env
 VITE_QMEET_API_URL=http://YOUR_LAPTOP_IP:8000
@@ -73,7 +86,6 @@ OPENAI_API_KEY=your_openai_key_here
 OPENAI_MODEL=gpt-4.1-mini
 OPENAI_MAX_OUTPUT_TOKENS=300
 FRONTEND_ORIGIN=http://localhost:5173
-
 GOOGLE_CALENDAR_ENABLED=true
 GOOGLE_CALENDAR_WRITE_ENABLED=true
 GOOGLE_CALENDAR_CREDENTIALS_FILE=google_credentials.json
@@ -97,24 +109,59 @@ Pi testing against laptop-hosted backend:
 VITE_QMEET_API_URL=http://YOUR_LAPTOP_IP:8000
 ```
 
-## Local frontend storage
+Restart Vite after changing `.env.local`.
 
-QMeet currently uses browser `localStorage` for prototype-local state.
+## Persistent memory
+
+Primary memory lives in:
 
 ```text
-qmeet-notes                  saved local notes
+backend/data/qmeet_memory.json
+```
+
+Current stored categories:
+
+```text
+tasks
+notes
+recentActions
+```
+
+The backend memory store is file-based and prototype-local. Phase 11 hardened it with atomic writes and an in-process lock so overlapping memory saves are less likely to corrupt or lose data.
+
+The frontend memory hook keeps browser fallback copies under:
+
+```text
+qmeet-notes
+qmeet-memory-tasks
+qmeet-recent-actions
+```
+
+Important behavior:
+
+```text
+- If backend memory has never been initialized, browser fallback memory can migrate into it.
+- If backend memory exists but is empty, that empty state is treated as intentional.
+- Memory import/export/reset should operate through backend memory first.
+- Browser fallback should recover UI state when backend is unavailable, not become the source of truth forever.
+```
+
+## Local browser storage
+
+QMeet currently uses these browser keys for fallback state and UI preferences:
+
+```text
+qmeet-notes                  fallback note copy
 qmeet-calendar-events        local fallback calendar events
-qmeet-memory-tasks           local task/memory list
+qmeet-memory-tasks           fallback task/memory list
 qmeet-recent-actions         compact recent action log used by memory readout
 qmeet-voice-output-enabled   voice output setting
 qmeet-speech-rate            speech speed setting
 ```
 
-Notes, local calendar events, memory tasks, voice settings, and recent actions are browser-local. They are not synchronized between laptop, Pi, or different browsers.
+Voice settings and local fallback state are browser-local. Backend memory and Google Calendar tokens are backend-local.
 
 ## Local memory / tasks
-
-Phase 9A added local task persistence. It does not require a backend or database.
 
 Main commands:
 
@@ -131,12 +178,11 @@ close memory
 Behavior:
 
 ```text
-Open Tasks       visible in Memory panel
-Completed Tasks  visible in Memory panel until cleared
-Recent Actions   stored internally for summary context, hidden from panel UI
+Open Tasks visible in Memory panel
+Completed Tasks visible in Memory panel until cleared
+Recent Actions stored internally for summary context, hidden from panel UI
+Destructive task actions are confirmation-gated through the existing command safety flow
 ```
-
-Destructive task actions are confirmation-gated through the existing command safety flow.
 
 ## Google Calendar setup
 
@@ -148,9 +194,7 @@ token_calendar_events.json
 calendar_auth_state.json
 ```
 
-`google_credentials.json` comes from Google Cloud OAuth credentials. The token/state files are generated locally after authorization.
-
-Calendar writing is guarded by frontend confirmations for destructive or real-calendar actions.
+`google_credentials.json` comes from Google Cloud OAuth credentials. The token/state files are generated locally after authorization. Calendar writing is guarded by frontend confirmations for destructive or real-calendar actions.
 
 Examples:
 
@@ -161,6 +205,8 @@ reschedule last event to tomorrow at 4
 rename last event to project sync
 ```
 
+Phase 11 hardened cold-start calendar delete/edit behavior so confirmed operations refresh Google Calendar before resolving the target event when connected.
+
 ## Useful API checks
 
 ```powershell
@@ -168,6 +214,9 @@ Invoke-RestMethod http://localhost:8000/api/status
 Invoke-RestMethod http://localhost:8000/api/calendar/status
 Invoke-RestMethod "http://localhost:8000/api/calendar/events?view=today"
 Invoke-RestMethod "http://localhost:8000/api/calendar/events?view=tomorrow"
+Invoke-RestMethod http://localhost:8000/api/memory/status
+Invoke-RestMethod http://localhost:8000/api/memory/context
+Invoke-RestMethod http://localhost:8000/api/memory/export
 ```
 
 Search test:
@@ -188,6 +237,16 @@ Invoke-RestMethod `
   -Method POST `
   -ContentType "application/json" `
   -Body '{"title":"QMeet test event","day":"tomorrow","time":"3 PM"}'
+```
+
+Memory context test:
+
+```powershell
+Invoke-RestMethod `
+  -Uri "http://localhost:8000/api/memory/tasks" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body '{"title":"Test persistent memory"}'
 ```
 
 ## Frontend command examples
@@ -223,13 +282,27 @@ go home
 end chat
 ```
 
+Phase 12 planned command examples:
+
+```text
+start focus session on QMeet Phase 12
+start coding mode
+set my goal to design camera support
+what is my current focus
+summarize this session
+save this session to memory
+end focus session
+```
+
 ## Layout notes
 
-The UI target is Raspberry Pi 1024×600 landscape. Normal laptop development should still use the browser/devtools workflow:
+The UI target is Raspberry Pi 1024x600 landscape.
+
+Normal laptop development should still use the browser/devtools workflow:
 
 ```text
 npm run dev
-Chrome DevTools → responsive mode → 1024×600
+Chrome DevTools -> responsive mode -> 1024x600
 ```
 
 The React app should not force fullscreen, block devtools, hide the cursor globally, or assume it is always running on the Pi. Pi behavior belongs in `scripts/pi-kiosk-start.sh` and `docs/pi-kiosk.md`.
@@ -247,18 +320,37 @@ FRONTEND_ORIGIN matches the frontend URL
 Vite was restarted after env changes
 ```
 
+For Pi/laptop testing, do not use `localhost` from the Pi unless the backend is also running on the Pi. Use the laptop LAN IP.
+
 ### Voice input does not work
 
 Browser speech recognition depends on browser support and microphone permissions. Chrome/Chromium is the expected browser path.
 
+### Orb looks ready after speech, before the answer starts
+
+This should be fixed by the Phase 11 voice feedback patch. After final speech transcript submission, the orb should immediately enter a thinking/routing state while command interpretation or chat startup runs.
+
 ### Memory/tasks disappeared
 
-Memory/tasks are in browser localStorage. Check that you are using the same browser/profile and did not clear site data.
-
-Browser devtools check:
+Check whether the backend memory file exists:
 
 ```text
-Application → Local storage → qmeet-memory-tasks
+backend/data/qmeet_memory.json
+```
+
+Check backend memory status:
+
+```powershell
+Invoke-RestMethod http://localhost:8000/api/memory/status
+Invoke-RestMethod http://localhost:8000/api/memory/context
+```
+
+Browser fallback can also be inspected in DevTools:
+
+```text
+Application -> Local storage -> qmeet-memory-tasks
+Application -> Local storage -> qmeet-notes
+Application -> Local storage -> qmeet-recent-actions
 ```
 
 ### Google Calendar says not connected
@@ -295,6 +387,7 @@ backend/google_credentials.json
 backend/token_calendar_readonly.json
 backend/token_calendar_events.json
 backend/calendar_auth_state.json
+backend/data/qmeet_memory.json
 ```
 
 ## Completed phase summary
@@ -310,8 +403,35 @@ Phase 7   Web search + result cards
 Phase 8A  Voice-first orb activity UI
 Phase 8B  Short spoken tool replies
 Phase 8C  Command/result toast cards
-Phase 8D  1024×600 tablet/kiosk layout polish
+Phase 8D  1024x600 tablet/kiosk layout polish
 Phase 8E  Raspberry Pi kiosk launcher/docs
 Phase 8F  Compact README/docs cleanup
 Phase 9A  Local memory/task persistence
+Phase 9G  Frontend architecture/refactor arc
+Phase 10  Backend-backed persistent memory
+Phase 11  Regression audit and hardening
+```
+
+## Phase 11 regression hardening log
+
+Recent fixes from the Phase 11 audit:
+
+```text
+- Backend memory writes are locked and atomic.
+- Task completion PATCH handling preserves completedAt when the field is omitted.
+- Duplicate close-memory toast switch case removed.
+- Chat stream SSE parsing is more robust and reports premature stream closure.
+- Chat failure message uses configured VITE_QMEET_API_URL instead of hardcoded localhost.
+- Spoken prompt submission immediately sets the orb into a thinking/routing state.
+- Google Calendar confirmed delete/edit refreshes connected calendar state before resolving cold-start targets.
+```
+
+## Phase 12 direction
+
+Phase 12 should add an active context/focus-session layer. The goal is to let QMeet know what the user is currently working on, not just respond to isolated prompts.
+
+See:
+
+```text
+docs/phase-12-context-engine.md
 ```
