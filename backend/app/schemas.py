@@ -1,5 +1,6 @@
-from pydantic import BaseModel, Field
 from typing import Any, Literal
+
+from pydantic import BaseModel, Field
 
 
 class ChatRequest(BaseModel):
@@ -115,6 +116,8 @@ class CalendarDeleteEventResponse(BaseModel):
     message: str = ""
 
 
+MemorySessionMode = Literal["general", "coding", "meeting", "planning", "research", "personal"]
+
 
 class MemoryTaskItem(BaseModel):
     id: str
@@ -136,6 +139,46 @@ class RecentActionItem(BaseModel):
     createdAt: str
 
 
+class ActiveSessionItem(BaseModel):
+    id: str
+    title: str
+    mode: MemorySessionMode = "general"
+    goal: str = ""
+    startedAt: str
+    updatedAt: str
+    pinnedNoteIds: list[str] = Field(default_factory=list)
+    linkedTaskIds: list[str] = Field(default_factory=list)
+    summary: str | None = None
+
+
+class ActiveSessionReplaceRequest(BaseModel):
+    activeSession: ActiveSessionItem | None = None
+
+
+class ActiveSessionUpdateRequest(BaseModel):
+    title: str | None = None
+    mode: MemorySessionMode | None = None
+    goal: str | None = None
+    pinnedNoteIds: list[str] | None = None
+    linkedTaskIds: list[str] | None = None
+    summary: str | None = None
+
+
+class ActiveSessionResponse(BaseModel):
+    ok: bool = True
+    provider: Literal["local-json"] = "local-json"
+    activeSession: ActiveSessionItem | None = None
+    message: str = ""
+
+
+class ActiveSessionClearResponse(BaseModel):
+    ok: bool = True
+    provider: Literal["local-json"] = "local-json"
+    activeSession: ActiveSessionItem | None = None
+    removedActiveSession: bool = False
+    message: str = ""
+
+
 class MemoryStatusResponse(BaseModel):
     ok: bool = True
     provider: Literal["local-json"] = "local-json"
@@ -145,6 +188,8 @@ class MemoryStatusResponse(BaseModel):
     completedCount: int = 0
     actionCount: int = 0
     noteCount: int = 0
+    activeSessionSet: bool = False
+    activeSessionTitle: str = ""
     message: str = ""
 
 
@@ -187,6 +232,7 @@ class MemoryContextReplaceRequest(BaseModel):
     tasks: list[MemoryTaskItem] = Field(default_factory=list)
     recentActions: list[RecentActionItem] = Field(default_factory=list)
     notes: list[MemoryNoteItem] = Field(default_factory=list)
+    activeSession: ActiveSessionItem | None = None
 
 
 class MemoryContextResponse(BaseModel):
@@ -195,9 +241,8 @@ class MemoryContextResponse(BaseModel):
     tasks: list[MemoryTaskItem] = Field(default_factory=list)
     recentActions: list[RecentActionItem] = Field(default_factory=list)
     notes: list[MemoryNoteItem] = Field(default_factory=list)
+    activeSession: ActiveSessionItem | None = None
     message: str = ""
-
-
 
 
 class MemoryContextClearResponse(BaseModel):
@@ -206,20 +251,23 @@ class MemoryContextClearResponse(BaseModel):
     tasks: list[MemoryTaskItem] = Field(default_factory=list)
     recentActions: list[RecentActionItem] = Field(default_factory=list)
     notes: list[MemoryNoteItem] = Field(default_factory=list)
+    activeSession: ActiveSessionItem | None = None
     removedTaskCount: int = 0
     removedActionCount: int = 0
     removedNoteCount: int = 0
+    removedActiveSession: bool = False
     message: str = ""
 
 
 class MemoryContextExportResponse(BaseModel):
     ok: bool = True
     provider: Literal["local-json"] = "local-json"
-    version: int = 4
+    version: int = 5
     exportedAt: str = ""
     tasks: list[MemoryTaskItem] = Field(default_factory=list)
     recentActions: list[RecentActionItem] = Field(default_factory=list)
     notes: list[MemoryNoteItem] = Field(default_factory=list)
+    activeSession: ActiveSessionItem | None = None
     message: str = ""
 
 
@@ -227,6 +275,7 @@ class MemoryContextImportRequest(BaseModel):
     tasks: list[MemoryTaskItem] = Field(default_factory=list)
     recentActions: list[RecentActionItem] = Field(default_factory=list)
     notes: list[MemoryNoteItem] = Field(default_factory=list)
+    activeSession: ActiveSessionItem | None = None
 
 
 class RecentActionCreateRequest(BaseModel):
@@ -288,7 +337,6 @@ class MemoryNotesClearResponse(BaseModel):
     removedCount: int = 0
     notes: list[MemoryNoteItem] = Field(default_factory=list)
     message: str = ""
-
 
 
 class SearchRequest(BaseModel):
