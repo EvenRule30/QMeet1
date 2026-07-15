@@ -50,6 +50,7 @@ from app.schemas import (
     RecentActionsResponse,
 )
 
+
 router = APIRouter(prefix="/api/memory", tags=["memory"])
 
 
@@ -57,6 +58,14 @@ def _model_to_dict(model) -> dict:
     if hasattr(model, "model_dump"):
         return model.model_dump(exclude_none=True)
     return model.dict(exclude_none=True)
+
+
+def _model_fields_set(model) -> set[str]:
+    """Return fields explicitly sent by the client for Pydantic v1 or v2."""
+
+    if hasattr(model, "model_fields_set"):
+        return set(model.model_fields_set)
+    return set(getattr(model, "__fields_set__", set()))
 
 
 @router.get("/status", response_model=MemoryStatusResponse)
@@ -88,11 +97,13 @@ async def memory_context():
 @router.put("/context", response_model=MemoryContextResponse)
 async def memory_replace_context(req: MemoryContextReplaceRequest):
     try:
-        return MemoryContextResponse(**replace_memory_context(
-            tasks=[_model_to_dict(task) for task in req.tasks],
-            recent_actions=[_model_to_dict(action) for action in req.recentActions],
-            notes=[_model_to_dict(note) for note in req.notes],
-        ))
+        return MemoryContextResponse(
+            **replace_memory_context(
+                tasks=[_model_to_dict(task) for task in req.tasks],
+                recent_actions=[_model_to_dict(action) for action in req.recentActions],
+                notes=[_model_to_dict(note) for note in req.notes],
+            )
+        )
     except MemoryStoreError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     except Exception:
@@ -118,11 +129,13 @@ async def memory_export_context():
 @router.post("/import", response_model=MemoryContextResponse)
 async def memory_import_context(req: MemoryContextImportRequest):
     try:
-        return MemoryContextResponse(**import_memory_context(
-            tasks=[_model_to_dict(task) for task in req.tasks],
-            recent_actions=[_model_to_dict(action) for action in req.recentActions],
-            notes=[_model_to_dict(note) for note in req.notes],
-        ))
+        return MemoryContextResponse(
+            **import_memory_context(
+                tasks=[_model_to_dict(task) for task in req.tasks],
+                recent_actions=[_model_to_dict(action) for action in req.recentActions],
+                notes=[_model_to_dict(note) for note in req.notes],
+            )
+        )
     except MemoryStoreError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     except Exception:
@@ -161,9 +174,9 @@ async def memory_tasks():
 @router.put("/tasks", response_model=MemoryTasksResponse)
 async def memory_replace_tasks(req: MemoryTasksReplaceRequest):
     try:
-        return MemoryTasksResponse(**replace_memory_tasks(
-            [_model_to_dict(task) for task in req.tasks]
-        ))
+        return MemoryTasksResponse(
+            **replace_memory_tasks([_model_to_dict(task) for task in req.tasks])
+        )
     except MemoryStoreError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     except Exception:
@@ -202,11 +215,15 @@ async def memory_clear_completed_tasks():
 @router.patch("/tasks/{task_id}", response_model=MemoryTasksResponse)
 async def memory_update_task(task_id: str, req: MemoryTaskUpdateRequest):
     try:
-        return MemoryTasksResponse(**update_memory_task(
-            task_id=task_id,
-            title=req.title,
-            completed_at=req.completedAt,
-        ))
+        sent_fields = _model_fields_set(req)
+        return MemoryTasksResponse(
+            **update_memory_task(
+                task_id=task_id,
+                title=req.title,
+                completed_at=req.completedAt,
+                update_completed_at="completedAt" in sent_fields,
+            )
+        )
     except MemoryStoreError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception:
@@ -245,9 +262,9 @@ async def memory_notes():
 @router.put("/notes", response_model=MemoryNotesResponse)
 async def memory_replace_notes(req: MemoryNotesReplaceRequest):
     try:
-        return MemoryNotesResponse(**replace_memory_notes(
-            [_model_to_dict(note) for note in req.notes]
-        ))
+        return MemoryNotesResponse(
+            **replace_memory_notes([_model_to_dict(note) for note in req.notes])
+        )
     except MemoryStoreError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     except Exception:
@@ -312,9 +329,9 @@ async def memory_recent_actions():
 @router.put("/actions", response_model=RecentActionsResponse)
 async def memory_replace_recent_actions(req: RecentActionsReplaceRequest):
     try:
-        return RecentActionsResponse(**replace_recent_actions(
-            [_model_to_dict(action) for action in req.recentActions]
-        ))
+        return RecentActionsResponse(
+            **replace_recent_actions([_model_to_dict(action) for action in req.recentActions])
+        )
     except MemoryStoreError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     except Exception:
@@ -327,10 +344,12 @@ async def memory_replace_recent_actions(req: RecentActionsReplaceRequest):
 @router.post("/actions", response_model=RecentActionsResponse)
 async def memory_create_recent_action(req: RecentActionCreateRequest):
     try:
-        return RecentActionsResponse(**create_recent_action(
-            label=req.label,
-            detail=req.detail,
-        ))
+        return RecentActionsResponse(
+            **create_recent_action(
+                label=req.label,
+                detail=req.detail,
+            )
+        )
     except MemoryStoreError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception:

@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
+from threading import RLock
 from uuid import uuid4
+
+
+MEMORY_FILE_VERSION = 4
+_STORE_LOCK = RLock()
 
 
 class MemoryStoreError(Exception):
@@ -32,6 +39,10 @@ def _new_action_id() -> str:
 
 def _new_note_id() -> str:
     return f"note-{int(datetime.now().timestamp() * 1000)}-{uuid4().hex[:10]}"
+
+
+def _empty_payload() -> dict:
+    return {"tasks": [], "recentActions": [], "notes": []}
 
 
 def _sanitize_task(raw: object) -> dict | None:
@@ -99,23 +110,20 @@ def _sanitize_note(raw: object) -> dict | None:
     }
 
 
-def _read_payload() -> dict:
+def _read_payload_unlocked() -> dict:
     path = _memory_file()
-
     if not path.exists():
-        return {"tasks": [], "recentActions": [], "notes": []}
+        return _empty_payload()
 
     try:
         parsed = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        raise MemoryStoreError(
-            f"QMeet memory file is invalid JSON: {path}"
-        ) from exc
+        raise MemoryStoreError(f"QMeet memory file is invalid JSON: {path}") from exc
     except Exception as exc:
         raise MemoryStoreError("QMeet could not read the memory file.") from exc
 
     if not isinstance(parsed, dict):
-        return {"tasks": [], "recentActions": [], "notes": []}
+        return _empty_payload()
 
     tasks = parsed.get("tasks", [])
     if not isinstance(tasks, list):
@@ -140,16 +148,71 @@ def _read_payload() -> dict:
     }
 
 
-def _write_payload(
+def _read_payload() -> dict:
+    with _STORE_LOCK:
+        return _read_payload_unlocked()
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    """Write JSON by replacing the old file in one filesystem operation.
+
+    This avoids leaving qmeet_memory.json truncated or half-written if the backend
+    process is interrupted while a save is in progress.
+    """
+
+    tmp_path: Path | None = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp_file:
+            tmp_path = Path(tmp_file.name)
+            json.dump(payload, tmp_file, indent=2)
+            tmp_file.write("\n")
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
+
+        os.replace(tmp_path, path)
+        tmp_path = None
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+def _build_payload(
+    tasks: list[dict],
+    recent_actions: list[dict],
+    notes: list[dict],
+) -> dict:
+    return {
+        "version": MEMORY_FILE_VERSION,
+        "updatedAt": _now_iso(),
+        "tasks": [_task for _task in (_sanitize_task(task) for task in tasks) if _task],
+        "recentActions": [
+            _action
+            for _action in (_sanitize_action(action) for action in recent_actions)
+            if _action
+        ][:24],
+        "notes": [_note for _note in (_sanitize_note(note) for note in notes) if _note],
+    }
+
+
+def _write_payload_unlocked(
     tasks: list[dict],
     recent_actions: list[dict] | None = None,
     notes: list[dict] | None = None,
-) -> None:
-    path = _memory_file()
+) -> dict:
     existing_payload: dict | None = None
-
     if recent_actions is None or notes is None:
-        existing_payload = _read_payload()
+        existing_payload = _read_payload_unlocked()
 
     if recent_actions is None:
         recent_actions = existing_payload["recentActions"] if existing_payload else []
@@ -157,97 +220,93 @@ def _write_payload(
     if notes is None:
         notes = existing_payload["notes"] if existing_payload else []
 
+    payload = _build_payload(tasks, recent_actions, notes)
+
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "version": 3,
-            "updatedAt": _now_iso(),
-            "tasks": [_task for _task in (_sanitize_task(task) for task in tasks) if _task],
-            "recentActions": [
-                _action
-                for _action in (_sanitize_action(action) for action in recent_actions)
-                if _action
-            ][:24],
-            "notes": [_note for _note in (_sanitize_note(note) for note in notes) if _note],
-        }
-        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        _atomic_write_json(_memory_file(), payload)
     except MemoryStoreError:
         raise
     except Exception as exc:
         raise MemoryStoreError("QMeet could not write the memory file.") from exc
 
+    return payload
+
+
+def _write_payload(
+    tasks: list[dict],
+    recent_actions: list[dict] | None = None,
+    notes: list[dict] | None = None,
+) -> dict:
+    with _STORE_LOCK:
+        return _write_payload_unlocked(tasks, recent_actions, notes)
+
 
 def get_memory_status() -> dict:
-    payload = _read_payload()
-    tasks = payload["tasks"]
-    completed_count = sum(1 for task in tasks if task.get("completedAt"))
+    with _STORE_LOCK:
+        payload = _read_payload_unlocked()
+        tasks = payload["tasks"]
+        completed_count = sum(1 for task in tasks if task.get("completedAt"))
 
-    return {
-        "ok": True,
-        "provider": "local-json",
-        "configured": True,
-        "path": str(_memory_file()),
-        "taskCount": len(tasks),
-        "completedCount": completed_count,
-        "actionCount": len(payload["recentActions"]),
-        "noteCount": len(payload["notes"]),
-        "message": "QMeet memory, notes, and work context are stored in a local backend JSON file.",
-    }
+        return {
+            "ok": True,
+            "provider": "local-json",
+            "configured": True,
+            "path": str(_memory_file()),
+            "taskCount": len(tasks),
+            "completedCount": completed_count,
+            "actionCount": len(payload["recentActions"]),
+            "noteCount": len(payload["notes"]),
+            "message": "QMeet memory, notes, and work context are stored in a local backend JSON file.",
+        }
 
 
 def get_memory_context() -> dict:
-    payload = _read_payload()
-
-    return {
-        "ok": True,
-        "provider": "local-json",
-        "tasks": payload["tasks"],
-        "recentActions": payload["recentActions"],
-        "notes": payload["notes"],
-        "message": "Memory context loaded from the backend.",
-    }
+    with _STORE_LOCK:
+        payload = _read_payload_unlocked()
+        return {
+            "ok": True,
+            "provider": "local-json",
+            "tasks": payload["tasks"],
+            "recentActions": payload["recentActions"],
+            "notes": payload["notes"],
+            "message": "Memory context loaded from the backend.",
+        }
 
 
 def replace_memory_context(tasks: list[dict], recent_actions: list[dict], notes: list[dict]) -> dict:
-    clean_tasks = [_task for _task in (_sanitize_task(task) for task in tasks) if _task]
-    clean_actions = [
-        _action for _action in (_sanitize_action(action) for action in recent_actions) if _action
-    ][:24]
-    clean_notes = [_note for _note in (_sanitize_note(note) for note in notes) if _note]
-    _write_payload(clean_tasks, clean_actions, clean_notes)
-
-    return {
-        "ok": True,
-        "provider": "local-json",
-        "tasks": clean_tasks,
-        "recentActions": clean_actions,
-        "notes": clean_notes,
-        "message": "Memory context saved to the backend.",
-    }
+    with _STORE_LOCK:
+        payload = _write_payload_unlocked(tasks, recent_actions, notes)
+        return {
+            "ok": True,
+            "provider": "local-json",
+            "tasks": payload["tasks"],
+            "recentActions": payload["recentActions"],
+            "notes": payload["notes"],
+            "message": "Memory context saved to the backend.",
+        }
 
 
 def list_memory_tasks() -> dict:
-    payload = _read_payload()
-
-    return {
-        "ok": True,
-        "provider": "local-json",
-        "tasks": payload["tasks"],
-        "message": "Memory tasks loaded from the backend.",
-    }
+    with _STORE_LOCK:
+        payload = _read_payload_unlocked()
+        return {
+            "ok": True,
+            "provider": "local-json",
+            "tasks": payload["tasks"],
+            "message": "Memory tasks loaded from the backend.",
+        }
 
 
 def replace_memory_tasks(tasks: list[dict]) -> dict:
-    payload = _read_payload()
-    clean_tasks = [_task for _task in (_sanitize_task(task) for task in tasks) if _task]
-    _write_payload(clean_tasks, payload["recentActions"])
-
-    return {
-        "ok": True,
-        "provider": "local-json",
-        "tasks": clean_tasks,
-        "message": "Memory tasks saved to the backend.",
-    }
+    with _STORE_LOCK:
+        existing = _read_payload_unlocked()
+        payload = _write_payload_unlocked(tasks, existing["recentActions"], existing["notes"])
+        return {
+            "ok": True,
+            "provider": "local-json",
+            "tasks": payload["tasks"],
+            "message": "Memory tasks saved to the backend.",
+        }
 
 
 def create_memory_task(title: str) -> dict:
@@ -255,67 +314,76 @@ def create_memory_task(title: str) -> dict:
     if not clean_title:
         raise MemoryStoreError("Task title cannot be empty.")
 
-    payload = _read_payload()
-    task = {
-        "id": _new_task_id(),
-        "title": clean_title,
-        "createdAt": _now_iso(),
-    }
+    with _STORE_LOCK:
+        existing = _read_payload_unlocked()
+        task = {
+            "id": _new_task_id(),
+            "title": clean_title,
+            "createdAt": _now_iso(),
+        }
+        tasks = [task, *existing["tasks"]]
+        payload = _write_payload_unlocked(tasks, existing["recentActions"], existing["notes"])
 
-    tasks = [task, *payload["tasks"]]
-    _write_payload(tasks, payload["recentActions"])
-
-    return {
-        "ok": True,
-        "provider": "local-json",
-        "tasks": tasks,
-        "message": f"Saved task: {clean_title}.",
-    }
+        return {
+            "ok": True,
+            "provider": "local-json",
+            "tasks": payload["tasks"],
+            "message": f"Saved task: {clean_title}.",
+        }
 
 
-def update_memory_task(task_id: str, title: str = "", completed_at: str | None = None) -> dict:
+def update_memory_task(
+    task_id: str,
+    title: str = "",
+    completed_at: str | None = None,
+    update_completed_at: bool = True,
+) -> dict:
     clean_task_id = (task_id or "").strip()
     if not clean_task_id:
         raise MemoryStoreError("Task id cannot be empty.")
 
-    payload = _read_payload()
-    found = False
-    updated_tasks: list[dict] = []
+    with _STORE_LOCK:
+        existing = _read_payload_unlocked()
+        found = False
+        updated_tasks: list[dict] = []
 
-    for task in payload["tasks"]:
-        if task["id"] != clean_task_id:
-            updated_tasks.append(task)
-            continue
+        for task in existing["tasks"]:
+            if task["id"] != clean_task_id:
+                updated_tasks.append(task)
+                continue
 
-        found = True
-        updated_task = dict(task)
+            found = True
+            updated_task = dict(task)
+            clean_title = (title or "").strip()
+            if clean_title:
+                updated_task["title"] = clean_title
 
-        clean_title = (title or "").strip()
-        if clean_title:
-            updated_task["title"] = clean_title
+            if update_completed_at:
+                if completed_at is None:
+                    updated_task.pop("completedAt", None)
+                elif isinstance(completed_at, str):
+                    clean_completed_at = completed_at.strip()
+                    if clean_completed_at:
+                        updated_task["completedAt"] = clean_completed_at
+                    else:
+                        updated_task.pop("completedAt", None)
 
-        if completed_at is None:
-            updated_task.pop("completedAt", None)
-        elif isinstance(completed_at, str):
-            clean_completed_at = completed_at.strip()
-            if clean_completed_at:
-                updated_task["completedAt"] = clean_completed_at
-            else:
-                updated_task.pop("completedAt", None)
+            updated_tasks.append(updated_task)
 
-        updated_tasks.append(updated_task)
+        if not found:
+            raise MemoryStoreError("Memory task was not found.")
 
-    if not found:
-        raise MemoryStoreError("Memory task was not found.")
-
-    _write_payload(updated_tasks, payload["recentActions"])
-
-    return {
-        "ok": True,
-        "provider": "local-json",
-        "tasks": updated_tasks,
-        "message": "Memory task updated.",
-    }
+        payload = _write_payload_unlocked(
+            updated_tasks,
+            existing["recentActions"],
+            existing["notes"],
+        )
+        return {
+            "ok": True,
+            "provider": "local-json",
+            "tasks": payload["tasks"],
+            "message": "Memory task updated.",
+        }
 
 
 def delete_memory_task(task_id: str) -> dict:
@@ -323,63 +391,61 @@ def delete_memory_task(task_id: str) -> dict:
     if not clean_task_id:
         raise MemoryStoreError("Task id cannot be empty.")
 
-    payload = _read_payload()
-    next_tasks = [task for task in payload["tasks"] if task["id"] != clean_task_id]
+    with _STORE_LOCK:
+        existing = _read_payload_unlocked()
+        next_tasks = [task for task in existing["tasks"] if task["id"] != clean_task_id]
+        if len(next_tasks) == len(existing["tasks"]):
+            raise MemoryStoreError("Memory task was not found.")
 
-    if len(next_tasks) == len(payload["tasks"]):
-        raise MemoryStoreError("Memory task was not found.")
-
-    _write_payload(next_tasks, payload["recentActions"])
-
-    return {
-        "ok": True,
-        "provider": "local-json",
-        "deletedTaskId": clean_task_id,
-        "message": "Memory task deleted.",
-    }
+        _write_payload_unlocked(next_tasks, existing["recentActions"], existing["notes"])
+        return {
+            "ok": True,
+            "provider": "local-json",
+            "deletedTaskId": clean_task_id,
+            "message": "Memory task deleted.",
+        }
 
 
 def clear_completed_memory_tasks() -> dict:
-    payload = _read_payload()
-    next_tasks = [task for task in payload["tasks"] if not task.get("completedAt")]
-    removed_count = len(payload["tasks"]) - len(next_tasks)
-
-    _write_payload(next_tasks, payload["recentActions"])
-
-    return {
-        "ok": True,
-        "provider": "local-json",
-        "removedCount": removed_count,
-        "tasks": next_tasks,
-        "message": f"Cleared {removed_count} completed task{'s' if removed_count != 1 else ''}.",
-    }
+    with _STORE_LOCK:
+        existing = _read_payload_unlocked()
+        next_tasks = [task for task in existing["tasks"] if not task.get("completedAt")]
+        removed_count = len(existing["tasks"]) - len(next_tasks)
+        payload = _write_payload_unlocked(
+            next_tasks,
+            existing["recentActions"],
+            existing["notes"],
+        )
+        return {
+            "ok": True,
+            "provider": "local-json",
+            "removedCount": removed_count,
+            "tasks": payload["tasks"],
+            "message": f"Cleared {removed_count} completed task{'s' if removed_count != 1 else ''}.",
+        }
 
 
 def list_recent_actions() -> dict:
-    payload = _read_payload()
-
-    return {
-        "ok": True,
-        "provider": "local-json",
-        "recentActions": payload["recentActions"],
-        "message": "Recent actions loaded from the backend.",
-    }
+    with _STORE_LOCK:
+        payload = _read_payload_unlocked()
+        return {
+            "ok": True,
+            "provider": "local-json",
+            "recentActions": payload["recentActions"],
+            "message": "Recent actions loaded from the backend.",
+        }
 
 
 def replace_recent_actions(recent_actions: list[dict]) -> dict:
-    payload = _read_payload()
-    clean_actions = [
-        _action for _action in (_sanitize_action(action) for action in recent_actions) if _action
-    ][:24]
-
-    _write_payload(payload["tasks"], clean_actions)
-
-    return {
-        "ok": True,
-        "provider": "local-json",
-        "recentActions": clean_actions,
-        "message": "Recent actions saved to the backend.",
-    }
+    with _STORE_LOCK:
+        existing = _read_payload_unlocked()
+        payload = _write_payload_unlocked(existing["tasks"], recent_actions, existing["notes"])
+        return {
+            "ok": True,
+            "provider": "local-json",
+            "recentActions": payload["recentActions"],
+            "message": "Recent actions saved to the backend.",
+        }
 
 
 def create_recent_action(label: str, detail: str = "") -> dict:
@@ -387,28 +453,27 @@ def create_recent_action(label: str, detail: str = "") -> dict:
     if not clean_label:
         raise MemoryStoreError("Recent action label cannot be empty.")
 
-    payload = _read_payload()
-    action = _sanitize_action(
-        {
-            "id": _new_action_id(),
-            "label": clean_label,
-            "detail": detail or "",
-            "createdAt": _now_iso(),
+    with _STORE_LOCK:
+        existing = _read_payload_unlocked()
+        action = _sanitize_action(
+            {
+                "id": _new_action_id(),
+                "label": clean_label,
+                "detail": detail or "",
+                "createdAt": _now_iso(),
+            }
+        )
+        if not action:
+            raise MemoryStoreError("Recent action could not be saved.")
+
+        next_actions = [action, *existing["recentActions"]][:24]
+        payload = _write_payload_unlocked(existing["tasks"], next_actions, existing["notes"])
+        return {
+            "ok": True,
+            "provider": "local-json",
+            "recentActions": payload["recentActions"],
+            "message": "Recent action saved.",
         }
-    )
-
-    if not action:
-        raise MemoryStoreError("Recent action could not be saved.")
-
-    next_actions = [action, *payload["recentActions"]][:24]
-    _write_payload(payload["tasks"], next_actions)
-
-    return {
-        "ok": True,
-        "provider": "local-json",
-        "recentActions": next_actions,
-        "message": "Recent action saved.",
-    }
 
 
 def delete_recent_action(action_id: str) -> dict:
@@ -416,58 +481,58 @@ def delete_recent_action(action_id: str) -> dict:
     if not clean_action_id:
         raise MemoryStoreError("Recent action id cannot be empty.")
 
-    payload = _read_payload()
-    next_actions = [action for action in payload["recentActions"] if action["id"] != clean_action_id]
+    with _STORE_LOCK:
+        existing = _read_payload_unlocked()
+        next_actions = [
+            action for action in existing["recentActions"] if action["id"] != clean_action_id
+        ]
+        if len(next_actions) == len(existing["recentActions"]):
+            raise MemoryStoreError("Recent action was not found.")
 
-    if len(next_actions) == len(payload["recentActions"]):
-        raise MemoryStoreError("Recent action was not found.")
-
-    _write_payload(payload["tasks"], next_actions)
-
-    return {
-        "ok": True,
-        "provider": "local-json",
-        "deletedActionId": clean_action_id,
-        "message": "Recent action deleted.",
-    }
+        _write_payload_unlocked(existing["tasks"], next_actions, existing["notes"])
+        return {
+            "ok": True,
+            "provider": "local-json",
+            "deletedActionId": clean_action_id,
+            "message": "Recent action deleted.",
+        }
 
 
 def clear_recent_actions() -> dict:
-    payload = _read_payload()
-    removed_count = len(payload["recentActions"])
-    _write_payload(payload["tasks"], [])
-
-    return {
-        "ok": True,
-        "provider": "local-json",
-        "removedCount": removed_count,
-        "recentActions": [],
-        "message": f"Cleared {removed_count} recent action{'s' if removed_count != 1 else ''}.",
-    }
+    with _STORE_LOCK:
+        existing = _read_payload_unlocked()
+        removed_count = len(existing["recentActions"])
+        _write_payload_unlocked(existing["tasks"], [], existing["notes"])
+        return {
+            "ok": True,
+            "provider": "local-json",
+            "removedCount": removed_count,
+            "recentActions": [],
+            "message": f"Cleared {removed_count} recent action{'s' if removed_count != 1 else ''}.",
+        }
 
 
 def list_memory_notes() -> dict:
-    payload = _read_payload()
-
-    return {
-        "ok": True,
-        "provider": "local-json",
-        "notes": payload["notes"],
-        "message": "Memory notes loaded from the backend.",
-    }
+    with _STORE_LOCK:
+        payload = _read_payload_unlocked()
+        return {
+            "ok": True,
+            "provider": "local-json",
+            "notes": payload["notes"],
+            "message": "Memory notes loaded from the backend.",
+        }
 
 
 def replace_memory_notes(notes: list[dict]) -> dict:
-    payload = _read_payload()
-    clean_notes = [_note for _note in (_sanitize_note(note) for note in notes) if _note]
-    _write_payload(payload["tasks"], payload["recentActions"], clean_notes)
-
-    return {
-        "ok": True,
-        "provider": "local-json",
-        "notes": clean_notes,
-        "message": "Memory notes saved to the backend.",
-    }
+    with _STORE_LOCK:
+        existing = _read_payload_unlocked()
+        payload = _write_payload_unlocked(existing["tasks"], existing["recentActions"], notes)
+        return {
+            "ok": True,
+            "provider": "local-json",
+            "notes": payload["notes"],
+            "message": "Memory notes saved to the backend.",
+        }
 
 
 def create_memory_note(content: str) -> dict:
@@ -475,22 +540,21 @@ def create_memory_note(content: str) -> dict:
     if not clean_content:
         raise MemoryStoreError("Note content cannot be empty.")
 
-    payload = _read_payload()
-    note = {
-        "id": _new_note_id(),
-        "content": clean_content[:2000],
-        "createdAt": _now_iso(),
-    }
-
-    notes = [note, *payload["notes"]]
-    _write_payload(payload["tasks"], payload["recentActions"], notes)
-
-    return {
-        "ok": True,
-        "provider": "local-json",
-        "notes": notes,
-        "message": "Saved note to backend memory.",
-    }
+    with _STORE_LOCK:
+        existing = _read_payload_unlocked()
+        note = {
+            "id": _new_note_id(),
+            "content": clean_content[:2000],
+            "createdAt": _now_iso(),
+        }
+        notes = [note, *existing["notes"]]
+        payload = _write_payload_unlocked(existing["tasks"], existing["recentActions"], notes)
+        return {
+            "ok": True,
+            "provider": "local-json",
+            "notes": payload["notes"],
+            "message": "Saved note to backend memory.",
+        }
 
 
 def delete_memory_note(note_id: str) -> dict:
@@ -498,86 +562,78 @@ def delete_memory_note(note_id: str) -> dict:
     if not clean_note_id:
         raise MemoryStoreError("Note id cannot be empty.")
 
-    payload = _read_payload()
-    next_notes = [note for note in payload["notes"] if note["id"] != clean_note_id]
+    with _STORE_LOCK:
+        existing = _read_payload_unlocked()
+        next_notes = [note for note in existing["notes"] if note["id"] != clean_note_id]
+        if len(next_notes) == len(existing["notes"]):
+            raise MemoryStoreError("Memory note was not found.")
 
-    if len(next_notes) == len(payload["notes"]):
-        raise MemoryStoreError("Memory note was not found.")
-
-    _write_payload(payload["tasks"], payload["recentActions"], next_notes)
-
-    return {
-        "ok": True,
-        "provider": "local-json",
-        "deletedNoteId": clean_note_id,
-        "message": "Memory note deleted.",
-    }
+        _write_payload_unlocked(existing["tasks"], existing["recentActions"], next_notes)
+        return {
+            "ok": True,
+            "provider": "local-json",
+            "deletedNoteId": clean_note_id,
+            "message": "Memory note deleted.",
+        }
 
 
 def clear_memory_notes() -> dict:
-    payload = _read_payload()
-    removed_count = len(payload["notes"])
-    _write_payload(payload["tasks"], payload["recentActions"], [])
-
-    return {
-        "ok": True,
-        "provider": "local-json",
-        "removedCount": removed_count,
-        "notes": [],
-        "message": f"Cleared {removed_count} note{'s' if removed_count != 1 else ''}.",
-    }
+    with _STORE_LOCK:
+        existing = _read_payload_unlocked()
+        removed_count = len(existing["notes"])
+        _write_payload_unlocked(existing["tasks"], existing["recentActions"], [])
+        return {
+            "ok": True,
+            "provider": "local-json",
+            "removedCount": removed_count,
+            "notes": [],
+            "message": f"Cleared {removed_count} note{'s' if removed_count != 1 else ''}.",
+        }
 
 
 def clear_memory_context() -> dict:
-    payload = _read_payload()
-    removed_tasks = len(payload["tasks"])
-    removed_actions = len(payload["recentActions"])
-    removed_notes = len(payload["notes"])
-
-    _write_payload([], [], [])
-
-    return {
-        "ok": True,
-        "provider": "local-json",
-        "tasks": [],
-        "recentActions": [],
-        "notes": [],
-        "removedTaskCount": removed_tasks,
-        "removedActionCount": removed_actions,
-        "removedNoteCount": removed_notes,
-        "message": "Cleared all backend memory, notes, and work context.",
-    }
+    with _STORE_LOCK:
+        existing = _read_payload_unlocked()
+        removed_tasks = len(existing["tasks"])
+        removed_actions = len(existing["recentActions"])
+        removed_notes = len(existing["notes"])
+        _write_payload_unlocked([], [], [])
+        return {
+            "ok": True,
+            "provider": "local-json",
+            "tasks": [],
+            "recentActions": [],
+            "notes": [],
+            "removedTaskCount": removed_tasks,
+            "removedActionCount": removed_actions,
+            "removedNoteCount": removed_notes,
+            "message": "Cleared all backend memory, notes, and work context.",
+        }
 
 
 def export_memory_context() -> dict:
-    payload = _read_payload()
-
-    return {
-        "ok": True,
-        "provider": "local-json",
-        "version": 4,
-        "exportedAt": _now_iso(),
-        "tasks": payload["tasks"],
-        "recentActions": payload["recentActions"],
-        "notes": payload["notes"],
-        "message": "Memory export loaded from the backend.",
-    }
+    with _STORE_LOCK:
+        payload = _read_payload_unlocked()
+        return {
+            "ok": True,
+            "provider": "local-json",
+            "version": MEMORY_FILE_VERSION,
+            "exportedAt": _now_iso(),
+            "tasks": payload["tasks"],
+            "recentActions": payload["recentActions"],
+            "notes": payload["notes"],
+            "message": "Memory export loaded from the backend.",
+        }
 
 
 def import_memory_context(tasks: list[dict], recent_actions: list[dict], notes: list[dict]) -> dict:
-    clean_tasks = [_task for _task in (_sanitize_task(task) for task in tasks) if _task]
-    clean_actions = [
-        _action for _action in (_sanitize_action(action) for action in recent_actions) if _action
-    ][:24]
-    clean_notes = [_note for _note in (_sanitize_note(note) for note in notes) if _note]
-
-    _write_payload(clean_tasks, clean_actions, clean_notes)
-
-    return {
-        "ok": True,
-        "provider": "local-json",
-        "tasks": clean_tasks,
-        "recentActions": clean_actions,
-        "notes": clean_notes,
-        "message": "Imported memory, notes, and work context into the backend.",
-    }
+    with _STORE_LOCK:
+        payload = _write_payload_unlocked(tasks, recent_actions, notes)
+        return {
+            "ok": True,
+            "provider": "local-json",
+            "tasks": payload["tasks"],
+            "recentActions": payload["recentActions"],
+            "notes": payload["notes"],
+            "message": "Imported memory, notes, and work context into the backend.",
+        }
