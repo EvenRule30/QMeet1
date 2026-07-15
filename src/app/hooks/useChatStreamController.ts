@@ -6,18 +6,34 @@ import {
   useRef,
   useState,
 } from 'react';
-import { streamChatMessage } from '../api';
+import { QMEET_API_BASE_URL, streamChatMessage } from '../api';
 import { buildBriefingRequest, isBriefingRequest } from '../lib/briefingUtils';
 import { Message, OrbState } from '../types';
 
 const BRIEF_ME_EVENT = 'qmeet:brief-me';
+
+function buildStreamingFailureMessage(error: unknown): string {
+  const connectionHint = `Make sure the QMeet backend is running at ${QMEET_API_BASE_URL}.`;
+
+  if (error instanceof Error && error.message.trim()) {
+    const message = error.message.trim();
+
+    if (message.includes(QMEET_API_BASE_URL)) {
+      return message;
+    }
+
+    return `${message}\n${connectionHint}`;
+  }
+
+  return `Streaming connection failed.\n${connectionHint}`;
+}
 
 type UseChatStreamControllerOptions = {
   setOrbState: Dispatch<SetStateAction<OrbState>>;
   setChatActive: Dispatch<SetStateAction<boolean>>;
   speakAssistantText: (
     text: string,
-    options?: { enabled?: boolean; rate?: number }
+    options?: { enabled?: boolean; rate?: number },
   ) => void;
 };
 
@@ -55,10 +71,7 @@ export function useChatStreamController({
 
       const now = Date.now();
       const assistantId = `a-${now}`;
-      const requestText = isBriefingRequest(text)
-        ? buildBriefingRequest()
-        : text;
-
+      const requestText = isBriefingRequest(text) ? buildBriefingRequest() : text;
       const userMsg: Message = {
         id: `u-${now}`,
         role: 'user',
@@ -67,7 +80,6 @@ export function useChatStreamController({
       };
 
       cancelActiveResponse();
-
       setMessages((prev) => [...prev, userMsg]);
       setOrbState('thinking');
       setShowThinkingBubble(true);
@@ -82,7 +94,7 @@ export function useChatStreamController({
 
       const upsertAssistantMessage = (
         content: string,
-        mode: 'replace' | 'append' = 'append'
+        mode: 'replace' | 'append' = 'append',
       ) => {
         setMessages((prev) => {
           const existingMessage = prev.find((msg) => msg.id === assistantId);
@@ -95,7 +107,7 @@ export function useChatStreamController({
                     content:
                       mode === 'replace' ? content : msg.content + content,
                   }
-                : msg
+                : msg,
             );
           }
 
@@ -119,12 +131,8 @@ export function useChatStreamController({
               if (responseTokenRef.current !== responseToken) return;
               setOrbState('thinking');
             },
-
             onChunk: (chunk) => {
-              if (
-                responseTokenRef.current !== responseToken ||
-                !chunk
-              ) {
+              if (responseTokenRef.current !== responseToken || !chunk) {
                 return;
               }
 
@@ -132,17 +140,17 @@ export function useChatStreamController({
               assistantReply += chunk;
               upsertAssistantMessage(chunk, 'append');
             },
-
             onDone: () => {
               if (responseTokenRef.current !== responseToken) return;
+
               setShowThinkingBubble(false);
               setResponseActive(false);
               activeStreamAbortRef.current = null;
               speakAssistantText(assistantReply);
             },
-
             onError: (message) => {
               if (responseTokenRef.current !== responseToken) return;
+
               setShowThinkingBubble(false);
               setResponseActive(false);
               activeStreamAbortRef.current = null;
@@ -156,7 +164,7 @@ export function useChatStreamController({
               }, 2000);
             },
           },
-          { signal: abortController.signal }
+          { signal: abortController.signal },
         );
       } catch (error) {
         if (
@@ -167,15 +175,11 @@ export function useChatStreamController({
         }
 
         console.error('QMeet streaming error:', error);
-
         activeStreamAbortRef.current = null;
         setShowThinkingBubble(false);
         setResponseActive(false);
         setOrbState('error');
-        upsertAssistantMessage(
-          'Streaming connection failed. Make sure the QMeet backend is running on http://localhost:8000.',
-          'replace'
-        );
+        upsertAssistantMessage(buildStreamingFailureMessage(error), 'replace');
 
         window.setTimeout(() => {
           if (responseTokenRef.current === responseToken) {
@@ -184,12 +188,7 @@ export function useChatStreamController({
         }, 2000);
       }
     },
-    [
-      cancelActiveResponse,
-      setChatActive,
-      setOrbState,
-      speakAssistantText,
-    ]
+    [cancelActiveResponse, setChatActive, setOrbState, speakAssistantText],
   );
 
   useEffect(() => {

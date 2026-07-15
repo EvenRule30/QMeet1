@@ -11,12 +11,6 @@ import {
   CalendarUpdateEventRequest,
   CalendarUpdateEventResponse,
   CommandIntentResponse,
-  MemoryStatusResponse,
-  MemoryTaskCreateRequest,
-  MemoryTaskDeleteResponse,
-  MemoryTaskUpdateRequest,
-  MemoryTasksReplaceRequest,
-  MemoryTasksResponse,
   MemoryClearCompletedResponse,
   MemoryContextClearResponse,
   MemoryContextExportResponse,
@@ -28,17 +22,23 @@ import {
   MemoryNotesClearResponse,
   MemoryNotesReplaceRequest,
   MemoryNotesResponse,
+  MemoryStatusResponse,
+  MemoryTaskCreateRequest,
+  MemoryTaskDeleteResponse,
+  MemoryTasksReplaceRequest,
+  MemoryTasksResponse,
+  MemoryTaskUpdateRequest,
   RecentActionCreateRequest,
   RecentActionDeleteResponse,
   RecentActionsClearResponse,
   RecentActionsReplaceRequest,
   RecentActionsResponse,
   SearchResponse,
-} from "./types";
+} from './types';
 
 export type ChatApiResponse = {
   reply: string;
-  state: "idle" | "listening" | "thinking" | "speaking" | "error";
+  state: 'idle' | 'listening' | 'thinking' | 'speaking' | 'error';
 };
 
 export type ChatStreamHandlers = {
@@ -48,137 +48,170 @@ export type ChatStreamHandlers = {
   onError?: (message: string) => void;
 };
 
-const API_BASE_URL =
-  import.meta.env.VITE_QMEET_API_URL ?? "http://localhost:8000";
+const FALLBACK_API_BASE_URL = 'http://localhost:8000';
+
+function normalizeApiBaseUrl(value: unknown): string {
+  if (typeof value !== 'string') return FALLBACK_API_BASE_URL;
+  const trimmedValue = value.trim();
+  if (!trimmedValue) return FALLBACK_API_BASE_URL;
+  return trimmedValue.replace(/\/+$/g, '');
+}
+
+export const QMEET_API_BASE_URL = normalizeApiBaseUrl(
+  import.meta.env.VITE_QMEET_API_URL,
+);
+
+function buildApiUrl(path: string): string {
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  return `${QMEET_API_BASE_URL}${normalizedPath}`;
+}
+
+async function readErrorMessage(
+  res: Response,
+  fallbackMessage: string,
+): Promise<string> {
+  const text = await res.text();
+  if (!text.trim()) return fallbackMessage;
+
+  try {
+    const parsed = JSON.parse(text) as {
+      detail?: unknown;
+      message?: unknown;
+    };
+
+    if (typeof parsed.detail === 'string' && parsed.detail.trim()) {
+      return parsed.detail;
+    }
+
+    if (typeof parsed.message === 'string' && parsed.message.trim()) {
+      return parsed.message;
+    }
+  } catch {
+    // Non-JSON error bodies are returned as-is below.
+  }
+
+  return text;
+}
+
+function fallbackWithStatus(fallbackMessage: string, status: number): string {
+  const trimmedMessage = fallbackMessage.replace(/[.:\s]+$/g, '');
+  return `${trimmedMessage}: ${status}`;
+}
+
+async function ensureOk(res: Response, fallbackMessage: string): Promise<void> {
+  if (!res.ok) {
+    throw new Error(
+      await readErrorMessage(res, fallbackWithStatus(fallbackMessage, res.status)),
+    );
+  }
+}
+
+async function fetchJson<T>(
+  path: string,
+  init: RequestInit | undefined,
+  fallbackMessage: string,
+): Promise<T> {
+  const res = await fetch(buildApiUrl(path), init);
+  await ensureOk(res, fallbackMessage);
+  return res.json();
+}
 
 export async function sendChatMessage(
   message: string,
 ): Promise<ChatApiResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/chat`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
+  return fetchJson<ChatApiResponse>(
+    '/api/chat',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ message }),
     },
-    body: JSON.stringify({ message }),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Backend error: ${res.status}`);
-  }
-
-  return res.json();
+    'Backend error.',
+  );
 }
 
 export async function getBackendStatus(): Promise<BackendStatus> {
-  const res = await fetch(`${API_BASE_URL}/api/status`);
-
-  if (!res.ok) {
-    throw new Error(`Backend status error: ${res.status}`);
-  }
-
-  return res.json();
+  return fetchJson<BackendStatus>(
+    '/api/status',
+    undefined,
+    'Backend status error.',
+  );
 }
 
 export async function resetConversation(): Promise<void> {
-  const res = await fetch(`${API_BASE_URL}/api/reset`, {
-    method: "POST",
+  const res = await fetch(buildApiUrl('/api/reset'), {
+    method: 'POST',
   });
-
-  if (!res.ok) {
-    throw new Error(`Reset error: ${res.status}`);
-  }
+  await ensureOk(res, 'Reset error.');
 }
 
 export async function interpretCommandIntent(
   message: string,
 ): Promise<CommandIntentResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/command/interpret`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
+  return fetchJson<CommandIntentResponse>(
+    '/api/command/interpret',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ message }),
     },
-    body: JSON.stringify({ message }),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Command interpreter error: ${res.status}`);
-  }
-
-  return res.json();
+    'Command interpreter error.',
+  );
 }
 
 export async function getCalendarStatus(): Promise<CalendarBackendStatus> {
-  const res = await fetch(`${API_BASE_URL}/api/calendar/status`);
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Calendar status error: ${res.status}`);
-  }
-
-  return res.json();
+  return fetchJson<CalendarBackendStatus>(
+    '/api/calendar/status',
+    undefined,
+    'Calendar status error.',
+  );
 }
 
 export async function startCalendarAuth(): Promise<CalendarAuthStartResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/calendar/auth/start`, {
-    method: "POST",
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Calendar auth start error: ${res.status}`);
-  }
-
-  return res.json();
+  return fetchJson<CalendarAuthStartResponse>(
+    '/api/calendar/auth/start',
+    { method: 'POST' },
+    'Calendar auth start error.',
+  );
 }
 
 export async function resetCalendarAuth(): Promise<CalendarAuthResetResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/calendar/auth/reset`, {
-    method: "POST",
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Calendar auth reset error: ${res.status}`);
-  }
-
-  return res.json();
+  return fetchJson<CalendarAuthResetResponse>(
+    '/api/calendar/auth/reset',
+    { method: 'POST' },
+    'Calendar auth reset error.',
+  );
 }
 
 export async function getCalendarEvents(
-  view: CalendarBackendView = "today",
+  view: CalendarBackendView = 'today',
 ): Promise<CalendarEventsResponse> {
   const params = new URLSearchParams({ view });
-  const res = await fetch(
-    `${API_BASE_URL}/api/calendar/events?${params.toString()}`,
+  return fetchJson<CalendarEventsResponse>(
+    `/api/calendar/events?${params.toString()}`,
+    undefined,
+    'Calendar events error.',
   );
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Calendar events error: ${res.status}`);
-  }
-
-  return res.json();
 }
 
 export async function createCalendarEvent(
   event: CalendarCreateEventRequest,
 ): Promise<CalendarCreateEventResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/calendar/events`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
+  return fetchJson<CalendarCreateEventResponse>(
+    '/api/calendar/events',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(event),
     },
-    body: JSON.stringify(event),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Calendar create event error: ${res.status}`);
-  }
-
-  return res.json();
+    'Calendar create event error.',
+  );
 }
 
 export async function updateGoogleCalendarEvent(
@@ -186,170 +219,132 @@ export async function updateGoogleCalendarEvent(
   event: CalendarUpdateEventRequest,
 ): Promise<CalendarUpdateEventResponse> {
   const encodedId = encodeURIComponent(googleEventId);
-  const res = await fetch(`${API_BASE_URL}/api/calendar/events/${encodedId}`, {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
+  return fetchJson<CalendarUpdateEventResponse>(
+    `/api/calendar/events/${encodedId}`,
+    {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(event),
     },
-    body: JSON.stringify(event),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Calendar update event error: ${res.status}`);
-  }
-
-  return res.json();
+    'Calendar update event error.',
+  );
 }
 
 export async function deleteGoogleCalendarEvent(
   googleEventId: string,
 ): Promise<CalendarDeleteEventResponse> {
   const encodedId = encodeURIComponent(googleEventId);
-  const res = await fetch(`${API_BASE_URL}/api/calendar/events/${encodedId}`, {
-    method: "DELETE",
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Calendar delete event error: ${res.status}`);
-  }
-
-  return res.json();
+  return fetchJson<CalendarDeleteEventResponse>(
+    `/api/calendar/events/${encodedId}`,
+    { method: 'DELETE' },
+    'Calendar delete event error.',
+  );
 }
 
 export async function getMemoryStatus(): Promise<MemoryStatusResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/memory/status`);
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Memory status error: ${res.status}`);
-  }
-
-  return res.json();
+  return fetchJson<MemoryStatusResponse>(
+    '/api/memory/status',
+    undefined,
+    'Memory status error.',
+  );
 }
 
 export async function getMemoryContext(): Promise<MemoryContextResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/memory/context`);
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Memory context error: ${res.status}`);
-  }
-
-  return res.json();
+  return fetchJson<MemoryContextResponse>(
+    '/api/memory/context',
+    undefined,
+    'Memory context error.',
+  );
 }
 
 export async function replaceMemoryContext(
   request: MemoryContextReplaceRequest,
 ): Promise<MemoryContextResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/memory/context`, {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
+  return fetchJson<MemoryContextResponse>(
+    '/api/memory/context',
+    {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
     },
-    body: JSON.stringify(request),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Memory context replace error: ${res.status}`);
-  }
-
-  return res.json();
+    'Memory context replace error.',
+  );
 }
 
 export async function exportMemoryContext(): Promise<MemoryContextExportResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/memory/export`);
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Memory export error: ${res.status}`);
-  }
-
-  return res.json();
+  return fetchJson<MemoryContextExportResponse>(
+    '/api/memory/export',
+    undefined,
+    'Memory export error.',
+  );
 }
 
 export async function importMemoryContext(
   request: MemoryContextImportRequest,
 ): Promise<MemoryContextResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/memory/import`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
+  return fetchJson<MemoryContextResponse>(
+    '/api/memory/import',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
     },
-    body: JSON.stringify(request),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Memory import error: ${res.status}`);
-  }
-
-  return res.json();
+    'Memory import error.',
+  );
 }
 
 export async function clearAllMemoryContext(): Promise<MemoryContextClearResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/memory/clear`, {
-    method: "POST",
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Memory clear error: ${res.status}`);
-  }
-
-  return res.json();
+  return fetchJson<MemoryContextClearResponse>(
+    '/api/memory/clear',
+    { method: 'POST' },
+    'Memory clear error.',
+  );
 }
 
-
 export async function getMemoryTasks(): Promise<MemoryTasksResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/memory/tasks`);
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Memory tasks error: ${res.status}`);
-  }
-
-  return res.json();
+  return fetchJson<MemoryTasksResponse>(
+    '/api/memory/tasks',
+    undefined,
+    'Memory tasks error.',
+  );
 }
 
 export async function replaceMemoryTasks(
   request: MemoryTasksReplaceRequest,
 ): Promise<MemoryTasksResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/memory/tasks`, {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
+  return fetchJson<MemoryTasksResponse>(
+    '/api/memory/tasks',
+    {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
     },
-    body: JSON.stringify(request),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Memory replace error: ${res.status}`);
-  }
-
-  return res.json();
+    'Memory replace error.',
+  );
 }
 
 export async function createMemoryTask(
   request: MemoryTaskCreateRequest,
 ): Promise<MemoryTasksResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/memory/tasks`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
+  return fetchJson<MemoryTasksResponse>(
+    '/api/memory/tasks',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
     },
-    body: JSON.stringify(request),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Memory create error: ${res.status}`);
-  }
-
-  return res.json();
+    'Memory create error.',
+  );
 }
 
 export async function updateMemoryTask(
@@ -357,222 +352,237 @@ export async function updateMemoryTask(
   request: MemoryTaskUpdateRequest,
 ): Promise<MemoryTasksResponse> {
   const encodedId = encodeURIComponent(taskId);
-  const res = await fetch(`${API_BASE_URL}/api/memory/tasks/${encodedId}`, {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
+  return fetchJson<MemoryTasksResponse>(
+    `/api/memory/tasks/${encodedId}`,
+    {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
     },
-    body: JSON.stringify(request),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Memory update error: ${res.status}`);
-  }
-
-  return res.json();
+    'Memory update error.',
+  );
 }
 
 export async function deleteMemoryTaskById(
   taskId: string,
 ): Promise<MemoryTaskDeleteResponse> {
   const encodedId = encodeURIComponent(taskId);
-  const res = await fetch(`${API_BASE_URL}/api/memory/tasks/${encodedId}`, {
-    method: "DELETE",
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Memory delete error: ${res.status}`);
-  }
-
-  return res.json();
+  return fetchJson<MemoryTaskDeleteResponse>(
+    `/api/memory/tasks/${encodedId}`,
+    { method: 'DELETE' },
+    'Memory delete error.',
+  );
 }
 
 export async function clearCompletedMemoryTasks(): Promise<MemoryClearCompletedResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/memory/tasks/clear-completed`, {
-    method: "POST",
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Memory clear completed error: ${res.status}`);
-  }
-
-  return res.json();
+  return fetchJson<MemoryClearCompletedResponse>(
+    '/api/memory/tasks/clear-completed',
+    { method: 'POST' },
+    'Memory clear completed error.',
+  );
 }
 
 export async function getMemoryNotes(): Promise<MemoryNotesResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/memory/notes`);
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Memory notes error: ${res.status}`);
-  }
-
-  return res.json();
+  return fetchJson<MemoryNotesResponse>(
+    '/api/memory/notes',
+    undefined,
+    'Memory notes error.',
+  );
 }
 
 export async function replaceMemoryNotes(
   request: MemoryNotesReplaceRequest,
 ): Promise<MemoryNotesResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/memory/notes`, {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
+  return fetchJson<MemoryNotesResponse>(
+    '/api/memory/notes',
+    {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
     },
-    body: JSON.stringify(request),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Memory notes replace error: ${res.status}`);
-  }
-
-  return res.json();
+    'Memory notes replace error.',
+  );
 }
 
 export async function createMemoryNote(
   request: MemoryNoteCreateRequest,
 ): Promise<MemoryNotesResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/memory/notes`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
+  return fetchJson<MemoryNotesResponse>(
+    '/api/memory/notes',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
     },
-    body: JSON.stringify(request),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Memory note create error: ${res.status}`);
-  }
-
-  return res.json();
+    'Memory note create error.',
+  );
 }
 
 export async function deleteMemoryNote(
   noteId: string,
 ): Promise<MemoryNoteDeleteResponse> {
   const encodedId = encodeURIComponent(noteId);
-  const res = await fetch(`${API_BASE_URL}/api/memory/notes/${encodedId}`, {
-    method: "DELETE",
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Memory note delete error: ${res.status}`);
-  }
-
-  return res.json();
+  return fetchJson<MemoryNoteDeleteResponse>(
+    `/api/memory/notes/${encodedId}`,
+    { method: 'DELETE' },
+    'Memory note delete error.',
+  );
 }
 
 export async function clearMemoryNotes(): Promise<MemoryNotesClearResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/memory/notes/clear`, {
-    method: "POST",
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Memory notes clear error: ${res.status}`);
-  }
-
-  return res.json();
+  return fetchJson<MemoryNotesClearResponse>(
+    '/api/memory/notes/clear',
+    { method: 'POST' },
+    'Memory notes clear error.',
+  );
 }
 
 export async function getRecentActions(): Promise<RecentActionsResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/memory/actions`);
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Recent actions error: ${res.status}`);
-  }
-
-  return res.json();
+  return fetchJson<RecentActionsResponse>(
+    '/api/memory/actions',
+    undefined,
+    'Recent actions error.',
+  );
 }
 
 export async function replaceRecentActions(
   request: RecentActionsReplaceRequest,
 ): Promise<RecentActionsResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/memory/actions`, {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
+  return fetchJson<RecentActionsResponse>(
+    '/api/memory/actions',
+    {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
     },
-    body: JSON.stringify(request),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Recent actions replace error: ${res.status}`);
-  }
-
-  return res.json();
+    'Recent actions replace error.',
+  );
 }
 
 export async function createRecentAction(
   request: RecentActionCreateRequest,
 ): Promise<RecentActionsResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/memory/actions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
+  return fetchJson<RecentActionsResponse>(
+    '/api/memory/actions',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
     },
-    body: JSON.stringify(request),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Recent action create error: ${res.status}`);
-  }
-
-  return res.json();
+    'Recent action create error.',
+  );
 }
 
 export async function deleteRecentActionById(
   actionId: string,
 ): Promise<RecentActionDeleteResponse> {
   const encodedId = encodeURIComponent(actionId);
-  const res = await fetch(`${API_BASE_URL}/api/memory/actions/${encodedId}`, {
-    method: "DELETE",
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Recent action delete error: ${res.status}`);
-  }
-
-  return res.json();
+  return fetchJson<RecentActionDeleteResponse>(
+    `/api/memory/actions/${encodedId}`,
+    { method: 'DELETE' },
+    'Recent action delete error.',
+  );
 }
 
 export async function clearRecentActions(): Promise<RecentActionsClearResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/memory/actions/clear`, {
-    method: "POST",
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Recent actions clear error: ${res.status}`);
-  }
-
-  return res.json();
+  return fetchJson<RecentActionsClearResponse>(
+    '/api/memory/actions/clear',
+    { method: 'POST' },
+    'Recent actions clear error.',
+  );
 }
 
 export async function searchWeb(query: string): Promise<SearchResponse> {
-  const res = await fetch(`${API_BASE_URL}/api/search`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
+  return fetchJson<SearchResponse>(
+    '/api/search',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ query }),
     },
-    body: JSON.stringify({ query }),
-  });
+    'Web search error.',
+  );
+}
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Web search error: ${res.status}`);
+type StreamEventPayload = Record<string, unknown>;
+
+type ParsedServerSentEvent = {
+  event: string;
+  data: string;
+};
+
+function parseServerSentEvent(rawEvent: string): ParsedServerSentEvent | null {
+  const lines = rawEvent.split('\n');
+  let event = 'message';
+  const dataLines: string[] = [];
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+
+    if (!line || line.startsWith(':')) {
+      continue;
+    }
+
+    const separatorIndex = line.indexOf(':');
+    const field = separatorIndex === -1 ? line : line.slice(0, separatorIndex);
+    let value = separatorIndex === -1 ? '' : line.slice(separatorIndex + 1);
+
+    if (value.startsWith(' ')) {
+      value = value.slice(1);
+    }
+
+    if (field === 'event') {
+      event = value.trim() || 'message';
+      continue;
+    }
+
+    if (field === 'data') {
+      dataLines.push(value);
+    }
   }
 
-  return res.json();
+  if (dataLines.length === 0) {
+    return null;
+  }
+
+  return {
+    event,
+    data: dataLines.join('\n'),
+  };
+}
+
+function parseStreamEventPayload(
+  eventName: string,
+  dataRaw: string,
+): StreamEventPayload {
+  try {
+    const parsed = JSON.parse(dataRaw) as unknown;
+    return parsed && typeof parsed === 'object'
+      ? (parsed as StreamEventPayload)
+      : {};
+  } catch {
+    throw new Error(`Malformed streaming event from backend: ${eventName}.`);
+  }
+}
+
+function getStringPayloadValue(
+  payload: StreamEventPayload,
+  key: string,
+): string {
+  const value = payload[key];
+  return typeof value === 'string' ? value : '';
 }
 
 export async function streamChatMessage(
@@ -580,67 +590,95 @@ export async function streamChatMessage(
   handlers: ChatStreamHandlers,
   options: { signal?: AbortSignal } = {},
 ): Promise<void> {
-  const res = await fetch(`${API_BASE_URL}/api/chat/stream`, {
-    method: "POST",
+  const res = await fetch(buildApiUrl('/api/chat/stream'), {
+    method: 'POST',
     headers: {
-      "Content-Type": "application/json",
-      Accept: "text/event-stream",
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
     },
     body: JSON.stringify({ message }),
     signal: options.signal,
   });
 
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || `Streaming backend error: ${res.status}`);
-  }
+  await ensureOk(res, 'Streaming backend error.');
 
   if (!res.body) {
-    throw new Error("Streaming response body was empty.");
+    throw new Error('Streaming response body was empty.');
   }
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
+  let buffer = '';
+  let terminalEventSeen = false;
 
-  let buffer = "";
+  const processRawEvent = (rawEvent: string) => {
+    const parsedEvent = parseServerSentEvent(rawEvent);
+    if (!parsedEvent || terminalEventSeen) return;
 
-  while (true) {
-    const { value, done } = await reader.read();
+    const data = parseStreamEventPayload(parsedEvent.event, parsedEvent.data);
 
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-
-    const events = buffer.split("\n\n");
-    buffer = events.pop() ?? "";
-
-    for (const rawEvent of events) {
-      const lines = rawEvent.split("\n");
-      const eventLine = lines.find((line) => line.startsWith("event:"));
-      const dataLine = lines.find((line) => line.startsWith("data:"));
-
-      const event = eventLine?.replace("event:", "").trim();
-      const dataRaw = dataLine?.replace("data:", "").trim();
-
-      if (!event || !dataRaw) continue;
-
-      const data = JSON.parse(dataRaw);
-
-      if (event === "start") {
-        handlers.onStart?.();
-      }
-
-      if (event === "chunk") {
-        handlers.onChunk(data.text ?? "");
-      }
-
-      if (event === "done") {
-        handlers.onDone?.();
-      }
-
-      if (event === "error") {
-        handlers.onError?.(data.message ?? "Streaming error.");
-      }
+    if (parsedEvent.event === 'start') {
+      handlers.onStart?.();
+      return;
     }
+
+    if (parsedEvent.event === 'chunk') {
+      handlers.onChunk(getStringPayloadValue(data, 'text'));
+      return;
+    }
+
+    if (parsedEvent.event === 'done') {
+      terminalEventSeen = true;
+      handlers.onDone?.();
+      return;
+    }
+
+    if (parsedEvent.event === 'error') {
+      terminalEventSeen = true;
+      handlers.onError?.(
+        getStringPayloadValue(data, 'message') || 'Streaming error.',
+      );
+    }
+  };
+
+  const processBufferedEvents = () => {
+    let boundaryIndex = buffer.indexOf('\n\n');
+
+    while (boundaryIndex !== -1) {
+      const rawEvent = buffer.slice(0, boundaryIndex);
+      buffer = buffer.slice(boundaryIndex + 2);
+      processRawEvent(rawEvent);
+      boundaryIndex = buffer.indexOf('\n\n');
+    }
+  };
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer += decoder
+        .decode(value, { stream: true })
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n');
+
+      processBufferedEvents();
+    }
+
+    buffer += decoder.decode().replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    processBufferedEvents();
+
+    const finalBufferedEvent = buffer.trim();
+    if (finalBufferedEvent) {
+      processRawEvent(finalBufferedEvent);
+    }
+
+    if (!terminalEventSeen && !options.signal?.aborted) {
+      throw new Error(
+        'Streaming connection closed before QMeet finished the response.',
+      );
+    }
+  } finally {
+    reader.releaseLock();
   }
 }
