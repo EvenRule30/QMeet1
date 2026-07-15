@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+
 import {
   createCalendarEvent,
   deleteGoogleCalendarEvent,
@@ -41,14 +42,11 @@ type UseCalendarControllerInput = {
   activePanel: ActivePanel;
 };
 
-
 function readStoredCalendarEvents(): CalendarEvent[] {
   if (typeof window === 'undefined') return [];
 
   try {
-    const rawEvents = window.localStorage.getItem(
-      CALENDAR_EVENTS_STORAGE_KEY,
-    );
+    const rawEvents = window.localStorage.getItem(CALENDAR_EVENTS_STORAGE_KEY);
     if (!rawEvents) return [];
 
     const parsedEvents = JSON.parse(rawEvents);
@@ -65,15 +63,10 @@ function readStoredCalendarEvents(): CalendarEvent[] {
         id:
           typeof event.id === 'string'
             ? event.id
-            : `event-${Date.now()}-${Math.random()
-                .toString(36)
-                .slice(2)}`,
+            : `event-${Date.now()}-${Math.random().toString(36).slice(2)}`,
         title: event.title,
         dateKey: event.dateKey,
-        time:
-          typeof event.time === 'string'
-            ? event.time
-            : 'Later',
+        time: typeof event.time === 'string' ? event.time : 'Later',
         createdAt:
           typeof event.createdAt === 'string'
             ? event.createdAt
@@ -102,9 +95,7 @@ function selectMostRecentlyCreatedEvent(
   // not the next event by clock time. Google events include their original
   // creation timestamp, while local events are also stamped when saved.
   const sortedEvents = [...visibleEvents].sort(
-    (left, right) =>
-      getCreatedTimestamp(right) -
-      getCreatedTimestamp(left),
+    (left, right) => getCreatedTimestamp(right) - getCreatedTimestamp(left),
   );
 
   return sortedEvents[0] ?? null;
@@ -113,18 +104,17 @@ function selectMostRecentlyCreatedEvent(
 export function useCalendarController({
   activePanel,
 }: UseCalendarControllerInput) {
-  const [calendarView, setCalendarView] =
-    useState<CalendarView>('today');
-  const [calendarEvents, setCalendarEvents] =
-    useState<CalendarEvent[]>(readStoredCalendarEvents);
+  const [calendarView, setCalendarView] = useState<CalendarView>('today');
+  const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>(
+    readStoredCalendarEvents,
+  );
   const [googleCalendarStatus, setGoogleCalendarStatus] =
     useState<CalendarBackendStatus | null>(null);
-  const [googleCalendarEvents, setGoogleCalendarEvents] =
-    useState<CalendarEvent[]>([]);
-  const [googleCalendarLoading, setGoogleCalendarLoading] =
-    useState(false);
-  const [googleCalendarError, setGoogleCalendarError] =
-    useState('');
+  const [googleCalendarEvents, setGoogleCalendarEvents] = useState<
+    CalendarEvent[]
+  >([]);
+  const [googleCalendarLoading, setGoogleCalendarLoading] = useState(false);
+  const [googleCalendarError, setGoogleCalendarError] = useState('');
 
   useEffect(() => {
     try {
@@ -133,10 +123,7 @@ export function useCalendarController({
         JSON.stringify(calendarEvents),
       );
     } catch (error) {
-      console.error(
-        'Failed to save calendar events:',
-        error,
-      );
+      console.error('Failed to save calendar events:', error);
     }
   }, [calendarEvents]);
 
@@ -156,7 +143,6 @@ export function useCalendarController({
           error instanceof Error
             ? error.message
             : 'Could not load Google Calendar status.';
-
         setGoogleCalendarStatus(null);
         setGoogleCalendarError(message);
         return null;
@@ -191,7 +177,6 @@ export function useCalendarController({
           error instanceof Error
             ? error.message
             : 'Could not read Google Calendar events.';
-
         setGoogleCalendarError(message);
         return [];
       } finally {
@@ -202,18 +187,14 @@ export function useCalendarController({
   );
 
   const saveCalendarEvent = useCallback(
-    async (
-      eventInput?: CalendarEventInput,
-    ): Promise<CalendarEvent | null> => {
+    async (eventInput?: CalendarEventInput): Promise<CalendarEvent | null> => {
       const title = eventInput?.title?.trim() ?? '';
-
       if (!title) {
         return null;
       }
 
       const view = eventInput?.day ?? 'today';
-      const eventTime =
-        eventInput?.time?.trim() || 'Later';
+      const eventTime = eventInput?.time?.trim() || 'Later';
 
       if (
         googleCalendarStatus?.connected &&
@@ -232,14 +213,10 @@ export function useCalendarController({
           if (response.event) {
             setGoogleCalendarEvents((prev) => [
               response.event as CalendarEvent,
-              ...prev.filter(
-                (event) =>
-                  event.id !== response.event?.id,
-              ),
+              ...prev.filter((event) => event.id !== response.event?.id),
             ]);
             setGoogleCalendarError(
-              response.message ||
-                'Google Calendar event created.',
+              response.message || 'Google Calendar event created.',
             );
             return response.event;
           }
@@ -254,7 +231,6 @@ export function useCalendarController({
             error instanceof Error
               ? error.message
               : 'Could not create Google Calendar event.';
-
           setGoogleCalendarError(message);
           return null;
         } finally {
@@ -263,9 +239,7 @@ export function useCalendarController({
       }
 
       const event: CalendarEvent = {
-        id: `event-${Date.now()}-${Math.random()
-          .toString(36)
-          .slice(2)}`,
+        id: `event-${Date.now()}-${Math.random().toString(36).slice(2)}`,
         title,
         dateKey: getDateKeyForCalendarView(view),
         time: eventTime,
@@ -276,43 +250,28 @@ export function useCalendarController({
       setCalendarEvents((prev) => [event, ...prev]);
       return event;
     },
-    [
-      googleCalendarStatus?.connected,
-      googleCalendarStatus?.writeEnabled,
-    ],
+    [googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled],
   );
 
   const deleteCalendarEvent = useCallback(
-    async (
-      eventId: string,
-    ): Promise<CalendarEvent | null> => {
+    async (eventId: string): Promise<CalendarEvent | null> => {
       let googleEvent = googleCalendarEvents.find(
-        (event) =>
-          event.id === eventId ||
-          event.googleEventId === eventId,
+        (event) => event.id === eventId || event.googleEventId === eventId,
       );
 
-      // A cold-start edit can identify an event from the array returned by a
-      // refresh before React has committed that array to state. Refresh and
+      // A cold-start command can identify an event from the array returned by
+      // a refresh before React has committed that array to state. Refresh and
       // resolve the event directly instead of treating it as a local event.
-      if (
-        !googleEvent &&
-        googleCalendarStatus?.connected
-      ) {
-        const refreshedEvents =
-          await refreshGoogleCalendar(calendarView);
-
+      if (!googleEvent && googleCalendarStatus?.connected) {
+        const refreshedEvents = await refreshGoogleCalendar(calendarView);
         googleEvent = refreshedEvents.find(
-          (event) =>
-            event.id === eventId ||
-            event.googleEventId === eventId,
+          (event) => event.id === eventId || event.googleEventId === eventId,
         );
       }
 
       if (googleEvent?.source === 'google') {
         const googleEventId =
-          googleEvent.googleEventId ||
-          googleEvent.id.replace(/^google-/, '');
+          googleEvent.googleEventId || googleEvent.id.replace(/^google-/, '');
 
         if (!googleEventId) {
           setGoogleCalendarError(
@@ -325,23 +284,17 @@ export function useCalendarController({
         setGoogleCalendarError('');
 
         try {
-          const response =
-            await deleteGoogleCalendarEvent(
-              googleEventId,
-            );
-
+          const response = await deleteGoogleCalendarEvent(googleEventId);
           setGoogleCalendarEvents((prev) =>
             prev.filter(
               (event) =>
                 event.id !== googleEvent.id &&
-                event.googleEventId !==
-                  googleEvent.googleEventId &&
+                event.googleEventId !== googleEvent.googleEventId &&
                 event.googleEventId !== googleEventId,
             ),
           );
           setGoogleCalendarError(
-            response.message ||
-              'Deleted Google Calendar event.',
+            response.message || 'Deleted Google Calendar event.',
           );
           return googleEvent;
         } catch (error) {
@@ -349,7 +302,6 @@ export function useCalendarController({
             error instanceof Error
               ? error.message
               : 'Could not delete Google Calendar event.';
-
           setGoogleCalendarError(message);
           return null;
         } finally {
@@ -358,16 +310,19 @@ export function useCalendarController({
       }
 
       const localEvent =
-        calendarEvents.find(
-          (event) => event.id === eventId,
-        ) ?? null;
-
+        calendarEvents.find((event) => event.id === eventId) ?? null;
       setCalendarEvents((prev) =>
         prev.filter((event) => event.id !== eventId),
       );
       return localEvent;
     },
-    [calendarEvents, googleCalendarEvents],
+    [
+      calendarEvents,
+      calendarView,
+      googleCalendarEvents,
+      googleCalendarStatus?.connected,
+      refreshGoogleCalendar,
+    ],
   );
 
   const updateCalendarEvent = useCallback(
@@ -377,26 +332,29 @@ export function useCalendarController({
     ): Promise<CalendarEvent | null> => {
       if (
         !changes ||
-        (!changes.day &&
-          !changes.time?.trim() &&
-          !changes.title?.trim())
+        (!changes.day && !changes.time?.trim() && !changes.title?.trim())
       ) {
-        setGoogleCalendarError(
-          'No calendar event changes were provided.',
-        );
+        setGoogleCalendarError('No calendar event changes were provided.');
         return null;
       }
 
-      const googleEvent = googleCalendarEvents.find(
-        (event) =>
-          event.id === eventId ||
-          event.googleEventId === eventId,
+      let googleEvent = googleCalendarEvents.find(
+        (event) => event.id === eventId || event.googleEventId === eventId,
       );
+
+      // Keep edit behavior consistent with deletion during cold-start commands.
+      // The target may come from a just-finished refresh that is not in React
+      // state yet.
+      if (!googleEvent && googleCalendarStatus?.connected) {
+        const refreshedEvents = await refreshGoogleCalendar(calendarView);
+        googleEvent = refreshedEvents.find(
+          (event) => event.id === eventId || event.googleEventId === eventId,
+        );
+      }
 
       if (googleEvent?.source === 'google') {
         const googleEventId =
-          googleEvent.googleEventId ||
-          googleEvent.id.replace(/^google-/, '');
+          googleEvent.googleEventId || googleEvent.id.replace(/^google-/, '');
 
         if (!googleEventId) {
           setGoogleCalendarError(
@@ -409,21 +367,11 @@ export function useCalendarController({
         setGoogleCalendarError('');
 
         try {
-          const response =
-            await updateGoogleCalendarEvent(
-              googleEventId,
-              {
-                ...(changes.title?.trim()
-                  ? { title: changes.title.trim() }
-                  : {}),
-                ...(changes.day
-                  ? { day: changes.day }
-                  : {}),
-                ...(changes.time?.trim()
-                  ? { time: changes.time.trim() }
-                  : {}),
-              },
-            );
+          const response = await updateGoogleCalendarEvent(googleEventId, {
+            ...(changes.title?.trim() ? { title: changes.title.trim() } : {}),
+            ...(changes.day ? { day: changes.day } : {}),
+            ...(changes.time?.trim() ? { time: changes.time.trim() } : {}),
+          });
 
           if (response.event) {
             setGoogleCalendarEvents((prev) => [
@@ -431,15 +379,12 @@ export function useCalendarController({
               ...prev.filter(
                 (event) =>
                   event.id !== googleEvent.id &&
-                  event.googleEventId !==
-                    googleEvent.googleEventId &&
-                  event.googleEventId !==
-                    googleEventId,
+                  event.googleEventId !== googleEvent.googleEventId &&
+                  event.googleEventId !== googleEventId,
               ),
             ]);
             setGoogleCalendarError(
-              response.message ||
-                'Updated Google Calendar event.',
+              response.message || 'Updated Google Calendar event.',
             );
             return response.event;
           }
@@ -454,7 +399,6 @@ export function useCalendarController({
             error instanceof Error
               ? error.message
               : 'Could not update Google Calendar event.';
-
           setGoogleCalendarError(message);
           return null;
         } finally {
@@ -463,9 +407,7 @@ export function useCalendarController({
       }
 
       const localEvent =
-        calendarEvents.find(
-          (event) => event.id === eventId,
-        ) ?? null;
+        calendarEvents.find((event) => event.id === eventId) ?? null;
 
       if (!localEvent) {
         return null;
@@ -473,10 +415,8 @@ export function useCalendarController({
 
       const updatedLocalEvent: CalendarEvent = {
         ...localEvent,
-        title:
-          changes.title?.trim() || localEvent.title,
-        time:
-          changes.time?.trim() || localEvent.time,
+        title: changes.title?.trim() || localEvent.title,
+        time: changes.time?.trim() || localEvent.time,
         dateKey: changes.day
           ? getDateKeyForCalendarView(changes.day)
           : localEvent.dateKey,
@@ -485,12 +425,9 @@ export function useCalendarController({
 
       setCalendarEvents((prev) =>
         prev.map((event) =>
-          event.id === localEvent.id
-            ? updatedLocalEvent
-            : event,
+          event.id === localEvent.id ? updatedLocalEvent : event,
         ),
       );
-
       return updatedLocalEvent;
     },
     [
@@ -506,72 +443,49 @@ export function useCalendarController({
     setCalendarEvents([]);
 
     try {
-      window.localStorage.setItem(
-        CALENDAR_EVENTS_STORAGE_KEY,
-        '[]',
-      );
+      window.localStorage.setItem(CALENDAR_EVENTS_STORAGE_KEY, '[]');
 
-      for (const legacyKey of
-        LEGACY_CALENDAR_EVENTS_STORAGE_KEYS) {
+      for (const legacyKey of LEGACY_CALENDAR_EVENTS_STORAGE_KEYS) {
         window.localStorage.removeItem(legacyKey);
       }
     } catch (error) {
-      console.error(
-        'Failed to clear calendar events:',
-        error,
-      );
+      console.error('Failed to clear calendar events:', error);
     }
   }, []);
 
-  const getNextCalendarEventForDeletion =
-    useCallback((): CalendarEvent | null => {
-      const sourceEvents =
-        googleCalendarStatus?.connected
-          ? googleCalendarEvents
-          : calendarEvents;
+  const getNextCalendarEventForDeletion = useCallback((): CalendarEvent | null => {
+    const sourceEvents = googleCalendarStatus?.connected
+      ? googleCalendarEvents
+      : calendarEvents;
+    return selectMostRecentlyCreatedEvent(sourceEvents, calendarView);
+  }, [
+    calendarEvents,
+    calendarView,
+    googleCalendarEvents,
+    googleCalendarStatus?.connected,
+  ]);
 
-      return selectMostRecentlyCreatedEvent(
-        sourceEvents,
-        calendarView,
-      );
-    }, [
-      calendarEvents,
-      calendarView,
-      googleCalendarEvents,
-      googleCalendarStatus?.connected,
-    ]);
-
-  const getNextCalendarEventForChange =
-    useCallback((): CalendarEvent | null => {
-      const sourceEvents =
-        googleCalendarStatus?.connected
-          ? googleCalendarEvents
-          : calendarEvents;
-
-      return selectMostRecentlyCreatedEvent(
-        sourceEvents,
-        calendarView,
-      );
-    }, [
-      calendarEvents,
-      calendarView,
-      googleCalendarEvents,
-      googleCalendarStatus?.connected,
-    ]);
+  const getNextCalendarEventForChange = useCallback((): CalendarEvent | null => {
+    const sourceEvents = googleCalendarStatus?.connected
+      ? googleCalendarEvents
+      : calendarEvents;
+    return selectMostRecentlyCreatedEvent(sourceEvents, calendarView);
+  }, [
+    calendarEvents,
+    calendarView,
+    googleCalendarEvents,
+    googleCalendarStatus?.connected,
+  ]);
 
   const findCalendarEventForChange = useCallback(
     async (): Promise<CalendarEvent | null> => {
-      const sourceEvents =
-        googleCalendarStatus?.connected
-          ? await refreshGoogleCalendar(calendarView)
-          : calendarEvents;
+      const sourceEvents = googleCalendarStatus?.connected
+        ? await refreshGoogleCalendar(calendarView)
+        : calendarEvents;
 
       // Use the refresh result directly. React state may still contain an
       // empty pre-refresh array during a cold-start edit command.
-      return selectMostRecentlyCreatedEvent(
-        sourceEvents,
-        calendarView,
-      );
+      return selectMostRecentlyCreatedEvent(sourceEvents, calendarView);
     },
     [
       calendarEvents,
@@ -582,74 +496,58 @@ export function useCalendarController({
   );
 
   const editLastCalendarEvent = useCallback(
-    async (
-      changes?: CalendarEventInput,
-    ): Promise<CalendarEvent | null> => {
-      const targetEvent =
-        await findCalendarEventForChange();
-
+    async (changes?: CalendarEventInput): Promise<CalendarEvent | null> => {
+      const targetEvent = await findCalendarEventForChange();
       if (!targetEvent) return null;
-
-      return updateCalendarEvent(
-        targetEvent.id,
-        changes,
-      );
+      return updateCalendarEvent(targetEvent.id, changes);
     },
-    [
-      findCalendarEventForChange,
-      updateCalendarEvent,
-    ],
+    [findCalendarEventForChange, updateCalendarEvent],
   );
 
   const deleteLastCalendarEvent = useCallback(
     async (): Promise<CalendarEvent | null> => {
-      const targetEvent =
-        getNextCalendarEventForDeletion();
+      // For Google Calendar, resolve the target from a fresh refresh result so
+      // the confirm step does not depend on React state having committed the
+      // pre-confirmation refresh yet.
+      const sourceEvents = googleCalendarStatus?.connected
+        ? await refreshGoogleCalendar(calendarView)
+        : calendarEvents;
+      const targetEvent = selectMostRecentlyCreatedEvent(
+        sourceEvents,
+        calendarView,
+      );
 
       if (!targetEvent) return null;
 
-      if (
-        targetEvent.source === 'google' ||
-        targetEvent.googleEventId
-      ) {
+      if (targetEvent.source === 'google' || targetEvent.googleEventId) {
         return deleteCalendarEvent(targetEvent.id);
       }
 
       setCalendarEvents((prev) =>
-        prev.filter(
-          (event) => event.id !== targetEvent.id,
-        ),
+        prev.filter((event) => event.id !== targetEvent.id),
       );
       return targetEvent;
     },
     [
+      calendarEvents,
+      calendarView,
       deleteCalendarEvent,
-      getNextCalendarEventForDeletion,
+      googleCalendarStatus?.connected,
+      refreshGoogleCalendar,
     ],
   );
 
   const getCalendarReadout = useCallback(
     (
       view: CalendarView | 'all' = 'all',
-      remoteEvents: CalendarEvent[] =
-        googleCalendarEvents,
+      remoteEvents: CalendarEvent[] = googleCalendarEvents,
     ) => {
-      const googleConnected = Boolean(
-        googleCalendarStatus?.connected,
-      );
-      const sourceEvents = googleConnected
-        ? remoteEvents
-        : calendarEvents;
-      const sourceLabel = googleConnected
-        ? 'Google Calendar'
-        : 'local calendar';
+      const googleConnected = Boolean(googleCalendarStatus?.connected);
+      const sourceEvents = googleConnected ? remoteEvents : calendarEvents;
+      const sourceLabel = googleConnected ? 'Google Calendar' : 'local calendar';
 
-      const getEventsForView = (
-        targetView: CalendarView,
-      ) =>
-        sourceEvents.filter((event) =>
-          isEventForCalendarView(event, targetView),
-        );
+      const getEventsForView = (targetView: CalendarView) =>
+        sourceEvents.filter((event) => isEventForCalendarView(event, targetView));
 
       const describeEvents = (
         label: string,
@@ -664,216 +562,151 @@ export function useCalendarController({
           .map(
             (event) =>
               `${event.time}: ${event.title}${
-                event.location
-                  ? ` at ${event.location}`
-                  : ''
+                event.location ? ` at ${event.location}` : ''
               }`,
           )
           .join(' ');
-
-        const remainingCount =
-          eventsForDate.length - 5;
+        const remainingCount = eventsForDate.length - 5;
         const suffix =
-          remainingCount > 0
-            ? ` Plus ${remainingCount} more.`
-            : '';
+          remainingCount > 0 ? ` Plus ${remainingCount} more.` : '';
 
-        return `${label
-          .charAt(0)
-          .toUpperCase()}${label.slice(
+        return `${label.charAt(0).toUpperCase()}${label.slice(
           1,
         )} ${sourceLabel}: ${eventText}${suffix}`;
       };
 
       if (view === 'today') {
-        return describeEvents(
-          'today',
-          getEventsForView('today'),
-        );
+        return describeEvents('today', getEventsForView('today'));
       }
 
       if (view === 'tomorrow') {
-        return describeEvents(
-          'tomorrow',
-          getEventsForView('tomorrow'),
-        );
+        return describeEvents('tomorrow', getEventsForView('tomorrow'));
       }
 
       const todayEvents = getEventsForView('today');
-      const tomorrowEvents =
-        getEventsForView('tomorrow');
+      const tomorrowEvents = getEventsForView('tomorrow');
 
-      if (
-        todayEvents.length === 0 &&
-        tomorrowEvents.length === 0
-      ) {
+      if (todayEvents.length === 0 && tomorrowEvents.length === 0) {
         return googleConnected
           ? 'You do not have any Google Calendar events for today or tomorrow.'
           : 'You do not have any local calendar events saved for today or tomorrow.';
       }
 
-      return `${describeEvents(
-        'today',
-        todayEvents,
-      )} ${describeEvents(
+      return `${describeEvents('today', todayEvents)} ${describeEvents(
         'tomorrow',
         tomorrowEvents,
       )}`;
     },
-    [
-      calendarEvents,
-      googleCalendarEvents,
-      googleCalendarStatus?.connected,
-    ],
+    [calendarEvents, googleCalendarEvents, googleCalendarStatus?.connected],
   );
 
-  const getCalendarEventsForDeleteCriteria =
-    useCallback(
-      async (
-        criteria?: CalendarDeleteCriteria,
-      ): Promise<CalendarEvent[]> => {
-        if (googleCalendarStatus?.connected) {
-          const targetView =
-            criteria?.day ?? calendarView;
-          return refreshGoogleCalendar(targetView);
-        }
+  const getCalendarEventsForDeleteCriteria = useCallback(
+    async (criteria?: CalendarDeleteCriteria): Promise<CalendarEvent[]> => {
+      if (googleCalendarStatus?.connected) {
+        const targetView = criteria?.day ?? calendarView;
+        return refreshGoogleCalendar(targetView);
+      }
 
-        return calendarEvents;
-      },
-      [
-        calendarEvents,
-        calendarView,
-        googleCalendarStatus?.connected,
-        refreshGoogleCalendar,
-      ],
-    );
+      return calendarEvents;
+    },
+    [
+      calendarEvents,
+      calendarView,
+      googleCalendarStatus?.connected,
+      refreshGoogleCalendar,
+    ],
+  );
 
   const findCalendarEventForDeletion = useCallback(
     async (
       criteria?: CalendarDeleteCriteria,
     ): Promise<CalendarEvent | null> => {
-      const sourceEvents =
-        await getCalendarEventsForDeleteCriteria(
-          criteria,
-        );
-      const matchingEvents = sourceEvents.filter(
-        (event) =>
-          calendarEventMatchesDeleteCriteria(
-            event,
-            criteria,
-          ),
+      const sourceEvents = await getCalendarEventsForDeleteCriteria(criteria);
+      const matchingEvents = sourceEvents.filter((event) =>
+        calendarEventMatchesDeleteCriteria(event, criteria),
       );
 
-      if (
-        criteria?.day ||
-        criteria?.time ||
-        criteria?.title
-      ) {
+      if (criteria?.day || criteria?.time || criteria?.title) {
         return matchingEvents[0] ?? null;
       }
 
-      // Use the events returned by the refresh itself. Reading React state
-      // here can still see the pre-refresh empty array during a cold-start
-      // command such as "delete last event."
-      return selectMostRecentlyCreatedEvent(
-        sourceEvents,
-        calendarView,
-      );
+      // Use the events returned by the refresh itself. Reading React state here
+      // can still see the pre-refresh empty array during a cold-start command
+      // such as "delete last event."
+      return selectMostRecentlyCreatedEvent(sourceEvents, calendarView);
     },
-    [
-      calendarView,
-      getCalendarEventsForDeleteCriteria,
-    ],
+    [calendarView, getCalendarEventsForDeleteCriteria],
   );
 
   const deleteCalendarEventByCriteria = useCallback(
     async (
       criteria?: CalendarDeleteCriteria,
     ): Promise<CalendarEvent | null> => {
-      const targetEvent =
-        await findCalendarEventForDeletion(criteria);
-
+      const targetEvent = await findCalendarEventForDeletion(criteria);
       if (!targetEvent) return null;
 
-      if (
-        targetEvent.source === 'google' ||
-        targetEvent.googleEventId
-      ) {
+      if (targetEvent.source === 'google' || targetEvent.googleEventId) {
         return deleteCalendarEvent(targetEvent.id);
       }
 
       setCalendarEvents((prev) =>
-        prev.filter(
-          (event) => event.id !== targetEvent.id,
-        ),
+        prev.filter((event) => event.id !== targetEvent.id),
       );
       return targetEvent;
     },
     [deleteCalendarEvent, findCalendarEventForDeletion],
   );
 
-  const handleStartGoogleCalendarAuth = useCallback(
-    async () => {
-      setGoogleCalendarLoading(true);
-      setGoogleCalendarError('');
+  const handleStartGoogleCalendarAuth = useCallback(async () => {
+    setGoogleCalendarLoading(true);
+    setGoogleCalendarError('');
 
-      try {
-        const response = await startCalendarAuth();
+    try {
+      const response = await startCalendarAuth();
 
-        if (response.authUrl) {
-          window.open(
-            response.authUrl,
-            '_blank',
-            'noopener,noreferrer',
-          );
-          setGoogleCalendarError(
-            'Google authorization opened in a new tab. After approving access, return here and press Refresh.',
-          );
-        } else {
-          setGoogleCalendarError(
-            response.message ||
-              'Google Calendar authorization did not return a URL.',
-          );
-        }
-      } catch (error) {
+      if (response.authUrl) {
+        window.open(response.authUrl, '_blank', 'noopener,noreferrer');
         setGoogleCalendarError(
-          error instanceof Error
-            ? error.message
-            : 'Could not start Google Calendar authorization.',
+          'Google authorization opened in a new tab. After approving access, return here and press Refresh.',
         );
-      } finally {
-        setGoogleCalendarLoading(false);
-        loadGoogleCalendarStatus();
+      } else {
+        setGoogleCalendarError(
+          response.message || 'Google Calendar authorization did not return a URL.',
+        );
       }
-    },
-    [loadGoogleCalendarStatus],
-  );
+    } catch (error) {
+      setGoogleCalendarError(
+        error instanceof Error
+          ? error.message
+          : 'Could not start Google Calendar authorization.',
+      );
+    } finally {
+      setGoogleCalendarLoading(false);
+      loadGoogleCalendarStatus();
+    }
+  }, [loadGoogleCalendarStatus]);
 
-  const handleResetGoogleCalendarAuth = useCallback(
-    async () => {
-      setGoogleCalendarLoading(true);
-      setGoogleCalendarError('');
+  const handleResetGoogleCalendarAuth = useCallback(async () => {
+    setGoogleCalendarLoading(true);
+    setGoogleCalendarError('');
 
-      try {
-        const response = await resetCalendarAuth();
-        setGoogleCalendarEvents([]);
-        setGoogleCalendarError(
-          response.message ||
-            'Google Calendar authorization reset.',
-        );
-        await loadGoogleCalendarStatus();
-      } catch (error) {
-        setGoogleCalendarError(
-          error instanceof Error
-            ? error.message
-            : 'Could not reset Google Calendar authorization.',
-        );
-      } finally {
-        setGoogleCalendarLoading(false);
-      }
-    },
-    [loadGoogleCalendarStatus],
-  );
+    try {
+      const response = await resetCalendarAuth();
+      setGoogleCalendarEvents([]);
+      setGoogleCalendarError(
+        response.message || 'Google Calendar authorization reset.',
+      );
+      await loadGoogleCalendarStatus();
+    } catch (error) {
+      setGoogleCalendarError(
+        error instanceof Error
+          ? error.message
+          : 'Could not reset Google Calendar authorization.',
+      );
+    } finally {
+      setGoogleCalendarLoading(false);
+    }
+  }, [loadGoogleCalendarStatus]);
 
   useEffect(() => {
     loadGoogleCalendarStatus();
@@ -883,11 +716,7 @@ export function useCalendarController({
     if (activePanel === 'calendar') {
       refreshGoogleCalendar(calendarView);
     }
-  }, [
-    activePanel,
-    calendarView,
-    refreshGoogleCalendar,
-  ]);
+  }, [activePanel, calendarView, refreshGoogleCalendar]);
 
   return {
     calendarView,

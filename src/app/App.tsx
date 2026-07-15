@@ -266,6 +266,7 @@ export default function App() {
     // existing stream must be cancelled before command routing begins.
     stopCurrentSpeech();
     cancelActiveResponse();
+    setOrbState('thinking');
 
     if (pendingInterpreterCommand) {
           if (isConfirmingPendingCommand(trimmed)) {
@@ -757,7 +758,7 @@ export default function App() {
   const handleOrbClick = useCallback(() => {
     // If QMeet is actively generating/streaming, tapping the orb should cancel
     // that response instead of starting a new listening session.
-    if (responseActive || orbState === 'thinking') {
+    if (responseActive) {
       cancelActiveResponse();
       setChatActive(true);
       setMessages((prev) => [
