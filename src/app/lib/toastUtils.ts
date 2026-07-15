@@ -1,12 +1,12 @@
 export function hasFailureLanguage(text: string): boolean {
-  return /\b(?:could not|did not|failed|error|not connected|not supported|no |none|missing|unavailable|denied)\b/i.test(text);
+  return /\b(?:could not|did not|failed|error|not connected|not supported|no |none|missing|unavailable|denied)\b/i.test(
+    text,
+  );
 }
 
 export function getBriefToolSpeech(command: string, fullText: string): string {
   const trimmed = fullText.trim();
-
   if (!trimmed) return '';
-
   if (hasFailureLanguage(trimmed)) {
     return trimmed;
   }
@@ -107,25 +107,17 @@ export type ResultToast = {
   createdAt: number;
 };
 
-type MemorySyncState =
-  | 'local'
-  | 'syncing'
-  | 'synced'
-  | 'error';
+type MemorySyncState = 'local' | 'syncing' | 'synced' | 'error';
 
-export function compactToastDetail(
-  text: string,
-  maxLength = 88,
-): string {
+export function compactToastDetail(text: string, maxLength = 88): string {
   const cleaned = text
     .replace(/\s+/g, ' ')
     .replace(/^I understood that as:\s*/i, '')
     .trim();
 
   if (cleaned.length <= maxLength) return cleaned;
-  return `${cleaned
-    .slice(0, maxLength - 1)
-    .trim()}…`;
+
+  return `${cleaned.slice(0, maxLength - 1).trim()}…`;
 }
 
 export function getResultToastForCommand(
@@ -133,7 +125,6 @@ export function getResultToastForCommand(
   fullText: string,
 ): Omit<ResultToast, 'id' | 'createdAt'> | null {
   const trimmed = fullText.trim();
-
   if (!trimmed) return null;
 
   if (hasFailureLanguage(trimmed)) {
@@ -176,7 +167,6 @@ export function getResultToastForCommand(
         title: 'Notes open',
         detail: 'Ready for local notes.',
       };
-
     case 'open-memory':
       return {
         kind: 'info',
@@ -187,8 +177,7 @@ export function getResultToastForCommand(
       return {
         kind: 'info',
         title: 'Memory summary',
-        detail:
-          'Current tasks and recent work summarized.',
+        detail: 'Current tasks and recent work summarized.',
       };
     case 'remember-task':
       return {
@@ -220,7 +209,6 @@ export function getResultToastForCommand(
         title: 'Memory closed',
         detail: 'Panel dismissed.',
       };
-
     case 'add-calendar-event':
       return {
         kind: 'calendar',
@@ -266,7 +254,6 @@ export function getResultToastForCommand(
         title: 'Calendar open',
         detail: 'Calendar panel is visible.',
       };
-
     case 'run-search':
       return trimmed === 'Opening search.'
         ? {
@@ -291,7 +278,6 @@ export function getResultToastForCommand(
         title: 'Search open',
         detail: 'Ready for a web query.',
       };
-
     case 'open-menu':
       return {
         kind: 'info',
@@ -321,7 +307,6 @@ export function getResultToastForCommand(
     case 'close-status':
     case 'hide-status':
     case 'close-notes':
-    case 'close-memory':
     case 'close-calendar':
     case 'close-search':
     case 'close-generic':
@@ -330,7 +315,6 @@ export function getResultToastForCommand(
         title: 'Closed',
         detail: 'Panel dismissed.',
       };
-
     case 'voice-output-on':
     case 'voice-output-off':
     case 'voice-output-toggle':
@@ -342,7 +326,6 @@ export function getResultToastForCommand(
         title: 'Voice updated',
         detail: compactToastDetail(trimmed),
       };
-
     case 'cancel-action':
       return {
         kind: 'warning',
