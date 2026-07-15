@@ -593,6 +593,15 @@ export default function App() {
         }
       } else if (commandMatch.command === 'clear-chat') {
         replaceMessages = true;
+        setPendingInterpreterCommand(null);
+
+        try {
+          await resetConversation();
+        } catch (error) {
+          console.error('Clear chat backend reset error:', error);
+          confirmationContent =
+            'Chat cleared locally, but the backend conversation could not be reset.';
+        }
       } else if (commandMatch.command === 'end-chat') {
         await handleEndChat();
         return;
