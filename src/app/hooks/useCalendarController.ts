@@ -286,11 +286,28 @@ export function useCalendarController({
     async (
       eventId: string,
     ): Promise<CalendarEvent | null> => {
-      const googleEvent = googleCalendarEvents.find(
+      let googleEvent = googleCalendarEvents.find(
         (event) =>
           event.id === eventId ||
           event.googleEventId === eventId,
       );
+
+      // A cold-start edit can identify an event from the array returned by a
+      // refresh before React has committed that array to state. Refresh and
+      // resolve the event directly instead of treating it as a local event.
+      if (
+        !googleEvent &&
+        googleCalendarStatus?.connected
+      ) {
+        const refreshedEvents =
+          await refreshGoogleCalendar(calendarView);
+
+        googleEvent = refreshedEvents.find(
+          (event) =>
+            event.id === eventId ||
+            event.googleEventId === eventId,
+        );
+      }
 
       if (googleEvent?.source === 'google') {
         const googleEventId =
@@ -476,7 +493,13 @@ export function useCalendarController({
 
       return updatedLocalEvent;
     },
-    [calendarEvents, googleCalendarEvents],
+    [
+      calendarEvents,
+      calendarView,
+      googleCalendarEvents,
+      googleCalendarStatus?.connected,
+      refreshGoogleCalendar,
+    ],
   );
 
   const clearCalendarEvents = useCallback(() => {
@@ -536,12 +559,34 @@ export function useCalendarController({
       googleCalendarStatus?.connected,
     ]);
 
+  const findCalendarEventForChange = useCallback(
+    async (): Promise<CalendarEvent | null> => {
+      const sourceEvents =
+        googleCalendarStatus?.connected
+          ? await refreshGoogleCalendar(calendarView)
+          : calendarEvents;
+
+      // Use the refresh result directly. React state may still contain an
+      // empty pre-refresh array during a cold-start edit command.
+      return selectMostRecentlyCreatedEvent(
+        sourceEvents,
+        calendarView,
+      );
+    },
+    [
+      calendarEvents,
+      calendarView,
+      googleCalendarStatus?.connected,
+      refreshGoogleCalendar,
+    ],
+  );
+
   const editLastCalendarEvent = useCallback(
     async (
       changes?: CalendarEventInput,
     ): Promise<CalendarEvent | null> => {
       const targetEvent =
-        getNextCalendarEventForChange();
+        await findCalendarEventForChange();
 
       if (!targetEvent) return null;
 
@@ -551,7 +596,7 @@ export function useCalendarController({
       );
     },
     [
-      getNextCalendarEventForChange,
+      findCalendarEventForChange,
       updateCalendarEvent,
     ],
   );
@@ -865,6 +910,7 @@ export function useCalendarController({
     refreshGoogleCalendar,
     getCalendarEventsForDeleteCriteria,
     findCalendarEventForDeletion,
+    findCalendarEventForChange,
     deleteCalendarEventByCriteria,
     handleStartGoogleCalendarAuth,
     handleResetGoogleCalendarAuth,
