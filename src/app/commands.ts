@@ -21,6 +21,7 @@ export type LocalCommand =
   | 'update-focus-session'
   | 'read-focus-session'
   | 'end-focus-session'
+  | 'focus-to-tasks'
   | 'remember-task'
   | 'mark-task-done'
   | 'delete-last-task'
@@ -89,7 +90,7 @@ export interface FocusSessionCommandPayload {
   goal?: string;
 }
 
-// Phase 12D-v7: neutral focus storage plus tighter routing for planning requests.
+// Phase 12E-v2: neutral focus storage plus focus-to-tasks routing.
 
 export interface CommandMatch {
   command: LocalCommand;
@@ -130,6 +131,7 @@ const CONFIRMATIONS: Record<LocalCommand, string> = {
   'update-focus-session': 'Updated focus session.',
   'read-focus-session': 'Reading focus session.',
   'end-focus-session': 'Ended focus session.',
+  'focus-to-tasks': 'Turning focus into tasks.',
   'remember-task': 'Saved task.',
   'mark-task-done': 'Marked task done.',
   'delete-last-task': 'Deleted the last task.',
@@ -322,6 +324,16 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
       rx(`^${REQUEST_PREFIX}(?:end|stop|clear|close|leave|exit|finish|wrap\s+up)\s+(?:(?:the|my|current|active)\s+)*(?:(?:general|coding|meeting|planning|research|personal)\s+)?(?:focus|focus\s+session|active\s+session|session|focus\s+mode)$`),
       rx(`^${REQUEST_PREFIX}(?:i(?:'m|\s+am)|we(?:'re|\s+are))\s+(?:done|finished)\s+(?:with\s+)?(?:(?:the|my|current|active)\s+)*(?:(?:general|coding|meeting|planning|research|personal)\s+)?(?:focus|focus\s+session|active\s+session|session|focus\s+mode)$`),
       /^(?:end focus|stop focus|clear focus|end session|stop session|exit focus mode|finish focus|wrap up focus)$/i,
+    ],
+  ],
+
+
+  [
+    'focus-to-tasks',
+    [
+      /^(?:turn|convert|make|create)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session|goal)\s+(?:into|to)\s+(?:tasks|task\s+list|action\s+items|next\s+steps|steps|checklist)$/i,
+      /^(?:make|create|add|generate)\s+(?:tasks|a\s+task\s+list|action\s+items|next\s+steps|steps|a\s+checklist)\s+(?:for|from|based\s+on)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session|goal)$/i,
+      /^(?:break|split)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session|goal)\s+(?:into|down\s+into)\s+(?:tasks|steps|next\s+steps|action\s+items)$/i,
     ],
   ],
 
@@ -636,7 +648,12 @@ function defaultFocusSessionTitle(mode: FocusSessionMode | undefined): string {
 }
 
 type FocusSessionIntent = {
-  command: 'start-focus-session' | 'update-focus-session' | 'read-focus-session' | 'end-focus-session';
+  command:
+    | 'start-focus-session'
+    | 'update-focus-session'
+    | 'read-focus-session'
+    | 'end-focus-session'
+    | 'focus-to-tasks';
   focusSession?: FocusSessionCommandPayload;
   confirmation?: string;
 };
@@ -746,6 +763,22 @@ function extractFocusSessionIntent(normalized: string): FocusSessionIntent | nul
   ];
   if (readPatterns.some((pattern) => pattern.test(focusText))) {
     return makeFocusSessionIntent('read-focus-session');
+  }
+
+
+  const focusToTasksPatterns = [
+    /^(?:please\s+)?(?:turn|convert|make|create)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session|goal)\s+(?:into|to)\s+(?:tasks|task\s+list|action\s+items|next\s+steps|steps|checklist)$/i,
+    /^(?:please\s+)?(?:make|create|add|generate)\s+(?:tasks|a\s+task\s+list|action\s+items|next\s+steps|steps|a\s+checklist)\s+(?:for|from|based\s+on)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session|goal)$/i,
+    /^(?:please\s+)?(?:break|split)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session|goal)\s+(?:into|down\s+into)\s+(?:tasks|steps|next\s+steps|action\s+items)$/i,
+    /^(?:please\s+)?(?:add|save)\s+(?:tasks|next\s+steps|action\s+items)\s+(?:for|from)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session|goal)$/i,
+    /^(?:please\s+)?(?:turn|convert)\s+(?:it|this|that)\s+(?:into|to)\s+(?:tasks|task\s+list|action\s+items|next\s+steps|steps|checklist)$/i,
+  ];
+  if (focusToTasksPatterns.some((pattern) => pattern.test(focusText))) {
+    return makeFocusSessionIntent(
+      'focus-to-tasks',
+      undefined,
+      'Turning focus into tasks.',
+    );
   }
 
   const modeShortcutMatch = focusText.match(

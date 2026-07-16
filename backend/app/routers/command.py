@@ -134,6 +134,22 @@ def _focus_command_intent(message: str) -> dict[str, Any] | None:
 
     lowered = text.lower()
 
+
+    focus_to_tasks_patterns = [
+        r"^(?:please\s+)?(?:turn|convert|make|create)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session|goal)\s+(?:into|to)\s+(?:tasks|task list|action items|next steps|steps|checklist)$",
+        r"^(?:please\s+)?(?:make|create|add|generate)\s+(?:tasks|a task list|action items|next steps|steps|a checklist)\s+(?:for|from|based on)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session|goal)$",
+        r"^(?:please\s+)?(?:break|split)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session|goal)\s+(?:into|down into)\s+(?:tasks|steps|next steps|action items)$",
+        r"^(?:please\s+)?(?:add|save)\s+(?:tasks|next steps|action items)\s+(?:for|from)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session|goal)$",
+        r"^(?:please\s+)?(?:turn|convert)\s+(?:it|this|that)\s+(?:into|to)\s+(?:tasks|task list|action items|next steps|steps|checklist)$",
+    ]
+    if _first_match(focus_to_tasks_patterns, lowered):
+        return _command_response(
+            action="focus_to_tasks",
+            frontend_command="turn focus into tasks",
+            confidence=0.98,
+            reason="Backend focus interpreter matched a focus-to-tasks command.",
+        )
+
     read_patterns = [
         r"^(?:what(?:'s| is)|what is)\s+(?:the\s+|my\s+|our\s+)?(?:current\s+|active\s+)?(?:focus|focus session|active session)$",
         r"^(?:what am i focused on(?: right now)?|what are we focused on(?: right now)?|what are we focusing on(?: right now)?)$",

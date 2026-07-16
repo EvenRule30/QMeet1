@@ -25,7 +25,7 @@ type NormalizedFocusPayload = {
 const ACTIVE_SESSION_STORAGE_KEY = 'qmeet-active-session';
 const ACTIVE_SESSION_SESSION_STORAGE_KEY = 'qmeet-active-session-live';
 const ACTIVE_SESSION_STATE_EVENT = 'qmeet-active-session-state';
-const ACTIVE_SESSION_COMMAND_HANDLER_MARKER = 'phase12d-v7-neutral-focus-storage';
+const ACTIVE_SESSION_COMMAND_HANDLER_MARKER = 'phase12e-v2-focus-to-tasks';
 
 function createId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -250,6 +250,111 @@ function normalizeFocusPayload(
   };
 }
 
+
+function compactTaskSubject(value: string, fallback: string): string {
+  const cleaned = value.replace(/\s+/g, ' ').trim();
+  if (!cleaned) return fallback;
+  return cleaned.length > 72 ? `${cleaned.slice(0, 69).trim()}...` : cleaned;
+}
+
+function uniqueTaskTitles(titles: string[]): string[] {
+  const seen = new Set<string>();
+  const uniqueTitles: string[] = [];
+
+  for (const title of titles) {
+    const cleaned = title.replace(/\s+/g, ' ').trim();
+    if (!cleaned) continue;
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    uniqueTitles.push(cleaned);
+  }
+
+  return uniqueTitles.slice(0, 5);
+}
+
+function generateFocusTaskTitles(activeSession: ActiveSession): string[] {
+  const title = compactTaskSubject(activeSession.title, 'current focus');
+  const goal = compactTaskSubject(activeSession.goal, title);
+  const target = activeSession.goal ? goal : title;
+
+  switch (activeSession.mode) {
+    case 'coding':
+      return uniqueTaskTitles([
+        `Define the target behavior for ${title}`,
+        `Inspect the relevant code paths for ${title}`,
+        `Implement the smallest working change for ${target}`,
+        `Test ${title} from the UI and backend`,
+        `Commit the finished ${title} changes`,
+      ]);
+    case 'research':
+      return uniqueTaskTitles([
+        `List the key questions for ${title}`,
+        `Gather useful sources or examples for ${target}`,
+        `Compare findings and note tradeoffs for ${title}`,
+        `Decide the next action from the ${title} research`,
+      ]);
+    case 'meeting':
+      return uniqueTaskTitles([
+        `Clarify the meeting objective for ${title}`,
+        `Prepare agenda points for ${target}`,
+        `Capture decisions from ${title}`,
+        `Save follow-up tasks after ${title}`,
+      ]);
+    case 'planning':
+      return uniqueTaskTitles([
+        `Define the desired outcome for ${title}`,
+        `Break ${target} into milestones`,
+        `Identify blockers and dependencies for ${title}`,
+        `Choose the first next action for ${title}`,
+      ]);
+    case 'personal':
+      return uniqueTaskTitles([
+        `Clarify what success looks like for ${title}`,
+        `Choose one small next step for ${target}`,
+        `Set aside time for ${title}`,
+        `Review progress on ${title}`,
+      ]);
+    default:
+      return uniqueTaskTitles([
+        `Clarify the outcome for ${title}`,
+        `Break ${target} into smaller steps`,
+        `Identify the next concrete action for ${title}`,
+        `Review progress and update the focus session`,
+      ]);
+  }
+}
+
+function linkTasksToActiveSession(
+  activeSession: ActiveSession,
+  tasks: MemoryTask[],
+): ActiveSession {
+  const linkedTaskIds = Array.from(
+    new Set([
+      ...activeSession.linkedTaskIds,
+      ...tasks.map((task) => task.id).filter(Boolean),
+    ]),
+  );
+
+  return {
+    ...activeSession,
+    linkedTaskIds,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function describeFocusTasks(activeSession: ActiveSession, tasks: MemoryTask[]): string {
+  if (tasks.length === 0) {
+    return `I could not create tasks for ${activeSession.title}.`;
+  }
+
+  const taskList = tasks
+    .map((task, index) => `${index + 1}. ${task.title}`)
+    .join(' ');
+
+  return `Added ${tasks.length} task${tasks.length === 1 ? '' : 's'} for ${activeSession.title}: ${taskList}`;
+}
+
 function describeFocusStart(payload: FocusSessionCommandPayload | undefined) {
   const title = payload?.title?.trim() || 'Focus session';
   const mode = payload?.mode ? ` ${payload.mode}` : '';
@@ -396,6 +501,37 @@ export function handleMemoryCommand(
         confirmationContent: existingSession
           ? `Ended focus session: ${existingSession.title}.`
           : 'No active focus session was running.',
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+
+
+    case 'focus-to-tasks': {
+      const activeSession = readStoredActiveSession();
+      deps.setActivePanel('memory');
+
+      if (!activeSession) {
+        return {
+          handled: true,
+          confirmationContent:
+            'No active focus session is running. Start a focus session first, then I can turn it into tasks.',
+          shouldSpeakConfirmation: deps.voiceOutputEnabled,
+        };
+      }
+
+      const createdTasks = generateFocusTaskTitles(activeSession)
+        .map((title) => deps.saveMemoryTask(title))
+        .filter((task): task is MemoryTask => task !== null);
+
+      if (createdTasks.length > 0) {
+        const updatedSession = linkTasksToActiveSession(activeSession, createdTasks);
+        applyActiveSession(updatedSession);
+        patchActiveSessionInBackend({ linkedTaskIds: updatedSession.linkedTaskIds });
+      }
+
+      return {
+        handled: true,
+        confirmationContent: describeFocusTasks(activeSession, createdTasks),
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }

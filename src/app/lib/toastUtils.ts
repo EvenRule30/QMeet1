@@ -51,6 +51,8 @@ export function getBriefToolSpeech(command: string, fullText: string): string {
       return trimmed;
     case 'remember-task':
       return 'Task saved.';
+    case 'focus-to-tasks':
+      return 'Tasks created.';
     case 'mark-task-done':
       return 'Task marked done.';
     case 'delete-last-task':
@@ -183,6 +185,12 @@ export function getResultToastForCommand(
       return {
         kind: 'success',
         title: 'Task saved',
+        detail: compactToastDetail(trimmed),
+      };
+    case 'focus-to-tasks':
+      return {
+        kind: 'success',
+        title: 'Focus tasks created',
         detail: compactToastDetail(trimmed),
       };
     case 'mark-task-done':
