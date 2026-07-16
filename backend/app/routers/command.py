@@ -120,6 +120,73 @@ def _default_focus_title(mode: str) -> str:
     return "Focus session"
 
 
+
+def _visual_context_intent(message: str) -> dict[str, Any] | None:
+    """Catch Phase 14 manual visual-context commands before the general interpreter."""
+    text = _collapse_command_text(message)
+    if not text:
+        return None
+
+    lowered = text.lower()
+
+    clear_patterns = [
+        r"^(?:please\s+)?(?:clear|reset|wipe|forget|delete)\s+(?:the\s+|my\s+|all\s+)?(?:visual\s+context|visual\s+memory|visual\s+observations|camera\s+context|camera\s+memory)$",
+        r"^(?:please\s+)?(?:clear|reset|wipe|forget|delete)\s+(?:everything\s+)?(?:i|we)\s+(?:saw|looked\s+at|were\s+looking\s+at)$",
+    ]
+    if _first_match(clear_patterns, lowered):
+        return _command_response(
+            action="clear_visual_context",
+            frontend_command="clear visual context",
+            confidence=0.98,
+            reason="Backend visual-context interpreter matched a clear command.",
+        )
+
+    delete_last_patterns = [
+        r"^(?:please\s+)?(?:delete|remove|forget|erase)\s+(?:the\s+)?(?:last|latest|most\s+recent)\s+(?:visual\s+)?(?:observation|visual\s+note|visual\s+memory|camera\s+observation)$",
+        r"^(?:please\s+)?(?:delete|remove|forget|erase)\s+(?:what\s+)?(?:i|we)\s+(?:just\s+)?(?:saw|looked\s+at)$",
+    ]
+    if _first_match(delete_last_patterns, lowered):
+        return _command_response(
+            action="delete_last_visual_observation",
+            frontend_command="delete last visual observation",
+            confidence=0.98,
+            reason="Backend visual-context interpreter matched a delete-last command.",
+        )
+
+    read_patterns = [
+        r"^(?:please\s+)?(?:what\s+(?:was|is)|show|read|tell\s+me|display|open|summarize)\s+(?:the\s+|my\s+|our\s+)?(?:last\s+|latest\s+|recent\s+|current\s+)?(?:visual\s+context|visual\s+memory|visual\s+observations|visual\s+observation|camera\s+context|camera\s+memory|camera\s+observation)$",
+        r"^(?:please\s+)?(?:what\s+(?:did|do)\s+(?:i|we)\s+(?:last\s+)?(?:see|look\s+at)|what\s+(?:am|are)\s+(?:i|we)\s+looking\s+at)$",
+        r"^(?:visual\s+context|visual\s+memory|visual\s+observations|camera\s+context)$",
+    ]
+    if _first_match(read_patterns, lowered):
+        return _command_response(
+            action="read_visual_context",
+            frontend_command="what was the last visual observation",
+            confidence=0.98,
+            reason="Backend visual-context interpreter matched a read command.",
+        )
+
+    observation_patterns = [
+        r"^(?:please\s+)?(?:note|remember|save|record|store)\s+(?:visually|as\s+(?:a\s+)?visual\s+(?:note|observation)|in\s+visual\s+context)\s+(?:that\s+)?(.+)$",
+        r"^(?:please\s+)?(?:visual\s+(?:note|observation)|visual\s+memory)\s+(?:that\s+)?(.+)$",
+        r"^(?:please\s+)?(?:add|save|record|store)\s+(?:a\s+)?(?:manual\s+)?visual\s+(?:observation|note)\s+(?:that\s+)?(.+)$",
+        r"^(?:please\s+)?(?:i(?:'m|\s+am)|we(?:'re|\s+are))\s+(?:looking\s+at|seeing|viewing)\s+(.+)$",
+        r"^(?:please\s+)?(?:the\s+camera\s+should\s+remember|remember\s+from\s+the\s+camera)\s+(?:that\s+)?(.+)$",
+    ]
+    match = _first_match(observation_patterns, text)
+    if match and match.group(1).strip():
+        payload = _clean_payload(match.group(1))
+        return _command_response(
+            action="create_visual_observation",
+            frontend_command=f"note visually that {payload}",
+            confidence=0.97,
+            reason="Backend visual-context interpreter matched a manual visual observation command.",
+            payload={"summary": payload},
+        )
+
+    return None
+
+
 def _focus_command_intent(message: str) -> dict[str, Any] | None:
     """Catch Phase 12 focus-session commands before the general LLM interpreter.
 

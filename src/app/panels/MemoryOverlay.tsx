@@ -43,6 +43,10 @@ type PromptCommandEventDetail = {
   command: string;
 };
 
+type VisualContextStateEventDetail = {
+  visualContext: VisualContext;
+};
+
 type MemoryOverlayProps = {
   memorySyncState: MemorySyncState;
   memorySyncMessage: string;
@@ -71,7 +75,8 @@ const ACTIVE_SESSION_SESSION_STORAGE_KEY = 'qmeet-active-session-live';
 const ACTIVE_SESSION_COMMAND_EVENT = 'qmeet-active-session-command';
 const ACTIVE_SESSION_STATE_EVENT = 'qmeet-active-session-state';
 const QMEET_PROMPT_COMMAND_EVENT = 'qmeet-prompt-command';
-const MEMORY_OVERLAY_FOCUS_MARKER = 'phase14b-v1-visual-context';
+const VISUAL_CONTEXT_STATE_EVENT = 'qmeet-visual-context-state';
+const MEMORY_OVERLAY_FOCUS_MARKER = 'phase14c-v1-manual-visual';
 
 function normalizeActiveSession(value: unknown): ActiveSession | null {
   if (!value || typeof value !== 'object') return null;
@@ -636,6 +641,21 @@ export function MemoryOverlay({
   useEffect(() => {
     loadVisualContext();
   }, [loadVisualContext]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const handleVisualContextState = (event: Event) => {
+      const detail = (event as CustomEvent<VisualContextStateEventDetail>).detail;
+      setVisualContext(normalizeVisualContext(detail?.visualContext));
+      setVisualContextMessage('Visual context updated.');
+    };
+
+    window.addEventListener(VISUAL_CONTEXT_STATE_EVENT, handleVisualContextState);
+    return () => {
+      window.removeEventListener(VISUAL_CONTEXT_STATE_EVENT, handleVisualContextState);
+    };
+  }, []);
 
   const handleDeleteRecentFocusSession = async (sessionId: string) => {
     try {

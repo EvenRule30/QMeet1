@@ -57,12 +57,17 @@ type ActiveSessionUpdate = Partial<
   >
 >;
 
+type VisualContextStateEventDetail = {
+  visualContext: VisualContext;
+};
+
 const MEMORY_TASKS_STORAGE_KEY = 'qmeet-memory-tasks';
 const RECENT_ACTIONS_STORAGE_KEY = 'qmeet-recent-actions';
 const RECENT_FOCUS_SESSIONS_STORAGE_KEY = 'qmeet-recent-focus-sessions';
 const NOTES_STORAGE_KEY = 'qmeet-notes';
 const ACTIVE_SESSION_STORAGE_KEY = 'qmeet-active-session';
 const VISUAL_CONTEXT_STORAGE_KEY = 'qmeet-visual-context';
+const VISUAL_CONTEXT_STATE_EVENT = 'qmeet-visual-context-state';
 
 function createId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -481,6 +486,35 @@ export function useMemoryContext({
       console.error('Failed to save visual context:', error);
     }
   }, [visualContext]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const handleVisualContextState = (event: Event) => {
+      const detail = (event as CustomEvent<VisualContextStateEventDetail>).detail;
+      if (!detail?.visualContext) return;
+      setVisualContext((prev) => {
+        const nextVisualContext = normalizeVisualContext(detail.visualContext);
+        return visualContextsAreSame(prev, nextVisualContext) ? prev : nextVisualContext;
+      });
+    };
+
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key !== VISUAL_CONTEXT_STORAGE_KEY) return;
+      setVisualContext((prev) => {
+        const nextVisualContext = readStoredVisualContext();
+        return visualContextsAreSame(prev, nextVisualContext) ? prev : nextVisualContext;
+      });
+    };
+
+    window.addEventListener(VISUAL_CONTEXT_STATE_EVENT, handleVisualContextState);
+    window.addEventListener('storage', handleStorage);
+
+    return () => {
+      window.removeEventListener(VISUAL_CONTEXT_STATE_EVENT, handleVisualContextState);
+      window.removeEventListener('storage', handleStorage);
+    };
+  }, []);
 
   const persistMemoryContextToBackend = useCallback(
     async (

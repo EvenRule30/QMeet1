@@ -64,6 +64,14 @@ export function getBriefToolSpeech(command: string, fullText: string): string {
     case 'recap-focus-activity':
     case 'enhanced-focus-recap':
       return trimmed;
+    case 'create-visual-observation':
+      return 'Visual observation saved.';
+    case 'read-visual-context':
+      return trimmed;
+    case 'clear-visual-context':
+      return 'Visual context cleared.';
+    case 'delete-last-visual-observation':
+      return 'Visual observation deleted.';
     case 'resume-last-focus-session':
       return 'Focus resumed.';
     case 'mark-task-done':
@@ -252,6 +260,30 @@ export function getResultToastForCommand(
       return {
         kind: 'info',
         title: 'Enhanced recap',
+        detail: compactToastDetail(trimmed),
+      };
+    case 'create-visual-observation':
+      return {
+        kind: 'success',
+        title: 'Visual observation saved',
+        detail: compactToastDetail(trimmed),
+      };
+    case 'read-visual-context':
+      return {
+        kind: 'info',
+        title: 'Visual context',
+        detail: compactToastDetail(trimmed),
+      };
+    case 'clear-visual-context':
+      return {
+        kind: 'warning',
+        title: 'Visual context cleared',
+        detail: compactToastDetail(trimmed),
+      };
+    case 'delete-last-visual-observation':
+      return {
+        kind: 'warning',
+        title: 'Visual observation deleted',
         detail: compactToastDetail(trimmed),
       };
     case 'mark-task-done':

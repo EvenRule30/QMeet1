@@ -30,6 +30,10 @@ export type LocalCommand =
   | 'resume-last-focus-session'
   | 'recap-focus-activity'
   | 'enhanced-focus-recap'
+  | 'create-visual-observation'
+  | 'read-visual-context'
+  | 'clear-visual-context'
+  | 'delete-last-visual-observation'
   | 'remember-task'
   | 'mark-task-done'
   | 'delete-last-task'
@@ -102,6 +106,7 @@ export interface FocusSessionCommandPayload {
 
 // Phase 13F-v1: local focus/work recap commands.
 // Phase 13F-v2: LLM-enhanced recap commands.
+// Phase 14C-v1: manual visual observation commands.
 
 export interface CommandMatch {
   command: LocalCommand;
@@ -151,6 +156,10 @@ const CONFIRMATIONS: Record<LocalCommand, string> = {
   'resume-last-focus-session': 'Resuming last focus session.',
   'recap-focus-activity': 'Recapping recent focus activity.',
   'enhanced-focus-recap': 'Preparing enhanced focus recap.',
+  'create-visual-observation': 'Saved visual observation.',
+  'read-visual-context': 'Reading visual context.',
+  'clear-visual-context': 'Clearing visual context.',
+  'delete-last-visual-observation': 'Deleted last visual observation.',
   'remember-task': 'Saved task.',
   'mark-task-done': 'Marked task done.',
   'delete-last-task': 'Deleted the last task.',
@@ -767,6 +776,86 @@ function maybePersonalMode(value: string): FocusSessionMode | undefined {
 
 function isFocusPlanningQuestionPayload(value: string): boolean {
   return /\b(?:tell\s+me\s+how|how\s+(?:should|can|do)\s+(?:i|we)|give\s+me\s+(?:a\s+)?plan|make\s+me\s+(?:a\s+)?plan|help\s+me\s+(?:to\s+)?(?:accomplish|complete|do|execute)|accomplish\s+(?:it|this|that|my\s+focus|my\s+goal|the\s+goal|the\s+focus)|doing\s+my\s+focus|do\s+my\s+focus)\b/i.test(value);
+}
+
+
+function cleanVisualObservationPayload(value: string): string {
+  return value
+    .replace(/\s+/g, ' ')
+    .replace(/^(?:that\s+)?/i, '')
+    .trim()
+    .replace(/^["']+|["']+$/g, '')
+    .replace(/[.?!,;:]+$/g, '')
+    .trim();
+}
+
+function extractVisualObservationPayload(value: string): string | null {
+  const normalized = normalizeSpokenQMeet(value)
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/^(?:hey\s+)?(?:qmeet|orb|assistant)\s+/i, '')
+    .trim();
+
+  const visualObservationPatterns: RegExp[] = [
+    /^(?:please\s+)?(?:note|remember|save|record|store)\s+(?:visually|as\s+(?:a\s+)?visual\s+(?:note|observation)|in\s+visual\s+context)\s+(?:that\s+)?(.+)$/i,
+    /^(?:please\s+)?(?:visual\s+(?:note|observation)|visual\s+memory)\s+(?:that\s+)?(.+)$/i,
+    /^(?:please\s+)?(?:add|save|record|store)\s+(?:a\s+)?(?:manual\s+)?visual\s+(?:observation|note)\s+(?:that\s+)?(.+)$/i,
+    /^(?:please\s+)?(?:i(?:'m|\s+am)|we(?:'re|\s+are))\s+(?:looking\s+at|seeing|viewing)\s+(.+)$/i,
+    /^(?:please\s+)?(?:the\s+camera\s+should\s+remember|remember\s+from\s+the\s+camera)\s+(?:that\s+)?(.+)$/i,
+  ];
+
+  for (const pattern of visualObservationPatterns) {
+    const match = normalized.match(pattern);
+    const payload = match?.[1] ? cleanVisualObservationPayload(match[1]) : '';
+    if (payload) return payload;
+  }
+
+  return null;
+}
+
+function extractVisualContextIntent(normalized: string): CommandMatch | null {
+  const text = normalizeSpokenQMeet(normalized)
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/^(?:hey\s+)?(?:qmeet|orb|assistant)\s+/i, '')
+    .trim();
+  const commandText = normalizeCommandText(text);
+
+  const clearPatterns = [
+    /^(?:please\s+)?(?:clear|reset|wipe|forget|delete)\s+(?:the\s+|my\s+|all\s+)?(?:visual\s+context|visual\s+memory|visual\s+observations|camera\s+context|camera\s+memory)$/i,
+    /^(?:please\s+)?(?:clear|reset|wipe|forget|delete)\s+(?:everything\s+)?(?:i|we)\s+(?:saw|looked\s+at|were\s+looking\s+at)$/i,
+  ];
+  if (clearPatterns.some((pattern) => pattern.test(commandText))) {
+    return {
+      command: 'clear-visual-context',
+      confirmation: CONFIRMATIONS['clear-visual-context'],
+    };
+  }
+
+  const deleteLastPatterns = [
+    /^(?:please\s+)?(?:delete|remove|forget|erase)\s+(?:the\s+)?(?:last|latest|most\s+recent)\s+(?:visual\s+)?(?:observation|visual\s+note|visual\s+memory|camera\s+observation)$/i,
+    /^(?:please\s+)?(?:delete|remove|forget|erase)\s+(?:what\s+)?(?:i|we)\s+(?:just\s+)?(?:saw|looked\s+at)$/i,
+  ];
+  if (deleteLastPatterns.some((pattern) => pattern.test(commandText))) {
+    return {
+      command: 'delete-last-visual-observation',
+      confirmation: CONFIRMATIONS['delete-last-visual-observation'],
+    };
+  }
+
+  const readPatterns = [
+    /^(?:please\s+)?(?:what\s+(?:was|is)|show|read|tell\s+me|display|open|summarize)\s+(?:the\s+|my\s+|our\s+)?(?:last\s+|latest\s+|recent\s+|current\s+)?(?:visual\s+context|visual\s+memory|visual\s+observations|visual\s+observation|camera\s+context|camera\s+memory|camera\s+observation)$/i,
+    /^(?:please\s+)?(?:what\s+(?:did|do)\s+(?:i|we)\s+(?:last\s+)?(?:see|look\s+at)|what\s+(?:am|are)\s+(?:i|we)\s+looking\s+at)$/i,
+    /^(?:visual\s+context|visual\s+memory|visual\s+observations|camera\s+context)$/i,
+  ];
+  if (readPatterns.some((pattern) => pattern.test(commandText))) {
+    return {
+      command: 'read-visual-context',
+      confirmation: CONFIRMATIONS['read-visual-context'],
+    };
+  }
+
+  return null;
 }
 
 function extractFocusSessionIntent(normalized: string): FocusSessionIntent | null {
@@ -1612,6 +1701,28 @@ export function debugCommandParse(text: string): {
       .replace(/^(?:hey\s+)?(?:qmeet|orb|assistant)\s+/i, '')
       .trim();
   
+    const visualContextIntent = extractVisualContextIntent(payloadSource);
+    if (visualContextIntent) {
+      return {
+        rawText: text,
+        normalizedText: normalized,
+        match: visualContextIntent,
+      };
+    }
+
+    const visualObservationPayload = extractVisualObservationPayload(payloadSource);
+    if (visualObservationPayload) {
+      return {
+        rawText: text,
+        normalizedText: normalized,
+        match: {
+          command: 'create-visual-observation',
+          confirmation: `Saved visual observation: ${visualObservationPayload}.`,
+          payload: visualObservationPayload,
+        },
+      };
+    }
+
     const focusSessionIntent = extractFocusSessionIntent(payloadSource);
     if (focusSessionIntent) {
       return {

@@ -1,7 +1,10 @@
-import type { ActivePanel, ActiveSession, MemorySessionMode, MemoryTask, RecentFocusSession } from '../types';
+import type { ActivePanel, ActiveSession, MemorySessionMode, MemoryTask, RecentFocusSession, VisualContext, VisualObservation } from '../types';
 import type { CommandMatch, FocusSessionCommandPayload } from '../commands';
 import {
   clearActiveSession,
+  clearVisualContext,
+  createVisualObservation,
+  deleteVisualObservationById,
   replaceActiveSession,
   updateActiveSession,
 } from '../api';
@@ -39,7 +42,9 @@ const MEMORY_TASKS_STORAGE_KEY = 'qmeet-memory-tasks';
 const NOTES_STORAGE_KEY = 'qmeet-notes';
 const RECENT_ACTIONS_STORAGE_KEY = 'qmeet-recent-actions';
 const RECENT_FOCUS_SESSIONS_STORAGE_KEY = 'qmeet-recent-focus-sessions';
-const ACTIVE_SESSION_COMMAND_HANDLER_MARKER = 'phase13f-v1-local-recap';
+const VISUAL_CONTEXT_STORAGE_KEY = 'qmeet-visual-context';
+const VISUAL_CONTEXT_STATE_EVENT = 'qmeet-visual-context-state';
+const ACTIVE_SESSION_COMMAND_HANDLER_MARKER = 'phase14c-v1-manual-visual';
 
 function createId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -173,6 +178,235 @@ function readStoredRecentFocusSessions(): RecentFocusSession[] {
   } catch {
     return [];
   }
+}
+
+
+function createEmptyVisualContext(): VisualContext {
+  return {
+    enabled: false,
+    lastObservation: null,
+    recentObservations: [],
+  };
+}
+
+function isVisualContextSource(value: unknown): value is VisualObservation['source'] {
+  return value === 'manual' || value === 'camera' || value === 'screen';
+}
+
+function normalizeVisualObservation(value: unknown): VisualObservation | null {
+  if (!value || typeof value !== 'object') return null;
+
+  const candidate = value as Partial<VisualObservation>;
+  if (typeof candidate.summary !== 'string' || !candidate.summary.trim()) {
+    return null;
+  }
+
+  const now = new Date().toISOString();
+  return {
+    id:
+      typeof candidate.id === 'string' && candidate.id.trim()
+        ? candidate.id
+        : createId('visual'),
+    source: isVisualContextSource(candidate.source) ? candidate.source : 'manual',
+    summary: candidate.summary.trim(),
+    capturedAt:
+      typeof candidate.capturedAt === 'string' && candidate.capturedAt.trim()
+        ? candidate.capturedAt
+        : now,
+    ...(typeof candidate.confidence === 'number'
+      ? { confidence: candidate.confidence }
+      : candidate.confidence === null
+        ? { confidence: null }
+        : {}),
+    ...(typeof candidate.relatedFocusId === 'string' && candidate.relatedFocusId.trim()
+      ? { relatedFocusId: candidate.relatedFocusId }
+      : {}),
+  };
+}
+
+function normalizeVisualContext(value: unknown): VisualContext {
+  if (!value || typeof value !== 'object') return createEmptyVisualContext();
+
+  const candidate = value as Partial<VisualContext>;
+  const recentObservations = Array.isArray(candidate.recentObservations)
+    ? candidate.recentObservations
+        .map(normalizeVisualObservation)
+        .filter((observation): observation is VisualObservation => observation !== null)
+        .sort((a, b) => {
+          const bTime = new Date(b.capturedAt).getTime();
+          const aTime = new Date(a.capturedAt).getTime();
+          return (Number.isNaN(bTime) ? 0 : bTime) - (Number.isNaN(aTime) ? 0 : aTime);
+        })
+    : [];
+  const lastObservation = normalizeVisualObservation(candidate.lastObservation) ?? recentObservations[0] ?? null;
+
+  return {
+    enabled: Boolean(candidate.enabled || lastObservation || recentObservations.length > 0),
+    lastObservation,
+    recentObservations,
+  };
+}
+
+function readStoredVisualContext(): VisualContext {
+  if (typeof window === 'undefined') return createEmptyVisualContext();
+
+  try {
+    const rawVisualContext = window.localStorage.getItem(VISUAL_CONTEXT_STORAGE_KEY);
+    if (!rawVisualContext) return createEmptyVisualContext();
+    return normalizeVisualContext(JSON.parse(rawVisualContext));
+  } catch {
+    return createEmptyVisualContext();
+  }
+}
+
+function writeStoredVisualContext(visualContext: VisualContext) {
+  if (typeof window === 'undefined') return;
+
+  try {
+    window.localStorage.setItem(
+      VISUAL_CONTEXT_STORAGE_KEY,
+      JSON.stringify(normalizeVisualContext(visualContext)),
+    );
+  } catch (error) {
+    console.warn('Visual context local save failed:', error);
+  }
+}
+
+function dispatchVisualContextState(visualContext: VisualContext) {
+  if (typeof window === 'undefined') return;
+
+  window.dispatchEvent(
+    new CustomEvent(VISUAL_CONTEXT_STATE_EVENT, {
+      detail: { visualContext: normalizeVisualContext(visualContext) },
+    }),
+  );
+}
+
+function applyVisualContext(visualContext: VisualContext) {
+  const normalizedContext = normalizeVisualContext(visualContext);
+  writeStoredVisualContext(normalizedContext);
+  dispatchVisualContextState(normalizedContext);
+}
+
+function formatVisualObservationTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'unknown time';
+
+  return date.toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function describeVisualObservation(observation: VisualObservation): string {
+  const sourceText = observation.source === 'manual' ? 'manual' : observation.source;
+  return `${observation.summary} (${sourceText}, ${formatVisualObservationTime(observation.capturedAt)})`;
+}
+
+function describeVisualContext(visualContext: VisualContext): string {
+  const normalizedContext = normalizeVisualContext(visualContext);
+  const lastObservation = normalizedContext.lastObservation ?? normalizedContext.recentObservations[0] ?? null;
+
+  if (!lastObservation) {
+    return normalizedContext.enabled
+      ? 'Visual context is enabled, but no observations have been saved yet.'
+      : 'No visual observations have been saved yet.';
+  }
+
+  const recentCount = normalizedContext.recentObservations.length;
+  const recentText = recentCount > 1
+    ? ` ${recentCount} recent visual observations are saved.`
+    : '';
+
+  return `Last visual observation: ${describeVisualObservation(lastObservation)}.${recentText}`;
+}
+
+function addLocalVisualObservation(summary: string): VisualObservation | null {
+  const trimmedSummary = summary.trim();
+  if (!trimmedSummary) return null;
+
+  const activeSession = readStoredActiveSession();
+  const observation: VisualObservation = {
+    id: createId('visual'),
+    source: 'manual',
+    summary: trimmedSummary,
+    capturedAt: new Date().toISOString(),
+    ...(activeSession ? { relatedFocusId: activeSession.id } : {}),
+  };
+
+  const previousContext = readStoredVisualContext();
+  const nextContext = normalizeVisualContext({
+    enabled: true,
+    lastObservation: observation,
+    recentObservations: [
+      observation,
+      ...previousContext.recentObservations.filter((item) => item.id !== observation.id),
+    ].slice(0, 20),
+  });
+
+  applyVisualContext(nextContext);
+
+  createVisualObservation({
+    summary: observation.summary,
+    source: 'manual',
+    capturedAt: observation.capturedAt,
+    ...(observation.relatedFocusId ? { relatedFocusId: observation.relatedFocusId } : {}),
+  })
+    .then((response) => {
+      if (response.visualContext) {
+        applyVisualContext(normalizeVisualContext(response.visualContext));
+      }
+    })
+    .catch((error) => {
+      console.warn('Visual observation backend save failed:', error);
+    });
+
+  return observation;
+}
+
+function clearStoredVisualContext() {
+  const emptyContext = createEmptyVisualContext();
+  applyVisualContext(emptyContext);
+  clearVisualContext()
+    .then((response) => {
+      if (response.visualContext) {
+        applyVisualContext(normalizeVisualContext(response.visualContext));
+      }
+    })
+    .catch((error) => {
+      console.warn('Visual context backend clear failed:', error);
+    });
+}
+
+function deleteLastStoredVisualObservation(): VisualObservation | null {
+  const previousContext = readStoredVisualContext();
+  const observation = previousContext.lastObservation ?? previousContext.recentObservations[0] ?? null;
+  if (!observation) return null;
+
+  const remainingObservations = previousContext.recentObservations.filter(
+    (item) => item.id !== observation.id,
+  );
+  const nextContext = normalizeVisualContext({
+    enabled: previousContext.enabled && remainingObservations.length > 0,
+    lastObservation: remainingObservations[0] ?? null,
+    recentObservations: remainingObservations,
+  });
+
+  applyVisualContext(nextContext);
+
+  deleteVisualObservationById(observation.id)
+    .then((response) => {
+      if (response.visualContext) {
+        applyVisualContext(normalizeVisualContext(response.visualContext));
+      }
+    })
+    .catch((error) => {
+      console.warn('Visual observation backend delete failed:', error);
+    });
+
+  return observation;
 }
 
 function formatFocusHistoryTime(value: string): string {
@@ -1358,6 +1592,53 @@ export function handleMemoryCommand(
       return {
         handled: true,
         confirmationContent: describeFocusTasks(activeSession, createdTasks),
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+
+    case 'create-visual-observation': {
+      const observation = addLocalVisualObservation(commandMatch.payload ?? '');
+      deps.setActivePanel('memory');
+      return {
+        handled: true,
+        confirmationContent: observation
+          ? `Saved visual observation: ${observation.summary}.`
+          : 'I did not catch the visual observation text.',
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+
+    case 'read-visual-context': {
+      deps.setActivePanel('memory');
+      return {
+        handled: true,
+        confirmationContent: describeVisualContext(readStoredVisualContext()),
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+
+    case 'clear-visual-context': {
+      const previousContext = readStoredVisualContext();
+      const removedCount = previousContext.recentObservations.length;
+      clearStoredVisualContext();
+      deps.setActivePanel('memory');
+      return {
+        handled: true,
+        confirmationContent: removedCount > 0
+          ? `Cleared ${removedCount} visual observation${removedCount === 1 ? '' : 's'}.`
+          : 'No visual observations to clear.',
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+
+    case 'delete-last-visual-observation': {
+      const deletedObservation = deleteLastStoredVisualObservation();
+      deps.setActivePanel('memory');
+      return {
+        handled: true,
+        confirmationContent: deletedObservation
+          ? `Deleted visual observation: ${deletedObservation.summary}.`
+          : 'No visual observations to delete.',
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }
