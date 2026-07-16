@@ -209,6 +209,49 @@ def _focus_command_intent(message: str) -> dict[str, Any] | None:
             reason="Backend focus interpreter matched a focus summary command.",
         )
 
+
+    enhanced_focus_recap_patterns: list[tuple[str, str, str]] = [
+        (
+            r"^(?:please\s+)?(?:give\s+me\s+|make\s+me\s+|create\s+)?(?:an?\s+)?(?:ai|smart|enhanced|better|polished|natural|intelligent)\s+(?:focus|work|activity|progress)?\s*(?:recap|summary|review)(?:\s+(?:(?:for|of)\s+)?(today|yesterday|this\s+week|recent(?:\s+work|\s+activity|\s+progress)?))?$",
+            "enhanced focus recap",
+            "enhanced-recent",
+        ),
+        (
+            r"^(?:please\s+)?(?:summarize|recap|review)\s+(?:my|our)\s+(?:recent\s+)?progress(?:\s+(today|yesterday|this\s+week))?$",
+            "enhanced progress recap",
+            "enhanced-recent",
+        ),
+        (
+            r"^(?:please\s+)?(?:what\s+should\s+(?:i|we)\s+focus\s+on\s+next|what\s+should\s+(?:i|we)\s+do\s+next|what\s+is\s+the\s+next\s+priority|suggest\s+(?:my|our)?\s*(?:next\s+)?priority|suggest\s+next\s+steps)$",
+            "what should I focus on next",
+            "next-priority",
+        ),
+        (
+            r"^(?:please\s+)?(?:give\s+me\s+|make\s+me\s+|create\s+)?(?:a\s+)?(?:daily|weekly)\s+(?:work|focus|activity|progress)\s+(?:recap|summary|review)\s+(?:with\s+)?(?:recommendations|next\s+steps|priorities)$",
+            "enhanced focus recap",
+            "enhanced-recent",
+        ),
+    ]
+    for pattern, frontend_command, payload in enhanced_focus_recap_patterns:
+        match = re.search(pattern, lowered, flags=re.IGNORECASE)
+        if match:
+            explicit_window = match.group(1) if match.lastindex and match.group(1) else payload
+            explicit_window = re.sub(r"\s+", "-", explicit_window.lower()).strip()
+            if payload == "next-priority":
+                routed_frontend_command = frontend_command
+            elif explicit_window in {"today", "yesterday", "this-week"}:
+                routed_frontend_command = f"enhanced focus recap {explicit_window.replace('-', ' ')}"
+            else:
+                routed_frontend_command = frontend_command
+
+            return _command_response(
+                action="enhanced_focus_recap",
+                frontend_command=routed_frontend_command,
+                confidence=0.98,
+                reason="Backend focus interpreter matched an enhanced focus recap command.",
+                payload={"timeframe": explicit_window},
+            )
+
     focus_recap_patterns: list[tuple[str, str, str]] = [
         (
             r"^(?:please\s+)?(?:summarize|recap|review)\s+(?:what\s+)?(?:i|we)\s+(?:worked\s+on|focused\s+on|did|accomplished)\s+today$",

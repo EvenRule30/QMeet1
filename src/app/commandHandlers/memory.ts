@@ -6,6 +6,14 @@ import {
   updateActiveSession,
 } from '../api';
 
+
+const ENHANCED_FOCUS_RECAP_CHAT_EVENT = 'qmeet-enhanced-focus-recap-chat';
+
+type EnhancedFocusRecapChatEventDetail = {
+  prompt: string;
+  visibleText: string;
+};
+
 export type MemoryCommandResult = {
   handled: boolean;
   confirmationContent?: string;
@@ -503,6 +511,139 @@ function buildFocusActivityRecap(rawPayload: string | undefined): string {
   return lines.join(' ');
 }
 
+
+function normalizeEnhancedRecapPayload(rawPayload: string | undefined): string {
+  const payload = (rawPayload ?? '')
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .trim();
+
+  if (payload.includes('today')) return 'today';
+  if (payload.includes('yesterday') && !payload.includes('since')) return 'yesterday';
+  if (payload.includes('week') || payload.includes('weekly')) return 'recent';
+  if (payload.includes('next-priority') || payload.includes('priority')) return 'next-priority';
+  return payload || 'enhanced-recent';
+}
+
+function buildEnhancedFocusRecapVisibleText(rawPayload: string | undefined): string {
+  const payload = normalizeEnhancedRecapPayload(rawPayload);
+
+  if (payload === 'today') return 'Enhanced recap for today';
+  if (payload === 'yesterday') return 'Enhanced recap for yesterday';
+  if (payload === 'next-priority') return 'What should I focus on next?';
+  return 'Enhanced recent focus recap';
+}
+
+function buildEnhancedFocusRecapPrompt(rawPayload: string | undefined): string {
+  const payload = normalizeEnhancedRecapPayload(rawPayload);
+  const localRecapPayload = payload === 'next-priority' ? 'recent' : payload;
+  const localRecap = buildFocusActivityRecap(localRecapPayload);
+  const activeSession = readStoredActiveSession();
+  const recentSessions = readStoredRecentFocusSessions().slice(0, 6);
+  const tasks = readStoredMemoryTasks();
+  const openTasks = tasks.filter((task) => !task.completedAt).slice(0, 8);
+  const recentlyCompletedTasks = tasks
+    .filter((task) => task.completedAt)
+    .sort((a, b) => timeValue(b.completedAt) - timeValue(a.completedAt))
+    .slice(0, 8);
+  const notes = readStoredNotes()
+    .sort((a, b) => timeValue(b.createdAt) - timeValue(a.createdAt))
+    .slice(0, 6);
+  const actions = readStoredRecentActions()
+    .sort((a, b) => timeValue(b.createdAt) - timeValue(a.createdAt))
+    .slice(0, 10);
+
+  const activeFocusText = activeSession
+    ? [
+        `Title: ${activeSession.title}`,
+        `Mode: ${activeSession.mode}`,
+        activeSession.goal ? `Goal: ${activeSession.goal}` : 'Goal: none set',
+        `Started: ${activeSession.startedAt}`,
+        `Updated: ${activeSession.updatedAt}`,
+        `Linked task count: ${activeSession.linkedTaskIds.length}`,
+        `Pinned note count: ${activeSession.pinnedNoteIds.length}`,
+      ].join('\n')
+    : 'No active focus session.';
+
+  const recentFocusText = recentSessions.length > 0
+    ? recentSessions
+        .map((session, index) => {
+          return `${index + 1}. ${session.title} (${session.mode}) ended ${session.endedAt}${session.goal ? ` — goal: ${session.goal}` : ''}${session.summaryNoteId || session.pinnedNoteIds.length > 0 ? ' — summary saved' : ''}`;
+        })
+        .join('\n')
+    : 'No recent focus sessions.';
+
+  const openTaskText = openTasks.length > 0
+    ? openTasks.map((task, index) => `${index + 1}. ${task.title}`).join('\n')
+    : 'No open tasks.';
+
+  const completedTaskText = recentlyCompletedTasks.length > 0
+    ? recentlyCompletedTasks.map((task, index) => `${index + 1}. ${task.title} — completed ${task.completedAt}`).join('\n')
+    : 'No recently completed tasks.';
+
+  const noteText = notes.length > 0
+    ? notes.map((note, index) => `${index + 1}. ${compactRecapText(note.content, 180)} — saved ${note.createdAt}`).join('\n')
+    : 'No recent notes.';
+
+  const actionText = actions.length > 0
+    ? actions.map((action, index) => `${index + 1}. ${action.label}${action.detail ? ` — ${action.detail}` : ''} — ${action.createdAt}`).join('\n')
+    : 'No recent actions.';
+
+  const modeInstruction = payload === 'next-priority'
+    ? 'The user wants help choosing the next priority. Emphasize the strongest next action and why it should come first.'
+    : 'The user wants an enhanced natural-language recap. Emphasize progress, changes, open loops, and the next useful action.';
+
+  return [
+    'QMeet enhanced work recap request.',
+    modeInstruction,
+    'Use only the memory snapshot below. Do not invent completed work that is not represented here. If there is not much data, say so and give a small next step.',
+    'Write like the orb assistant speaking to the user: direct, practical, and concise.',
+    'Use this structure: 1) concise recap, 2) what changed, 3) open loops, 4) suggested next action.',
+    'Do not mention localStorage, sessionStorage, JSON, APIs, routes, event names, or implementation details.',
+    '',
+    `<requested_timeframe>${payload}</requested_timeframe>`,
+    '<local_recap_fallback>',
+    localRecap,
+    '</local_recap_fallback>',
+    '<active_focus>',
+    activeFocusText,
+    '</active_focus>',
+    '<recent_focus_sessions>',
+    recentFocusText,
+    '</recent_focus_sessions>',
+    '<open_tasks>',
+    openTaskText,
+    '</open_tasks>',
+    '<recently_completed_tasks>',
+    completedTaskText,
+    '</recently_completed_tasks>',
+    '<recent_notes>',
+    noteText,
+    '</recent_notes>',
+    '<recent_actions>',
+    actionText,
+    '</recent_actions>',
+  ].join('\n');
+}
+
+function dispatchEnhancedFocusRecapChat(rawPayload: string | undefined) {
+  if (typeof window === 'undefined') return;
+
+  const detail: EnhancedFocusRecapChatEventDetail = {
+    prompt: buildEnhancedFocusRecapPrompt(rawPayload),
+    visibleText: buildEnhancedFocusRecapVisibleText(rawPayload),
+  };
+
+  window.setTimeout(() => {
+    window.dispatchEvent(
+      new CustomEvent<EnhancedFocusRecapChatEventDetail>(
+        ENHANCED_FOCUS_RECAP_CHAT_EVENT,
+        { detail },
+      ),
+    );
+  }, 0);
+}
+
 function writeStoredActiveSession(activeSession: ActiveSession | null) {
   if (typeof window === 'undefined') return;
 
@@ -935,6 +1076,17 @@ export function handleMemoryCommand(
         handled: true,
         confirmationContent: buildFocusActivityRecap(commandMatch.payload),
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+
+    case 'enhanced-focus-recap': {
+      deps.setActivePanel('memory');
+      dispatchEnhancedFocusRecapChat(commandMatch.payload);
+      return {
+        handled: true,
+        confirmationContent:
+          'Preparing an enhanced recap from your focus history, tasks, notes, and recent actions.',
+        shouldSpeakConfirmation: false,
       };
     }
 

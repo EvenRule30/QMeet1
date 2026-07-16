@@ -29,6 +29,7 @@ export type LocalCommand =
   | 'read-focus-history'
   | 'resume-last-focus-session'
   | 'recap-focus-activity'
+  | 'enhanced-focus-recap'
   | 'remember-task'
   | 'mark-task-done'
   | 'delete-last-task'
@@ -100,6 +101,7 @@ export interface FocusSessionCommandPayload {
 }
 
 // Phase 13F-v1: local focus/work recap commands.
+// Phase 13F-v2: LLM-enhanced recap commands.
 
 export interface CommandMatch {
   command: LocalCommand;
@@ -148,6 +150,7 @@ const CONFIRMATIONS: Record<LocalCommand, string> = {
   'read-focus-history': 'Reading recent focus sessions.',
   'resume-last-focus-session': 'Resuming last focus session.',
   'recap-focus-activity': 'Recapping recent focus activity.',
+  'enhanced-focus-recap': 'Preparing enhanced focus recap.',
   'remember-task': 'Saved task.',
   'mark-task-done': 'Marked task done.',
   'delete-last-task': 'Deleted the last task.',
@@ -676,7 +679,8 @@ type FocusSessionIntent = {
     | 'read-last-focus-session'
     | 'read-focus-history'
     | 'resume-last-focus-session'
-    | 'recap-focus-activity';
+    | 'recap-focus-activity'
+    | 'enhanced-focus-recap';
   focusSession?: FocusSessionCommandPayload;
   payload?: string;
   confirmation?: string;
@@ -839,6 +843,43 @@ function extractFocusSessionIntent(normalized: string): FocusSessionIntent | nul
     );
   }
 
+
+
+  const enhancedFocusRecapPatterns: Array<{ pattern: RegExp; payload: string; confirmation: string }> = [
+    {
+      pattern: /^(?:please\s+)?(?:give\s+me\s+|make\s+me\s+|create\s+)?(?:an?\s+)?(?:ai|smart|enhanced|better|polished|natural|intelligent)\s+(?:focus|work|activity|progress)?\s*(?:recap|summary|review)(?:\s+(?:(?:for|of)\s+)?(today|yesterday|this\s+week|recent(?:\s+work|\s+activity|\s+progress)?))?$/i,
+      payload: 'enhanced-recent',
+      confirmation: 'Preparing enhanced focus recap.',
+    },
+    {
+      pattern: /^(?:please\s+)?(?:summarize|recap|review)\s+(?:my|our)\s+(?:recent\s+)?progress(?:\s+(today|yesterday|this\s+week))?$/i,
+      payload: 'enhanced-recent',
+      confirmation: 'Preparing enhanced progress recap.',
+    },
+    {
+      pattern: /^(?:please\s+)?(?:what\s+should\s+(?:i|we)\s+focus\s+on\s+next|what\s+should\s+(?:i|we)\s+do\s+next|what\s+is\s+the\s+next\s+priority|suggest\s+(?:my|our)?\s*(?:next\s+)?priority|suggest\s+next\s+steps)$/i,
+      payload: 'next-priority',
+      confirmation: 'Preparing focus recommendations.',
+    },
+    {
+      pattern: /^(?:please\s+)?(?:give\s+me\s+|make\s+me\s+|create\s+)?(?:a\s+)?(?:daily|weekly)\s+(?:work|focus|activity|progress)\s+(?:recap|summary|review)\s+(?:with\s+)?(?:recommendations|next\s+steps|priorities)$/i,
+      payload: 'enhanced-recent',
+      confirmation: 'Preparing enhanced focus recap.',
+    },
+  ];
+  for (const { pattern, payload, confirmation } of enhancedFocusRecapPatterns) {
+    const match = focusText.match(pattern);
+    if (match) {
+      const explicitWindow = match[1]
+        ? match[1].replace(/\s+/g, '-').toLowerCase()
+        : payload;
+      return {
+        command: 'enhanced-focus-recap',
+        payload: explicitWindow,
+        confirmation,
+      };
+    }
+  }
 
   const focusRecapPatterns: Array<{ pattern: RegExp; payload: string; confirmation: string }> = [
     {

@@ -62,6 +62,7 @@ export function getBriefToolSpeech(command: string, fullText: string): string {
     case 'read-last-focus-session':
     case 'read-focus-history':
     case 'recap-focus-activity':
+    case 'enhanced-focus-recap':
       return trimmed;
     case 'resume-last-focus-session':
       return 'Focus resumed.';
@@ -245,6 +246,12 @@ export function getResultToastForCommand(
       return {
         kind: 'info',
         title: 'Focus recap',
+        detail: compactToastDetail(trimmed),
+      };
+    case 'enhanced-focus-recap':
+      return {
+        kind: 'info',
+        title: 'Enhanced recap',
         detail: compactToastDetail(trimmed),
       };
     case 'mark-task-done':

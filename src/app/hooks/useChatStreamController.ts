@@ -11,11 +11,17 @@ import { buildBriefingRequest, isBriefingRequest } from '../lib/briefingUtils';
 import { ActiveSession, Message, OrbState } from '../types';
 
 const BRIEF_ME_EVENT = 'qmeet:brief-me';
+const ENHANCED_FOCUS_RECAP_CHAT_EVENT = 'qmeet-enhanced-focus-recap-chat';
 const ACTIVE_SESSION_STORAGE_KEYS = [
   'qmeet-active-session-live',
   'qmeet-active-session',
 ];
-const ACTIVE_FOCUS_CONTEXT_MARKER = 'phase12e-v1-focus-aware-chat-context';
+const ACTIVE_FOCUS_CONTEXT_MARKER = 'phase13f-v2-enhanced-recap-chat-context';
+
+type EnhancedFocusRecapChatEventDetail = {
+  prompt?: string;
+  visibleText?: string;
+};
 
 function buildStreamingFailureMessage(error: unknown): string {
   const connectionHint = `Make sure the QMeet backend is running at ${QMEET_API_BASE_URL}.`;
@@ -396,6 +402,34 @@ export function useChatStreamController({
 
     return () => {
       window.removeEventListener(BRIEF_ME_EVENT, handleBriefMe);
+    };
+  }, [sendStreamingChat]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const handleEnhancedFocusRecap = (event: Event) => {
+      const detail = (event as CustomEvent<EnhancedFocusRecapChatEventDetail>).detail;
+      const prompt = typeof detail?.prompt === 'string' ? detail.prompt.trim() : '';
+      const visibleText =
+        typeof detail?.visibleText === 'string' && detail.visibleText.trim()
+          ? detail.visibleText.trim()
+          : 'Enhanced focus recap';
+
+      if (!prompt) return;
+      void sendStreamingChat(prompt, visibleText);
+    };
+
+    window.addEventListener(
+      ENHANCED_FOCUS_RECAP_CHAT_EVENT,
+      handleEnhancedFocusRecap,
+    );
+
+    return () => {
+      window.removeEventListener(
+        ENHANCED_FOCUS_RECAP_CHAT_EVENT,
+        handleEnhancedFocusRecap,
+      );
     };
   }, [sendStreamingChat]);
 
