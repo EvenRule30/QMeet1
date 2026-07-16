@@ -51,7 +51,7 @@ const ACTIVE_SESSION_STORAGE_KEY = 'qmeet-active-session';
 const ACTIVE_SESSION_SESSION_STORAGE_KEY = 'qmeet-active-session-live';
 const ACTIVE_SESSION_COMMAND_EVENT = 'qmeet-active-session-command';
 const ACTIVE_SESSION_STATE_EVENT = 'qmeet-active-session-state';
-const MEMORY_OVERLAY_FOCUS_MARKER = 'phase12c-v3-visible-focus-state-sync';
+const MEMORY_OVERLAY_FOCUS_MARKER = 'phase13a-v1-focus-nudge-engine';
 
 function normalizeActiveSession(value: unknown): ActiveSession | null {
   if (!value || typeof value !== 'object') return null;
@@ -152,6 +152,114 @@ function formatSessionMode(mode: ActiveSession['mode']) {
   return mode.charAt(0).toUpperCase() + mode.slice(1);
 }
 
+
+type FocusNudge = {
+  id: string;
+  title: string;
+  detail: string;
+  command: string;
+};
+
+function findLinkedTasks(
+  activeSession: ActiveSession | null,
+  memoryTasks: MemoryTask[],
+) {
+  if (!activeSession || activeSession.linkedTaskIds.length === 0) return [];
+  const linkedIds = new Set(activeSession.linkedTaskIds);
+  return memoryTasks.filter((task) => linkedIds.has(task.id));
+}
+
+function getFocusAgeMinutes(activeSession: ActiveSession | null) {
+  if (!activeSession) return 0;
+  const startedAt = new Date(activeSession.startedAt).getTime();
+  if (!Number.isFinite(startedAt)) return 0;
+  return Math.max(0, Math.round((Date.now() - startedAt) / 60000));
+}
+
+function buildFocusNudges(
+  activeSession: ActiveSession | null,
+  memoryTasks: MemoryTask[],
+): FocusNudge[] {
+  if (!activeSession) {
+    return [
+      {
+        id: 'start-focus',
+        title: 'Start with a focus session',
+        detail: 'Set the current work context so QMeet can connect chat, tasks, and notes.',
+        command: 'start a focus session for …',
+      },
+    ];
+  }
+
+  const nudges: FocusNudge[] = [];
+  const linkedTasks = findLinkedTasks(activeSession, memoryTasks);
+  const openLinkedTasks = linkedTasks.filter((task) => !task.completedAt);
+  const completedLinkedTasks = linkedTasks.filter((task) => task.completedAt);
+  const focusAgeMinutes = getFocusAgeMinutes(activeSession);
+
+  if (!activeSession.goal.trim()) {
+    nudges.push({
+      id: 'set-goal',
+      title: 'Add a goal',
+      detail: 'A goal makes focus-aware chat, summaries, and next steps more useful.',
+      command: 'set my goal to …',
+    });
+  }
+
+  if (activeSession.goal.trim() && linkedTasks.length === 0) {
+    nudges.push({
+      id: 'make-tasks',
+      title: 'Turn this focus into tasks',
+      detail: 'Create a short checklist from the current focus and goal.',
+      command: 'turn this focus into tasks',
+    });
+  }
+
+  if (openLinkedTasks.length > 0) {
+    nudges.push({
+      id: 'next-linked-task',
+      title: 'Next linked task',
+      detail: openLinkedTasks[0].title,
+      command: `work on ${openLinkedTasks[0].title}`,
+    });
+  }
+
+  if (linkedTasks.length > 0 && openLinkedTasks.length === 0) {
+    nudges.push({
+      id: 'summarize-completed-focus',
+      title: 'All linked tasks are done',
+      detail: `You completed ${completedLinkedTasks.length} linked task${
+        completedLinkedTasks.length === 1 ? '' : 's'
+      }. Capture the outcome before ending the focus.`,
+      command: 'save this focus as a note',
+    });
+  }
+
+  if (
+    activeSession.goal.trim() &&
+    activeSession.pinnedNoteIds.length === 0 &&
+    focusAgeMinutes >= 30
+  ) {
+    nudges.push({
+      id: 'save-progress-note',
+      title: 'Save a progress note',
+      detail: 'This focus has been active for a while and has not pinned a summary note yet.',
+      command: 'save this focus as a note',
+    });
+  }
+
+  if (nudges.length === 0) {
+    nudges.push({
+      id: 'keep-going',
+      title: 'Keep momentum',
+      detail: 'Your focus has a goal and linked context. Ask QMeet for the next step when you are ready.',
+      command: 'what should I do next for this focus',
+    });
+  }
+
+  return nudges.slice(0, 3);
+}
+
 export function MemoryOverlay({
   memorySyncState,
   memorySyncMessage,
@@ -177,6 +285,7 @@ export function MemoryOverlay({
   const [activeSession, setActiveSession] = useState(readStoredActiveSession);
   const openTasks = memoryTasks.filter((task) => !task.completedAt);
   const completedTasks = memoryTasks.filter((task) => task.completedAt);
+  const focusNudges = buildFocusNudges(activeSession, memoryTasks);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -277,6 +386,23 @@ export function MemoryOverlay({
                 QMeet Phase 12” to create one.
               </p>
             )}
+          </div>
+
+          <div className="panel-section memory-sync-section">
+            <div className="panel-section-title">Focus Nudges</div>
+            <div className="memory-list">
+              {focusNudges.map((nudge) => (
+                <div className="memory-action-item" key={nudge.id}>
+                  <div className="memory-task-copy">
+                    <div className="memory-action-title">{nudge.title}</div>
+                    <div className="memory-task-meta">{nudge.detail}</div>
+                    <p className="panel-section-text">
+                      Say “{nudge.command}”
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
 
           <div className="panel-section memory-sync-section">
@@ -515,8 +641,9 @@ export function MemoryOverlay({
               Say “start a coding focus session for QMeet Phase 12,” “what am I
               focused on,” “set my goal to wire focus commands,” “end focus
               session,” “remember to test the Pi as a task,” “mark task done,”
-              or “clear completed tasks.” Notes and recent actions sync in the
-              background.
+              or “turn this focus into tasks,” “save this focus as a note,”
+              “what should I do next,” or “clear completed tasks.” Notes and
+              recent actions sync in the background.
             </p>
           </div>
 
