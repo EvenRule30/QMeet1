@@ -56,7 +56,7 @@ const ACTIVE_SESSION_SESSION_STORAGE_KEY = 'qmeet-active-session-live';
 const ACTIVE_SESSION_COMMAND_EVENT = 'qmeet-active-session-command';
 const ACTIVE_SESSION_STATE_EVENT = 'qmeet-active-session-state';
 const QMEET_PROMPT_COMMAND_EVENT = 'qmeet-prompt-command';
-const MEMORY_OVERLAY_FOCUS_MARKER = 'phase13b-v1-clickable-focus-nudges';
+const MEMORY_OVERLAY_FOCUS_MARKER = 'phase13b-v2-always-available-focus-actions';
 
 function normalizeActiveSession(value: unknown): ActiveSession | null {
   if (!value || typeof value !== 'object') return null;
@@ -324,6 +324,19 @@ function runFocusNudge(
   });
 }
 
+function runFocusQuickAction(
+  command: string,
+  label: string,
+  pushResultToast: (toastInput: ToastInput) => void,
+) {
+  dispatchPromptCommand(command);
+  pushResultToast({
+    kind: 'info',
+    title: label,
+    detail: command,
+  });
+}
+
 export function MemoryOverlay({
   memorySyncState,
   memorySyncMessage,
@@ -427,6 +440,47 @@ export function MemoryOverlay({
                         ? `Goal: ${activeSession.goal}`
                         : 'No goal set yet. Say “set my goal to …” to add one.'}
                     </p>
+                    <div className="panel-action-row">
+                      <button
+                        className="panel-action-btn"
+                        type="button"
+                        onClick={() =>
+                          runFocusQuickAction(
+                            'turn this focus into tasks',
+                            'Focus tasks',
+                            pushResultToast,
+                          )
+                        }
+                      >
+                        Create tasks
+                      </button>
+                      <button
+                        className="panel-action-btn"
+                        type="button"
+                        onClick={() =>
+                          runFocusQuickAction(
+                            'save this focus as a note',
+                            'Focus note',
+                            pushResultToast,
+                          )
+                        }
+                      >
+                        Save note
+                      </button>
+                      <button
+                        className="panel-action-btn"
+                        type="button"
+                        onClick={() =>
+                          runFocusQuickAction(
+                            'end and summarize this focus',
+                            'End with summary',
+                            pushResultToast,
+                          )
+                        }
+                      >
+                        End with summary
+                      </button>
+                    </div>
                   </div>
                   <div className="memory-task-actions">
                     <button
@@ -461,7 +515,7 @@ export function MemoryOverlay({
                     <div className="memory-action-title">{nudge.title}</div>
                     <div className="memory-task-meta">{nudge.detail}</div>
                     <p className="panel-section-text">
-                      Say “{nudge.command}” or tap the action.
+                      Say “{nudge.command}” or tap the suggested action.
                     </p>
                   </div>
                   <div className="memory-task-actions">
@@ -714,8 +768,7 @@ export function MemoryOverlay({
               Say “start a coding focus session for QMeet Phase 12,” “what am I
               focused on,” “set my goal to wire focus commands,” “end focus
               session,” “remember to test the Pi as a task,” “mark task done,”
-              or “turn this focus into tasks,” “save this focus as a note,”
-              “what should I do next,” or “clear completed tasks.” Notes and
+              or use the focus action buttons for tasks, notes, summaries, and ending the session. You can also say “what should I do next” or “clear completed tasks.” Notes and
               recent actions sync in the background.
             </p>
           </div>
