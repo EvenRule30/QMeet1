@@ -13,6 +13,7 @@ import {
   MemoryTask,
   Note,
   RecentAction,
+  RecentFocusSession,
   SearchResponse,
 } from '../types';
 import {
@@ -47,13 +48,6 @@ type ActiveSessionDraft = {
   summary?: string | null;
 };
 
-type FocusSummaryNoteEventDetail = {
-  sessionId?: string;
-  summary?: string;
-  title?: string;
-  endAfterSave?: boolean;
-};
-
 type ActiveSessionUpdate = Partial<
   Pick<
     ActiveSession,
@@ -63,10 +57,9 @@ type ActiveSessionUpdate = Partial<
 
 const MEMORY_TASKS_STORAGE_KEY = 'qmeet-memory-tasks';
 const RECENT_ACTIONS_STORAGE_KEY = 'qmeet-recent-actions';
+const RECENT_FOCUS_SESSIONS_STORAGE_KEY = 'qmeet-recent-focus-sessions';
 const NOTES_STORAGE_KEY = 'qmeet-notes';
 const ACTIVE_SESSION_STORAGE_KEY = 'qmeet-active-session';
-const ACTIVE_SESSION_STATE_EVENT = 'qmeet-active-session-state';
-const SAVE_FOCUS_SUMMARY_NOTE_EVENT = 'qmeet-save-focus-summary-note';
 
 function createId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -118,14 +111,52 @@ function normalizeActiveSession(session: unknown): ActiveSession | null {
 }
 
 
-function emitActiveSessionState(activeSession: ActiveSession | null) {
-  if (typeof window === 'undefined') return;
+function normalizeRecentFocusSession(session: unknown): RecentFocusSession | null {
+  if (!session || typeof session !== 'object') return null;
 
-  window.dispatchEvent(
-    new CustomEvent(ACTIVE_SESSION_STATE_EVENT, {
-      detail: { activeSession },
-    }),
-  );
+  const candidate = session as Partial<RecentFocusSession>;
+  if (typeof candidate.title !== 'string' || !candidate.title.trim()) {
+    return null;
+  }
+
+  const now = new Date().toISOString();
+
+  return {
+    id: typeof candidate.id === 'string' ? candidate.id : createId('session'),
+    title: candidate.title.trim(),
+    mode: isMemorySessionMode(candidate.mode) ? candidate.mode : 'general',
+    goal: typeof candidate.goal === 'string' ? candidate.goal : '',
+    startedAt:
+      typeof candidate.startedAt === 'string' ? candidate.startedAt : now,
+    endedAt: typeof candidate.endedAt === 'string' ? candidate.endedAt : now,
+    pinnedNoteIds: readStringArray(candidate.pinnedNoteIds),
+    linkedTaskIds: readStringArray(candidate.linkedTaskIds),
+    ...(typeof candidate.summary === 'string'
+      ? { summary: candidate.summary }
+      : candidate.summary === null
+        ? { summary: null }
+        : {}),
+    ...(typeof candidate.summaryNoteId === 'string'
+      ? { summaryNoteId: candidate.summaryNoteId }
+      : candidate.summaryNoteId === null
+        ? { summaryNoteId: null }
+        : {}),
+  };
+}
+
+function normalizeRecentFocusSessions(value: unknown): RecentFocusSession[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((session) => normalizeRecentFocusSession(session))
+    .filter((session): session is RecentFocusSession => Boolean(session));
+}
+
+
+function recentFocusSessionsAreSame(
+  first: RecentFocusSession[],
+  second: RecentFocusSession[],
+): boolean {
+  return JSON.stringify(first) === JSON.stringify(second);
 }
 
 function readStoredNotes(): Note[] {
@@ -207,6 +238,22 @@ function readStoredRecentActions(): RecentAction[] {
   }
 }
 
+
+function readStoredRecentFocusSessions(): RecentFocusSession[] {
+  if (typeof window === 'undefined') return [];
+
+  try {
+    const rawSessions = window.localStorage.getItem(
+      RECENT_FOCUS_SESSIONS_STORAGE_KEY,
+    );
+    if (!rawSessions) return [];
+
+    return normalizeRecentFocusSessions(JSON.parse(rawSessions));
+  } catch {
+    return [];
+  }
+}
+
 function readStoredActiveSession(): ActiveSession | null {
   if (typeof window === 'undefined') return null;
 
@@ -249,10 +296,14 @@ export function useMemoryContext({
     'Using browser fallback until backend memory, notes, and active context load.',
   );
   const [recentActions, setRecentActions] = useState(readStoredRecentActions);
+  const [recentFocusSessions, setRecentFocusSessions] = useState(
+    readStoredRecentFocusSessions,
+  );
   const [activeSession, setActiveSession] = useState(readStoredActiveSession);
 
   const initialMemoryTasksRef = useRef(memoryTasks);
   const initialRecentActionsRef = useRef(recentActions);
+  const initialRecentFocusSessionsRef = useRef(recentFocusSessions);
   const initialNotesRef = useRef(notes);
   const initialActiveSessionRef = useRef(activeSession);
   const memoryContextHydratedRef = useRef(false);
@@ -305,6 +356,18 @@ export function useMemoryContext({
     }
   }, [recentActions]);
 
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        RECENT_FOCUS_SESSIONS_STORAGE_KEY,
+        JSON.stringify(recentFocusSessions),
+      );
+    } catch (error) {
+      console.error('Failed to save recent focus sessions:', error);
+    }
+  }, [recentFocusSessions]);
+
   useEffect(() => {
     try {
       if (activeSession) {
@@ -326,6 +389,7 @@ export function useMemoryContext({
       actionsToSave: RecentAction[],
       notesToSave: Note[],
       activeSessionToSave: ActiveSession | null,
+      recentFocusSessionsToSave: RecentFocusSession[],
     ) => {
       const writeId = ++latestMemoryWriteIdRef.current;
       setMemorySyncState('syncing');
@@ -337,6 +401,7 @@ export function useMemoryContext({
             recentActions: actionsToSave,
             notes: notesToSave,
             activeSession: activeSessionToSave,
+            recentFocusSessions: recentFocusSessionsToSave,
           }),
         );
 
@@ -344,6 +409,13 @@ export function useMemoryContext({
           return false;
         }
 
+        setRecentFocusSessions((prev) => {
+          const nextSessions =
+            response.recentFocusSessions ?? recentFocusSessionsToSave;
+          return recentFocusSessionsAreSame(prev, nextSessions)
+            ? prev
+            : nextSessions;
+        });
         setMemorySyncState('synced');
         setMemorySyncMessage(
           response.message ||
@@ -377,12 +449,16 @@ export function useMemoryContext({
       const backendTasks = response.tasks ?? [];
       const backendActions = response.recentActions ?? [];
       const backendNotes = response.notes ?? [];
+      const backendRecentFocusSessions = normalizeRecentFocusSessions(
+        response.recentFocusSessions ?? [],
+      );
       const backendActiveSession = normalizeActiveSession(
         response.activeSession ?? null,
       );
       const browserTasks = initialMemoryTasksRef.current;
       const browserActions = initialRecentActionsRef.current;
       const browserNotes = initialNotesRef.current;
+      const browserRecentFocusSessions = initialRecentFocusSessionsRef.current;
       const browserActiveSession = initialActiveSessionRef.current;
       const backendInitialized = initialization.initialized;
       const mayMigrateBrowserFallback = !backendInitialized;
@@ -405,6 +481,12 @@ export function useMemoryContext({
         browserNotes.length > 0
           ? browserNotes
           : backendNotes;
+      const nextRecentFocusSessions =
+        mayMigrateBrowserFallback &&
+        backendRecentFocusSessions.length === 0 &&
+        browserRecentFocusSessions.length > 0
+          ? browserRecentFocusSessions
+          : backendRecentFocusSessions;
       const nextActiveSession =
         mayMigrateBrowserFallback && !backendActiveSession && browserActiveSession
           ? browserActiveSession
@@ -422,11 +504,20 @@ export function useMemoryContext({
         mayMigrateBrowserFallback &&
         backendNotes.length === 0 &&
         browserNotes.length > 0;
+      const copiedBrowserRecentFocusSessions =
+        mayMigrateBrowserFallback &&
+        backendRecentFocusSessions.length === 0 &&
+        browserRecentFocusSessions.length > 0;
       const copiedBrowserActiveSession =
         mayMigrateBrowserFallback && !backendActiveSession && !!browserActiveSession;
 
       setMemoryTasks(nextTasks);
       setRecentActions(nextActions);
+      setRecentFocusSessions((prev) =>
+        recentFocusSessionsAreSame(prev, nextRecentFocusSessions)
+          ? prev
+          : nextRecentFocusSessions,
+      );
       setNotes(nextNotes);
       setActiveSession(nextActiveSession);
       memoryContextHydratedRef.current = true;
@@ -435,6 +526,7 @@ export function useMemoryContext({
         copiedBrowserTasks ||
         copiedBrowserActions ||
         copiedBrowserNotes ||
+        copiedBrowserRecentFocusSessions ||
         copiedBrowserActiveSession
       ) {
         const migrationSaved = await persistMemoryContextToBackend(
@@ -442,6 +534,7 @@ export function useMemoryContext({
           nextActions,
           nextNotes,
           nextActiveSession,
+          nextRecentFocusSessions,
         );
 
         if (migrationSaved) {
@@ -458,6 +551,7 @@ export function useMemoryContext({
           backendTasks.length === 0 &&
           backendActions.length === 0 &&
           backendNotes.length === 0 &&
+          backendRecentFocusSessions.length === 0 &&
           !backendActiveSession
           ? 'Backend memory is intentionally empty.'
           : response.message || 'Memory context loaded from backend.',
@@ -484,6 +578,7 @@ export function useMemoryContext({
         recentActions,
         notes,
         activeSession,
+        recentFocusSessions,
       );
     }, 250);
 
@@ -494,6 +589,7 @@ export function useMemoryContext({
     notes,
     persistMemoryContextToBackend,
     recentActions,
+    recentFocusSessions,
   ]);
 
   const saveNote = useCallback((content: string): Note | null => {
@@ -510,59 +606,6 @@ export function useMemoryContext({
 
     setNotes((prev) => [note, ...prev]);
     return note;
-  }, []);
-
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-
-    const handleFocusSummaryNote = (event: Event) => {
-      const detail = (event as CustomEvent<FocusSummaryNoteEventDetail>).detail;
-      const summary = detail?.summary?.trim();
-      if (!summary) return;
-
-      const note: Note = {
-        id: createId('note'),
-        content: summary,
-        createdAt: new Date().toISOString(),
-      };
-
-      setNotes((prev) => [note, ...prev]);
-      setActiveSession((prev) => {
-        if (!prev || (detail?.sessionId && prev.id !== detail.sessionId)) {
-          return detail?.endAfterSave ? null : prev;
-        }
-
-        if (detail.endAfterSave) {
-          return null;
-        }
-
-        const updatedSession: ActiveSession = {
-          ...prev,
-          summary,
-          pinnedNoteIds: Array.from(new Set([note.id, ...prev.pinnedNoteIds])),
-          updatedAt: new Date().toISOString(),
-        };
-        emitActiveSessionState(updatedSession);
-        return updatedSession;
-      });
-
-      if (detail?.endAfterSave) {
-        emitActiveSessionState(null);
-      }
-    };
-
-    window.addEventListener(
-      SAVE_FOCUS_SUMMARY_NOTE_EVENT,
-      handleFocusSummaryNote as EventListener,
-    );
-
-    return () => {
-      window.removeEventListener(
-        SAVE_FOCUS_SUMMARY_NOTE_EVENT,
-        handleFocusSummaryNote as EventListener,
-      );
-    };
   }, []);
 
   const deleteNote = useCallback((noteId: string) => {
@@ -969,12 +1012,14 @@ export function useMemoryContext({
       await memoryWriteQueueRef.current;
       const exportPayload = await exportMemoryContext();
       const payload = {
-        version: exportPayload.version || 5,
+        version: exportPayload.version || 6,
         exportedAt: exportPayload.exportedAt || new Date().toISOString(),
         tasks: exportPayload.tasks ?? memoryTasks,
         recentActions: exportPayload.recentActions ?? recentActions,
         notes: exportPayload.notes ?? notes,
         activeSession: exportPayload.activeSession ?? activeSession,
+        recentFocusSessions:
+          exportPayload.recentFocusSessions ?? recentFocusSessions,
       };
 
       downloadJsonFile(
@@ -990,12 +1035,13 @@ export function useMemoryContext({
       });
     } catch {
       const payload = {
-        version: 5,
+        version: 6,
         exportedAt: new Date().toISOString(),
         tasks: memoryTasks,
         recentActions,
         notes,
         activeSession,
+        recentFocusSessions,
       };
 
       downloadJsonFile(
@@ -1012,7 +1058,14 @@ export function useMemoryContext({
         detail: 'Backend unavailable; exported browser fallback.',
       });
     }
-  }, [activeSession, memoryTasks, notes, pushResultToast, recentActions]);
+  }, [
+    activeSession,
+    memoryTasks,
+    notes,
+    pushResultToast,
+    recentActions,
+    recentFocusSessions,
+  ]);
 
   const handleImportMemoryFile = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
@@ -1032,6 +1085,9 @@ export function useMemoryContext({
           ? parsed.recentActions
           : [];
         const importedNotes = Array.isArray(parsed.notes) ? parsed.notes : [];
+        const importedRecentFocusSessions = normalizeRecentFocusSessions(
+          parsed.recentFocusSessions ?? [],
+        );
         const importedActiveSession = Object.prototype.hasOwnProperty.call(
           parsed,
           'activeSession',
@@ -1047,11 +1103,15 @@ export function useMemoryContext({
             recentActions: importedActions,
             notes: importedNotes,
             activeSession: importedActiveSession,
+            recentFocusSessions: importedRecentFocusSessions,
           }),
         );
 
         setMemoryTasks(response.tasks ?? importedTasks);
         setRecentActions(response.recentActions ?? importedActions);
+        setRecentFocusSessions(
+          response.recentFocusSessions ?? importedRecentFocusSessions,
+        );
         setNotes(response.notes ?? importedNotes);
         setActiveSession(
           Object.prototype.hasOwnProperty.call(response, 'activeSession')
@@ -1069,7 +1129,7 @@ export function useMemoryContext({
         pushResultToast({
           kind: 'success',
           title: 'Memory imported',
-          detail: 'Tasks, notes, work context, and active session replaced.',
+          detail: 'Tasks, notes, focus history, work context, and active session replaced.',
         });
       } catch (error) {
         const message =
@@ -1100,6 +1160,7 @@ export function useMemoryContext({
 
     setMemoryTasks([]);
     setRecentActions([]);
+    setRecentFocusSessions([]);
     setNotes([]);
     setActiveSession(null);
     setMemoryTaskDraft('');
@@ -1107,6 +1168,7 @@ export function useMemoryContext({
     try {
       window.localStorage.removeItem(MEMORY_TASKS_STORAGE_KEY);
       window.localStorage.removeItem(RECENT_ACTIONS_STORAGE_KEY);
+      window.localStorage.removeItem(RECENT_FOCUS_SESSIONS_STORAGE_KEY);
       window.localStorage.removeItem(NOTES_STORAGE_KEY);
       window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
     } catch (error) {
@@ -1233,6 +1295,7 @@ export function useMemoryContext({
     const latestNote = notes[0]?.content;
     const latestCalendarEvent = googleCalendarEvents[0] ?? calendarEvents[0];
     const latestSearch = searchResult?.query || searchQuery.trim();
+    const latestRecentFocusSession = recentFocusSessions[0];
     const recentActionText = recentActions
       .slice(0, 3)
       .map((action) =>
@@ -1268,8 +1331,11 @@ export function useMemoryContext({
     const actionText = recentActionText
       ? `Recent actions: ${recentActionText}.`
       : 'No recent actions yet.';
+    const recentFocusText = latestRecentFocusSession
+      ? `Last completed focus: ${latestRecentFocusSession.title}.`
+      : 'No completed focus sessions yet.';
 
-    return `${focusText} ${taskText} ${completedText} ${noteText} ${calendarText} ${searchText} ${actionText}`;
+    return `${focusText} ${recentFocusText} ${taskText} ${completedText} ${noteText} ${calendarText} ${searchText} ${actionText}`;
   }, [
     activeSession,
     calendarEvents,
@@ -1277,6 +1343,7 @@ export function useMemoryContext({
     memoryTasks,
     notes,
     recentActions,
+    recentFocusSessions,
     searchQuery,
     searchResult?.query,
   ]);
@@ -1285,6 +1352,7 @@ export function useMemoryContext({
     notes,
     memoryTasks,
     recentActions,
+    recentFocusSessions,
     activeSession,
     memoryTaskDraft,
     setMemoryTaskDraft,

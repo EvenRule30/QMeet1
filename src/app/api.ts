@@ -37,6 +37,10 @@ import {
   RecentActionsClearResponse,
   RecentActionsReplaceRequest,
   RecentActionsResponse,
+  RecentFocusSessionsResponse,
+  RecentFocusSessionsReplaceRequest,
+  RecentFocusSessionsClearResponse,
+  RecentFocusSessionDeleteResponse,
   SearchResponse,
 } from './types';
 
@@ -308,6 +312,50 @@ export async function clearActiveSession(): Promise<ActiveSessionClearResponse> 
     '/api/memory/session',
     { method: 'DELETE' },
     'Active session clear error.',
+  );
+}
+
+
+export async function getRecentFocusSessions(): Promise<RecentFocusSessionsResponse> {
+  return fetchJson<RecentFocusSessionsResponse>(
+    '/api/memory/sessions/recent',
+    undefined,
+    'Recent focus sessions error.',
+  );
+}
+
+export async function replaceRecentFocusSessions(
+  request: RecentFocusSessionsReplaceRequest,
+): Promise<RecentFocusSessionsResponse> {
+  return fetchJson<RecentFocusSessionsResponse>(
+    '/api/memory/sessions/recent',
+    {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
+    },
+    'Recent focus sessions replace error.',
+  );
+}
+
+export async function clearRecentFocusSessions(): Promise<RecentFocusSessionsClearResponse> {
+  return fetchJson<RecentFocusSessionsClearResponse>(
+    '/api/memory/sessions/recent/clear',
+    { method: 'POST' },
+    'Recent focus sessions clear error.',
+  );
+}
+
+export async function deleteRecentFocusSessionById(
+  sessionId: string,
+): Promise<RecentFocusSessionDeleteResponse> {
+  const encodedId = encodeURIComponent(sessionId);
+  return fetchJson<RecentFocusSessionDeleteResponse>(
+    `/api/memory/sessions/recent/${encodedId}`,
+    { method: 'DELETE' },
+    'Recent focus session delete error.',
   );
 }
 

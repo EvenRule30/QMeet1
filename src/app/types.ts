@@ -87,6 +87,19 @@ export interface ActiveSession {
   summary?: string | null;
 }
 
+export interface RecentFocusSession {
+  id: string;
+  title: string;
+  mode: MemorySessionMode;
+  goal: string;
+  startedAt: string;
+  endedAt: string;
+  pinnedNoteIds: string[];
+  linkedTaskIds: string[];
+  summary?: string | null;
+  summaryNoteId?: string | null;
+}
+
 export interface ActiveSessionReplaceRequest {
   activeSession: ActiveSession | null;
 }
@@ -112,6 +125,35 @@ export interface ActiveSessionClearResponse {
   provider: 'local-json';
   activeSession: ActiveSession | null;
   removedActiveSession: boolean;
+  recentFocusSessions?: RecentFocusSession[];
+  archivedFocusSession?: RecentFocusSession | null;
+  message: string;
+}
+
+
+export interface RecentFocusSessionsReplaceRequest {
+  recentFocusSessions: RecentFocusSession[];
+}
+
+export interface RecentFocusSessionsResponse {
+  ok: boolean;
+  provider: 'local-json';
+  recentFocusSessions: RecentFocusSession[];
+  message: string;
+}
+
+export interface RecentFocusSessionDeleteResponse {
+  ok: boolean;
+  provider: 'local-json';
+  deletedRecentFocusSessionId: string;
+  message: string;
+}
+
+export interface RecentFocusSessionsClearResponse {
+  ok: boolean;
+  provider: 'local-json';
+  removedCount: number;
+  recentFocusSessions: RecentFocusSession[];
   message: string;
 }
 
@@ -126,6 +168,8 @@ export interface MemoryStatusResponse {
   noteCount: number;
   activeSessionSet?: boolean;
   activeSessionTitle?: string;
+  recentFocusSessionCount?: number;
+  lastFocusSessionTitle?: string;
   message: string;
 }
 
@@ -169,6 +213,7 @@ export interface MemoryContextReplaceRequest {
   recentActions: RecentAction[];
   notes: Note[];
   activeSession?: ActiveSession | null;
+  recentFocusSessions?: RecentFocusSession[];
 }
 
 export interface MemoryContextResponse {
@@ -178,6 +223,8 @@ export interface MemoryContextResponse {
   recentActions: RecentAction[];
   notes: Note[];
   activeSession?: ActiveSession | null;
+  recentFocusSessions?: RecentFocusSession[];
+  archivedFocusSession?: RecentFocusSession | null;
   message: string;
 }
 
@@ -190,6 +237,7 @@ export interface MemoryContextExportResponse {
   recentActions: RecentAction[];
   notes: Note[];
   activeSession?: ActiveSession | null;
+  recentFocusSessions?: RecentFocusSession[];
   message: string;
 }
 
@@ -198,6 +246,7 @@ export interface MemoryContextImportRequest {
   recentActions: RecentAction[];
   notes: Note[];
   activeSession?: ActiveSession | null;
+  recentFocusSessions?: RecentFocusSession[];
 }
 
 export interface MemoryContextClearResponse {
@@ -207,10 +256,12 @@ export interface MemoryContextClearResponse {
   recentActions: RecentAction[];
   notes: Note[];
   activeSession?: ActiveSession | null;
+  recentFocusSessions?: RecentFocusSession[];
   removedTaskCount: number;
   removedActionCount: number;
   removedNoteCount: number;
   removedActiveSession?: boolean;
+  removedRecentFocusSessionCount?: number;
   message: string;
 }
 

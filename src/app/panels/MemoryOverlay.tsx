@@ -1,13 +1,19 @@
 import {
   type ChangeEvent,
   type RefObject,
+  useCallback,
   useEffect,
   useState,
 } from 'react';
 
-import type { ActiveSession, MemoryTask } from '../types';
+import type { ActiveSession, MemoryTask, RecentFocusSession } from '../types';
 import type { ResultToast } from '../lib/toastUtils';
 import { formatMemoryTime } from '../lib/memoryUtils';
+import {
+  clearRecentFocusSessions,
+  deleteRecentFocusSessionById,
+  getRecentFocusSessions,
+} from '../api';
 
 type MemorySyncState = 'local' | 'syncing' | 'synced' | 'error';
 
@@ -56,7 +62,7 @@ const ACTIVE_SESSION_SESSION_STORAGE_KEY = 'qmeet-active-session-live';
 const ACTIVE_SESSION_COMMAND_EVENT = 'qmeet-active-session-command';
 const ACTIVE_SESSION_STATE_EVENT = 'qmeet-active-session-state';
 const QMEET_PROMPT_COMMAND_EVENT = 'qmeet-prompt-command';
-const MEMORY_OVERLAY_FOCUS_MARKER = 'phase13b-v2-always-available-focus-actions';
+const MEMORY_OVERLAY_FOCUS_MARKER = 'phase13d-v3-recent-focus-history';
 
 function normalizeActiveSession(value: unknown): ActiveSession | null {
   if (!value || typeof value !== 'object') return null;
@@ -107,6 +113,67 @@ function normalizeActiveSession(value: unknown): ActiveSession | null {
   };
 }
 
+
+function normalizeRecentFocusSession(value: unknown): RecentFocusSession | null {
+  if (!value || typeof value !== 'object') return null;
+
+  const candidate = value as Partial<RecentFocusSession>;
+  if (typeof candidate.title !== 'string' || !candidate.title.trim()) {
+    return null;
+  }
+
+  const now = new Date().toISOString();
+  const mode =
+    candidate.mode === 'coding' ||
+    candidate.mode === 'meeting' ||
+    candidate.mode === 'planning' ||
+    candidate.mode === 'research' ||
+    candidate.mode === 'personal' ||
+    candidate.mode === 'general'
+      ? candidate.mode
+      : 'general';
+
+  return {
+    id:
+      typeof candidate.id === 'string' && candidate.id
+        ? candidate.id
+        : `session-${Date.now()}`,
+    title: candidate.title.trim(),
+    mode,
+    goal: typeof candidate.goal === 'string' ? candidate.goal : '',
+    startedAt:
+      typeof candidate.startedAt === 'string' ? candidate.startedAt : now,
+    endedAt: typeof candidate.endedAt === 'string' ? candidate.endedAt : now,
+    pinnedNoteIds: Array.isArray(candidate.pinnedNoteIds)
+      ? candidate.pinnedNoteIds.filter(
+          (item): item is string => typeof item === 'string',
+        )
+      : [],
+    linkedTaskIds: Array.isArray(candidate.linkedTaskIds)
+      ? candidate.linkedTaskIds.filter(
+          (item): item is string => typeof item === 'string',
+        )
+      : [],
+    ...(typeof candidate.summary === 'string'
+      ? { summary: candidate.summary }
+      : candidate.summary === null
+        ? { summary: null }
+        : {}),
+    ...(typeof candidate.summaryNoteId === 'string'
+      ? { summaryNoteId: candidate.summaryNoteId }
+      : candidate.summaryNoteId === null
+        ? { summaryNoteId: null }
+        : {}),
+  };
+}
+
+function normalizeRecentFocusSessions(value: unknown): RecentFocusSession[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((session) => normalizeRecentFocusSession(session))
+    .filter((session): session is RecentFocusSession => Boolean(session));
+}
+
 function readStoredActiveSession(): ActiveSession | null {
   if (typeof window === 'undefined') return null;
 
@@ -155,6 +222,34 @@ function dispatchActiveSessionCommand(detail: ActiveSessionCommandEventDetail) {
 
 function formatSessionMode(mode: ActiveSession['mode']) {
   return mode.charAt(0).toUpperCase() + mode.slice(1);
+}
+
+
+function formatSessionRange(session: RecentFocusSession) {
+  return `${formatMemoryTime(session.startedAt)} → ${formatMemoryTime(
+    session.endedAt,
+  )}`;
+}
+
+function getRecentFocusSessionMeta(session: RecentFocusSession) {
+  const linkedTaskCount = session.linkedTaskIds.length;
+  const pinnedNoteCount = session.pinnedNoteIds.length;
+  const pieces = [
+    `${formatSessionMode(session.mode)} mode`,
+    `Ended ${formatMemoryTime(session.endedAt)}`,
+  ];
+
+  if (linkedTaskCount > 0) {
+    pieces.push(
+      `${linkedTaskCount} linked task${linkedTaskCount === 1 ? '' : 's'}`,
+    );
+  }
+
+  if (pinnedNoteCount > 0 || session.summaryNoteId) {
+    pieces.push('summary saved');
+  }
+
+  return pieces.join(' · ');
 }
 
 
@@ -360,9 +455,33 @@ export function MemoryOverlay({
   onClose,
 }: MemoryOverlayProps) {
   const [activeSession, setActiveSession] = useState(readStoredActiveSession);
+  const [recentFocusSessions, setRecentFocusSessions] = useState<
+    RecentFocusSession[]
+  >([]);
+  const [recentFocusSessionMessage, setRecentFocusSessionMessage] = useState(
+    'Loading recent focus sessions...',
+  );
   const openTasks = memoryTasks.filter((task) => !task.completedAt);
   const completedTasks = memoryTasks.filter((task) => task.completedAt);
   const focusNudges = buildFocusNudges(activeSession, memoryTasks);
+
+  const loadRecentFocusSessions = useCallback(async () => {
+    try {
+      const response = await getRecentFocusSessions();
+      setRecentFocusSessions(
+        normalizeRecentFocusSessions(response.recentFocusSessions),
+      );
+      setRecentFocusSessionMessage(
+        response.message || 'Recent focus sessions loaded.',
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Recent focus sessions unavailable.';
+      setRecentFocusSessionMessage(message);
+    }
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -397,6 +516,63 @@ export function MemoryOverlay({
       window.clearInterval(intervalId);
     };
   }, []);
+
+  useEffect(() => {
+    loadRecentFocusSessions();
+  }, [loadRecentFocusSessions, activeSession?.id]);
+
+  const handleDeleteRecentFocusSession = async (sessionId: string) => {
+    try {
+      await deleteRecentFocusSessionById(sessionId);
+      setRecentFocusSessions((prev) =>
+        prev.filter((session) => session.id !== sessionId),
+      );
+      pushResultToast({
+        kind: 'warning',
+        title: 'Focus history removed',
+        detail: 'Removed one recent focus session.',
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Could not remove focus session.';
+      pushResultToast({
+        kind: 'error',
+        title: 'History delete failed',
+        detail: message,
+      });
+    }
+  };
+
+  const handleClearRecentFocusSessions = async () => {
+    const confirmed = window.confirm('Clear recent focus session history?');
+    if (!confirmed) return;
+
+    try {
+      const response = await clearRecentFocusSessions();
+      setRecentFocusSessions(response.recentFocusSessions ?? []);
+      setRecentFocusSessionMessage(
+        response.message || 'Recent focus sessions cleared.',
+      );
+      pushResultToast({
+        kind: 'warning',
+        title: 'Focus history cleared',
+        detail:
+          response.removedCount > 0
+            ? `${response.removedCount} session${
+                response.removedCount === 1 ? '' : 's'
+              } removed.`
+            : 'No recent focus sessions to clear.',
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Could not clear focus history.';
+      pushResultToast({
+        kind: 'error',
+        title: 'History clear failed',
+        detail: message,
+      });
+    }
+  };
 
   return (
     <div className="panel-overlay">
@@ -503,6 +679,58 @@ export function MemoryOverlay({
                 No active focus session. Say “start a coding focus session for
                 QMeet Phase 12” to create one.
               </p>
+            )}
+          </div>
+
+
+          <div className="panel-section memory-sync-section">
+            <div className="panel-section-title">Recent Focus Sessions</div>
+            {recentFocusSessions.length === 0 ? (
+              <p className="panel-section-text">
+                {recentFocusSessionMessage ||
+                  'Ended focus sessions will appear here.'}
+              </p>
+            ) : (
+              <div className="memory-list">
+                {recentFocusSessions.slice(0, 5).map((session) => (
+                  <div className="memory-action-item" key={session.id}>
+                    <div className="memory-task-copy">
+                      <div className="memory-action-title">{session.title}</div>
+                      <div className="memory-task-meta">
+                        {getRecentFocusSessionMeta(session)}
+                      </div>
+                      <p className="panel-section-text">
+                        {session.goal
+                          ? `Goal: ${session.goal}`
+                          : 'No goal was saved for this focus.'}
+                      </p>
+                      <div className="memory-task-meta">
+                        {formatSessionRange(session)}
+                      </div>
+                    </div>
+                    <div className="memory-task-actions">
+                      <button
+                        className="memory-task-delete-btn"
+                        type="button"
+                        onClick={() => handleDeleteRecentFocusSession(session.id)}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {recentFocusSessions.length > 0 && (
+              <div className="panel-action-row">
+                <button
+                  className="panel-action-btn panel-action-btn-danger"
+                  type="button"
+                  onClick={handleClearRecentFocusSessions}
+                >
+                  Clear Recent Sessions
+                </button>
+              </div>
             )}
           </div>
 
@@ -768,7 +996,7 @@ export function MemoryOverlay({
               Say “start a coding focus session for QMeet Phase 12,” “what am I
               focused on,” “set my goal to wire focus commands,” “end focus
               session,” “remember to test the Pi as a task,” “mark task done,”
-              or use the focus action buttons for tasks, notes, summaries, and ending the session. You can also say “what should I do next” or “clear completed tasks.” Notes and
+              or use the focus action buttons for tasks, notes, summaries, and ending the session. You can also say “what should I do next” or “clear completed tasks.” Notes, focus history, and
               recent actions sync in the background.
             </p>
           </div>
