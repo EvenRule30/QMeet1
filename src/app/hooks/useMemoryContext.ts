@@ -47,6 +47,13 @@ type ActiveSessionDraft = {
   summary?: string | null;
 };
 
+type FocusSummaryNoteEventDetail = {
+  sessionId?: string;
+  summary?: string;
+  title?: string;
+  endAfterSave?: boolean;
+};
+
 type ActiveSessionUpdate = Partial<
   Pick<
     ActiveSession,
@@ -54,26 +61,12 @@ type ActiveSessionUpdate = Partial<
   >
 >;
 
-type ActiveSessionCommandEventDetail = {
-  action: 'start' | 'update' | 'end';
-  title?: string;
-  mode?: MemorySessionMode;
-  goal?: string;
-};
-
-type ActiveSessionStateEventDetail = {
-  activeSession: ActiveSession | null;
-};
-
-// Phase 12C2 repair: focus command events are handled here so App.tsx does not need to pass focus callbacks yet.
-const ACTIVE_SESSION_COMMAND_EVENT = 'qmeet-active-session-command';
-const ACTIVE_SESSION_STATE_EVENT = 'qmeet-active-session-state';
-const ACTIVE_SESSION_SYNC_MARKER = 'phase12c-v3-direct-session-state-sync';
-
 const MEMORY_TASKS_STORAGE_KEY = 'qmeet-memory-tasks';
 const RECENT_ACTIONS_STORAGE_KEY = 'qmeet-recent-actions';
 const NOTES_STORAGE_KEY = 'qmeet-notes';
 const ACTIVE_SESSION_STORAGE_KEY = 'qmeet-active-session';
+const ACTIVE_SESSION_STATE_EVENT = 'qmeet-active-session-state';
+const SAVE_FOCUS_SUMMARY_NOTE_EVENT = 'qmeet-save-focus-summary-note';
 
 function createId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -122,6 +115,17 @@ function normalizeActiveSession(session: unknown): ActiveSession | null {
         ? { summary: null }
         : {}),
   };
+}
+
+
+function emitActiveSessionState(activeSession: ActiveSession | null) {
+  if (typeof window === 'undefined') return;
+
+  window.dispatchEvent(
+    new CustomEvent(ACTIVE_SESSION_STATE_EVENT, {
+      detail: { activeSession },
+    }),
+  );
 }
 
 function readStoredNotes(): Note[] {
@@ -213,16 +217,6 @@ function readStoredActiveSession(): ActiveSession | null {
   } catch {
     return null;
   }
-}
-
-function emitActiveSessionState(activeSession: ActiveSession | null) {
-  if (typeof window === 'undefined') return;
-
-  window.dispatchEvent(
-    new CustomEvent<ActiveSessionStateEventDetail>(ACTIVE_SESSION_STATE_EVENT, {
-      detail: { activeSession },
-    }),
-  );
 }
 
 function downloadJsonFile(payload: object, filename: string) {
@@ -372,7 +366,6 @@ export function useMemoryContext({
   );
 
   const loadMemoryContextFromBackend = useCallback(async () => {
-    const loadStartedAtMs = Date.now();
     setMemorySyncState('syncing');
 
     try {
@@ -390,13 +383,7 @@ export function useMemoryContext({
       const browserTasks = initialMemoryTasksRef.current;
       const browserActions = initialRecentActionsRef.current;
       const browserNotes = initialNotesRef.current;
-      const currentBrowserActiveSession = readStoredActiveSession();
-      const browserActiveSession =
-        currentBrowserActiveSession ?? initialActiveSessionRef.current;
-      const browserSessionChangedDuringLoad = Boolean(
-        currentBrowserActiveSession &&
-          Date.parse(currentBrowserActiveSession.updatedAt) >= loadStartedAtMs - 1000,
-      );
+      const browserActiveSession = initialActiveSessionRef.current;
       const backendInitialized = initialization.initialized;
       const mayMigrateBrowserFallback = !backendInitialized;
 
@@ -419,11 +406,9 @@ export function useMemoryContext({
           ? browserNotes
           : backendNotes;
       const nextActiveSession =
-        browserSessionChangedDuringLoad && !backendActiveSession
-          ? currentBrowserActiveSession
-          : mayMigrateBrowserFallback && !backendActiveSession && browserActiveSession
-            ? browserActiveSession
-            : backendActiveSession;
+        mayMigrateBrowserFallback && !backendActiveSession && browserActiveSession
+          ? browserActiveSession
+          : backendActiveSession;
 
       const copiedBrowserTasks =
         mayMigrateBrowserFallback &&
@@ -438,14 +423,12 @@ export function useMemoryContext({
         backendNotes.length === 0 &&
         browserNotes.length > 0;
       const copiedBrowserActiveSession =
-        (mayMigrateBrowserFallback && !backendActiveSession && !!browserActiveSession) ||
-        browserSessionChangedDuringLoad;
+        mayMigrateBrowserFallback && !backendActiveSession && !!browserActiveSession;
 
       setMemoryTasks(nextTasks);
       setRecentActions(nextActions);
       setNotes(nextNotes);
       setActiveSession(nextActiveSession);
-      emitActiveSessionState(nextActiveSession);
       memoryContextHydratedRef.current = true;
 
       if (
@@ -527,6 +510,59 @@ export function useMemoryContext({
 
     setNotes((prev) => [note, ...prev]);
     return note;
+  }, []);
+
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const handleFocusSummaryNote = (event: Event) => {
+      const detail = (event as CustomEvent<FocusSummaryNoteEventDetail>).detail;
+      const summary = detail?.summary?.trim();
+      if (!summary) return;
+
+      const note: Note = {
+        id: createId('note'),
+        content: summary,
+        createdAt: new Date().toISOString(),
+      };
+
+      setNotes((prev) => [note, ...prev]);
+      setActiveSession((prev) => {
+        if (!prev || (detail?.sessionId && prev.id !== detail.sessionId)) {
+          return detail?.endAfterSave ? null : prev;
+        }
+
+        if (detail.endAfterSave) {
+          return null;
+        }
+
+        const updatedSession: ActiveSession = {
+          ...prev,
+          summary,
+          pinnedNoteIds: Array.from(new Set([note.id, ...prev.pinnedNoteIds])),
+          updatedAt: new Date().toISOString(),
+        };
+        emitActiveSessionState(updatedSession);
+        return updatedSession;
+      });
+
+      if (detail?.endAfterSave) {
+        emitActiveSessionState(null);
+      }
+    };
+
+    window.addEventListener(
+      SAVE_FOCUS_SUMMARY_NOTE_EVENT,
+      handleFocusSummaryNote as EventListener,
+    );
+
+    return () => {
+      window.removeEventListener(
+        SAVE_FOCUS_SUMMARY_NOTE_EVENT,
+        handleFocusSummaryNote as EventListener,
+      );
+    };
   }, []);
 
   const deleteNote = useCallback((noteId: string) => {
@@ -835,7 +871,6 @@ export function useMemoryContext({
       };
 
       setActiveSession(session);
-      emitActiveSessionState(session);
       addRecentAction(
         'Started focus session',
         session.goal ? `${session.title}: ${session.goal}` : session.title,
@@ -848,33 +883,7 @@ export function useMemoryContext({
   const updateActiveSessionContext = useCallback(
     (updates: ActiveSessionUpdate): ActiveSession | null => {
       if (!activeSession) {
-        const fallbackTitle =
-          typeof updates.title === 'string' && updates.title.trim()
-            ? updates.title.trim()
-            : 'Focus session';
-        const now = new Date().toISOString();
-        const newSession: ActiveSession = {
-          id: createId('session'),
-          title: fallbackTitle,
-          mode: updates.mode ?? 'general',
-          goal:
-            typeof updates.goal === 'string' ? updates.goal.trim() : '',
-          startedAt: now,
-          updatedAt: now,
-          pinnedNoteIds: updates.pinnedNoteIds ?? [],
-          linkedTaskIds: updates.linkedTaskIds ?? [],
-          ...(updates.summary !== undefined ? { summary: updates.summary } : {}),
-        };
-
-        setActiveSession(newSession);
-        emitActiveSessionState(newSession);
-        addRecentAction(
-          'Started focus session',
-          newSession.goal
-            ? `${newSession.title}: ${newSession.goal}`
-            : newSession.title,
-        );
-        return newSession;
+        return null;
       }
 
       const updatedSession: ActiveSession = {
@@ -894,7 +903,6 @@ export function useMemoryContext({
       };
 
       setActiveSession(updatedSession);
-      emitActiveSessionState(updatedSession);
       addRecentAction(
         'Updated focus session',
         updatedSession.goal
@@ -913,118 +921,33 @@ export function useMemoryContext({
     }
 
     setActiveSession(null);
-    emitActiveSessionState(null);
     addRecentAction('Ended focus session', activeSession.title);
     return activeSession;
   }, [activeSession, addRecentAction]);
 
   const getActiveSessionReadout = useCallback(() => {
-    const session = activeSession ?? readStoredActiveSession();
-
-    if (!session) {
+    if (!activeSession) {
       return 'No active focus session is running.';
     }
 
-    const goalText = session.goal
-      ? ` Goal: ${session.goal}.`
+    const goalText = activeSession.goal
+      ? ` Goal: ${activeSession.goal}.`
       : ' No goal has been set yet.';
     const linkedTaskText =
-      session.linkedTaskIds.length > 0
-        ? ` ${session.linkedTaskIds.length} linked task${
-            session.linkedTaskIds.length === 1 ? '' : 's'
+      activeSession.linkedTaskIds.length > 0
+        ? ` ${activeSession.linkedTaskIds.length} linked task${
+            activeSession.linkedTaskIds.length === 1 ? '' : 's'
           }.`
         : '';
     const pinnedNoteText =
-      session.pinnedNoteIds.length > 0
-        ? ` ${session.pinnedNoteIds.length} pinned note${
-            session.pinnedNoteIds.length === 1 ? '' : 's'
+      activeSession.pinnedNoteIds.length > 0
+        ? ` ${activeSession.pinnedNoteIds.length} pinned note${
+            activeSession.pinnedNoteIds.length === 1 ? '' : 's'
           }.`
         : '';
 
-    return `Current focus: ${session.title}. Mode: ${session.mode}.${goalText}${linkedTaskText}${pinnedNoteText}`;
+    return `Current focus: ${activeSession.title}. Mode: ${activeSession.mode}.${goalText}${linkedTaskText}${pinnedNoteText}`;
   }, [activeSession]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-
-    const handleActiveSessionState = (event: Event) => {
-      const detail = (event as CustomEvent<ActiveSessionStateEventDetail>)
-        .detail;
-      const nextActiveSession = normalizeActiveSession(
-        detail?.activeSession ?? null,
-      );
-      setActiveSession(nextActiveSession);
-    };
-
-    window.addEventListener(
-      ACTIVE_SESSION_STATE_EVENT,
-      handleActiveSessionState,
-    );
-
-    return () => {
-      window.removeEventListener(
-        ACTIVE_SESSION_STATE_EVENT,
-        handleActiveSessionState,
-      );
-    };
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-
-    const handleActiveSessionCommand = (event: Event) => {
-      const detail = (event as CustomEvent<ActiveSessionCommandEventDetail>)
-        .detail;
-
-      if (!detail || typeof detail !== 'object') {
-        return;
-      }
-
-      if (detail.action === 'start') {
-        startActiveSession({
-          title: detail.title?.trim() || 'Focus session',
-          mode: isMemorySessionMode(detail.mode) ? detail.mode : 'general',
-          goal: detail.goal?.trim() ?? '',
-        });
-        return;
-      }
-
-      if (detail.action === 'update') {
-        const updates: ActiveSessionUpdate = {};
-
-        if (typeof detail.title === 'string' && detail.title.trim()) {
-          updates.title = detail.title.trim();
-        }
-
-        if (isMemorySessionMode(detail.mode)) {
-          updates.mode = detail.mode;
-        }
-
-        if (typeof detail.goal === 'string') {
-          updates.goal = detail.goal.trim();
-        }
-
-        updateActiveSessionContext(updates);
-        return;
-      }
-
-      if (detail.action === 'end') {
-        endActiveSession();
-      }
-    };
-
-    window.addEventListener(
-      ACTIVE_SESSION_COMMAND_EVENT,
-      handleActiveSessionCommand,
-    );
-
-    return () => {
-      window.removeEventListener(
-        ACTIVE_SESSION_COMMAND_EVENT,
-        handleActiveSessionCommand,
-      );
-    };
-  }, [endActiveSession, startActiveSession, updateActiveSessionContext]);
 
   const handleSaveMemoryTaskDraft = useCallback(() => {
     const savedTask = saveMemoryTask(memoryTaskDraft);
@@ -1127,18 +1050,14 @@ export function useMemoryContext({
           }),
         );
 
-        const nextImportedActiveSession = Object.prototype.hasOwnProperty.call(
-          response,
-          'activeSession',
-        )
-          ? normalizeActiveSession(response.activeSession)
-          : importedActiveSession;
-
         setMemoryTasks(response.tasks ?? importedTasks);
         setRecentActions(response.recentActions ?? importedActions);
         setNotes(response.notes ?? importedNotes);
-        setActiveSession(nextImportedActiveSession);
-        emitActiveSessionState(nextImportedActiveSession);
+        setActiveSession(
+          Object.prototype.hasOwnProperty.call(response, 'activeSession')
+            ? normalizeActiveSession(response.activeSession)
+            : importedActiveSession,
+        );
 
         if (writeId === latestMemoryWriteIdRef.current) {
           setMemorySyncState('synced');
@@ -1183,7 +1102,6 @@ export function useMemoryContext({
     setRecentActions([]);
     setNotes([]);
     setActiveSession(null);
-    emitActiveSessionState(null);
     setMemoryTaskDraft('');
 
     try {
@@ -1322,10 +1240,9 @@ export function useMemoryContext({
       )
       .join('; ');
 
-    const session = activeSession ?? readStoredActiveSession();
-    const focusText = session
-      ? `Current focus: ${session.title} (${session.mode}).${
-          session.goal ? ` Goal: ${session.goal}.` : ''
+    const focusText = activeSession
+      ? `Current focus: ${activeSession.title} (${activeSession.mode}).${
+          activeSession.goal ? ` Goal: ${activeSession.goal}.` : ''
         }`
       : 'No active focus session.';
     const taskText =

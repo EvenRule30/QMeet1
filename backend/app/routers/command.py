@@ -150,6 +150,50 @@ def _focus_command_intent(message: str) -> dict[str, Any] | None:
             reason="Backend focus interpreter matched a focus-to-tasks command.",
         )
 
+
+    end_with_summary_patterns = [
+        r"^(?:please\s+)?(?:end|finish|wrap up|close)\s+(?:and\s+)?(?:summarize|recap|save\s+(?:a\s+)?summary|save)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session|matter|topic|work|thing)?$",
+        r"^(?:please\s+)?(?:summarize|recap|save\s+(?:a\s+)?summary\s+of|save)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session)\s+(?:and\s+)?(?:end|finish|close|wrap up)(?:\s+it)?$",
+        r"^(?:please\s+)?(?:summarize|recap)\s+(?:and\s+)?(?:end|finish|close|wrap up)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session)$",
+        r"^(?:please\s+)?(?:end|finish|wrap up|close)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session)\s+(?:with\s+)?(?:a\s+)?(?:summary|recap)$",
+        r"^(?:please\s+)?(?:save\s+(?:a\s+)?summary\s+and\s+end|save\s+and\s+end)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session)?$",
+    ]
+    if _first_match(end_with_summary_patterns, lowered):
+        return _command_response(
+            action="end_focus_with_summary",
+            frontend_command="end and summarize focus",
+            confidence=0.98,
+            reason="Backend focus interpreter matched an end-with-summary command.",
+        )
+
+    save_summary_patterns = [
+        r"^(?:please\s+)?(?:save|store|remember|write)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session)\s+(?:as|to|in)\s+(?:a\s+)?(?:note|notes|memory|summary)$",
+        r"^(?:please\s+)?(?:save|store|remember|write)\s+(?:a\s+)?(?:summary|recap)\s+(?:of|for)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session)$",
+        r"^(?:please\s+)?(?:save|store|remember|write)\s+(?:the\s+)?(?:focus|session)\s+(?:summary|recap)(?:\s+(?:as|to|in)\s+(?:a\s+)?(?:note|notes|memory))?$",
+        r"^(?:please\s+)?(?:save|store|remember)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:session|focus)(?:\s+to\s+memory)?$",
+    ]
+    if _first_match(save_summary_patterns, lowered):
+        return _command_response(
+            action="save_focus_summary",
+            frontend_command="save focus summary as note",
+            confidence=0.98,
+            reason="Backend focus interpreter matched a save-focus-summary command.",
+        )
+
+    summarize_patterns = [
+        r"^(?:please\s+)?(?:summarize|recap|review)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session|matter|topic|work|thing)$",
+        r"^(?:please\s+)?(?:give\s+me\s+|make\s+me\s+|create\s+)?(?:a\s+)?(?:focus|session)\s+(?:summary|recap|review)$",
+        r"^(?:please\s+)?(?:what\s+did\s+i\s+do|what\s+did\s+we\s+do|what\s+happened|what\s+changed)\s+(?:in|during|for)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session)$",
+        r"^(?:focus|session)\s+(?:summary|recap|review)$",
+    ]
+    if _first_match(summarize_patterns, lowered):
+        return _command_response(
+            action="summarize_focus_session",
+            frontend_command="summarize this focus",
+            confidence=0.98,
+            reason="Backend focus interpreter matched a focus summary command.",
+        )
+
     read_patterns = [
         r"^(?:what(?:'s| is)|what is)\s+(?:the\s+|my\s+|our\s+)?(?:current\s+|active\s+)?(?:focus|focus session|active session)$",
         r"^(?:what am i focused on(?: right now)?|what are we focused on(?: right now)?|what are we focusing on(?: right now)?)$",

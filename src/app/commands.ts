@@ -22,6 +22,9 @@ export type LocalCommand =
   | 'read-focus-session'
   | 'end-focus-session'
   | 'focus-to-tasks'
+  | 'summarize-focus-session'
+  | 'save-focus-summary'
+  | 'end-focus-with-summary'
   | 'remember-task'
   | 'mark-task-done'
   | 'delete-last-task'
@@ -90,7 +93,7 @@ export interface FocusSessionCommandPayload {
   goal?: string;
 }
 
-// Phase 12E-v2: neutral focus storage plus focus-to-tasks routing.
+// Phase 12E-v3: focus summaries, saved summary notes, and end-with-summary routing.
 
 export interface CommandMatch {
   command: LocalCommand;
@@ -132,6 +135,9 @@ const CONFIRMATIONS: Record<LocalCommand, string> = {
   'read-focus-session': 'Reading focus session.',
   'end-focus-session': 'Ended focus session.',
   'focus-to-tasks': 'Turning focus into tasks.',
+  'summarize-focus-session': 'Summarizing focus session.',
+  'save-focus-summary': 'Saving focus summary.',
+  'end-focus-with-summary': 'Ending focus session with summary.',
   'remember-task': 'Saved task.',
   'mark-task-done': 'Marked task done.',
   'delete-last-task': 'Deleted the last task.',
@@ -653,7 +659,10 @@ type FocusSessionIntent = {
     | 'update-focus-session'
     | 'read-focus-session'
     | 'end-focus-session'
-    | 'focus-to-tasks';
+    | 'focus-to-tasks'
+    | 'summarize-focus-session'
+    | 'save-focus-summary'
+    | 'end-focus-with-summary';
   focusSession?: FocusSessionCommandPayload;
   confirmation?: string;
 };
@@ -753,6 +762,50 @@ function extractFocusSessionIntent(normalized: string): FocusSessionIntent | nul
   ];
   if (endPatterns.some((pattern) => pattern.test(focusText))) {
     return makeFocusSessionIntent('end-focus-session');
+  }
+
+
+  const endWithSummaryPatterns = [
+    /^(?:please\s+)?(?:end|finish|wrap\s+up|close)\s+(?:and\s+)?(?:summarize|recap|save\s+(?:a\s+)?summary|save)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session|matter|topic|work|thing)?$/i,
+    /^(?:please\s+)?(?:summarize|recap|save\s+(?:a\s+)?summary\s+of|save)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session)\s+(?:and\s+)?(?:end|finish|close|wrap\s+up)(?:\s+it)?$/i,
+    /^(?:please\s+)?(?:summarize|recap)\s+(?:and\s+)?(?:end|finish|close|wrap\s+up)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session)$/i,
+    /^(?:please\s+)?(?:end|finish|wrap\s+up|close)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session)\s+(?:with\s+)?(?:a\s+)?(?:summary|recap)$/i,
+    /^(?:please\s+)?(?:save\s+(?:a\s+)?summary\s+and\s+end|save\s+and\s+end)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session)?$/i,
+  ];
+  if (endWithSummaryPatterns.some((pattern) => pattern.test(focusText))) {
+    return makeFocusSessionIntent(
+      'end-focus-with-summary',
+      undefined,
+      'Ending focus session with summary.',
+    );
+  }
+
+  const saveSummaryPatterns = [
+    /^(?:please\s+)?(?:save|store|remember|write)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session)\s+(?:as|to|in)\s+(?:a\s+)?(?:note|notes|memory|summary)$/i,
+    /^(?:please\s+)?(?:save|store|remember|write)\s+(?:a\s+)?(?:summary|recap)\s+(?:of|for)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session)$/i,
+    /^(?:please\s+)?(?:save|store|remember|write)\s+(?:the\s+)?(?:focus|session)\s+(?:summary|recap)(?:\s+(?:as|to|in)\s+(?:a\s+)?(?:note|notes|memory))?$/i,
+    /^(?:please\s+)?(?:save|store|remember)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:session|focus)(?:\s+to\s+memory)?$/i,
+  ];
+  if (saveSummaryPatterns.some((pattern) => pattern.test(focusText))) {
+    return makeFocusSessionIntent(
+      'save-focus-summary',
+      undefined,
+      'Saving focus summary.',
+    );
+  }
+
+  const summarizePatterns = [
+    /^(?:please\s+)?(?:summarize|recap|review)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session|matter|topic|work|thing)$/i,
+    /^(?:please\s+)?(?:give\s+me\s+|make\s+me\s+|create\s+)?(?:a\s+)?(?:focus|session)\s+(?:summary|recap|review)$/i,
+    /^(?:please\s+)?(?:what\s+did\s+i\s+do|what\s+did\s+we\s+do|what\s+happened|what\s+changed)\s+(?:in|during|for)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session)$/i,
+    /^(?:focus|session)\s+(?:summary|recap|review)$/i,
+  ];
+  if (summarizePatterns.some((pattern) => pattern.test(focusText))) {
+    return makeFocusSessionIntent(
+      'summarize-focus-session',
+      undefined,
+      'Summarizing focus session.',
+    );
   }
 
   const readPatterns = [

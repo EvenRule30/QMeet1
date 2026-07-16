@@ -34,6 +34,14 @@ export function getCommandActionLabel(command: string): string {
       return 'Updated focus session';
     case 'read-focus-session':
       return 'Read focus session';
+    case 'focus-to-tasks':
+      return 'Created focus tasks';
+    case 'summarize-focus-session':
+      return 'Summarized focus session';
+    case 'save-focus-summary':
+      return 'Saved focus summary';
+    case 'end-focus-with-summary':
+      return 'Ended focus with summary';
     case 'end-focus-session':
       return 'Ended focus session';
     case 'remember-task':

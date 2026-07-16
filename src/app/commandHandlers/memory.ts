@@ -25,7 +25,10 @@ type NormalizedFocusPayload = {
 const ACTIVE_SESSION_STORAGE_KEY = 'qmeet-active-session';
 const ACTIVE_SESSION_SESSION_STORAGE_KEY = 'qmeet-active-session-live';
 const ACTIVE_SESSION_STATE_EVENT = 'qmeet-active-session-state';
-const ACTIVE_SESSION_COMMAND_HANDLER_MARKER = 'phase12e-v2-focus-to-tasks';
+const SAVE_FOCUS_SUMMARY_NOTE_EVENT = 'qmeet-save-focus-summary-note';
+const MEMORY_TASKS_STORAGE_KEY = 'qmeet-memory-tasks';
+const RECENT_ACTIONS_STORAGE_KEY = 'qmeet-recent-actions';
+const ACTIVE_SESSION_COMMAND_HANDLER_MARKER = 'phase12e-v4-focus-summary-notes-panel';
 
 function createId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -102,6 +105,66 @@ function readStoredActiveSession(): ActiveSession | null {
   return null;
 }
 
+
+function readStoredMemoryTasks(): MemoryTask[] {
+  if (typeof window === 'undefined') return [];
+
+  try {
+    const rawTasks = window.localStorage.getItem(MEMORY_TASKS_STORAGE_KEY);
+    if (!rawTasks) return [];
+    const parsedTasks = JSON.parse(rawTasks);
+    if (!Array.isArray(parsedTasks)) return [];
+
+    return parsedTasks
+      .filter((task) => task && typeof task.title === 'string')
+      .map((task) => ({
+        id: typeof task.id === 'string' ? task.id : createId('task'),
+        title: task.title,
+        createdAt:
+          typeof task.createdAt === 'string'
+            ? task.createdAt
+            : new Date().toISOString(),
+        ...(typeof task.completedAt === 'string'
+          ? { completedAt: task.completedAt }
+          : {}),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+type StoredRecentAction = {
+  id: string;
+  label: string;
+  detail: string;
+  createdAt: string;
+};
+
+function readStoredRecentActions(): StoredRecentAction[] {
+  if (typeof window === 'undefined') return [];
+
+  try {
+    const rawActions = window.localStorage.getItem(RECENT_ACTIONS_STORAGE_KEY);
+    if (!rawActions) return [];
+    const parsedActions = JSON.parse(rawActions);
+    if (!Array.isArray(parsedActions)) return [];
+
+    return parsedActions
+      .filter((action) => action && typeof action.label === 'string')
+      .map((action) => ({
+        id: typeof action.id === 'string' ? action.id : createId('action'),
+        label: action.label,
+        detail: typeof action.detail === 'string' ? action.detail : '',
+        createdAt:
+          typeof action.createdAt === 'string'
+            ? action.createdAt
+            : new Date().toISOString(),
+      }));
+  } catch {
+    return [];
+  }
+}
+
 function writeStoredActiveSession(activeSession: ActiveSession | null) {
   if (typeof window === 'undefined') return;
 
@@ -128,6 +191,26 @@ function dispatchActiveSessionState(activeSession: ActiveSession | null) {
   window.dispatchEvent(
     new CustomEvent<ActiveSessionStateEventDetail>(ACTIVE_SESSION_STATE_EVENT, {
       detail: { activeSession },
+    }),
+  );
+}
+
+
+function dispatchFocusSummaryNote(
+  activeSession: ActiveSession,
+  summary: string,
+  options: { endAfterSave?: boolean } = {},
+) {
+  if (typeof window === 'undefined') return;
+
+  window.dispatchEvent(
+    new CustomEvent(SAVE_FOCUS_SUMMARY_NOTE_EVENT, {
+      detail: {
+        sessionId: activeSession.id,
+        summary,
+        title: activeSession.title,
+        endAfterSave: Boolean(options.endAfterSave),
+      },
     }),
   );
 }
@@ -355,6 +438,81 @@ function describeFocusTasks(activeSession: ActiveSession, tasks: MemoryTask[]): 
   return `Added ${tasks.length} task${tasks.length === 1 ? '' : 's'} for ${activeSession.title}: ${taskList}`;
 }
 
+
+function formatFocusSummaryTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Unknown';
+
+  return date.toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function sentenceList(items: string[], fallback: string): string {
+  const cleanedItems = items
+    .map((item) => item.replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+
+  if (cleanedItems.length === 0) return fallback;
+  return cleanedItems.join('; ');
+}
+
+function buildFocusSummary(activeSession: ActiveSession): string {
+  const storedTasks = readStoredMemoryTasks();
+  const storedRecentActions = readStoredRecentActions();
+  const linkedTaskIds = new Set(activeSession.linkedTaskIds);
+  const linkedTasks = storedTasks.filter((task) => linkedTaskIds.has(task.id));
+  const openLinkedTasks = linkedTasks.filter((task) => !task.completedAt);
+  const completedLinkedTasks = linkedTasks.filter((task) => task.completedAt);
+  const recentFocusActions = storedRecentActions
+    .filter((action) => {
+      const actionText = `${action.label} ${action.detail}`.toLowerCase();
+      return (
+        actionText.includes('focus') ||
+        actionText.includes(activeSession.title.toLowerCase()) ||
+        (activeSession.goal && actionText.includes(activeSession.goal.toLowerCase()))
+      );
+    })
+    .slice(0, 5)
+    .map((action) =>
+      action.detail ? `${action.label}: ${action.detail}` : action.label,
+    );
+
+  const lines = [
+    `Focus summary - ${activeSession.title}`,
+    `Mode: ${activeSession.mode}`,
+    activeSession.goal ? `Goal: ${activeSession.goal}` : 'Goal: No goal set',
+    `Started: ${formatFocusSummaryTime(activeSession.startedAt)}`,
+    `Last updated: ${formatFocusSummaryTime(activeSession.updatedAt)}`,
+    linkedTasks.length > 0
+      ? `Linked tasks: ${linkedTasks.length} total, ${openLinkedTasks.length} open, ${completedLinkedTasks.length} completed. ${sentenceList(
+          linkedTasks.slice(0, 5).map((task) => task.title),
+          '',
+        )}`.trim()
+      : 'Linked tasks: None yet',
+    recentFocusActions.length > 0
+      ? `Recent focus actions: ${sentenceList(recentFocusActions, 'None yet')}`
+      : 'Recent focus actions: None yet',
+  ];
+
+  return lines.join('\n');
+}
+
+function describeFocusSummary(activeSession: ActiveSession): string {
+  const storedTasks = readStoredMemoryTasks();
+  const linkedTaskIds = new Set(activeSession.linkedTaskIds);
+  const linkedTasks = storedTasks.filter((task) => linkedTaskIds.has(task.id));
+  const taskText = linkedTasks.length > 0
+    ? ` ${linkedTasks.length} linked task${linkedTasks.length === 1 ? '' : 's'}.`
+    : '';
+  const goalText = activeSession.goal ? ` Goal: ${activeSession.goal}.` : ' No goal has been set yet.';
+
+  return `Focus summary for ${activeSession.title}. Mode: ${activeSession.mode}.${goalText}${taskText}`;
+}
+
 function describeFocusStart(payload: FocusSessionCommandPayload | undefined) {
   const title = payload?.title?.trim() || 'Focus session';
   const mode = payload?.mode ? ` ${payload.mode}` : '';
@@ -505,6 +663,79 @@ export function handleMemoryCommand(
       };
     }
 
+
+
+    case 'summarize-focus-session': {
+      const activeSession = readStoredActiveSession();
+      deps.setActivePanel('memory');
+
+      if (!activeSession) {
+        return {
+          handled: true,
+          confirmationContent:
+            'No active focus session is running. Start a focus session first, then I can summarize it.',
+          shouldSpeakConfirmation: deps.voiceOutputEnabled,
+        };
+      }
+
+      const summary = buildFocusSummary(activeSession);
+      return {
+        handled: true,
+        confirmationContent: summary,
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+
+    case 'save-focus-summary': {
+      const activeSession = readStoredActiveSession();
+
+      if (!activeSession) {
+        deps.setActivePanel('memory');
+        return {
+          handled: true,
+          confirmationContent:
+            'No active focus session is running. Start a focus session first, then I can save a summary note.',
+          shouldSpeakConfirmation: deps.voiceOutputEnabled,
+        };
+      }
+
+      const summary = buildFocusSummary(activeSession);
+      dispatchFocusSummaryNote(activeSession, summary);
+      patchActiveSessionInBackend({ summary });
+      deps.setActivePanel('notes');
+
+      return {
+        handled: true,
+        confirmationContent: `Saved focus summary as a note for ${activeSession.title}. ${describeFocusSummary(activeSession)}`,
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+
+    case 'end-focus-with-summary': {
+      const activeSession = readStoredActiveSession();
+
+      if (!activeSession) {
+        deps.setActivePanel('memory');
+        return {
+          handled: true,
+          confirmationContent:
+            'No active focus session is running, so there is nothing to summarize or end.',
+          shouldSpeakConfirmation: deps.voiceOutputEnabled,
+        };
+      }
+
+      const summary = buildFocusSummary(activeSession);
+      dispatchFocusSummaryNote(activeSession, summary, { endAfterSave: true });
+      applyActiveSession(null);
+      persistActiveSessionToBackend(null);
+      deps.setActivePanel('notes');
+
+      return {
+        handled: true,
+        confirmationContent: `Saved a summary note and ended focus session: ${activeSession.title}.`,
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
 
     case 'focus-to-tasks': {
       const activeSession = readStoredActiveSession();
