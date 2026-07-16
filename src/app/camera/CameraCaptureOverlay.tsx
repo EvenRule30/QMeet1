@@ -167,6 +167,21 @@ export function CameraCaptureOverlay() {
   const [statusMessage, setStatusMessage] = useState('Camera preview is closed.');
   const [snapshotDataUrl, setSnapshotDataUrl] = useState<string | null>(null);
 
+  const clearCanvas = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) {
+      return;
+    }
+
+    const context = canvas.getContext('2d');
+    if (context) {
+      context.clearRect(0, 0, canvas.width, canvas.height);
+    }
+
+    canvas.width = 0;
+    canvas.height = 0;
+  }, []);
+
   const stopStream = useCallback(() => {
     const stream = streamRef.current;
     if (stream) {
@@ -181,16 +196,19 @@ export function CameraCaptureOverlay() {
 
   const closeCamera = useCallback(() => {
     stopStream();
+    clearCanvas();
+    setSnapshotDataUrl(null);
     setOpen(false);
     setStatus('closed');
     setStatusMessage('Camera preview is closed.');
-  }, [stopStream]);
+  }, [clearCanvas, stopStream]);
 
   const startCamera = useCallback(async () => {
     setOpen(true);
     setStatus('opening');
     setStatusMessage('Requesting camera permission...');
     setSnapshotDataUrl(null);
+    clearCanvas();
 
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
       setStatus('error');
@@ -222,7 +240,7 @@ export function CameraCaptureOverlay() {
       setStatus('error');
       setStatusMessage(getCameraErrorMessage(error));
     }
-  }, [stopStream]);
+  }, [clearCanvas, stopStream]);
 
   const captureSnapshot = useCallback(async () => {
     if (!open) {
@@ -255,9 +273,10 @@ export function CameraCaptureOverlay() {
 
   const clearSnapshot = useCallback(() => {
     setSnapshotDataUrl(null);
+    clearCanvas();
     setStatus(streamRef.current ? 'ready' : 'closed');
     setStatusMessage(streamRef.current ? 'Camera preview is live.' : 'Snapshot cleared. Camera preview is closed.');
-  }, []);
+  }, [clearCanvas]);
 
   useEffect(() => {
     const handleCameraCommand = (event: Event) => {
@@ -279,10 +298,29 @@ export function CameraCaptureOverlay() {
   }, [captureSnapshot, closeCamera, startCamera]);
 
   useEffect(() => {
+    if (!open && !snapshotDataUrl) {
+      return undefined;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeCamera();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [closeCamera, open, snapshotDataUrl]);
+
+  useEffect(() => {
     return () => {
       stopStream();
+      clearCanvas();
     };
-  }, [stopStream]);
+  }, [clearCanvas, stopStream]);
 
   if (!open && !snapshotDataUrl) {
     return (
@@ -301,8 +339,14 @@ export function CameraCaptureOverlay() {
   const canCapture = status === 'ready' || status === 'captured';
 
   return (
-    <div style={overlayStyle} role="dialog" aria-modal="true" aria-label="QMeet camera preview">
-      <div style={panelStyle}>
+    <div
+      style={overlayStyle}
+      role="dialog"
+      aria-modal="true"
+      aria-label="QMeet camera preview"
+      onClick={closeCamera}
+    >
+      <div style={panelStyle} onClick={(event) => event.stopPropagation()}>
         <div style={headerStyle}>
           <div>
             <h2 style={titleStyle}>Camera Preview</h2>
