@@ -28,9 +28,10 @@ const ACTIVE_SESSION_SESSION_STORAGE_KEY = 'qmeet-active-session-live';
 const ACTIVE_SESSION_STATE_EVENT = 'qmeet-active-session-state';
 const SAVE_FOCUS_SUMMARY_NOTE_EVENT = 'qmeet-save-focus-summary-note';
 const MEMORY_TASKS_STORAGE_KEY = 'qmeet-memory-tasks';
+const NOTES_STORAGE_KEY = 'qmeet-notes';
 const RECENT_ACTIONS_STORAGE_KEY = 'qmeet-recent-actions';
 const RECENT_FOCUS_SESSIONS_STORAGE_KEY = 'qmeet-recent-focus-sessions';
-const ACTIVE_SESSION_COMMAND_HANDLER_MARKER = 'phase13e-v1-focus-history-recall';
+const ACTIVE_SESSION_COMMAND_HANDLER_MARKER = 'phase13f-v1-local-recap';
 
 function createId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -296,6 +297,210 @@ function readStoredRecentActions(): StoredRecentAction[] {
   } catch {
     return [];
   }
+}
+
+
+type StoredNote = {
+  id: string;
+  content: string;
+  createdAt: string;
+};
+
+function readStoredNotes(): StoredNote[] {
+  if (typeof window === 'undefined') return [];
+
+  try {
+    const rawNotes = window.localStorage.getItem(NOTES_STORAGE_KEY);
+    if (!rawNotes) return [];
+    const parsedNotes = JSON.parse(rawNotes);
+    if (!Array.isArray(parsedNotes)) return [];
+
+    return parsedNotes
+      .filter((note) => note && typeof note.content === 'string')
+      .map((note) => ({
+        id: typeof note.id === 'string' ? note.id : createId('note'),
+        content: note.content,
+        createdAt:
+          typeof note.createdAt === 'string'
+            ? note.createdAt
+            : new Date().toISOString(),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+type RecapWindow = {
+  label: string;
+  start?: Date;
+  end?: Date;
+};
+
+function startOfLocalDay(value: Date): Date {
+  return new Date(value.getFullYear(), value.getMonth(), value.getDate());
+}
+
+function addDays(value: Date, days: number): Date {
+  const next = new Date(value);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function getFocusRecapWindow(rawPayload: string | undefined): RecapWindow {
+  const payload = (rawPayload ?? '').toLowerCase();
+  const todayStart = startOfLocalDay(new Date());
+
+  if (/yesterday/.test(payload) && !/since/.test(payload)) {
+    const yesterdayStart = addDays(todayStart, -1);
+    return {
+      label: 'Yesterday',
+      start: yesterdayStart,
+      end: todayStart,
+    };
+  }
+
+  if (/since-yesterday|since yesterday|changed/.test(payload)) {
+    return {
+      label: 'Since yesterday',
+      start: addDays(todayStart, -1),
+    };
+  }
+
+  if (/today/.test(payload)) {
+    return {
+      label: 'Today',
+      start: todayStart,
+      end: addDays(todayStart, 1),
+    };
+  }
+
+  return {
+    label: 'Recent focus activity',
+    start: addDays(todayStart, -7),
+  };
+}
+
+function timeValue(value: string | undefined): number {
+  if (!value) return 0;
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? 0 : time;
+}
+
+function isWithinRecapWindow(value: string | undefined, window: RecapWindow): boolean {
+  const time = timeValue(value);
+  if (!time) return false;
+  if (window.start && time < window.start.getTime()) return false;
+  if (window.end && time >= window.end.getTime()) return false;
+  return true;
+}
+
+function compactRecapText(value: string, maxLength = 80): string {
+  const cleaned = value.replace(/\s+/g, ' ').trim();
+  if (cleaned.length <= maxLength) return cleaned;
+  return `${cleaned.slice(0, maxLength - 1).trim()}…`;
+}
+
+function formatRecapItemTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'unknown time';
+
+  return date.toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function describeTaskList(tasks: MemoryTask[], label: string, maxItems = 4): string {
+  if (tasks.length === 0) return '';
+  const taskLines = tasks.slice(0, maxItems).map((task, index) => {
+    const status = task.completedAt ? 'done' : 'open';
+    return `${index + 1}. ${compactRecapText(task.title, 72)} (${status})`;
+  });
+  const remaining = tasks.length - taskLines.length;
+  return `${label}: ${taskLines.join('; ')}${remaining > 0 ? `; plus ${remaining} more` : ''}.`;
+}
+
+function buildFocusActivityRecap(rawPayload: string | undefined): string {
+  const window = getFocusRecapWindow(rawPayload);
+  const activeSession = readStoredActiveSession();
+  const recentSessions = readStoredRecentFocusSessions().filter((session) =>
+    isWithinRecapWindow(session.endedAt, window),
+  );
+  const tasks = readStoredMemoryTasks();
+  const windowTasks = tasks
+    .filter((task) =>
+      isWithinRecapWindow(task.completedAt ?? task.createdAt, window),
+    )
+    .sort((a, b) => timeValue(b.completedAt ?? b.createdAt) - timeValue(a.completedAt ?? a.createdAt));
+  const openTasks = tasks
+    .filter((task) => !task.completedAt)
+    .slice(0, 5);
+  const notes = readStoredNotes()
+    .filter((note) => isWithinRecapWindow(note.createdAt, window))
+    .sort((a, b) => timeValue(b.createdAt) - timeValue(a.createdAt));
+  const actions = readStoredRecentActions()
+    .filter((action) => isWithinRecapWindow(action.createdAt, window))
+    .sort((a, b) => timeValue(b.createdAt) - timeValue(a.createdAt));
+
+  const lines: string[] = [`${window.label} recap.`];
+
+  if (activeSession) {
+    lines.push(
+      `Active focus: ${activeSession.title} (${activeSession.mode}).${
+        activeSession.goal ? ` Goal: ${activeSession.goal}.` : ' No goal set.'
+      }${
+        activeSession.linkedTaskIds.length > 0
+          ? ` ${activeSession.linkedTaskIds.length} linked task${activeSession.linkedTaskIds.length === 1 ? '' : 's'}.`
+          : ''
+      }`,
+    );
+  }
+
+  if (recentSessions.length > 0) {
+    const sessionLines = recentSessions.slice(0, 4).map((session, index) => {
+      const goalText = session.goal ? ` — ${compactRecapText(session.goal, 70)}` : '';
+      return `${index + 1}. ${session.title} (${session.mode}, ended ${formatRecapItemTime(session.endedAt)})${goalText}`;
+    });
+    const remaining = recentSessions.length - sessionLines.length;
+    lines.push(
+      `Ended focus sessions: ${sessionLines.join('; ')}${remaining > 0 ? `; plus ${remaining} more` : ''}.`,
+    );
+  }
+
+  const completedTasks = windowTasks.filter((task) => task.completedAt);
+  const createdTasks = windowTasks.filter((task) => !task.completedAt);
+  const completedTaskText = describeTaskList(completedTasks, 'Completed tasks');
+  if (completedTaskText) lines.push(completedTaskText);
+  const createdTaskText = describeTaskList(createdTasks, 'New open tasks');
+  if (createdTaskText) lines.push(createdTaskText);
+
+  if (openTasks.length > 0) {
+    lines.push(describeTaskList(openTasks, 'Current open tasks'));
+  }
+
+  if (notes.length > 0) {
+    const noteLines = notes.slice(0, 3).map((note, index) => {
+      return `${index + 1}. ${compactRecapText(note.content, 84)}`;
+    });
+    const remaining = notes.length - noteLines.length;
+    lines.push(`Notes saved: ${noteLines.join('; ')}${remaining > 0 ? `; plus ${remaining} more` : ''}.`);
+  }
+
+  if (actions.length > 0) {
+    const actionLines = actions.slice(0, 5).map((action) => {
+      const detail = action.detail ? ` — ${compactRecapText(action.detail, 60)}` : '';
+      return `${action.label}${detail}`;
+    });
+    lines.push(`Recent actions: ${actionLines.join('; ')}.`);
+  }
+
+  if (lines.length === 1) {
+    return `${window.label} recap. I do not see focus sessions, tasks, notes, or recent actions in that window yet.`;
+  }
+
+  return lines.join(' ');
 }
 
 function writeStoredActiveSession(activeSession: ActiveSession | null) {
@@ -723,6 +928,15 @@ export function handleMemoryCommand(
     case 'close-memory':
       deps.closePanel();
       return { handled: true };
+
+    case 'recap-focus-activity': {
+      deps.setActivePanel('memory');
+      return {
+        handled: true,
+        confirmationContent: buildFocusActivityRecap(commandMatch.payload),
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
 
     case 'read-last-focus-session': {
       deps.setActivePanel('memory');

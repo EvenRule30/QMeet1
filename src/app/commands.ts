@@ -28,6 +28,7 @@ export type LocalCommand =
   | 'read-last-focus-session'
   | 'read-focus-history'
   | 'resume-last-focus-session'
+  | 'recap-focus-activity'
   | 'remember-task'
   | 'mark-task-done'
   | 'delete-last-task'
@@ -98,7 +99,7 @@ export interface FocusSessionCommandPayload {
   forceEnd?: boolean;
 }
 
-// Phase 13E-v1: recent focus recall and resume commands.
+// Phase 13F-v1: local focus/work recap commands.
 
 export interface CommandMatch {
   command: LocalCommand;
@@ -146,6 +147,7 @@ const CONFIRMATIONS: Record<LocalCommand, string> = {
   'read-last-focus-session': 'Reading last focus session.',
   'read-focus-history': 'Reading recent focus sessions.',
   'resume-last-focus-session': 'Resuming last focus session.',
+  'recap-focus-activity': 'Recapping recent focus activity.',
   'remember-task': 'Saved task.',
   'mark-task-done': 'Marked task done.',
   'delete-last-task': 'Deleted the last task.',
@@ -673,8 +675,10 @@ type FocusSessionIntent = {
     | 'end-focus-with-summary'
     | 'read-last-focus-session'
     | 'read-focus-history'
-    | 'resume-last-focus-session';
+    | 'resume-last-focus-session'
+    | 'recap-focus-activity';
   focusSession?: FocusSessionCommandPayload;
+  payload?: string;
   confirmation?: string;
 };
 
@@ -833,6 +837,74 @@ function extractFocusSessionIntent(normalized: string): FocusSessionIntent | nul
       undefined,
       'Summarizing focus session.',
     );
+  }
+
+
+  const focusRecapPatterns: Array<{ pattern: RegExp; payload: string; confirmation: string }> = [
+    {
+      pattern: /^(?:please\s+)?(?:summarize|recap|review)\s+(?:what\s+)?(?:i|we)\s+(?:worked\s+on|focused\s+on|did|accomplished)\s+today$/i,
+      payload: 'today',
+      confirmation: "Recapping today\'s focus activity.",
+    },
+    {
+      pattern: /^(?:please\s+)?(?:what\s+did|what\s+have)\s+(?:i|we)\s+(?:work\s+on|focus\s+on|do|accomplish)\s+today$/i,
+      payload: 'today',
+      confirmation: "Recapping today\'s focus activity.",
+    },
+    {
+      pattern: /^(?:please\s+)?(?:today(?:'s)?\s+)?(?:focus|work|activity)\s+(?:recap|summary|review)$/i,
+      payload: 'today',
+      confirmation: "Recapping today\'s focus activity.",
+    },
+    {
+      pattern: /^(?:please\s+)?(?:summarize|recap|review)\s+(?:what\s+)?(?:i|we)\s+(?:worked\s+on|focused\s+on|did|accomplished)\s+yesterday$/i,
+      payload: 'yesterday',
+      confirmation: "Recapping yesterday\'s focus activity.",
+    },
+    {
+      pattern: /^(?:please\s+)?(?:what\s+did|what\s+have)\s+(?:i|we)\s+(?:work\s+on|focus\s+on|do|accomplish)\s+yesterday$/i,
+      payload: 'yesterday',
+      confirmation: "Recapping yesterday\'s focus activity.",
+    },
+    {
+      pattern: /^(?:please\s+)?(?:yesterday(?:'s)?\s+)?(?:focus|work|activity)\s+(?:recap|summary|review)$/i,
+      payload: 'yesterday',
+      confirmation: "Recapping yesterday\'s focus activity.",
+    },
+    {
+      pattern: /^(?:please\s+)?what\s+changed\s+since\s+yesterday$/i,
+      payload: 'since-yesterday',
+      confirmation: 'Recapping what changed since yesterday.',
+    },
+    {
+      pattern: /^(?:please\s+)?(?:summarize|recap|review)\s+(?:my|our)?\s*(?:recent\s+)?(?:focus|focuses|focus\s+sessions|work|activity)$/i,
+      payload: 'recent',
+      confirmation: 'Recapping recent focus activity.',
+    },
+    {
+      pattern: /^(?:please\s+)?what\s+did\s+(?:i|we)\s+focus\s+on\s+recently$/i,
+      payload: 'recent',
+      confirmation: 'Recapping recent focus activity.',
+    },
+    {
+      pattern: /^(?:please\s+)?(?:what\s+have|what\s+did)\s+(?:i|we)\s+been\s+(?:working|focusing)\s+on\s+recently$/i,
+      payload: 'recent',
+      confirmation: 'Recapping recent focus activity.',
+    },
+    {
+      pattern: /^(?:please\s+)?(?:daily|weekly|recent)\s+(?:focus|work|activity)\s+(?:recap|summary|review)$/i,
+      payload: 'recent',
+      confirmation: 'Recapping recent focus activity.',
+    },
+  ];
+  for (const { pattern, payload, confirmation } of focusRecapPatterns) {
+    if (pattern.test(focusText)) {
+      return {
+        command: 'recap-focus-activity',
+        payload,
+        confirmation,
+      };
+    }
   }
 
   const focusHistoryPatterns = [
@@ -1510,6 +1582,7 @@ export function debugCommandParse(text: string): {
           ...(focusSessionIntent.focusSession
             ? { focusSession: focusSessionIntent.focusSession }
             : {}),
+          ...(focusSessionIntent.payload ? { payload: focusSessionIntent.payload } : {}),
         },
       };
     }

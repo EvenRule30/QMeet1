@@ -209,6 +209,73 @@ def _focus_command_intent(message: str) -> dict[str, Any] | None:
             reason="Backend focus interpreter matched a focus summary command.",
         )
 
+    focus_recap_patterns: list[tuple[str, str, str]] = [
+        (
+            r"^(?:please\s+)?(?:summarize|recap|review)\s+(?:what\s+)?(?:i|we)\s+(?:worked\s+on|focused\s+on|did|accomplished)\s+today$",
+            "summarize what I worked on today",
+            "today",
+        ),
+        (
+            r"^(?:please\s+)?(?:what\s+did|what\s+have)\s+(?:i|we)\s+(?:work\s+on|focus\s+on|do|accomplish)\s+today$",
+            "summarize what I worked on today",
+            "today",
+        ),
+        (
+            r"^(?:please\s+)?(?:today(?:'s)?\s+)?(?:focus|work|activity)\s+(?:recap|summary|review)$",
+            "today focus recap",
+            "today",
+        ),
+        (
+            r"^(?:please\s+)?(?:summarize|recap|review)\s+(?:what\s+)?(?:i|we)\s+(?:worked\s+on|focused\s+on|did|accomplished)\s+yesterday$",
+            "summarize what I worked on yesterday",
+            "yesterday",
+        ),
+        (
+            r"^(?:please\s+)?(?:what\s+did|what\s+have)\s+(?:i|we)\s+(?:work\s+on|focus\s+on|do|accomplish)\s+yesterday$",
+            "summarize what I worked on yesterday",
+            "yesterday",
+        ),
+        (
+            r"^(?:please\s+)?(?:yesterday(?:'s)?\s+)?(?:focus|work|activity)\s+(?:recap|summary|review)$",
+            "yesterday focus recap",
+            "yesterday",
+        ),
+        (
+            r"^(?:please\s+)?what\s+changed\s+since\s+yesterday$",
+            "what changed since yesterday",
+            "since-yesterday",
+        ),
+        (
+            r"^(?:please\s+)?(?:summarize|recap|review)\s+(?:my|our)?\s*(?:recent\s+)?(?:focus|focuses|focus\s+sessions|work|activity)$",
+            "recap recent focus activity",
+            "recent",
+        ),
+        (
+            r"^(?:please\s+)?what\s+did\s+(?:i|we)\s+focus\s+on\s+recently$",
+            "recap recent focus activity",
+            "recent",
+        ),
+        (
+            r"^(?:please\s+)?(?:what\s+have|what\s+did)\s+(?:i|we)\s+been\s+(?:working|focusing)\s+on\s+recently$",
+            "recap recent focus activity",
+            "recent",
+        ),
+        (
+            r"^(?:please\s+)?(?:daily|weekly|recent)\s+(?:focus|work|activity)\s+(?:recap|summary|review)$",
+            "recap recent focus activity",
+            "recent",
+        ),
+    ]
+    for pattern, frontend_command, payload in focus_recap_patterns:
+        if re.search(pattern, lowered, flags=re.IGNORECASE):
+            return _command_response(
+                action="recap_focus_activity",
+                frontend_command=frontend_command,
+                confidence=0.98,
+                reason="Backend focus interpreter matched a focus activity recap command.",
+                payload={"timeframe": payload},
+            )
+
     focus_history_patterns = [
         r"^(?:please\s+)?(?:show|list|read|display|open)\s+(?:my\s+|our\s+)?(?:recent\s+)?(?:focus\s+)?(?:history|sessions|focus\s+sessions)$",
         r"^(?:please\s+)?(?:show|list|read|display|open)\s+(?:my\s+|our\s+)?recent\s+(?:focuses|focus\s+sessions|sessions)$",
