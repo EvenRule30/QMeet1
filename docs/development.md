@@ -2,18 +2,6 @@
 
 This file keeps detailed project/setup information out of the main README.
 
-## Current project state
-
-QMeet is currently past Phase 11 and ready to begin Phase 12.
-
-```text
-Phase 10 completed: backend-backed persistent memory
-Phase 11 completed/in progress: regression audit and bug hardening
-Phase 12 next: active context / focus sessions
-```
-
-The most important current architecture rule is that backend memory is primary after initialization. Browser `localStorage` is still used as a fallback and migration source, but it should not overwrite an intentionally empty backend memory file.
-
 ## Architecture
 
 ```text
@@ -22,17 +10,18 @@ QMeet
 │  ├─ interactive orb UI
 │  ├─ browser speech recognition
 │  ├─ browser speech synthesis
-│  ├─ local exact command parser
-│  ├─ backend fuzzy command interpreter client
-│  ├─ command/result toast cards
-│  ├─ notes, memory, calendar, search, settings, status panels
-│  └─ chat streaming controller
+│  ├─ local command parser
+│  ├─ local notes and memory panels
+│  ├─ Active Focus Session UI/state
+│  ├─ Google Calendar panel
+│  └─ web search panel
 └─ FastAPI backend
    ├─ OpenAI chat streaming
    ├─ OpenAI web search wrapper
    ├─ command interpretation endpoint
+   ├─ deterministic focus command routing helpers
    ├─ Google Calendar OAuth/API integration
-   └─ backend-local JSON memory store
+   └─ backend JSON memory store
 ```
 
 ## Main local URLs
@@ -42,7 +31,7 @@ Frontend: http://localhost:5173
 Backend:  http://localhost:8000
 ```
 
-For testing from a Raspberry Pi or another device on the same network, set the frontend API URL to the laptop IP:
+For testing from a Raspberry Pi on the same network, set the frontend API URL to the laptop IP:
 
 ```env
 VITE_QMEET_API_URL=http://YOUR_LAPTOP_IP:8000
@@ -86,6 +75,7 @@ OPENAI_API_KEY=your_openai_key_here
 OPENAI_MODEL=gpt-4.1-mini
 OPENAI_MAX_OUTPUT_TOKENS=300
 FRONTEND_ORIGIN=http://localhost:5173
+
 GOOGLE_CALENDAR_ENABLED=true
 GOOGLE_CALENDAR_WRITE_ENABLED=true
 GOOGLE_CALENDAR_CREDENTIALS_FILE=google_credentials.json
@@ -109,61 +99,49 @@ Pi testing against laptop-hosted backend:
 VITE_QMEET_API_URL=http://YOUR_LAPTOP_IP:8000
 ```
 
-Restart Vite after changing `.env.local`.
+## Backend memory
 
-## Persistent memory
-
-Primary memory lives in:
+Backend memory is the source of truth when available. It is stored as local JSON:
 
 ```text
 backend/data/qmeet_memory.json
 ```
 
-Current stored categories:
+Current memory categories:
 
 ```text
 tasks
 notes
 recentActions
+activeSession
 ```
 
-The backend memory store is file-based and prototype-local. Phase 11 hardened it with atomic writes and an in-process lock so overlapping memory saves are less likely to corrupt or lose data.
+Phase 10 made backend memory primary. The frontend still keeps local browser fallback copies and migrates old local memory into the backend only when the backend memory file has not been initialized yet.
 
-The frontend memory hook keeps browser fallback copies under:
+The memory file is written with an atomic temp-file/replace flow and guarded by an in-process lock to reduce local JSON corruption and overlapping write issues.
+
+## Frontend local fallback storage
+
+Frontend localStorage/sessionStorage keys include:
 
 ```text
-qmeet-notes
-qmeet-memory-tasks
-qmeet-recent-actions
+qmeet-notes                         notes fallback
+qmeet-calendar-events               local fallback calendar events
+qmeet-memory-tasks                  task fallback
+qmeet-recent-actions                compact recent action log used by memory readout
+qmeet-active-session                active focus/session fallback
+qmeet-active-session-live           same-tab focus/session live mirror
+qmeet-voice-output-enabled          voice output setting
+qmeet-speech-rate                   speech speed setting
 ```
 
-Important behavior:
+Backend memory should be treated as primary for tasks, notes, recent actions, and focus sessions. Browser storage is mainly fallback/migration state.
 
-```text
-- If backend memory has never been initialized, browser fallback memory can migrate into it.
-- If backend memory exists but is empty, that empty state is treated as intentional.
-- Memory import/export/reset should operate through backend memory first.
-- Browser fallback should recover UI state when backend is unavailable, not become the source of truth forever.
-```
+## Local memory / tasks / focus
 
-## Local browser storage
+Memory panel supports tasks, notes, recent action summaries, and Active Focus Sessions.
 
-QMeet currently uses these browser keys for fallback state and UI preferences:
-
-```text
-qmeet-notes                  fallback note copy
-qmeet-calendar-events        local fallback calendar events
-qmeet-memory-tasks           fallback task/memory list
-qmeet-recent-actions         compact recent action log used by memory readout
-qmeet-voice-output-enabled   voice output setting
-qmeet-speech-rate            speech speed setting
-```
-
-Voice settings and local fallback state are browser-local. Backend memory and Google Calendar tokens are backend-local.
-
-## Local memory / tasks
-
-Main commands:
+Task commands:
 
 ```text
 open memory
@@ -175,13 +153,32 @@ clear completed tasks
 close memory
 ```
 
-Behavior:
+Focus commands:
 
 ```text
-Open Tasks visible in Memory panel
-Completed Tasks visible in Memory panel until cleared
-Recent Actions stored internally for summary context, hidden from panel UI
-Destructive task actions are confirmation-gated through the existing command safety flow
+start a focus session for QMeet Phase 12
+start a coding focus session for QMeet Phase 12
+set current focus on camera architecture
+set my goal to improve focus-aware chat
+what is my focus
+what should I do next
+turn this focus into tasks
+make tasks for my current goal
+summarize this focus
+save this focus as a note
+save this session to memory
+end and summarize this focus
+end focus session
+```
+
+Focus behavior:
+
+```text
+- activeSession is persisted in backend memory.
+- the top status bar displays the current focus.
+- normal chat receives neutral active-focus context.
+- focus-to-tasks creates deterministic memory tasks and links them to the session.
+- focus summaries can be saved as notes and optionally end the session.
 ```
 
 ## Google Calendar setup
@@ -205,8 +202,6 @@ reschedule last event to tomorrow at 4
 rename last event to project sync
 ```
 
-Phase 11 hardened cold-start calendar delete/edit behavior so confirmed operations refresh Google Calendar before resolving the target event when connected.
-
 ## Useful API checks
 
 ```powershell
@@ -216,7 +211,7 @@ Invoke-RestMethod "http://localhost:8000/api/calendar/events?view=today"
 Invoke-RestMethod "http://localhost:8000/api/calendar/events?view=tomorrow"
 Invoke-RestMethod http://localhost:8000/api/memory/status
 Invoke-RestMethod http://localhost:8000/api/memory/context
-Invoke-RestMethod http://localhost:8000/api/memory/export
+Invoke-RestMethod http://localhost:8000/api/memory/session
 ```
 
 Search test:
@@ -239,14 +234,20 @@ Invoke-RestMethod `
   -Body '{"title":"QMeet test event","day":"tomorrow","time":"3 PM"}'
 ```
 
-Memory context test:
+Active session API examples:
 
 ```powershell
 Invoke-RestMethod `
-  -Uri "http://localhost:8000/api/memory/tasks" `
-  -Method POST `
+  -Uri "http://localhost:8000/api/memory/session" `
+  -Method PUT `
   -ContentType "application/json" `
-  -Body '{"title":"Test persistent memory"}'
+  -Body '{"title":"QMeet Phase 12","mode":"coding","goal":"finish focus docs"}'
+
+Invoke-RestMethod http://localhost:8000/api/memory/session
+
+Invoke-RestMethod `
+  -Uri "http://localhost:8000/api/memory/session" `
+  -Method DELETE
 ```
 
 ## Frontend command examples
@@ -262,6 +263,13 @@ remember to test the Pi as a task
 what was I working on
 mark task done
 clear completed tasks
+start a coding focus session for QMeet Phase 12
+set my goal to polish the focus workflow
+what is my focus
+turn this focus into tasks
+summarize this focus
+save this focus as a note
+end and summarize this focus
 open calendar
 what's on my calendar
 what's on my calendar tomorrow
@@ -280,18 +288,6 @@ speak slower
 speak faster
 go home
 end chat
-```
-
-Phase 12 planned command examples:
-
-```text
-start focus session on QMeet Phase 12
-start coding mode
-set my goal to design camera support
-what is my current focus
-summarize this session
-save this session to memory
-end focus session
 ```
 
 ## Layout notes
@@ -320,37 +316,43 @@ FRONTEND_ORIGIN matches the frontend URL
 Vite was restarted after env changes
 ```
 
-For Pi/laptop testing, do not use `localhost` from the Pi unless the backend is also running on the Pi. Use the laptop LAN IP.
-
 ### Voice input does not work
 
 Browser speech recognition depends on browser support and microphone permissions. Chrome/Chromium is the expected browser path.
 
-### Orb looks ready after speech, before the answer starts
+### Memory/tasks/focus disappeared
 
-This should be fixed by the Phase 11 voice feedback patch. After final speech transcript submission, the orb should immediately enter a thinking/routing state while command interpretation or chat startup runs.
-
-### Memory/tasks disappeared
-
-Check whether the backend memory file exists:
-
-```text
-backend/data/qmeet_memory.json
-```
-
-Check backend memory status:
+Check backend memory first:
 
 ```powershell
 Invoke-RestMethod http://localhost:8000/api/memory/status
 Invoke-RestMethod http://localhost:8000/api/memory/context
 ```
 
-Browser fallback can also be inspected in DevTools:
+Then check browser fallback storage:
 
 ```text
 Application -> Local storage -> qmeet-memory-tasks
-Application -> Local storage -> qmeet-notes
-Application -> Local storage -> qmeet-recent-actions
+Application -> Local storage -> qmeet-active-session
+Application -> Session storage -> qmeet-active-session-live
+```
+
+### Focus commands go to chat instead of a tool update
+
+Check that both frontend and backend were restarted/reloaded after replacing files:
+
+```text
+npm run build
+restart Vite dev server if needed
+restart uvicorn backend
+```
+
+Focus command routing is split across:
+
+```text
+src/app/commands.ts
+src/app/commandHandlers/memory.ts
+backend/app/routers/command.py
 ```
 
 ### Google Calendar says not connected
@@ -387,7 +389,6 @@ backend/google_credentials.json
 backend/token_calendar_readonly.json
 backend/token_calendar_events.json
 backend/calendar_auth_state.json
-backend/data/qmeet_memory.json
 ```
 
 ## Completed phase summary
@@ -407,31 +408,13 @@ Phase 8D  1024x600 tablet/kiosk layout polish
 Phase 8E  Raspberry Pi kiosk launcher/docs
 Phase 8F  Compact README/docs cleanup
 Phase 9A  Local memory/task persistence
-Phase 9G  Frontend architecture/refactor arc
-Phase 10  Backend-backed persistent memory
-Phase 11  Regression audit and hardening
-```
-
-## Phase 11 regression hardening log
-
-Recent fixes from the Phase 11 audit:
-
-```text
-- Backend memory writes are locked and atomic.
-- Task completion PATCH handling preserves completedAt when the field is omitted.
-- Duplicate close-memory toast switch case removed.
-- Chat stream SSE parsing is more robust and reports premature stream closure.
-- Chat failure message uses configured VITE_QMEET_API_URL instead of hardcoded localhost.
-- Spoken prompt submission immediately sets the orb into a thinking/routing state.
-- Google Calendar confirmed delete/edit refreshes connected calendar state before resolving cold-start targets.
-```
-
-## Phase 12 direction
-
-Phase 12 should add an active context/focus-session layer. The goal is to let QMeet know what the user is currently working on, not just respond to isolated prompts.
-
-See:
-
-```text
-docs/phase-12-context-engine.md
+Phase 9G  Refactor arc / architecture cleanup
+Phase 10  Backend persistent memory
+Phase 11  Regression hardening and bug discovery
+Phase 12A Backend activeSession persistence
+Phase 12B Frontend activeSession memory hook support
+Phase 12C Focus session commands
+Phase 12D Visible focus + backend focus routing + focus-aware chat context
+Phase 12E Focus-to-tasks and focus summary/save/end flows
+Phase 12F Documentation refresh
 ```

@@ -2,52 +2,66 @@
 
 QMeet is a voice-first AI tablet interface for the Chascii orb prototype. The frontend is a React/Vite app built around an interactive orb UI, and the backend is a FastAPI service for chat, command interpretation, web search, Google Calendar actions, and persistent memory.
 
-The current prototype target is a 1024x600 Raspberry Pi/tablet-style screen. Laptop development remains normal browser development, while Pi kiosk behavior is kept in the launcher script and Pi documentation.
+The current project direction is an on-screen orb assistant for a future AI tablet. The user should be able to speak naturally, have QMeet route tool actions locally when possible, and keep enough memory/context to feel continuous across a work session.
 
 ## Current status
 
-QMeet currently supports:
-
-- Text and browser voice input
-- Spoken responses through browser speech synthesis
-- OpenAI-backed chat streaming
-- Immediate orb feedback while spoken prompts are routed
-- Local exact command routing before normal chat
-- Backend fuzzy command interpretation for natural phrasing
-- Command/result toast cards
-- Web search result cards
-- Notes
-- Backend-backed persistent memory for tasks, notes, and recent actions
-- Memory import/export/reset controls
-- Google Calendar read/create/edit/delete with confirmation gates
-- 1024x600 tablet/kiosk layout polish
-- Raspberry Pi Chromium kiosk launcher in `scripts/pi-kiosk-start.sh`
-
-## Phase status
+QMeet now supports the core assistant loop:
 
 ```text
-Phase 1   Browser speech input
-Phase 2   Local UI commands
-Phase 3   Browser speech output
-Phase 4   Notes, local tools, settings
-Phase 5   Fuzzy command interpreter and confirmations
-Phase 6   Google Calendar read/create/delete/edit
-Phase 7   Web search and result cards
-Phase 8   Orb activity UI, tablet/kiosk polish, Pi launcher, docs cleanup
-Phase 9   Local memory/task persistence and frontend refactor work
-Phase 10  Backend-backed persistent memory
-Phase 11  Regression audit and bug-fix hardening
-Phase 12  Planned: active context / focus sessions
+speak or type -> local/fuzzy command routing -> tool action or streaming chat -> memory/context update
 ```
 
-Phase 12 is intended to add an active context layer so QMeet can understand the user's current work mode, goal, and session state. Future camera/video support should plug into that context layer as another perception source instead of being built as an isolated feature.
+Recent progress:
+
+```text
+Phase 10  Persistent backend memory
+Phase 11  Regression hardening and bug fixes
+Phase 12  Active Context / Focus Sessions
+```
+
+Phase 12 currently includes:
+
+```text
+- backend-persisted activeSession state
+- frontend memory-hook support for focus sessions
+- focus start/update/read/end commands
+- top-bar focus visibility
+- focus-aware chat context
+- turn focus into tasks
+- summarize/save/end focus sessions
+```
+
+## What works
+
+```text
+- Text input
+- Browser voice input
+- Spoken responses through browser speech synthesis
+- OpenAI-backed streaming chat
+- Local command parser before normal chat
+- Backend fuzzy command interpretation for natural language commands
+- Active Focus Sessions / context engine foundation
+- Focus-aware chat context
+- Focus-to-task generation
+- Focus summary notes
+- Web search result cards
+- Local notes with backend-backed persistence
+- Backend-backed memory/tasks/notes/recent actions/focus context
+- Memory import/export/reset controls
+- Google Calendar read/create/edit/delete with confirmations
+- 1024x600 tablet/kiosk layout polish
+- Raspberry Pi Chromium kiosk launcher in scripts/pi-kiosk-start.sh
+```
 
 ## Requirements
 
-- Node.js 20+ recommended
-- Python 3.11+ recommended
-- OpenAI API key
-- Google Calendar OAuth credentials, optional but needed for real calendar actions
+```text
+Node.js 20+ recommended
+Python 3.11+ recommended
+OpenAI API key
+Google Calendar OAuth credentials, optional but needed for real calendar actions
+```
 
 ## Run locally
 
@@ -70,6 +84,7 @@ OPENAI_API_KEY=your_openai_key_here
 OPENAI_MODEL=gpt-4.1-mini
 OPENAI_MAX_OUTPUT_TOKENS=300
 FRONTEND_ORIGIN=http://localhost:5173
+
 GOOGLE_CALENDAR_ENABLED=true
 GOOGLE_CALENDAR_WRITE_ENABLED=true
 GOOGLE_CALENDAR_CREDENTIALS_FILE=google_credentials.json
@@ -113,13 +128,13 @@ http://localhost:5173
 
 ## Test commands
 
+Build and basic backend checks:
+
 ```powershell
 npm run build
 Invoke-RestMethod http://localhost:8000/api/status
 Invoke-RestMethod http://localhost:8000/api/calendar/status
 Invoke-RestMethod "http://localhost:8000/api/calendar/events?view=today"
-Invoke-RestMethod http://localhost:8000/api/memory/status
-Invoke-RestMethod http://localhost:8000/api/memory/context
 ```
 
 Useful QMeet prompts:
@@ -139,14 +154,18 @@ delete the 12:00 PM event tomorrow
 go home
 ```
 
-Phase 12 planned prompts:
+Focus/session prompts:
 
 ```text
-start focus session on QMeet Phase 12
-set my goal to design camera support
-what is my current focus
-summarize this session
-save this session to memory
+start a coding focus session for QMeet Phase 12
+set my goal to polish the focus summary flow
+what is my focus
+what should I do next
+turn this focus into tasks
+make tasks for my current goal
+summarize this focus
+save this focus as a note
+end and summarize this focus
 end focus session
 ```
 
@@ -166,46 +185,39 @@ chmod +x scripts/pi-kiosk-start.sh
 QMEET_URL=http://YOUR_LAPTOP_IP:5173 ./scripts/pi-kiosk-start.sh
 ```
 
-For Pi testing against a laptop-hosted backend, make sure the frontend `.env.local` uses the laptop LAN IP, not `localhost`:
+## Memory and storage
 
-```env
-VITE_QMEET_API_URL=http://YOUR_LAPTOP_IP:8000
-```
-
-Restart Vite after changing `.env.local`.
-
-## Persistent memory
-
-QMeet's primary memory store is backend-local JSON:
+Backend memory is primary. The backend stores memory in:
 
 ```text
 backend/data/qmeet_memory.json
 ```
 
-It currently stores:
+Current backend memory categories:
 
 ```text
 tasks
 notes
 recentActions
+activeSession
 ```
 
-The frontend still keeps browser `localStorage` fallback copies so the UI can recover gracefully if the backend is unavailable. Backend memory is treated as primary after it has been initialized, including the case where the backend memory is intentionally empty.
+The frontend keeps browser fallback copies so the tablet UI remains resilient during backend outages or first-run migration.
 
-## Local browser storage
-
-These browser-local keys are still used for fallback state and UI preferences:
+Important frontend storage keys:
 
 ```text
 qmeet-notes
 qmeet-calendar-events
 qmeet-memory-tasks
 qmeet-recent-actions
+qmeet-active-session
+qmeet-active-session-live
 qmeet-voice-output-enabled
 qmeet-speech-rate
 ```
 
-Clearing site data or switching browsers/devices can affect fallback state and preferences. Google Calendar OAuth tokens are backend-local files, not browser storage.
+Google Calendar OAuth tokens are backend-local files, not browser storage.
 
 ## Do not commit secrets
 
@@ -218,26 +230,28 @@ backend/google_credentials.json
 backend/token_calendar_readonly.json
 backend/token_calendar_events.json
 backend/calendar_auth_state.json
-backend/data/qmeet_memory.json
 ```
 
 ## More docs
 
-- `docs/development.md` - setup details, API endpoints, phase history, testing, troubleshooting
-- `docs/architecture.md` - current frontend/backend architecture snapshot
-- `docs/pi-kiosk.md` - Raspberry Pi kiosk launch/autostart notes
-- `docs/phase-12-context-engine.md` - planned active context/focus-session design
+```text
+docs/development.md              setup details, API endpoints, phase notes, troubleshooting
+docs/architecture.md             current frontend/backend architecture snapshot
+docs/phase-12-context-engine.md  Active Context / Focus Sessions design and progress
+docs/pi-kiosk.md                 Raspberry Pi kiosk launch/autostart notes
+```
 
 ## Project structure
 
 ```text
-repo root
+QMeet1/
 ├─ src/app/
 │  ├─ App.tsx
 │  ├─ api.ts
 │  ├─ commands.ts
 │  ├─ types.ts
 │  ├─ components/
+│  │  └─ TopStatusBar.tsx
 │  ├─ commandHandlers/
 │  │  ├─ calendar.ts
 │  │  ├─ memory.ts
@@ -283,6 +297,5 @@ repo root
 │     ├─ memory_state.py
 │     └─ search.py
 ├─ docs/
-├─ guidelines/
 └─ scripts/
 ```

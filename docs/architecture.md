@@ -1,6 +1,6 @@
 # QMeet Architecture Snapshot
 
-This document describes the current QMeet architecture after Phase 10 persistent memory and the Phase 11 regression-audit hardening pass. Phase 12 is planned as an active context/focus-session layer.
+This document describes the current QMeet architecture after Phase 12E. QMeet is a voice-first React/FastAPI prototype centered on an on-screen orb assistant, persistent memory, Google Calendar, web search, and Active Context / Focus Sessions.
 
 ## High-level architecture
 
@@ -10,17 +10,18 @@ User
 │
 Frontend
 ├─ Orb and chat interface
-├─ local exact command parser
-├─ fuzzy command interpreter client
+├─ exact command parser
+├─ backend fuzzy command interpreter client
 ├─ panels for notes, memory, calendar, search, settings, status, menu
+├─ Active Focus Session display and state bridge
 ├─ hooks for backend status, memory, search, calendar, speech, chat streaming
-├─ command/result toast system
 └─ typed API client for FastAPI
 │
 Backend
 ├─ FastAPI app
 ├─ feature routers
 ├─ OpenAI chat/search/command interpreter service
+├─ deterministic focus command routing helpers
 ├─ Google Calendar service
 └─ local JSON memory store
 │
@@ -31,14 +32,14 @@ External services
 
 ## Frontend responsibilities
 
-The frontend owns the tablet user experience. It handles visual state, orb state, panel state, speech recognition, speech synthesis, streaming response display, local command execution, confirmation gates, and fallback browser state.
+The frontend owns the tablet user experience. It handles visual state, orb state, panel state, speech recognition, speech synthesis, streaming response display, local command execution, focus-session state display, and browser fallback memory.
 
 ```text
 src/app/
 ├─ App.tsx
 │  └─ top-level orchestration and remaining command flow
 ├─ api.ts
-│  └─ typed client for FastAPI endpoints and chat SSE parsing
+│  └─ typed client for FastAPI endpoints
 ├─ commands.ts
 │  └─ exact local command parser
 ├─ types.ts
@@ -66,11 +67,11 @@ useResultToasts
 
 useMemoryContext
 ├─ loads backend memory context
-├─ syncs tasks, notes, and recent actions
+├─ syncs tasks, notes, recent actions, and activeSession
 ├─ keeps localStorage fallback active
-├─ prevents stale fallback state from overwriting initialized backend memory
 ├─ handles memory import/export/reset controls
-└─ exposes memory and note actions
+├─ listens for active-session state events
+└─ exposes memory, note, task, and focus-session actions
 
 useSearchController
 ├─ owns search query/result/loading/error state
@@ -81,8 +82,7 @@ useCalendarController
 ├─ owns Google Calendar state/status/error/loading
 ├─ handles Google auth start/reset
 ├─ reads Google Calendar events
-├─ creates/edits/deletes calendar events
-└─ refreshes connected Google Calendar state before cold-start edit/delete target resolution
+└─ creates/edits/deletes calendar events
 
 useSpeechOutput
 ├─ owns voice output enabled state
@@ -94,8 +94,8 @@ useChatStreamController
 ├─ owns chat messages
 ├─ owns streaming abort state
 ├─ sends normal streaming chat
-├─ cancels active responses
-└─ surfaces backend/SSE errors through the chat UI
+├─ injects neutral active-focus context into chat
+└─ cancels active responses
 
 useSpeechRecognitionController
 ├─ starts browser speech recognition
@@ -113,11 +113,13 @@ QMeet has two command layers.
 Exact parser
 └─ src/app/commands.ts
    ├─ fast local command matching
-   └─ handles known command phrases directly
+   ├─ handles known command phrases directly
+   └─ catches focus/session/task/note/search/calendar/voice UI commands
 
 Fuzzy interpreter
 └─ backend /api/command/interpret
-   ├─ OpenAI or mock interpreter
+   ├─ deterministic focus routing helpers for common focus phrases
+   ├─ OpenAI or mock interpreter fallback
    ├─ maps fuzzy natural language to exact frontend commands
    └─ returns confidence and frontendCommand
 ```
@@ -126,27 +128,56 @@ Execution is split into command handler files:
 
 ```text
 src/app/commandHandlers/
-├─ notes.ts
+├─ calendar.ts
 ├─ memory.ts
+├─ notes.ts
 ├─ search.ts
-├─ voice.ts
-└─ calendar.ts
+└─ voice.ts
 ```
 
-`App.tsx` still owns the main orchestration path:
+`App.tsx` still owns the main orchestration path: command detection, confirmation prompts, destructive-command safety checks, feature-handler dispatch, and normal-chat fallback.
+
+## Active Context / Focus Session flow
+
+Active Focus Sessions are the Phase 12 context engine foundation.
 
 ```text
-pending confirmation handling
-cancel handling
-exact local command parsing
-destructive-command confirmation checks
-feature-specific command handlers
-panel commands
-fuzzy backend command interpretation
-normal chat fallback
+User phrase
+├─ start/update/read/end focus command
+├─ focus-to-tasks command
+├─ focus summary/save/end command
+└─ normal chat prompt referring to current focus
+
+Frontend parser/backend router
+└─ maps phrase to local frontend command when it should mutate memory
+
+memory command handler
+├─ writes activeSession/tasks/notes through useMemoryContext and API helpers
+├─ mirrors activeSession into browser storage for immediate UI readback
+└─ opens Memory or Notes depending on the result
+
+TopStatusBar / Memory panel
+└─ display current focus state
+
+Chat stream hook
+└─ includes neutral active-focus context for normal chat prompts
 ```
 
-For spoken prompts, the orb should enter a thinking/routing state as soon as the final transcript is submitted. It should not sit in Ready while backend command interpretation or chat stream startup is pending.
+Active session shape:
+
+```ts
+activeSession: {
+  id: string;
+  title: string;
+  mode: 'general' | 'coding' | 'meeting' | 'planning' | 'research' | 'personal';
+  goal: string;
+  startedAt: string;
+  updatedAt: string;
+  pinnedNoteIds: string[];
+  linkedTaskIds: string[];
+  summary?: string | null;
+}
+```
 
 ## Backend responsibilities
 
@@ -177,148 +208,128 @@ backend/app/
 
 ```text
 Core
-├─ GET    /health
-└─ GET    /api/status
+├─ GET /health
+└─ GET /api/status
 
 Chat
-├─ POST   /api/chat
-├─ POST   /api/chat/stream
-└─ POST   /api/reset
+├─ POST /api/chat
+├─ POST /api/chat/stream
+└─ POST /api/reset
 
 Command interpreter
-└─ POST   /api/command/interpret
+└─ POST /api/command/interpret
 
 Search
-└─ POST   /api/search
+└─ POST /api/search
 
 Calendar
-├─ GET    /api/calendar/status
-├─ POST   /api/calendar/auth/start
-├─ GET    /api/calendar/auth/callback
-├─ POST   /api/calendar/auth/reset
-├─ GET    /api/calendar/events
-├─ POST   /api/calendar/events
-├─ PATCH  /api/calendar/events/{event_id}
+├─ GET /api/calendar/status
+├─ POST /api/calendar/auth/start
+├─ GET /api/calendar/auth/callback
+├─ POST /api/calendar/auth/reset
+├─ GET /api/calendar/events
+├─ POST /api/calendar/events
+├─ PATCH /api/calendar/events/{event_id}
 └─ DELETE /api/calendar/events/{event_id}
 
-Memory state
-└─ GET    /api/memory/initialization
+Memory initialization
+└─ GET /api/memory/initialization
 
-Memory
-├─ GET    /api/memory/status
-├─ GET    /api/memory/context
-├─ PUT    /api/memory/context
-├─ GET    /api/memory/export
-├─ POST   /api/memory/import
-├─ POST   /api/memory/clear
-├─ GET    /api/memory/tasks
-├─ PUT    /api/memory/tasks
-├─ POST   /api/memory/tasks
-├─ PATCH  /api/memory/tasks/{task_id}
+Memory context
+├─ GET /api/memory/status
+├─ GET /api/memory/context
+├─ PUT /api/memory/context
+├─ GET /api/memory/export
+├─ POST /api/memory/import
+└─ POST /api/memory/clear
+
+Active session
+├─ GET /api/memory/session
+├─ PUT /api/memory/session
+├─ PATCH /api/memory/session
+└─ DELETE /api/memory/session
+
+Tasks
+├─ GET /api/memory/tasks
+├─ PUT /api/memory/tasks
+├─ POST /api/memory/tasks
+├─ PATCH /api/memory/tasks/{task_id}
 ├─ DELETE /api/memory/tasks/{task_id}
-├─ POST   /api/memory/tasks/clear-completed
-├─ GET    /api/memory/notes
-├─ PUT    /api/memory/notes
-├─ POST   /api/memory/notes
+└─ POST /api/memory/tasks/clear-completed
+
+Notes
+├─ GET /api/memory/notes
+├─ PUT /api/memory/notes
+├─ POST /api/memory/notes
 ├─ DELETE /api/memory/notes/{note_id}
-├─ POST   /api/memory/notes/clear
-├─ GET    /api/memory/actions
-├─ PUT    /api/memory/actions
-├─ POST   /api/memory/actions
+└─ POST /api/memory/notes/clear
+
+Recent actions
+├─ GET /api/memory/actions
+├─ PUT /api/memory/actions
+├─ POST /api/memory/actions
 ├─ DELETE /api/memory/actions/{action_id}
-└─ POST   /api/memory/actions/clear
+└─ POST /api/memory/actions/clear
 ```
 
 ## Memory model
 
-The backend memory store keeps three current categories:
+The backend memory store keeps four main categories:
 
 ```text
 backend/data/qmeet_memory.json
 ├─ tasks
 ├─ notes
-└─ recentActions
+├─ recentActions
+└─ activeSession
 ```
 
-The frontend treats backend memory as primary and browser localStorage as fallback. This lets the Raspberry Pi frontend and laptop frontend share the same backend memory when pointed at the same FastAPI server.
+The frontend treats backend memory as primary and browser localStorage/sessionStorage as fallback. This lets the Raspberry Pi frontend and laptop frontend share the same backend memory when pointed at the same FastAPI server.
 
-Important Phase 10/11 rules:
+Important memory notes:
 
 ```text
-- Backend memory initialization state is checked separately from memory contents.
-- Empty backend arrays can be intentional saved state.
-- Browser fallback migration should only happen when backend memory has not been initialized.
-- Backend writes should be atomic and locked within the FastAPI process.
-- Partial task PATCH operations should preserve omitted fields.
+- memory initialization status prevents stale browser fallback from overwriting an intentionally empty backend
+- JSON writes use a temp-file/replace flow
+- backend memory operations are guarded by an in-process lock
+- title-only task updates preserve completedAt state
+- reset tasks clears activeSession.linkedTaskIds
+- reset notes clears activeSession.pinnedNoteIds
 ```
 
-## Chat streaming model
+## Streaming chat model
 
-Normal chat uses `/api/chat/stream` with server-sent events.
+The frontend chat stream parser handles server-sent events from `/api/chat/stream`.
 
-Expected event types:
+Current behavior:
 
 ```text
-start
-chunk
-done
-error
+- normalizes VITE_QMEET_API_URL
+- supports LF and CRLF event boundaries
+- supports multi-line data fields
+- treats done/error as terminal events
+- reports stream-close-before-done as an explicit error
+- cancellation uses AbortController
 ```
 
-The frontend SSE parser should tolerate:
+When an active focus exists, the chat stream hook adds a neutral context block so prompts like `how should I accomplish my focus` can resolve references to the active focus without mutating focus state.
 
-```text
-- LF and CRLF line endings
-- multiple data: lines
-- final buffered events without a trailing blank line
-- explicit terminal done/error events
-```
+## Calendar hardening
 
-If a stream closes before `done` or `error`, the frontend should surface a clear stream-closed error and reset active response state.
-
-## Google Calendar model
-
-QMeet supports both local fallback calendar events and connected Google Calendar events.
-
-Calendar writes are guarded by confirmations where appropriate, especially delete/edit operations. For connected Google Calendar, confirmed cold-start edit/delete flows should refresh Google Calendar and resolve the target from the fresh result instead of relying only on React state that may not have committed yet.
-
-## Phase 12 planned architecture
-
-Phase 12 should add active context/focus sessions. The context engine should eventually sit above individual tools:
-
-```text
-Active Context / Focus Session
-├─ current mode
-├─ current title
-├─ active goal
-├─ linked tasks
-├─ linked notes
-├─ recent actions
-├─ session summary
-└─ future perception inputs
-   └─ camera/video observations
-```
-
-This should become the place where future video camera support plugs in. The camera should feed observations into context rather than behaving like a standalone webcam feature.
-
-See:
-
-```text
-docs/phase-12-context-engine.md
-```
+Calendar delete/edit flows refresh Google Calendar directly when connected so cold-start state does not block confirmed actions. The confirmed delete flow resolves its target from fresh calendar data instead of relying only on a possibly stale React state commit.
 
 ## Deployment notes
 
-The app is still a prototype. Likely future deployment improvements:
+The app is still a prototype. Likely next improvements:
 
 ```text
+├─ Phase 13 proactive focus suggestions
+├─ camera/video as a future context input
 ├─ environment validation on backend startup
 ├─ production CORS tightening
 ├─ more robust memory storage than local JSON
 ├─ Pi startup service hardening
 ├─ frontend error boundary
 ├─ automated endpoint tests
-├─ calendar-aware chat context
-├─ active context/focus-session persistence
-└─ camera/video perception pipeline
+└─ calendar-aware chat context
 ```
