@@ -209,6 +209,58 @@ def _focus_command_intent(message: str) -> dict[str, Any] | None:
             reason="Backend focus interpreter matched a focus summary command.",
         )
 
+    focus_history_patterns = [
+        r"^(?:please\s+)?(?:show|list|read|display|open)\s+(?:my\s+|our\s+)?(?:recent\s+)?(?:focus\s+)?(?:history|sessions|focus\s+sessions)$",
+        r"^(?:please\s+)?(?:show|list|read|display|open)\s+(?:my\s+|our\s+)?recent\s+(?:focuses|focus\s+sessions|sessions)$",
+        r"^(?:please\s+)?(?:what\s+(?:are|were)\s+)?(?:my\s+|our\s+)?recent\s+(?:focuses|focus\s+sessions|sessions)(?:\s+again)?$",
+        r"^(?:focus|session)\s+history$",
+        r"^(?:recent\s+focus|recent\s+focuses|recent\s+sessions|recent\s+focus\s+sessions)$",
+        r"^(?:please\s+)?what\s+(?:have|were)\s+(?:i|we)\s+been\s+working\s+on(?:\s+recently)?$",
+    ]
+    if _first_match(focus_history_patterns, lowered):
+        return _command_response(
+            action="read_focus_history",
+            frontend_command="show recent focus sessions",
+            confidence=0.98,
+            reason="Backend focus interpreter matched a recent focus history command.",
+        )
+
+    last_focus_patterns = [
+        r"^(?:please\s+)?(?:what\s+was|what\s+were|show|read|tell\s+me\s+about|display)\s+(?:my\s+|our\s+)?(?:last|latest|previous|most\s+recent)\s+(?:focus|focus\s+session|session)$",
+        r"^(?:please\s+)?(?:what\s+did\s+(?:i|we)\s+focus\s+on\s+last|what\s+was\s+(?:i|we)\s+focused\s+on\s+last)$",
+        r"^(?:please\s+)?(?:what\s+was\s+(?:i|we)\s+working\s+on\s+(?:earlier|before|previously|last))$",
+        r"^(?:last|latest|previous|most\s+recent)\s+(?:focus|focus\s+session|session)$",
+    ]
+    if _first_match(last_focus_patterns, lowered):
+        return _command_response(
+            action="read_last_focus_session",
+            frontend_command="what was my last focus",
+            confidence=0.98,
+            reason="Backend focus interpreter matched a last-focus recall command.",
+        )
+
+    resume_focus_patterns = [
+        r"^(?:please\s+)?(?:resume|restart|continue|reopen|restore)\s+(?:my\s+|our\s+|the\s+)?(?:last|latest|previous|most\s+recent)\s+(?:(general|coding|code|development|dev|programming|meeting|planning|research|personal)\s+)?(?:focus|focus\s+session|session)$",
+        r"^(?:please\s+)?(?:start|open)\s+(?:my\s+|our\s+|the\s+)?(?:last|latest|previous|most\s+recent)\s+(?:(general|coding|code|development|dev|programming|meeting|planning|research|personal)\s+)?(?:focus|focus\s+session|session)\s+(?:again|back\s+up)$",
+        r"^(?:please\s+)?(?:resume|restart|continue|reopen|restore)\s+(?:(general|coding|code|development|dev|programming|meeting|planning|research|personal)\s+)(?:focus|focus\s+session|session)$",
+    ]
+    resume_match = _first_match(resume_focus_patterns, text)
+    if resume_match:
+        mode = _mode_from_text(resume_match.group(1) or "") if resume_match.lastindex else ""
+        if mode:
+            frontend_command = f"resume last {mode} focus"
+            payload = {"mode": mode}
+        else:
+            frontend_command = "resume last focus"
+            payload = {}
+        return _command_response(
+            action="resume_last_focus_session",
+            frontend_command=frontend_command,
+            confidence=0.98,
+            reason="Backend focus interpreter matched a resume-focus command.",
+            payload=payload,
+        )
+
     read_patterns = [
         r"^(?:what(?:'s| is)|what is)\s+(?:the\s+|my\s+|our\s+)?(?:current\s+|active\s+)?(?:focus|focus session|active session)$",
         r"^(?:what am i focused on(?: right now)?|what are we focused on(?: right now)?|what are we focusing on(?: right now)?)$",

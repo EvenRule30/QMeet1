@@ -25,6 +25,9 @@ export type LocalCommand =
   | 'summarize-focus-session'
   | 'save-focus-summary'
   | 'end-focus-with-summary'
+  | 'read-last-focus-session'
+  | 'read-focus-history'
+  | 'resume-last-focus-session'
   | 'remember-task'
   | 'mark-task-done'
   | 'delete-last-task'
@@ -95,7 +98,7 @@ export interface FocusSessionCommandPayload {
   forceEnd?: boolean;
 }
 
-// Phase 13C-v1: end-of-focus guard for unsaved session progress.
+// Phase 13E-v1: recent focus recall and resume commands.
 
 export interface CommandMatch {
   command: LocalCommand;
@@ -140,6 +143,9 @@ const CONFIRMATIONS: Record<LocalCommand, string> = {
   'summarize-focus-session': 'Summarizing focus session.',
   'save-focus-summary': 'Saving focus summary.',
   'end-focus-with-summary': 'Ending focus session with summary.',
+  'read-last-focus-session': 'Reading last focus session.',
+  'read-focus-history': 'Reading recent focus sessions.',
+  'resume-last-focus-session': 'Resuming last focus session.',
   'remember-task': 'Saved task.',
   'mark-task-done': 'Marked task done.',
   'delete-last-task': 'Deleted the last task.',
@@ -664,7 +670,10 @@ type FocusSessionIntent = {
     | 'focus-to-tasks'
     | 'summarize-focus-session'
     | 'save-focus-summary'
-    | 'end-focus-with-summary';
+    | 'end-focus-with-summary'
+    | 'read-last-focus-session'
+    | 'read-focus-history'
+    | 'resume-last-focus-session';
   focusSession?: FocusSessionCommandPayload;
   confirmation?: string;
 };
@@ -824,6 +833,75 @@ function extractFocusSessionIntent(normalized: string): FocusSessionIntent | nul
       undefined,
       'Summarizing focus session.',
     );
+  }
+
+  const focusHistoryPatterns = [
+    /^(?:please\s+)?(?:show|list|read|display|open)\s+(?:my\s+|our\s+)?(?:recent\s+)?(?:focus\s+)?(?:history|sessions|focus\s+sessions)$/i,
+    /^(?:please\s+)?(?:show|list|read|display|open)\s+(?:my\s+|our\s+)?recent\s+(?:focuses|focus\s+sessions|sessions)$/i,
+    /^(?:please\s+)?(?:what\s+(?:are|were)\s+)?(?:my\s+|our\s+)?recent\s+(?:focuses|focus\s+sessions|sessions)(?:\s+again)?$/i,
+    /^(?:focus|session)\s+history$/i,
+    /^(?:recent\s+focus|recent\s+focuses|recent\s+sessions|recent\s+focus\s+sessions)$/i,
+    /^(?:please\s+)?what\s+(?:have|were)\s+(?:i|we)\s+been\s+working\s+on(?:\s+recently)?$/i,
+  ];
+  if (focusHistoryPatterns.some((pattern) => pattern.test(focusText))) {
+    return makeFocusSessionIntent(
+      'read-focus-history',
+      undefined,
+      'Reading recent focus sessions.',
+    );
+  }
+
+  const lastFocusPatterns = [
+    /^(?:please\s+)?(?:what\s+was|what\s+were|show|read|tell\s+me\s+about|display)\s+(?:my\s+|our\s+)?(?:last|latest|previous|most\s+recent)\s+(?:focus|focus\s+session|session)$/i,
+    /^(?:please\s+)?(?:what\s+did\s+(?:i|we)\s+focus\s+on\s+last|what\s+was\s+(?:i|we)\s+focused\s+on\s+last)$/i,
+    /^(?:please\s+)?(?:what\s+was\s+(?:i|we)\s+working\s+on\s+(?:earlier|before|previously|last))$/i,
+    /^(?:last|latest|previous|most\s+recent)\s+(?:focus|focus\s+session|session)$/i,
+  ];
+  if (lastFocusPatterns.some((pattern) => pattern.test(focusText))) {
+    return makeFocusSessionIntent(
+      'read-last-focus-session',
+      undefined,
+      'Reading last focus session.',
+    );
+  }
+
+  const resumeFocusPatterns: Array<{
+    pattern: RegExp;
+    read: (match: RegExpMatchArray) => FocusSessionCommandPayload | undefined;
+  }> = [
+    {
+      pattern: /^(?:please\s+)?(?:resume|restart|continue|reopen|restore)\s+(?:my\s+|our\s+|the\s+)?(?:last|latest|previous|most\s+recent)\s+(?:(general|coding|code|development|dev|programming|meeting|planning|research|personal)\s+)?(?:focus|focus\s+session|session)$/i,
+      read: (match) => {
+        const mode = normalizeFocusSessionMode(match[1]);
+        return mode ? { mode } : undefined;
+      },
+    },
+    {
+      pattern: /^(?:please\s+)?(?:start|open)\s+(?:my\s+|our\s+|the\s+)?(?:last|latest|previous|most\s+recent)\s+(?:(general|coding|code|development|dev|programming|meeting|planning|research|personal)\s+)?(?:focus|focus\s+session|session)\s+(?:again|back\s+up)$/i,
+      read: (match) => {
+        const mode = normalizeFocusSessionMode(match[1]);
+        return mode ? { mode } : undefined;
+      },
+    },
+    {
+      pattern: /^(?:please\s+)?(?:resume|restart|continue|reopen|restore)\s+(?:(general|coding|code|development|dev|programming|meeting|planning|research|personal)\s+)(?:focus|focus\s+session|session)$/i,
+      read: (match) => {
+        const mode = normalizeFocusSessionMode(match[1]);
+        return mode ? { mode } : undefined;
+      },
+    },
+  ];
+  for (const { pattern, read } of resumeFocusPatterns) {
+    const match = focusText.match(pattern);
+    if (match) {
+      const payload = read(match);
+      const modeText = payload?.mode ? `${payload.mode} ` : '';
+      return makeFocusSessionIntent(
+        'resume-last-focus-session',
+        payload,
+        `Resuming last ${modeText}focus session.`,
+      );
+    }
   }
 
   const readPatterns = [

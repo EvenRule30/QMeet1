@@ -1,4 +1,4 @@
-import type { ActivePanel, ActiveSession, MemorySessionMode, MemoryTask } from '../types';
+import type { ActivePanel, ActiveSession, MemorySessionMode, MemoryTask, RecentFocusSession } from '../types';
 import type { CommandMatch, FocusSessionCommandPayload } from '../commands';
 import {
   clearActiveSession,
@@ -29,7 +29,8 @@ const ACTIVE_SESSION_STATE_EVENT = 'qmeet-active-session-state';
 const SAVE_FOCUS_SUMMARY_NOTE_EVENT = 'qmeet-save-focus-summary-note';
 const MEMORY_TASKS_STORAGE_KEY = 'qmeet-memory-tasks';
 const RECENT_ACTIONS_STORAGE_KEY = 'qmeet-recent-actions';
-const ACTIVE_SESSION_COMMAND_HANDLER_MARKER = 'phase13c-v1-end-focus-guard';
+const RECENT_FOCUS_SESSIONS_STORAGE_KEY = 'qmeet-recent-focus-sessions';
+const ACTIVE_SESSION_COMMAND_HANDLER_MARKER = 'phase13e-v1-focus-history-recall';
 
 function createId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -106,6 +107,137 @@ function readStoredActiveSession(): ActiveSession | null {
   return null;
 }
 
+
+function normalizeRecentFocusSession(value: unknown): RecentFocusSession | null {
+  if (!value || typeof value !== 'object') return null;
+
+  const candidate = value as Partial<RecentFocusSession>;
+  if (typeof candidate.title !== 'string' || !candidate.title.trim()) {
+    return null;
+  }
+
+  const now = new Date().toISOString();
+
+  return {
+    id:
+      typeof candidate.id === 'string' && candidate.id.trim()
+        ? candidate.id
+        : createId('recent-session'),
+    title: candidate.title.trim(),
+    mode: isMemorySessionMode(candidate.mode) ? candidate.mode : 'general',
+    goal: typeof candidate.goal === 'string' ? candidate.goal : '',
+    startedAt:
+      typeof candidate.startedAt === 'string' ? candidate.startedAt : now,
+    endedAt: typeof candidate.endedAt === 'string' ? candidate.endedAt : now,
+    pinnedNoteIds: readStringArray(candidate.pinnedNoteIds),
+    linkedTaskIds: readStringArray(candidate.linkedTaskIds),
+    ...(typeof candidate.summary === 'string'
+      ? { summary: candidate.summary }
+      : candidate.summary === null
+        ? { summary: null }
+        : {}),
+    ...(typeof candidate.summaryNoteId === 'string'
+      ? { summaryNoteId: candidate.summaryNoteId }
+      : candidate.summaryNoteId === null
+        ? { summaryNoteId: null }
+        : {}),
+  };
+}
+
+function readStoredRecentFocusSessions(): RecentFocusSession[] {
+  if (typeof window === 'undefined') return [];
+
+  try {
+    const rawSessions = window.localStorage.getItem(RECENT_FOCUS_SESSIONS_STORAGE_KEY);
+    if (!rawSessions) return [];
+    const parsedSessions = JSON.parse(rawSessions);
+    if (!Array.isArray(parsedSessions)) return [];
+
+    return parsedSessions
+      .map(normalizeRecentFocusSession)
+      .filter((session): session is RecentFocusSession => session !== null)
+      .sort((a, b) => {
+        const bTime = new Date(b.endedAt).getTime();
+        const aTime = new Date(a.endedAt).getTime();
+        return (Number.isNaN(bTime) ? 0 : bTime) - (Number.isNaN(aTime) ? 0 : aTime);
+      });
+  } catch {
+    return [];
+  }
+}
+
+function formatFocusHistoryTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'unknown time';
+
+  return date.toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function selectRecentFocusSession(mode?: MemorySessionMode): RecentFocusSession | null {
+  const sessions = readStoredRecentFocusSessions();
+  if (!mode) return sessions[0] ?? null;
+
+  return sessions.find((session) => session.mode === mode) ?? null;
+}
+
+function describeRecentFocusSession(
+  session: RecentFocusSession | null,
+  label = 'Last focus',
+): string {
+  if (!session) {
+    return 'No recent focus sessions have been saved yet.';
+  }
+
+  const goalText = session.goal ? ` Goal: ${session.goal}.` : ' No goal was set.';
+  const taskText = session.linkedTaskIds.length > 0
+    ? ` ${session.linkedTaskIds.length} linked task${session.linkedTaskIds.length === 1 ? '' : 's'}.`
+    : '';
+  const noteText = session.pinnedNoteIds.length > 0 || session.summaryNoteId
+    ? ' Summary note saved.'
+    : '';
+
+  return `${label}: ${session.title}. Mode: ${session.mode}. Ended: ${formatFocusHistoryTime(session.endedAt)}.${goalText}${taskText}${noteText}`;
+}
+
+function describeRecentFocusSessions(sessions: RecentFocusSession[]): string {
+  if (sessions.length === 0) {
+    return 'No recent focus sessions have been saved yet.';
+  }
+
+  const sessionLines = sessions.slice(0, 5).map((session, index) => {
+    const goalText = session.goal ? ` Goal: ${session.goal}.` : '';
+    const taskText = session.linkedTaskIds.length > 0
+      ? ` ${session.linkedTaskIds.length} task${session.linkedTaskIds.length === 1 ? '' : 's'}.`
+      : '';
+    const noteText = session.pinnedNoteIds.length > 0 || session.summaryNoteId
+      ? ' Saved note.'
+      : '';
+
+    return `${index + 1}. ${session.title} (${session.mode}) ended ${formatFocusHistoryTime(session.endedAt)}.${goalText}${taskText}${noteText}`;
+  });
+
+  return `Recent focus sessions: ${sessionLines.join(' ')}`;
+}
+
+function createActiveSessionFromRecent(session: RecentFocusSession): ActiveSession {
+  const now = new Date().toISOString();
+
+  return {
+    id: createId('session'),
+    title: session.title,
+    mode: session.mode,
+    goal: session.goal,
+    startedAt: now,
+    updatedAt: now,
+    pinnedNoteIds: [...session.pinnedNoteIds],
+    linkedTaskIds: [...session.linkedTaskIds],
+  };
+}
 
 function readStoredMemoryTasks(): MemoryTask[] {
   if (typeof window === 'undefined') return [];
@@ -591,6 +723,56 @@ export function handleMemoryCommand(
     case 'close-memory':
       deps.closePanel();
       return { handled: true };
+
+    case 'read-last-focus-session': {
+      deps.setActivePanel('memory');
+      const mode = commandMatch.focusSession?.mode;
+      const recentSession = selectRecentFocusSession(mode);
+      const label = mode ? `Last ${mode} focus` : 'Last focus';
+
+      return {
+        handled: true,
+        confirmationContent: describeRecentFocusSession(recentSession, label),
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+
+    case 'read-focus-history': {
+      deps.setActivePanel('memory');
+      const recentSessions = readStoredRecentFocusSessions();
+
+      return {
+        handled: true,
+        confirmationContent: describeRecentFocusSessions(recentSessions),
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+
+    case 'resume-last-focus-session': {
+      deps.setActivePanel('memory');
+      const mode = commandMatch.focusSession?.mode;
+      const recentSession = selectRecentFocusSession(mode);
+
+      if (!recentSession) {
+        return {
+          handled: true,
+          confirmationContent: mode
+            ? `No recent ${mode} focus session was found.`
+            : 'No recent focus session was found to resume.',
+          shouldSpeakConfirmation: deps.voiceOutputEnabled,
+        };
+      }
+
+      const resumedSession = createActiveSessionFromRecent(recentSession);
+      applyActiveSession(resumedSession);
+      persistActiveSessionToBackend(resumedSession);
+
+      return {
+        handled: true,
+        confirmationContent: `Resumed ${resumedSession.mode} focus session: ${resumedSession.title}.${resumedSession.goal ? ` Goal: ${resumedSession.goal}.` : ''}`,
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
 
     case 'read-focus-session': {
       deps.setActivePanel('memory');
