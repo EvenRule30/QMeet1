@@ -15,6 +15,8 @@ import {
   RecentAction,
   RecentFocusSession,
   SearchResponse,
+  VisualContext,
+  VisualObservation,
 } from '../types';
 import {
   clearAllMemoryContext,
@@ -60,6 +62,7 @@ const RECENT_ACTIONS_STORAGE_KEY = 'qmeet-recent-actions';
 const RECENT_FOCUS_SESSIONS_STORAGE_KEY = 'qmeet-recent-focus-sessions';
 const NOTES_STORAGE_KEY = 'qmeet-notes';
 const ACTIVE_SESSION_STORAGE_KEY = 'qmeet-active-session';
+const VISUAL_CONTEXT_STORAGE_KEY = 'qmeet-visual-context';
 
 function createId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -156,6 +159,76 @@ function recentFocusSessionsAreSame(
   first: RecentFocusSession[],
   second: RecentFocusSession[],
 ): boolean {
+  return JSON.stringify(first) === JSON.stringify(second);
+}
+
+
+function createEmptyVisualContext(): VisualContext {
+  return {
+    enabled: false,
+    lastObservation: null,
+    recentObservations: [],
+  };
+}
+
+function isVisualContextSource(value: unknown): value is VisualObservation['source'] {
+  return value === 'camera' || value === 'screen' || value === 'manual';
+}
+
+function normalizeVisualObservation(value: unknown): VisualObservation | null {
+  if (!value || typeof value !== 'object') return null;
+
+  const candidate = value as Partial<VisualObservation>;
+  if (typeof candidate.summary !== 'string' || !candidate.summary.trim()) {
+    return null;
+  }
+
+  const confidence =
+    typeof candidate.confidence === 'number' && Number.isFinite(candidate.confidence)
+      ? Math.max(0, Math.min(1, candidate.confidence))
+      : null;
+
+  return {
+    id:
+      typeof candidate.id === 'string' && candidate.id.trim()
+        ? candidate.id
+        : createId('visual'),
+    source: isVisualContextSource(candidate.source) ? candidate.source : 'manual',
+    summary: candidate.summary.trim(),
+    capturedAt:
+      typeof candidate.capturedAt === 'string'
+        ? candidate.capturedAt
+        : new Date().toISOString(),
+    ...(confidence === null ? {} : { confidence }),
+    ...(typeof candidate.relatedFocusId === 'string'
+      ? { relatedFocusId: candidate.relatedFocusId }
+      : {}),
+  };
+}
+
+function normalizeVisualContext(value: unknown): VisualContext {
+  if (!value || typeof value !== 'object') {
+    return createEmptyVisualContext();
+  }
+
+  const candidate = value as Partial<VisualContext>;
+  const recentObservations = Array.isArray(candidate.recentObservations)
+    ? candidate.recentObservations
+        .map((observation) => normalizeVisualObservation(observation))
+        .filter((observation): observation is VisualObservation =>
+          Boolean(observation),
+        )
+    : [];
+  const lastObservation = normalizeVisualObservation(candidate.lastObservation);
+
+  return {
+    enabled: candidate.enabled === true,
+    lastObservation: lastObservation ?? recentObservations[0] ?? null,
+    recentObservations,
+  };
+}
+
+function visualContextsAreSame(first: VisualContext, second: VisualContext): boolean {
   return JSON.stringify(first) === JSON.stringify(second);
 }
 
@@ -266,6 +339,19 @@ function readStoredActiveSession(): ActiveSession | null {
   }
 }
 
+
+function readStoredVisualContext(): VisualContext {
+  if (typeof window === 'undefined') return createEmptyVisualContext();
+
+  try {
+    const rawVisualContext = window.localStorage.getItem(VISUAL_CONTEXT_STORAGE_KEY);
+    if (!rawVisualContext) return createEmptyVisualContext();
+    return normalizeVisualContext(JSON.parse(rawVisualContext));
+  } catch {
+    return createEmptyVisualContext();
+  }
+}
+
 function downloadJsonFile(payload: object, filename: string) {
   const blob = new Blob([JSON.stringify(payload, null, 2)], {
     type: 'application/json',
@@ -300,12 +386,14 @@ export function useMemoryContext({
     readStoredRecentFocusSessions,
   );
   const [activeSession, setActiveSession] = useState(readStoredActiveSession);
+  const [visualContext, setVisualContext] = useState(readStoredVisualContext);
 
   const initialMemoryTasksRef = useRef(memoryTasks);
   const initialRecentActionsRef = useRef(recentActions);
   const initialRecentFocusSessionsRef = useRef(recentFocusSessions);
   const initialNotesRef = useRef(notes);
   const initialActiveSessionRef = useRef(activeSession);
+  const initialVisualContextRef = useRef(visualContext);
   const memoryContextHydratedRef = useRef(false);
   const memoryImportInputRef = useRef<HTMLInputElement | null>(null);
   const memoryWriteQueueRef = useRef<Promise<void | unknown>>(Promise.resolve());
@@ -383,6 +471,17 @@ export function useMemoryContext({
     }
   }, [activeSession]);
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        VISUAL_CONTEXT_STORAGE_KEY,
+        JSON.stringify(visualContext),
+      );
+    } catch (error) {
+      console.error('Failed to save visual context:', error);
+    }
+  }, [visualContext]);
+
   const persistMemoryContextToBackend = useCallback(
     async (
       tasksToSave: MemoryTask[],
@@ -390,6 +489,7 @@ export function useMemoryContext({
       notesToSave: Note[],
       activeSessionToSave: ActiveSession | null,
       recentFocusSessionsToSave: RecentFocusSession[],
+      visualContextToSave: VisualContext,
     ) => {
       const writeId = ++latestMemoryWriteIdRef.current;
       setMemorySyncState('syncing');
@@ -402,6 +502,7 @@ export function useMemoryContext({
             notes: notesToSave,
             activeSession: activeSessionToSave,
             recentFocusSessions: recentFocusSessionsToSave,
+            visualContext: visualContextToSave,
           }),
         );
 
@@ -416,10 +517,16 @@ export function useMemoryContext({
             ? prev
             : nextSessions;
         });
+        if (response.visualContext) {
+          const nextVisualContext = normalizeVisualContext(response.visualContext);
+          setVisualContext((prev) =>
+            visualContextsAreSame(prev, nextVisualContext) ? prev : nextVisualContext,
+          );
+        }
         setMemorySyncState('synced');
         setMemorySyncMessage(
           response.message ||
-            'Memory, notes, work context, and active session synced to backend.',
+            'Memory, notes, work context, active session, and visual context synced to backend.',
         );
         return true;
       } catch (error) {
@@ -455,11 +562,13 @@ export function useMemoryContext({
       const backendActiveSession = normalizeActiveSession(
         response.activeSession ?? null,
       );
+      const backendVisualContext = normalizeVisualContext(response.visualContext);
       const browserTasks = initialMemoryTasksRef.current;
       const browserActions = initialRecentActionsRef.current;
       const browserNotes = initialNotesRef.current;
       const browserRecentFocusSessions = initialRecentFocusSessionsRef.current;
       const browserActiveSession = initialActiveSessionRef.current;
+      const browserVisualContext = initialVisualContextRef.current;
       const backendInitialized = initialization.initialized;
       const mayMigrateBrowserFallback = !backendInitialized;
 
@@ -491,6 +600,18 @@ export function useMemoryContext({
         mayMigrateBrowserFallback && !backendActiveSession && browserActiveSession
           ? browserActiveSession
           : backendActiveSession;
+      const backendHasVisualContext =
+        backendVisualContext.enabled ||
+        backendVisualContext.lastObservation !== null ||
+        backendVisualContext.recentObservations.length > 0;
+      const browserHasVisualContext =
+        browserVisualContext.enabled ||
+        browserVisualContext.lastObservation !== null ||
+        browserVisualContext.recentObservations.length > 0;
+      const nextVisualContext =
+        mayMigrateBrowserFallback && !backendHasVisualContext && browserHasVisualContext
+          ? browserVisualContext
+          : backendVisualContext;
 
       const copiedBrowserTasks =
         mayMigrateBrowserFallback &&
@@ -510,6 +631,8 @@ export function useMemoryContext({
         browserRecentFocusSessions.length > 0;
       const copiedBrowserActiveSession =
         mayMigrateBrowserFallback && !backendActiveSession && !!browserActiveSession;
+      const copiedBrowserVisualContext =
+        mayMigrateBrowserFallback && !backendHasVisualContext && browserHasVisualContext;
 
       setMemoryTasks(nextTasks);
       setRecentActions(nextActions);
@@ -520,6 +643,9 @@ export function useMemoryContext({
       );
       setNotes(nextNotes);
       setActiveSession(nextActiveSession);
+      setVisualContext((prev) =>
+        visualContextsAreSame(prev, nextVisualContext) ? prev : nextVisualContext,
+      );
       memoryContextHydratedRef.current = true;
 
       if (
@@ -527,7 +653,8 @@ export function useMemoryContext({
         copiedBrowserActions ||
         copiedBrowserNotes ||
         copiedBrowserRecentFocusSessions ||
-        copiedBrowserActiveSession
+        copiedBrowserActiveSession ||
+        copiedBrowserVisualContext
       ) {
         const migrationSaved = await persistMemoryContextToBackend(
           nextTasks,
@@ -535,11 +662,12 @@ export function useMemoryContext({
           nextNotes,
           nextActiveSession,
           nextRecentFocusSessions,
+          nextVisualContext,
         );
 
         if (migrationSaved) {
           setMemorySyncMessage(
-            'First-run browser memory, notes, work context, and active session were copied into the backend.',
+            'First-run browser memory, notes, work context, active session, and visual context were copied into the backend.',
           );
         }
         return;
@@ -552,7 +680,8 @@ export function useMemoryContext({
           backendActions.length === 0 &&
           backendNotes.length === 0 &&
           backendRecentFocusSessions.length === 0 &&
-          !backendActiveSession
+          !backendActiveSession &&
+          !backendHasVisualContext
           ? 'Backend memory is intentionally empty.'
           : response.message || 'Memory context loaded from backend.',
       );
@@ -579,6 +708,7 @@ export function useMemoryContext({
         notes,
         activeSession,
         recentFocusSessions,
+        visualContext,
       );
     }, 250);
 
@@ -590,6 +720,7 @@ export function useMemoryContext({
     persistMemoryContextToBackend,
     recentActions,
     recentFocusSessions,
+    visualContext,
   ]);
 
   const saveNote = useCallback((content: string): Note | null => {
@@ -1012,7 +1143,7 @@ export function useMemoryContext({
       await memoryWriteQueueRef.current;
       const exportPayload = await exportMemoryContext();
       const payload = {
-        version: exportPayload.version || 6,
+        version: exportPayload.version || 7,
         exportedAt: exportPayload.exportedAt || new Date().toISOString(),
         tasks: exportPayload.tasks ?? memoryTasks,
         recentActions: exportPayload.recentActions ?? recentActions,
@@ -1020,6 +1151,9 @@ export function useMemoryContext({
         activeSession: exportPayload.activeSession ?? activeSession,
         recentFocusSessions:
           exportPayload.recentFocusSessions ?? recentFocusSessions,
+        visualContext: exportPayload.visualContext
+          ? normalizeVisualContext(exportPayload.visualContext)
+          : visualContext,
       };
 
       downloadJsonFile(
@@ -1035,13 +1169,14 @@ export function useMemoryContext({
       });
     } catch {
       const payload = {
-        version: 6,
+        version: 7,
         exportedAt: new Date().toISOString(),
         tasks: memoryTasks,
         recentActions,
         notes,
         activeSession,
         recentFocusSessions,
+        visualContext,
       };
 
       downloadJsonFile(
@@ -1065,6 +1200,7 @@ export function useMemoryContext({
     pushResultToast,
     recentActions,
     recentFocusSessions,
+    visualContext,
   ]);
 
   const handleImportMemoryFile = useCallback(
@@ -1094,6 +1230,12 @@ export function useMemoryContext({
         )
           ? normalizeActiveSession(parsed.activeSession)
           : null;
+        const importedVisualContext = Object.prototype.hasOwnProperty.call(
+          parsed,
+          'visualContext',
+        )
+          ? normalizeVisualContext(parsed.visualContext)
+          : createEmptyVisualContext();
 
         writeId = ++latestMemoryWriteIdRef.current;
         setMemorySyncState('syncing');
@@ -1104,6 +1246,7 @@ export function useMemoryContext({
             notes: importedNotes,
             activeSession: importedActiveSession,
             recentFocusSessions: importedRecentFocusSessions,
+            visualContext: importedVisualContext,
           }),
         );
 
@@ -1113,6 +1256,11 @@ export function useMemoryContext({
           response.recentFocusSessions ?? importedRecentFocusSessions,
         );
         setNotes(response.notes ?? importedNotes);
+        setVisualContext(
+          response.visualContext
+            ? normalizeVisualContext(response.visualContext)
+            : importedVisualContext,
+        );
         setActiveSession(
           Object.prototype.hasOwnProperty.call(response, 'activeSession')
             ? normalizeActiveSession(response.activeSession)
@@ -1129,7 +1277,7 @@ export function useMemoryContext({
         pushResultToast({
           kind: 'success',
           title: 'Memory imported',
-          detail: 'Tasks, notes, focus history, work context, and active session replaced.',
+          detail: 'Tasks, notes, focus history, work context, active session, and visual context replaced.',
         });
       } catch (error) {
         const message =
@@ -1152,7 +1300,7 @@ export function useMemoryContext({
 
   const handleClearAllMemory = useCallback(async () => {
     const confirmed = window.confirm(
-      'Clear all QMeet tasks, completed tasks, notes, active focus session, and hidden recent work context? This cannot be undone unless you exported a backup.',
+      'Clear all QMeet tasks, completed tasks, notes, active focus session, visual context, and hidden recent work context? This cannot be undone unless you exported a backup.',
     );
     if (!confirmed) {
       return;
@@ -1163,6 +1311,7 @@ export function useMemoryContext({
     setRecentFocusSessions([]);
     setNotes([]);
     setActiveSession(null);
+    setVisualContext(createEmptyVisualContext());
     setMemoryTaskDraft('');
 
     try {
@@ -1171,6 +1320,7 @@ export function useMemoryContext({
       window.localStorage.removeItem(RECENT_FOCUS_SESSIONS_STORAGE_KEY);
       window.localStorage.removeItem(NOTES_STORAGE_KEY);
       window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
+      window.localStorage.removeItem(VISUAL_CONTEXT_STORAGE_KEY);
     } catch (error) {
       console.error('Failed to clear local memory fallback:', error);
     }
@@ -1190,7 +1340,7 @@ export function useMemoryContext({
       pushResultToast({
         kind: 'warning',
         title: 'Memory cleared',
-        detail: 'Tasks, notes, active focus, and work context removed.',
+        detail: 'Tasks, notes, active focus, visual context, and work context removed.',
       });
     } catch (error) {
       const message =
@@ -1296,6 +1446,7 @@ export function useMemoryContext({
     const latestCalendarEvent = googleCalendarEvents[0] ?? calendarEvents[0];
     const latestSearch = searchResult?.query || searchQuery.trim();
     const latestRecentFocusSession = recentFocusSessions[0];
+    const latestVisualObservation = visualContext.lastObservation ?? visualContext.recentObservations[0] ?? null;
     const recentActionText = recentActions
       .slice(0, 3)
       .map((action) =>
@@ -1334,8 +1485,13 @@ export function useMemoryContext({
     const recentFocusText = latestRecentFocusSession
       ? `Last completed focus: ${latestRecentFocusSession.title}.`
       : 'No completed focus sessions yet.';
+    const visualText = latestVisualObservation
+      ? `Last visual observation: ${latestVisualObservation.summary}.`
+      : visualContext.enabled
+        ? 'Visual context is enabled, but no observations are saved yet.'
+        : 'Visual context is disabled.';
 
-    return `${focusText} ${recentFocusText} ${taskText} ${completedText} ${noteText} ${calendarText} ${searchText} ${actionText}`;
+    return `${focusText} ${recentFocusText} ${visualText} ${taskText} ${completedText} ${noteText} ${calendarText} ${searchText} ${actionText}`;
   }, [
     activeSession,
     calendarEvents,
@@ -1344,6 +1500,7 @@ export function useMemoryContext({
     notes,
     recentActions,
     recentFocusSessions,
+    visualContext,
     searchQuery,
     searchResult?.query,
   ]);
@@ -1354,6 +1511,7 @@ export function useMemoryContext({
     recentActions,
     recentFocusSessions,
     activeSession,
+    visualContext,
     memoryTaskDraft,
     setMemoryTaskDraft,
     memorySyncState,

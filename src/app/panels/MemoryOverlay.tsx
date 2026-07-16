@@ -6,13 +6,22 @@ import {
   useState,
 } from 'react';
 
-import type { ActiveSession, MemoryTask, RecentFocusSession } from '../types';
+import type {
+  ActiveSession,
+  MemoryTask,
+  RecentFocusSession,
+  VisualContext,
+  VisualObservation,
+} from '../types';
 import type { ResultToast } from '../lib/toastUtils';
 import { formatMemoryTime } from '../lib/memoryUtils';
 import {
   clearRecentFocusSessions,
   deleteRecentFocusSessionById,
   getRecentFocusSessions,
+  clearVisualContext,
+  deleteVisualObservationById,
+  getVisualContext,
 } from '../api';
 
 type MemorySyncState = 'local' | 'syncing' | 'synced' | 'error';
@@ -62,7 +71,7 @@ const ACTIVE_SESSION_SESSION_STORAGE_KEY = 'qmeet-active-session-live';
 const ACTIVE_SESSION_COMMAND_EVENT = 'qmeet-active-session-command';
 const ACTIVE_SESSION_STATE_EVENT = 'qmeet-active-session-state';
 const QMEET_PROMPT_COMMAND_EVENT = 'qmeet-prompt-command';
-const MEMORY_OVERLAY_FOCUS_MARKER = 'phase13d-v3-recent-focus-history';
+const MEMORY_OVERLAY_FOCUS_MARKER = 'phase14b-v1-visual-context';
 
 function normalizeActiveSession(value: unknown): ActiveSession | null {
   if (!value || typeof value !== 'object') return null;
@@ -172,6 +181,91 @@ function normalizeRecentFocusSessions(value: unknown): RecentFocusSession[] {
   return value
     .map((session) => normalizeRecentFocusSession(session))
     .filter((session): session is RecentFocusSession => Boolean(session));
+}
+
+
+function createEmptyVisualContext(): VisualContext {
+  return {
+    enabled: false,
+    lastObservation: null,
+    recentObservations: [],
+  };
+}
+
+function isVisualContextSource(value: unknown): value is VisualObservation['source'] {
+  return value === 'camera' || value === 'screen' || value === 'manual';
+}
+
+function normalizeVisualObservation(value: unknown): VisualObservation | null {
+  if (!value || typeof value !== 'object') return null;
+
+  const candidate = value as Partial<VisualObservation>;
+  if (typeof candidate.summary !== 'string' || !candidate.summary.trim()) {
+    return null;
+  }
+
+  return {
+    id:
+      typeof candidate.id === 'string' && candidate.id.trim()
+        ? candidate.id
+        : `visual-${Date.now()}`,
+    source: isVisualContextSource(candidate.source) ? candidate.source : 'manual',
+    summary: candidate.summary.trim(),
+    capturedAt:
+      typeof candidate.capturedAt === 'string'
+        ? candidate.capturedAt
+        : new Date().toISOString(),
+    ...(typeof candidate.confidence === 'number' &&
+    Number.isFinite(candidate.confidence)
+      ? { confidence: Math.max(0, Math.min(1, candidate.confidence)) }
+      : {}),
+    ...(typeof candidate.relatedFocusId === 'string'
+      ? { relatedFocusId: candidate.relatedFocusId }
+      : {}),
+  };
+}
+
+function normalizeVisualContext(value: unknown): VisualContext {
+  if (!value || typeof value !== 'object') {
+    return createEmptyVisualContext();
+  }
+
+  const candidate = value as Partial<VisualContext>;
+  const recentObservations = Array.isArray(candidate.recentObservations)
+    ? candidate.recentObservations
+        .map((observation) => normalizeVisualObservation(observation))
+        .filter((observation): observation is VisualObservation =>
+          Boolean(observation),
+        )
+    : [];
+  const lastObservation = normalizeVisualObservation(candidate.lastObservation);
+
+  return {
+    enabled: candidate.enabled === true,
+    lastObservation: lastObservation ?? recentObservations[0] ?? null,
+    recentObservations,
+  };
+}
+
+function formatVisualSource(source: VisualObservation['source']) {
+  return source.charAt(0).toUpperCase() + source.slice(1);
+}
+
+function getVisualObservationMeta(observation: VisualObservation) {
+  const pieces = [
+    formatVisualSource(observation.source),
+    formatMemoryTime(observation.capturedAt),
+  ];
+
+  if (typeof observation.confidence === 'number') {
+    pieces.push(`${Math.round(observation.confidence * 100)}% confidence`);
+  }
+
+  if (observation.relatedFocusId) {
+    pieces.push('linked to focus');
+  }
+
+  return pieces.join(' · ');
 }
 
 function readStoredActiveSession(): ActiveSession | null {
@@ -461,6 +555,12 @@ export function MemoryOverlay({
   const [recentFocusSessionMessage, setRecentFocusSessionMessage] = useState(
     'Loading recent focus sessions...',
   );
+  const [visualContext, setVisualContext] = useState<VisualContext>(
+    createEmptyVisualContext,
+  );
+  const [visualContextMessage, setVisualContextMessage] = useState(
+    'Loading visual context...',
+  );
   const openTasks = memoryTasks.filter((task) => !task.completedAt);
   const completedTasks = memoryTasks.filter((task) => task.completedAt);
   const focusNudges = buildFocusNudges(activeSession, memoryTasks);
@@ -480,6 +580,18 @@ export function MemoryOverlay({
           ? error.message
           : 'Recent focus sessions unavailable.';
       setRecentFocusSessionMessage(message);
+    }
+  }, []);
+
+  const loadVisualContext = useCallback(async () => {
+    try {
+      const response = await getVisualContext();
+      setVisualContext(normalizeVisualContext(response.visualContext));
+      setVisualContextMessage(response.message || 'Visual context loaded.');
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Visual context unavailable.';
+      setVisualContextMessage(message);
     }
   }, []);
 
@@ -520,6 +632,10 @@ export function MemoryOverlay({
   useEffect(() => {
     loadRecentFocusSessions();
   }, [loadRecentFocusSessions, activeSession?.id]);
+
+  useEffect(() => {
+    loadVisualContext();
+  }, [loadVisualContext]);
 
   const handleDeleteRecentFocusSession = async (sessionId: string) => {
     try {
@@ -569,6 +685,59 @@ export function MemoryOverlay({
       pushResultToast({
         kind: 'error',
         title: 'History clear failed',
+        detail: message,
+      });
+    }
+  };
+
+
+  const handleDeleteVisualObservation = async (observationId: string) => {
+    try {
+      const response = await deleteVisualObservationById(observationId);
+      setVisualContext(normalizeVisualContext(response.visualContext));
+      pushResultToast({
+        kind: 'warning',
+        title: 'Observation removed',
+        detail: 'Removed one visual observation.',
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Could not remove observation.';
+      pushResultToast({
+        kind: 'error',
+        title: 'Visual delete failed',
+        detail: message,
+      });
+    }
+  };
+
+  const handleClearVisualContext = async () => {
+    const confirmed = window.confirm('Clear saved visual context observations?');
+    if (!confirmed) return;
+
+    try {
+      const response = await clearVisualContext();
+      setVisualContext(normalizeVisualContext(response.visualContext));
+      setVisualContextMessage(response.message || 'Visual context cleared.');
+      pushResultToast({
+        kind: 'warning',
+        title: 'Visual context cleared',
+        detail:
+          response.removedVisualObservationCount || response.removedCount
+            ? `${response.removedVisualObservationCount ?? response.removedCount} observation${
+                (response.removedVisualObservationCount ?? response.removedCount) ===
+                1
+                  ? ''
+                  : 's'
+              } removed.`
+            : 'No visual observations to clear.',
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Could not clear visual context.';
+      pushResultToast({
+        kind: 'error',
+        title: 'Visual clear failed',
         detail: message,
       });
     }
@@ -732,6 +901,74 @@ export function MemoryOverlay({
                 </button>
               </div>
             )}
+          </div>
+
+
+          <div className="panel-section memory-sync-section">
+            <div className="panel-section-title">Visual Context</div>
+            <p className="panel-section-text">
+              {visualContext.enabled
+                ? 'Visual context is enabled for future camera or screen observations.'
+                : 'Visual context is ready but disabled until a camera, screen, or manual observation source is connected.'}
+            </p>
+            {visualContext.lastObservation ? (
+              <div className="memory-list">
+                <div className="memory-action-item">
+                  <div className="memory-task-copy">
+                    <div className="memory-action-title">Last observation</div>
+                    <div className="memory-task-meta">
+                      {getVisualObservationMeta(visualContext.lastObservation)}
+                    </div>
+                    <p className="panel-section-text">
+                      {visualContext.lastObservation.summary}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <p className="panel-section-text">
+                {visualContextMessage ||
+                  'No visual observations saved yet. Phase 14C will add manual observation commands before camera capture.'}
+              </p>
+            )}
+
+            {visualContext.recentObservations.length > 0 && (
+              <div className="memory-list">
+                {visualContext.recentObservations.slice(0, 4).map((observation) => (
+                  <div className="memory-action-item" key={observation.id}>
+                    <div className="memory-task-copy">
+                      <div className="memory-action-title">
+                        {formatVisualSource(observation.source)} observation
+                      </div>
+                      <div className="memory-task-meta">
+                        {getVisualObservationMeta(observation)}
+                      </div>
+                      <p className="panel-section-text">{observation.summary}</p>
+                    </div>
+                    <div className="memory-task-actions">
+                      <button
+                        className="memory-task-delete-btn"
+                        type="button"
+                        onClick={() => handleDeleteVisualObservation(observation.id)}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="panel-action-row">
+              <button
+                className="panel-action-btn panel-action-btn-danger"
+                type="button"
+                disabled={visualContext.recentObservations.length === 0 && !visualContext.enabled}
+                onClick={handleClearVisualContext}
+              >
+                Clear Visual
+              </button>
+            </div>
           </div>
 
           <div className="panel-section memory-sync-section">
@@ -996,7 +1233,7 @@ export function MemoryOverlay({
               Say “start a coding focus session for QMeet Phase 12,” “what am I
               focused on,” “set my goal to wire focus commands,” “end focus
               session,” “remember to test the Pi as a task,” “mark task done,”
-              or use the focus action buttons for tasks, notes, summaries, and ending the session. You can also say “what should I do next” or “clear completed tasks.” Notes, focus history, and
+              or use the focus action buttons for tasks, notes, summaries, and ending the session. You can also say “what should I do next” or “clear completed tasks.” Notes, focus history, visual context, and
               recent actions sync in the background.
             </p>
           </div>

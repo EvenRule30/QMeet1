@@ -100,6 +100,75 @@ export interface RecentFocusSession {
   summaryNoteId?: string | null;
 }
 
+
+export type VisualContextSource = 'camera' | 'screen' | 'manual';
+
+export interface VisualObservation {
+  id: string;
+  source: VisualContextSource;
+  summary: string;
+  capturedAt: string;
+  confidence?: number | null;
+  relatedFocusId?: string;
+}
+
+export interface VisualContext {
+  enabled: boolean;
+  lastObservation: VisualObservation | null;
+  recentObservations: VisualObservation[];
+}
+
+export interface VisualContextReplaceRequest {
+  visualContext: VisualContext;
+}
+
+export interface VisualContextUpdateRequest {
+  enabled?: boolean | null;
+  lastObservation?: VisualObservation | null;
+  recentObservations?: VisualObservation[] | null;
+}
+
+export interface VisualObservationCreateRequest {
+  summary: string;
+  source?: VisualContextSource;
+  capturedAt?: string | null;
+  confidence?: number | null;
+  relatedFocusId?: string;
+}
+
+export interface VisualContextResponse {
+  ok: boolean;
+  provider: 'local-json';
+  visualContext: VisualContext;
+  message: string;
+}
+
+export interface VisualObservationCreateResponse {
+  ok: boolean;
+  provider: 'local-json';
+  visualContext: VisualContext;
+  observation: VisualObservation | null;
+  message: string;
+}
+
+export interface VisualObservationDeleteResponse {
+  ok: boolean;
+  provider: 'local-json';
+  deletedVisualObservationId: string;
+  visualContext: VisualContext;
+  message: string;
+}
+
+export interface VisualContextClearResponse {
+  ok: boolean;
+  provider: 'local-json';
+  removedCount: number;
+  removedVisualObservationCount?: number;
+  removedVisualContextEnabled?: boolean;
+  visualContext: VisualContext;
+  message: string;
+}
+
 export interface ActiveSessionReplaceRequest {
   activeSession: ActiveSession | null;
 }
@@ -126,6 +195,7 @@ export interface ActiveSessionClearResponse {
   activeSession: ActiveSession | null;
   removedActiveSession: boolean;
   recentFocusSessions?: RecentFocusSession[];
+  visualContext?: VisualContext;
   archivedFocusSession?: RecentFocusSession | null;
   message: string;
 }
@@ -170,6 +240,9 @@ export interface MemoryStatusResponse {
   activeSessionTitle?: string;
   recentFocusSessionCount?: number;
   lastFocusSessionTitle?: string;
+  visualContextEnabled?: boolean;
+  visualObservationCount?: number;
+  lastVisualObservationAt?: string;
   message: string;
 }
 
@@ -214,6 +287,7 @@ export interface MemoryContextReplaceRequest {
   notes: Note[];
   activeSession?: ActiveSession | null;
   recentFocusSessions?: RecentFocusSession[];
+  visualContext?: VisualContext;
 }
 
 export interface MemoryContextResponse {
@@ -224,6 +298,7 @@ export interface MemoryContextResponse {
   notes: Note[];
   activeSession?: ActiveSession | null;
   recentFocusSessions?: RecentFocusSession[];
+  visualContext?: VisualContext;
   archivedFocusSession?: RecentFocusSession | null;
   message: string;
 }
@@ -238,6 +313,7 @@ export interface MemoryContextExportResponse {
   notes: Note[];
   activeSession?: ActiveSession | null;
   recentFocusSessions?: RecentFocusSession[];
+  visualContext?: VisualContext;
   message: string;
 }
 
@@ -247,6 +323,7 @@ export interface MemoryContextImportRequest {
   notes: Note[];
   activeSession?: ActiveSession | null;
   recentFocusSessions?: RecentFocusSession[];
+  visualContext?: VisualContext;
 }
 
 export interface MemoryContextClearResponse {
@@ -257,11 +334,13 @@ export interface MemoryContextClearResponse {
   notes: Note[];
   activeSession?: ActiveSession | null;
   recentFocusSessions?: RecentFocusSession[];
+  visualContext?: VisualContext;
   removedTaskCount: number;
   removedActionCount: number;
   removedNoteCount: number;
   removedActiveSession?: boolean;
   removedRecentFocusSessionCount?: number;
+  removedVisualObservationCount?: number;
   message: string;
 }
 

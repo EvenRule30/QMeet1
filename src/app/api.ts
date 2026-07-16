@@ -41,6 +41,13 @@ import {
   RecentFocusSessionsReplaceRequest,
   RecentFocusSessionsClearResponse,
   RecentFocusSessionDeleteResponse,
+  VisualContextClearResponse,
+  VisualContextReplaceRequest,
+  VisualContextResponse,
+  VisualContextUpdateRequest,
+  VisualObservationCreateRequest,
+  VisualObservationCreateResponse,
+  VisualObservationDeleteResponse,
   SearchResponse,
 } from './types';
 
@@ -356,6 +363,82 @@ export async function deleteRecentFocusSessionById(
     `/api/memory/sessions/recent/${encodedId}`,
     { method: 'DELETE' },
     'Recent focus session delete error.',
+  );
+}
+
+
+export async function getVisualContext(): Promise<VisualContextResponse> {
+  return fetchJson(
+    '/api/memory/visual',
+    undefined,
+    'Visual context error.',
+  );
+}
+
+export async function replaceVisualContext(
+  request: VisualContextReplaceRequest,
+): Promise<VisualContextResponse> {
+  return fetchJson(
+    '/api/memory/visual',
+    {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
+    },
+    'Visual context replace error.',
+  );
+}
+
+export async function updateVisualContext(
+  request: VisualContextUpdateRequest,
+): Promise<VisualContextResponse> {
+  return fetchJson(
+    '/api/memory/visual',
+    {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
+    },
+    'Visual context update error.',
+  );
+}
+
+export async function createVisualObservation(
+  request: VisualObservationCreateRequest,
+): Promise<VisualObservationCreateResponse> {
+  return fetchJson(
+    '/api/memory/visual/observations',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
+    },
+    'Visual observation create error.',
+  );
+}
+
+export async function clearVisualContext(): Promise<VisualContextClearResponse> {
+  return fetchJson(
+    '/api/memory/visual/clear',
+    { method: 'POST' },
+    'Visual context clear error.',
+  );
+}
+
+export async function deleteVisualObservationById(
+  observationId: string,
+): Promise<VisualObservationDeleteResponse> {
+  const encodedId = encodeURIComponent(observationId);
+  return fetchJson(
+    `/api/memory/visual/observations/${encodedId}`,
+    { method: 'DELETE' },
+    'Visual observation delete error.',
   );
 }
 
