@@ -143,6 +143,17 @@ export interface VisualContextResponse {
   message: string;
 }
 
+
+export interface VisualSnapshotAnalysisResponse {
+  ok: boolean;
+  source: 'camera';
+  summary: string;
+  model: string;
+  contentType: string;
+  imageBytesReceived: number;
+  confidence: number | null;
+}
+
 export interface VisualObservationCreateResponse {
   ok: boolean;
   provider: 'local-json';

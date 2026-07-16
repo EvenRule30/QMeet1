@@ -1,10 +1,17 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { analyzeVisualSnapshot, createVisualObservation } from '../api';
+import type { ActiveSession, VisualContext } from '../types';
 
-export type QMeetCameraCommandAction = 'open' | 'close' | 'snapshot';
+export type QMeetCameraCommandAction = 'open' | 'close' | 'snapshot' | 'analyze';
 
 export const QMEET_CAMERA_COMMAND_EVENT = 'qmeet-camera-command';
 
-type CameraStatus = 'closed' | 'opening' | 'ready' | 'captured' | 'error';
+const ACTIVE_SESSION_SESSION_STORAGE_KEY = 'qmeet-active-session-live';
+const ACTIVE_SESSION_STORAGE_KEY = 'qmeet-active-session';
+const VISUAL_CONTEXT_STORAGE_KEY = 'qmeet-visual-context';
+const VISUAL_CONTEXT_STATE_EVENT = 'qmeet-visual-context-state';
+
+type CameraStatus = 'closed' | 'opening' | 'ready' | 'captured' | 'analyzing' | 'error';
 
 type CameraCommandDetail = {
   action?: QMeetCameraCommandAction;
@@ -18,16 +25,18 @@ const overlayStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  padding: 20,
+  padding: 10,
   background: 'rgba(2, 8, 18, 0.76)',
   backdropFilter: 'blur(18px)',
 };
 
 const panelStyle: CSSProperties = {
-  width: 'min(920px, 96vw)',
-  maxHeight: '92vh',
+  width: 'min(880px, 96vw)',
+  maxHeight: 'calc(100vh - 20px)',
+  display: 'flex',
+  flexDirection: 'column',
   border: '1px solid rgba(124, 219, 255, 0.32)',
-  borderRadius: 28,
+  borderRadius: 22,
   background: 'linear-gradient(180deg, rgba(8, 18, 36, 0.96), rgba(5, 10, 22, 0.96))',
   color: '#e9f7ff',
   boxShadow: '0 24px 100px rgba(0, 0, 0, 0.52), 0 0 48px rgba(47, 213, 255, 0.12)',
@@ -38,35 +47,40 @@ const headerStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'flex-start',
   justifyContent: 'space-between',
-  gap: 16,
-  padding: '20px 22px 14px',
+  gap: 14,
+  padding: '14px 18px 10px',
   borderBottom: '1px solid rgba(124, 219, 255, 0.16)',
+  flex: '0 0 auto',
 };
 
 const titleStyle: CSSProperties = {
   margin: 0,
-  fontSize: 18,
+  fontSize: 16,
   letterSpacing: '0.08em',
   textTransform: 'uppercase',
 };
 
 const subtitleStyle: CSSProperties = {
-  margin: '6px 0 0',
+  margin: '4px 0 0',
   color: 'rgba(233, 247, 255, 0.68)',
-  fontSize: 13,
-  lineHeight: 1.4,
+  fontSize: 12,
+  lineHeight: 1.35,
 };
 
 const bodyStyle: CSSProperties = {
-  padding: 18,
+  padding: 12,
+  flex: '1 1 auto',
+  minHeight: 0,
+  overflowY: 'auto',
 };
 
 const previewWrapStyle: CSSProperties = {
   position: 'relative',
   display: 'grid',
   placeItems: 'center',
-  minHeight: 360,
-  borderRadius: 22,
+  minHeight: 220,
+  maxHeight: 'min(330px, 50vh)',
+  borderRadius: 18,
   overflow: 'hidden',
   background: 'radial-gradient(circle at center, rgba(30, 85, 120, 0.24), rgba(2, 8, 18, 0.96))',
   border: '1px solid rgba(124, 219, 255, 0.18)',
@@ -74,7 +88,7 @@ const previewWrapStyle: CSSProperties = {
 
 const mediaStyle: CSSProperties = {
   width: '100%',
-  maxHeight: '58vh',
+  height: 'min(330px, 50vh)',
   objectFit: 'contain',
   background: '#020812',
 };
@@ -84,14 +98,17 @@ const footerStyle: CSSProperties = {
   flexWrap: 'wrap',
   alignItems: 'center',
   justifyContent: 'space-between',
-  gap: 12,
-  padding: '14px 22px 20px',
+  gap: 10,
+  padding: '10px 18px 14px',
+  borderTop: '1px solid rgba(124, 219, 255, 0.14)',
+  flex: '0 0 auto',
 };
 
 const buttonRowStyle: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
-  gap: 10,
+  justifyContent: 'flex-end',
+  gap: 8,
   flexWrap: 'wrap',
 };
 
@@ -100,8 +117,8 @@ const buttonStyle: CSSProperties = {
   borderRadius: 999,
   background: 'rgba(124, 219, 255, 0.10)',
   color: '#e9f7ff',
-  padding: '10px 16px',
-  fontSize: 13,
+  padding: '8px 13px',
+  fontSize: 12,
   fontWeight: 700,
   letterSpacing: '0.03em',
   cursor: 'pointer',
@@ -120,6 +137,25 @@ const disabledButtonStyle: CSSProperties = {
   cursor: 'not-allowed',
 };
 
+const snapshotActionsStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: 8,
+  flexWrap: 'wrap',
+  marginTop: 8,
+  padding: '8px 10px',
+  borderRadius: 14,
+  background: 'rgba(8, 22, 42, 0.72)',
+  border: '1px solid rgba(124, 219, 255, 0.16)',
+};
+
+const snapshotLabelStyle: CSSProperties = {
+  color: 'rgba(233, 247, 255, 0.72)',
+  fontSize: 12,
+  lineHeight: 1.35,
+};
+
 const launcherStyle: CSSProperties = {
   position: 'fixed',
   right: 18,
@@ -134,6 +170,28 @@ const launcherStyle: CSSProperties = {
   boxShadow: '0 10px 36px rgba(0, 0, 0, 0.35), 0 0 28px rgba(47, 213, 255, 0.12)',
   cursor: 'pointer',
   fontSize: 22,
+};
+
+const privacyStyle: CSSProperties = {
+  marginTop: 8,
+  border: '1px solid rgba(255, 214, 128, 0.24)',
+  borderRadius: 14,
+  background: 'rgba(255, 214, 128, 0.08)',
+  color: 'rgba(255, 241, 205, 0.88)',
+  padding: '8px 10px',
+  fontSize: 11,
+  lineHeight: 1.35,
+};
+
+const analysisStyle: CSSProperties = {
+  marginTop: 8,
+  border: '1px solid rgba(124, 219, 255, 0.22)',
+  borderRadius: 14,
+  background: 'rgba(124, 219, 255, 0.08)',
+  padding: '10px 12px',
+  color: 'rgba(233, 247, 255, 0.86)',
+  fontSize: 12,
+  lineHeight: 1.4,
 };
 
 function getCameraErrorMessage(error: unknown): string {
@@ -158,6 +216,59 @@ function getCameraErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Camera could not be started.';
 }
 
+async function dataUrlToBlob(dataUrl: string): Promise<Blob> {
+  const response = await fetch(dataUrl);
+  return response.blob();
+}
+
+function readActiveSessionFromStorage(): ActiveSession | null {
+  if (typeof window === 'undefined') return null;
+
+  const candidates = [
+    window.sessionStorage.getItem(ACTIVE_SESSION_SESSION_STORAGE_KEY),
+    window.localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY),
+  ];
+
+  for (const rawValue of candidates) {
+    if (!rawValue) continue;
+    try {
+      const parsed = JSON.parse(rawValue) as Partial<ActiveSession> | null;
+      if (
+        parsed &&
+        typeof parsed.id === 'string' &&
+        parsed.id.trim() &&
+        typeof parsed.title === 'string' &&
+        parsed.title.trim()
+      ) {
+        return parsed as ActiveSession;
+      }
+    } catch {
+      // Ignore malformed browser fallback state.
+    }
+  }
+
+  return null;
+}
+
+function publishVisualContext(visualContext: VisualContext): void {
+  if (typeof window === 'undefined') return;
+
+  try {
+    window.localStorage.setItem(
+      VISUAL_CONTEXT_STORAGE_KEY,
+      JSON.stringify(visualContext),
+    );
+  } catch {
+    // The backend save already succeeded; browser fallback is best effort.
+  }
+
+  window.dispatchEvent(
+    new CustomEvent(VISUAL_CONTEXT_STATE_EVENT, {
+      detail: { visualContext },
+    }),
+  );
+}
+
 export function CameraCaptureOverlay() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -166,6 +277,15 @@ export function CameraCaptureOverlay() {
   const [status, setStatus] = useState<CameraStatus>('closed');
   const [statusMessage, setStatusMessage] = useState('Camera preview is closed.');
   const [snapshotDataUrl, setSnapshotDataUrl] = useState<string | null>(null);
+  const [analysisSummary, setAnalysisSummary] = useState<string | null>(null);
+  const [analysisModel, setAnalysisModel] = useState<string | null>(null);
+  const [analysisSaved, setAnalysisSaved] = useState(false);
+
+  const clearAnalysis = useCallback(() => {
+    setAnalysisSummary(null);
+    setAnalysisModel(null);
+    setAnalysisSaved(false);
+  }, []);
 
   const clearCanvas = useCallback(() => {
     const canvas = canvasRef.current;
@@ -197,17 +317,19 @@ export function CameraCaptureOverlay() {
   const closeCamera = useCallback(() => {
     stopStream();
     clearCanvas();
+    clearAnalysis();
     setSnapshotDataUrl(null);
     setOpen(false);
     setStatus('closed');
     setStatusMessage('Camera preview is closed.');
-  }, [clearCanvas, stopStream]);
+  }, [clearAnalysis, clearCanvas, stopStream]);
 
   const startCamera = useCallback(async () => {
     setOpen(true);
     setStatus('opening');
     setStatusMessage('Requesting camera permission...');
     setSnapshotDataUrl(null);
+    clearAnalysis();
     clearCanvas();
 
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
@@ -234,13 +356,13 @@ export function CameraCaptureOverlay() {
       }
 
       setStatus('ready');
-      setStatusMessage('Camera preview is live. Snapshots stay in memory only and are not uploaded or saved.');
+      setStatusMessage('Camera preview is live. Snapshots stay in memory only and are not uploaded or saved until Analyze Snapshot is tapped.');
     } catch (error) {
       stopStream();
       setStatus('error');
       setStatusMessage(getCameraErrorMessage(error));
     }
-  }, [clearCanvas, stopStream]);
+  }, [clearAnalysis, clearCanvas, stopStream]);
 
   const captureSnapshot = useCallback(async () => {
     if (!open) {
@@ -267,16 +389,59 @@ export function CameraCaptureOverlay() {
 
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
     setSnapshotDataUrl(canvas.toDataURL('image/jpeg', 0.92));
+    clearAnalysis();
     setStatus('captured');
     setStatusMessage('Snapshot captured in memory only. It has not been uploaded or saved.');
-  }, [open, startCamera]);
+  }, [clearAnalysis, open, startCamera]);
+
+  const analyzeSnapshot = useCallback(async () => {
+    if (!snapshotDataUrl) {
+      setStatusMessage('Take a snapshot before analyzing it.');
+      return;
+    }
+
+    setStatus('analyzing');
+    setStatusMessage('Sending this one snapshot to OpenAI through the backend for description...');
+
+    try {
+      const snapshot = await dataUrlToBlob(snapshotDataUrl);
+      const analysis = await analyzeVisualSnapshot(snapshot);
+      const summary = analysis.summary.trim();
+      if (!summary) {
+        throw new Error('OpenAI returned an empty visual description.');
+      }
+
+      const activeSession = readActiveSessionFromStorage();
+      const observationResponse = await createVisualObservation({
+        source: 'camera',
+        summary,
+        confidence: analysis.confidence,
+        relatedFocusId: activeSession?.id,
+      });
+
+      publishVisualContext(observationResponse.visualContext);
+      setAnalysisSummary(summary);
+      setAnalysisModel(analysis.model);
+      setAnalysisSaved(true);
+      setStatus('captured');
+      setStatusMessage('Snapshot analyzed. QMeet saved only the returned text observation, not the image.');
+    } catch (error) {
+      setStatus('captured');
+      setStatusMessage(
+        error instanceof Error
+          ? `Snapshot analysis failed: ${error.message}`
+          : 'Snapshot analysis failed.',
+      );
+    }
+  }, [snapshotDataUrl]);
 
   const clearSnapshot = useCallback(() => {
     setSnapshotDataUrl(null);
+    clearAnalysis();
     clearCanvas();
     setStatus(streamRef.current ? 'ready' : 'closed');
     setStatusMessage(streamRef.current ? 'Camera preview is live.' : 'Snapshot cleared. Camera preview is closed.');
-  }, [clearCanvas]);
+  }, [clearAnalysis, clearCanvas]);
 
   useEffect(() => {
     const handleCameraCommand = (event: Event) => {
@@ -288,6 +453,8 @@ export function CameraCaptureOverlay() {
         closeCamera();
       } else if (action === 'snapshot') {
         void captureSnapshot();
+      } else if (action === 'analyze') {
+        void analyzeSnapshot();
       }
     };
 
@@ -295,7 +462,7 @@ export function CameraCaptureOverlay() {
     return () => {
       window.removeEventListener(QMEET_CAMERA_COMMAND_EVENT, handleCameraCommand);
     };
-  }, [captureSnapshot, closeCamera, startCamera]);
+  }, [analyzeSnapshot, captureSnapshot, closeCamera, startCamera]);
 
   useEffect(() => {
     if (!open && !snapshotDataUrl) {
@@ -337,6 +504,7 @@ export function CameraCaptureOverlay() {
   }
 
   const canCapture = status === 'ready' || status === 'captured';
+  const canAnalyze = Boolean(snapshotDataUrl) && status !== 'analyzing';
 
   return (
     <div
@@ -351,7 +519,7 @@ export function CameraCaptureOverlay() {
           <div>
             <h2 style={titleStyle}>Camera Preview</h2>
             <p style={subtitleStyle}>
-              Phase 14E one-shot capture. Preview and snapshots remain in browser memory only.
+              Phase 14F one-shot analysis. Preview and snapshots stay local until you tap Analyze Snapshot.
             </p>
           </div>
           <button type="button" style={buttonStyle} onClick={closeCamera}>
@@ -368,17 +536,71 @@ export function CameraCaptureOverlay() {
             )}
             <canvas ref={canvasRef} style={{ display: 'none' }} />
           </div>
+
+          {snapshotDataUrl && (
+            <div style={snapshotActionsStyle}>
+              <div style={snapshotLabelStyle}>
+                Snapshot ready. Analyze saves a text-only camera observation.
+              </div>
+              <div style={buttonRowStyle}>
+                <button
+                  type="button"
+                  style={canAnalyze ? primaryButtonStyle : disabledButtonStyle}
+                  disabled={!canAnalyze}
+                  onClick={() => void analyzeSnapshot()}
+                >
+                  {status === 'analyzing' ? 'Analyzing...' : 'Analyze Snapshot'}
+                </button>
+                <button
+                  type="button"
+                  style={status === 'analyzing' ? disabledButtonStyle : buttonStyle}
+                  disabled={status === 'analyzing'}
+                  onClick={clearSnapshot}
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+          )}
+
+          {snapshotDataUrl && (
+            <div style={privacyStyle}>
+              Analyze Snapshot sends this image to OpenAI through your backend for description.
+              QMeet stores only the returned text observation in visual context, not the raw image.
+            </div>
+          )}
+
+          {analysisSummary && (
+            <div style={analysisStyle}>
+              <strong>Visual observation saved{analysisModel ? ` via ${analysisModel}` : ''}:</strong>
+              <div style={{ marginTop: 6 }}>{analysisSummary}</div>
+              {analysisSaved && (
+                <div style={{ marginTop: 8, color: 'rgba(179, 255, 216, 0.82)' }}>
+                  Saved to Visual Context as a camera observation.
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <div style={footerStyle}>
-          <div aria-live="polite" style={{ color: status === 'error' ? '#ffb3b3' : 'rgba(233, 247, 255, 0.72)', fontSize: 13 }}>
+          <div
+            aria-live="polite"
+            style={{
+              color: status === 'error' ? '#ffb3b3' : 'rgba(233, 247, 255, 0.72)',
+              fontSize: 12,
+              lineHeight: 1.35,
+              minWidth: 220,
+              flex: '1 1 280px',
+            }}
+          >
             {statusMessage}
           </div>
           <div style={buttonRowStyle}>
             <button
               type="button"
-              style={status === 'opening' ? disabledButtonStyle : buttonStyle}
-              disabled={status === 'opening'}
+              style={status === 'opening' || status === 'analyzing' ? disabledButtonStyle : buttonStyle}
+              disabled={status === 'opening' || status === 'analyzing'}
               onClick={() => void startCamera()}
             >
               Restart preview
@@ -389,13 +611,9 @@ export function CameraCaptureOverlay() {
               disabled={!canCapture}
               onClick={() => void captureSnapshot()}
             >
-              Snapshot
+              {snapshotDataUrl ? 'Retake' : 'Snapshot'}
             </button>
-            {snapshotDataUrl && (
-              <button type="button" style={buttonStyle} onClick={clearSnapshot}>
-                Clear snapshot
-              </button>
-            )}
+
           </div>
         </div>
       </div>

@@ -48,6 +48,7 @@ import {
   VisualObservationCreateRequest,
   VisualObservationCreateResponse,
   VisualObservationDeleteResponse,
+  VisualSnapshotAnalysisResponse,
   SearchResponse,
 } from './types';
 
@@ -440,6 +441,22 @@ export async function deleteVisualObservationById(
     { method: 'DELETE' },
     'Visual observation delete error.',
   );
+}
+
+export async function analyzeVisualSnapshot(
+  snapshot: Blob,
+): Promise<VisualSnapshotAnalysisResponse> {
+  const contentType = snapshot.type || 'image/jpeg';
+  const res = await fetch(buildApiUrl('/api/visual/analyze-snapshot'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': contentType,
+    },
+    body: snapshot,
+  });
+
+  await ensureOk(res, 'Visual snapshot analysis error.');
+  return res.json();
 }
 
 export async function replaceMemoryContext(

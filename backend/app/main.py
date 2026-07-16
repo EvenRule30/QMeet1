@@ -13,6 +13,7 @@ from app.routers import (  # noqa: E402
     memory,
     memory_state,
     search,
+    visual,
 )
 
 app = FastAPI(title="QMeet Agent Backend")
@@ -46,3 +47,4 @@ app.include_router(search.router)
 app.include_router(calendar.router)
 app.include_router(memory.router)
 app.include_router(memory_state.router)
+app.include_router(visual.router)
