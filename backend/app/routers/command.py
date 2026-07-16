@@ -134,6 +134,20 @@ def _focus_command_intent(message: str) -> dict[str, Any] | None:
 
     lowered = text.lower()
 
+    force_end_patterns = [
+        r"^(?:please\s+)?(?:end|finish|stop|close|clear|discard)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session|focus mode)\s+(?:anyway|without\s+(?:saving|a\s+summary|summary|a\s+note|note))$",
+        r"^(?:please\s+)?(?:end|finish|stop|close|clear|discard)\s+(?:anyway|without\s+(?:saving|a\s+summary|summary|a\s+note|note))$",
+        r"^(?:please\s+)?(?:end|finish|stop|close|clear|discard)\s+(?:it|this|that)\s+(?:anyway|without\s+(?:saving|a\s+summary|summary|a\s+note|note))$",
+        r"^(?:please\s+)?(?:do\s+not|don't)\s+save\s+(?:a\s+)?(?:summary|note)\s+(?:and\s+)?(?:end|finish|stop|close)\s+(?:the\s+)?(?:focus|session)?$",
+        r"^(?:please\s+)?(?:skip|discard)\s+(?:the\s+)?(?:summary|note)\s+(?:and\s+)?(?:end|finish|stop|close)\s+(?:the\s+)?(?:focus|session)?$",
+    ]
+    if _first_match(force_end_patterns, lowered):
+        return _command_response(
+            action="end_focus_session",
+            frontend_command="end focus anyway",
+            confidence=0.99,
+            reason="Backend focus interpreter matched an explicit force-end command.",
+        )
 
     focus_to_tasks_patterns = [
         r"^(?:please\s+)?(?:turn|convert|make|create)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session|goal)\s+(?:into|to)\s+(?:tasks|task list|action items|next steps|steps|checklist)$",
@@ -152,6 +166,7 @@ def _focus_command_intent(message: str) -> dict[str, Any] | None:
 
 
     end_with_summary_patterns = [
+        r"^(?:please\s+)?(?:end|finish|wrap up|close)\s+(?:with|and\s+save|and\s+write)\s+(?:a\s+)?(?:summary|recap|note)$",
         r"^(?:please\s+)?(?:end|finish|wrap up|close)\s+(?:and\s+)?(?:summarize|recap|save\s+(?:a\s+)?summary|save)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session|matter|topic|work|thing)?$",
         r"^(?:please\s+)?(?:summarize|recap|save\s+(?:a\s+)?summary\s+of|save)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session)\s+(?:and\s+)?(?:end|finish|close|wrap up)(?:\s+it)?$",
         r"^(?:please\s+)?(?:summarize|recap)\s+(?:and\s+)?(?:end|finish|close|wrap up)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session)$",

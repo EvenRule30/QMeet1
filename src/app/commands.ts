@@ -91,9 +91,11 @@ export interface FocusSessionCommandPayload {
   title?: string;
   mode?: FocusSessionMode;
   goal?: string;
+  /** Phase 13C: bypass the end-of-focus summary guard when the user explicitly says to end anyway. */
+  forceEnd?: boolean;
 }
 
-// Phase 12E-v3: focus summaries, saved summary notes, and end-with-summary routing.
+// Phase 13C-v1: end-of-focus guard for unsaved session progress.
 
 export interface CommandMatch {
   command: LocalCommand;
@@ -753,6 +755,21 @@ function isFocusPlanningQuestionPayload(value: string): boolean {
 function extractFocusSessionIntent(normalized: string): FocusSessionIntent | null {
   const focusText = normalizeFocusCommandPhrase(normalized);
 
+  const forceEndPatterns = [
+    /^(?:please\s+)?(?:end|finish|stop|close|clear|discard)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session|focus\s+mode)\s+(?:anyway|without\s+(?:saving|a\s+summary|summary|a\s+note|note))$/i,
+    /^(?:please\s+)?(?:end|finish|stop|close|clear|discard)\s+(?:anyway|without\s+(?:saving|a\s+summary|summary|a\s+note|note))$/i,
+    /^(?:please\s+)?(?:end|finish|stop|close|clear|discard)\s+(?:it|this|that)\s+(?:anyway|without\s+(?:saving|a\s+summary|summary|a\s+note|note))$/i,
+    /^(?:please\s+)?(?:do\s+not|don't)\s+save\s+(?:a\s+)?(?:summary|note)\s+(?:and\s+)?(?:end|finish|stop|close)\s+(?:the\s+)?(?:focus|session)?$/i,
+    /^(?:please\s+)?(?:skip|discard)\s+(?:the\s+)?(?:summary|note)\s+(?:and\s+)?(?:end|finish|stop|close)\s+(?:the\s+)?(?:focus|session)?$/i,
+  ];
+  if (forceEndPatterns.some((pattern) => pattern.test(focusText))) {
+    return makeFocusSessionIntent(
+      'end-focus-session',
+      { forceEnd: true },
+      'Ending focus session without saving a summary.',
+    );
+  }
+
   const endPatterns = [
     /^(?:please\s+)?(?:end|stop|clear|close|leave|exit|finish|wrap\s+up)\s+(?:(?:the|my|our|current|active)\s+)*(?:(?:general|coding|code|development|dev|programming|meeting|planning|research|personal)\s+)?(?:focus|focus\s+session|active\s+session|session|focus\s+mode)$/i,
     /^(?:please\s+)?(?:end|stop|clear|close|leave|exit|finish|wrap\s+up)\s+(?:(?:the|my|our|current|active|this|that)\s+)*(?:(?:general|coding|code|development|dev|programming|meeting|planning|research|personal)\s+)?(?:focus|focus\s+session|active\s+session|session|focus\s+mode|matter|topic|work|thing)$/i,
@@ -766,6 +783,7 @@ function extractFocusSessionIntent(normalized: string): FocusSessionIntent | nul
 
 
   const endWithSummaryPatterns = [
+    /^(?:please\s+)?(?:end|finish|wrap\s+up|close)\s+(?:with|and\s+save|and\s+write)\s+(?:a\s+)?(?:summary|recap|note)$/i,
     /^(?:please\s+)?(?:end|finish|wrap\s+up|close)\s+(?:and\s+)?(?:summarize|recap|save\s+(?:a\s+)?summary|save)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session|matter|topic|work|thing)?$/i,
     /^(?:please\s+)?(?:summarize|recap|save\s+(?:a\s+)?summary\s+of|save)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session)\s+(?:and\s+)?(?:end|finish|close|wrap\s+up)(?:\s+it)?$/i,
     /^(?:please\s+)?(?:summarize|recap)\s+(?:and\s+)?(?:end|finish|close|wrap\s+up)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session)$/i,

@@ -20,6 +20,7 @@ type NormalizedFocusPayload = {
   title?: string;
   mode?: MemorySessionMode;
   goal?: string;
+  forceEnd?: boolean;
 };
 
 const ACTIVE_SESSION_STORAGE_KEY = 'qmeet-active-session';
@@ -28,7 +29,7 @@ const ACTIVE_SESSION_STATE_EVENT = 'qmeet-active-session-state';
 const SAVE_FOCUS_SUMMARY_NOTE_EVENT = 'qmeet-save-focus-summary-note';
 const MEMORY_TASKS_STORAGE_KEY = 'qmeet-memory-tasks';
 const RECENT_ACTIONS_STORAGE_KEY = 'qmeet-recent-actions';
-const ACTIVE_SESSION_COMMAND_HANDLER_MARKER = 'phase12e-v4-focus-summary-notes-panel';
+const ACTIVE_SESSION_COMMAND_HANDLER_MARKER = 'phase13c-v1-end-focus-guard';
 
 function createId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -513,6 +514,34 @@ function describeFocusSummary(activeSession: ActiveSession): string {
   return `Focus summary for ${activeSession.title}. Mode: ${activeSession.mode}.${goalText}${taskText}`;
 }
 
+function hasSavedFocusSummary(activeSession: ActiveSession): boolean {
+  return activeSession.pinnedNoteIds.length > 0 || Boolean(activeSession.summary?.trim());
+}
+
+function shouldGuardFocusEnd(activeSession: ActiveSession): boolean {
+  if (hasSavedFocusSummary(activeSession)) return false;
+
+  const hasGoal = Boolean(activeSession.goal.trim());
+  const hasLinkedTasks = activeSession.linkedTaskIds.length > 0;
+  const hasSessionDetail = activeSession.title.trim().toLowerCase() !== 'focus session';
+
+  return hasGoal || hasLinkedTasks || hasSessionDetail;
+}
+
+function describeFocusEndGuard(activeSession: ActiveSession): string {
+  const storedTasks = readStoredMemoryTasks();
+  const linkedTaskIds = new Set(activeSession.linkedTaskIds);
+  const linkedTasks = storedTasks.filter((task) => linkedTaskIds.has(task.id));
+  const openLinkedTasks = linkedTasks.filter((task) => !task.completedAt).length;
+  const completedLinkedTasks = linkedTasks.filter((task) => task.completedAt).length;
+  const taskText = linkedTasks.length > 0
+    ? ` It has ${linkedTasks.length} linked task${linkedTasks.length === 1 ? '' : 's'} (${openLinkedTasks} open, ${completedLinkedTasks} done).`
+    : '';
+  const goalText = activeSession.goal ? ` Goal: ${activeSession.goal}.` : '';
+
+  return `You have an active focus with no saved summary note: ${activeSession.title}.${goalText}${taskText} Say "end with summary" to save a note and end it, "end focus anyway" to end without saving, or "cancel" to keep it running.`;
+}
+
 function describeFocusStart(payload: FocusSessionCommandPayload | undefined) {
   const title = payload?.title?.trim() || 'Focus session';
   const mode = payload?.mode ? ` ${payload.mode}` : '';
@@ -651,14 +680,32 @@ export function handleMemoryCommand(
 
     case 'end-focus-session': {
       const existingSession = readStoredActiveSession();
+      deps.setActivePanel('memory');
+
+      if (!existingSession) {
+        return {
+          handled: true,
+          confirmationContent: 'No active focus session was running.',
+          shouldSpeakConfirmation: deps.voiceOutputEnabled,
+        };
+      }
+
+      const forceEnd = Boolean(commandMatch.focusSession?.forceEnd);
+      if (!forceEnd && shouldGuardFocusEnd(existingSession)) {
+        return {
+          handled: true,
+          confirmationContent: describeFocusEndGuard(existingSession),
+          shouldSpeakConfirmation: deps.voiceOutputEnabled,
+        };
+      }
+
       applyActiveSession(null);
       persistActiveSessionToBackend(null);
-      deps.setActivePanel('memory');
       return {
         handled: true,
-        confirmationContent: existingSession
-          ? `Ended focus session: ${existingSession.title}.`
-          : 'No active focus session was running.',
+        confirmationContent: forceEnd
+          ? `Ended focus session without saving a summary: ${existingSession.title}.`
+          : `Ended focus session: ${existingSession.title}.`,
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }
