@@ -117,6 +117,7 @@ class CalendarDeleteEventResponse(BaseModel):
 
 
 MemorySessionMode = Literal["general", "coding", "meeting", "planning", "research", "personal"]
+VisualContextSource = Literal["camera", "screen", "manual"]
 
 
 class MemoryTaskItem(BaseModel):
@@ -190,6 +191,72 @@ class RecentFocusSessionsClearResponse(BaseModel):
     message: str = ""
 
 
+class VisualObservationItem(BaseModel):
+    id: str
+    source: VisualContextSource = "manual"
+    summary: str
+    capturedAt: str
+    confidence: float | None = None
+    relatedFocusId: str = ""
+
+
+class VisualContextItem(BaseModel):
+    enabled: bool = False
+    lastObservation: VisualObservationItem | None = None
+    recentObservations: list[VisualObservationItem] = Field(default_factory=list)
+
+
+class VisualContextReplaceRequest(BaseModel):
+    visualContext: VisualContextItem = Field(default_factory=VisualContextItem)
+
+
+class VisualContextUpdateRequest(BaseModel):
+    enabled: bool | None = None
+    lastObservation: VisualObservationItem | None = None
+    recentObservations: list[VisualObservationItem] | None = None
+
+
+class VisualObservationCreateRequest(BaseModel):
+    summary: str
+    source: VisualContextSource = "manual"
+    capturedAt: str | None = None
+    confidence: float | None = None
+    relatedFocusId: str = ""
+
+
+class VisualContextResponse(BaseModel):
+    ok: bool = True
+    provider: Literal["local-json"] = "local-json"
+    visualContext: VisualContextItem = Field(default_factory=VisualContextItem)
+    message: str = ""
+
+
+class VisualObservationCreateResponse(BaseModel):
+    ok: bool = True
+    provider: Literal["local-json"] = "local-json"
+    visualContext: VisualContextItem = Field(default_factory=VisualContextItem)
+    observation: VisualObservationItem | None = None
+    message: str = ""
+
+
+class VisualObservationDeleteResponse(BaseModel):
+    ok: bool = True
+    provider: Literal["local-json"] = "local-json"
+    deletedVisualObservationId: str = ""
+    visualContext: VisualContextItem = Field(default_factory=VisualContextItem)
+    message: str = ""
+
+
+class VisualContextClearResponse(BaseModel):
+    ok: bool = True
+    provider: Literal["local-json"] = "local-json"
+    removedCount: int = 0
+    removedVisualObservationCount: int = 0
+    removedVisualContextEnabled: bool = False
+    visualContext: VisualContextItem = Field(default_factory=VisualContextItem)
+    message: str = ""
+
+
 class ActiveSessionReplaceRequest(BaseModel):
     activeSession: ActiveSessionItem | None = None
 
@@ -233,6 +300,9 @@ class MemoryStatusResponse(BaseModel):
     activeSessionTitle: str = ""
     recentFocusSessionCount: int = 0
     lastFocusSessionTitle: str = ""
+    visualContextEnabled: bool = False
+    visualObservationCount: int = 0
+    lastVisualObservationAt: str = ""
     message: str = ""
 
 
@@ -277,6 +347,7 @@ class MemoryContextReplaceRequest(BaseModel):
     notes: list[MemoryNoteItem] = Field(default_factory=list)
     activeSession: ActiveSessionItem | None = None
     recentFocusSessions: list[RecentFocusSessionItem] = Field(default_factory=list)
+    visualContext: VisualContextItem = Field(default_factory=VisualContextItem)
 
 
 class MemoryContextResponse(BaseModel):
@@ -287,6 +358,7 @@ class MemoryContextResponse(BaseModel):
     notes: list[MemoryNoteItem] = Field(default_factory=list)
     activeSession: ActiveSessionItem | None = None
     recentFocusSessions: list[RecentFocusSessionItem] = Field(default_factory=list)
+    visualContext: VisualContextItem = Field(default_factory=VisualContextItem)
     message: str = ""
 
 
@@ -298,24 +370,27 @@ class MemoryContextClearResponse(BaseModel):
     notes: list[MemoryNoteItem] = Field(default_factory=list)
     activeSession: ActiveSessionItem | None = None
     recentFocusSessions: list[RecentFocusSessionItem] = Field(default_factory=list)
+    visualContext: VisualContextItem = Field(default_factory=VisualContextItem)
     removedTaskCount: int = 0
     removedActionCount: int = 0
     removedNoteCount: int = 0
     removedActiveSession: bool = False
     removedRecentFocusSessionCount: int = 0
+    removedVisualObservationCount: int = 0
     message: str = ""
 
 
 class MemoryContextExportResponse(BaseModel):
     ok: bool = True
     provider: Literal["local-json"] = "local-json"
-    version: int = 6
+    version: int = 7
     exportedAt: str = ""
     tasks: list[MemoryTaskItem] = Field(default_factory=list)
     recentActions: list[RecentActionItem] = Field(default_factory=list)
     notes: list[MemoryNoteItem] = Field(default_factory=list)
     activeSession: ActiveSessionItem | None = None
     recentFocusSessions: list[RecentFocusSessionItem] = Field(default_factory=list)
+    visualContext: VisualContextItem = Field(default_factory=VisualContextItem)
     message: str = ""
 
 
@@ -325,6 +400,7 @@ class MemoryContextImportRequest(BaseModel):
     notes: list[MemoryNoteItem] = Field(default_factory=list)
     activeSession: ActiveSessionItem | None = None
     recentFocusSessions: list[RecentFocusSessionItem] = Field(default_factory=list)
+    visualContext: VisualContextItem = Field(default_factory=VisualContextItem)
 
 
 class RecentActionCreateRequest(BaseModel):

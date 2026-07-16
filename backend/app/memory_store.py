@@ -9,8 +9,9 @@ from threading import RLock
 from uuid import uuid4
 
 
-MEMORY_FILE_VERSION = 6
+MEMORY_FILE_VERSION = 7
 SESSION_MODES = {"general", "coding", "meeting", "planning", "research", "personal"}
+VISUAL_SOURCES = {"camera", "screen", "manual"}
 _STORE_LOCK = RLock()
 
 
@@ -46,6 +47,18 @@ def _new_session_id() -> str:
     return f"session-{int(datetime.now().timestamp() * 1000)}-{uuid4().hex[:10]}"
 
 
+def _new_visual_observation_id() -> str:
+    return f"visual-{int(datetime.now().timestamp() * 1000)}-{uuid4().hex[:10]}"
+
+
+def _empty_visual_context() -> dict:
+    return {
+        "enabled": False,
+        "lastObservation": None,
+        "recentObservations": [],
+    }
+
+
 def _empty_payload() -> dict:
     return {
         "tasks": [],
@@ -53,6 +66,7 @@ def _empty_payload() -> dict:
         "notes": [],
         "activeSession": None,
         "recentFocusSessions": [],
+        "visualContext": _empty_visual_context(),
     }
 
 
@@ -253,6 +267,88 @@ def _sanitize_recent_focus_sessions(raw: object, max_items: int = 24) -> list[di
     return sessions
 
 
+def _sanitize_visual_observation(raw: object) -> dict | None:
+    if raw is None or not isinstance(raw, dict):
+        return None
+
+    summary = str(raw.get("summary", "")).strip()
+    if not summary:
+        return None
+
+    raw_source = str(raw.get("source") or "manual").strip().lower()
+    source = raw_source if raw_source in VISUAL_SOURCES else "manual"
+    captured_at = str(raw.get("capturedAt") or raw.get("captured_at") or "").strip()
+    if not captured_at:
+        captured_at = _now_iso()
+
+    observation = {
+        "id": str(raw.get("id") or _new_visual_observation_id()).strip() or _new_visual_observation_id(),
+        "source": source,
+        "summary": summary[:1200],
+        "capturedAt": captured_at,
+    }
+
+    confidence = raw.get("confidence")
+    if isinstance(confidence, (int, float)) and not isinstance(confidence, bool):
+        observation["confidence"] = max(0.0, min(1.0, float(confidence)))
+
+    related_focus_id = str(
+        raw.get("relatedFocusId", raw.get("related_focus_id", "")) or ""
+    ).strip()
+    if related_focus_id:
+        observation["relatedFocusId"] = related_focus_id[:140]
+
+    return observation
+
+
+def _sanitize_visual_observations(raw: object, max_items: int = 24) -> list[dict]:
+    if not isinstance(raw, list):
+        return []
+
+    observations: list[dict] = []
+    seen: set[str] = set()
+    for item in raw:
+        observation = _sanitize_visual_observation(item)
+        if not observation:
+            continue
+        observation_id = observation["id"]
+        if observation_id in seen:
+            continue
+        observations.append(observation)
+        seen.add(observation_id)
+        if len(observations) >= max_items:
+            break
+    return observations
+
+
+def _sanitize_visual_context(raw: object) -> dict:
+    if not isinstance(raw, dict):
+        return _empty_visual_context()
+
+    recent_observations = _sanitize_visual_observations(
+        raw.get("recentObservations", raw.get("recent_observations", []))
+    )
+    last_observation = _sanitize_visual_observation(
+        raw.get("lastObservation", raw.get("last_observation"))
+    )
+
+    if last_observation:
+        recent_observations = [last_observation] + [
+            observation
+            for observation in recent_observations
+            if observation["id"] != last_observation["id"]
+        ]
+        recent_observations = recent_observations[:24]
+    elif recent_observations:
+        last_observation = recent_observations[0]
+
+    return {
+        "enabled": bool(raw.get("enabled", False)),
+        "lastObservation": last_observation,
+        "recentObservations": recent_observations,
+    }
+
+
 def _archive_active_session(
     active_session: dict | None,
     recent_focus_sessions: list[dict],
@@ -307,6 +403,8 @@ def _read_payload_unlocked() -> dict:
         parsed.get("recent_focus_sessions", []),
     )
 
+    visual_context = parsed.get("visualContext", parsed.get("visual_context", {}))
+
     return {
         "tasks": [_task for _task in (_sanitize_task(task) for task in tasks) if _task],
         "recentActions": [
@@ -317,6 +415,7 @@ def _read_payload_unlocked() -> dict:
         "notes": [_note for _note in (_sanitize_note(note) for note in notes) if _note],
         "activeSession": _sanitize_active_session(active_session),
         "recentFocusSessions": _sanitize_recent_focus_sessions(recent_focus_sessions),
+        "visualContext": _sanitize_visual_context(visual_context),
     }
 
 
@@ -361,6 +460,7 @@ def _build_payload(
     notes: list[dict],
     active_session: dict | None = None,
     recent_focus_sessions: list[dict] | None = None,
+    visual_context: dict | None = None,
 ) -> dict:
     return {
         "version": MEMORY_FILE_VERSION,
@@ -374,6 +474,7 @@ def _build_payload(
         "notes": [_note for _note in (_sanitize_note(note) for note in notes) if _note],
         "activeSession": _sanitize_active_session(active_session),
         "recentFocusSessions": _sanitize_recent_focus_sessions(recent_focus_sessions or []),
+        "visualContext": _sanitize_visual_context(visual_context or _empty_visual_context()),
     }
 
 
@@ -383,8 +484,10 @@ def _write_payload_unlocked(
     notes: list[dict] | None = None,
     active_session: dict | None = None,
     recent_focus_sessions: list[dict] | None = None,
+    visual_context: dict | None = None,
     preserve_active_session: bool = True,
     preserve_recent_focus_sessions: bool = True,
+    preserve_visual_context: bool = True,
 ) -> dict:
     existing_payload: dict | None = None
     if (
@@ -392,6 +495,7 @@ def _write_payload_unlocked(
         or notes is None
         or preserve_active_session
         or preserve_recent_focus_sessions
+        or preserve_visual_context
     ):
         existing_payload = _read_payload_unlocked()
 
@@ -407,12 +511,16 @@ def _write_payload_unlocked(
     if preserve_recent_focus_sessions and recent_focus_sessions is None:
         recent_focus_sessions = existing_payload["recentFocusSessions"] if existing_payload else []
 
+    if preserve_visual_context and visual_context is None:
+        visual_context = existing_payload["visualContext"] if existing_payload else _empty_visual_context()
+
     payload = _build_payload(
         tasks,
         recent_actions,
         notes,
         active_session,
         recent_focus_sessions,
+        visual_context,
     )
 
     try:
@@ -431,8 +539,10 @@ def _write_payload(
     notes: list[dict] | None = None,
     active_session: dict | None = None,
     recent_focus_sessions: list[dict] | None = None,
+    visual_context: dict | None = None,
     preserve_active_session: bool = True,
     preserve_recent_focus_sessions: bool = True,
+    preserve_visual_context: bool = True,
 ) -> dict:
     with _STORE_LOCK:
         return _write_payload_unlocked(
@@ -441,8 +551,10 @@ def _write_payload(
             notes,
             active_session,
             recent_focus_sessions,
+            visual_context,
             preserve_active_session=preserve_active_session,
             preserve_recent_focus_sessions=preserve_recent_focus_sessions,
+            preserve_visual_context=preserve_visual_context,
         )
 
 
@@ -452,6 +564,8 @@ def get_memory_status() -> dict:
         tasks = payload["tasks"]
         completed_count = sum(1 for task in tasks if task.get("completedAt"))
         active_session = payload["activeSession"]
+        visual_context = payload["visualContext"]
+        last_visual_observation = visual_context.get("lastObservation") if visual_context else None
 
         return {
             "ok": True,
@@ -468,7 +582,10 @@ def get_memory_status() -> dict:
             "lastFocusSessionTitle": payload["recentFocusSessions"][0].get("title", "")
             if payload["recentFocusSessions"]
             else "",
-            "message": "QMeet memory, notes, work context, active session, and recent focus history are stored in a local backend JSON file.",
+            "visualContextEnabled": bool(visual_context.get("enabled", False)) if visual_context else False,
+            "visualObservationCount": len(visual_context.get("recentObservations", [])) if visual_context else 0,
+            "lastVisualObservationAt": last_visual_observation.get("capturedAt", "") if last_visual_observation else "",
+            "message": "QMeet memory, notes, work context, active session, recent focus history, and visual context are stored in a local backend JSON file.",
         }
 
 
@@ -483,6 +600,7 @@ def get_memory_context() -> dict:
             "notes": payload["notes"],
             "activeSession": payload["activeSession"],
             "recentFocusSessions": payload["recentFocusSessions"],
+            "visualContext": payload["visualContext"],
             "message": "Memory context loaded from the backend.",
         }
 
@@ -493,6 +611,7 @@ def replace_memory_context(
     notes: list[dict],
     active_session: dict | None = None,
     recent_focus_sessions: list[dict] | None = None,
+    visual_context: dict | None = None,
 ) -> dict:
     """Replace the frontend-owned memory context without losing focus history.
 
@@ -514,6 +633,10 @@ def replace_memory_context(
             else recent_focus_sessions
         )
 
+        next_visual_context = (
+            existing["visualContext"] if visual_context is None else visual_context
+        )
+
         if existing["activeSession"] is not None and active_session is None:
             next_recent_focus_sessions = _archive_active_session(
                 existing["activeSession"],
@@ -526,8 +649,10 @@ def replace_memory_context(
             notes,
             active_session,
             next_recent_focus_sessions,
+            next_visual_context,
             preserve_active_session=False,
             preserve_recent_focus_sessions=False,
+            preserve_visual_context=False,
         )
         return {
             "ok": True,
@@ -537,6 +662,7 @@ def replace_memory_context(
             "notes": payload["notes"],
             "activeSession": payload["activeSession"],
             "recentFocusSessions": payload["recentFocusSessions"],
+            "visualContext": payload["visualContext"],
             "message": "Memory context saved to the backend.",
         }
 
@@ -1143,6 +1269,216 @@ def clear_recent_focus_sessions() -> dict:
         }
 
 
+def get_visual_context() -> dict:
+    with _STORE_LOCK:
+        payload = _read_payload_unlocked()
+        return {
+            "ok": True,
+            "provider": "local-json",
+            "visualContext": payload["visualContext"],
+            "message": "Visual context loaded from the backend.",
+        }
+
+
+def replace_visual_context(visual_context: dict | None) -> dict:
+    with _STORE_LOCK:
+        existing = _read_payload_unlocked()
+        payload = _write_payload_unlocked(
+            existing["tasks"],
+            existing["recentActions"],
+            existing["notes"],
+            existing["activeSession"],
+            existing["recentFocusSessions"],
+            visual_context or _empty_visual_context(),
+            preserve_active_session=False,
+            preserve_recent_focus_sessions=False,
+            preserve_visual_context=False,
+        )
+        return {
+            "ok": True,
+            "provider": "local-json",
+            "visualContext": payload["visualContext"],
+            "message": "Visual context saved to the backend.",
+        }
+
+
+def update_visual_context(
+    enabled: bool | None = None,
+    last_observation: dict | None = None,
+    recent_observations: list[dict] | None = None,
+    update_last_observation: bool = False,
+    update_recent_observations: bool = False,
+) -> dict:
+    with _STORE_LOCK:
+        existing = _read_payload_unlocked()
+        current = existing["visualContext"]
+        next_context = {
+            "enabled": current.get("enabled", False),
+            "lastObservation": current.get("lastObservation"),
+            "recentObservations": current.get("recentObservations", []),
+        }
+
+        if enabled is not None:
+            next_context["enabled"] = bool(enabled)
+        if update_last_observation:
+            next_context["lastObservation"] = last_observation
+        if update_recent_observations:
+            next_context["recentObservations"] = recent_observations or []
+
+        payload = _write_payload_unlocked(
+            existing["tasks"],
+            existing["recentActions"],
+            existing["notes"],
+            existing["activeSession"],
+            existing["recentFocusSessions"],
+            next_context,
+            preserve_active_session=False,
+            preserve_recent_focus_sessions=False,
+            preserve_visual_context=False,
+        )
+        return {
+            "ok": True,
+            "provider": "local-json",
+            "visualContext": payload["visualContext"],
+            "message": "Visual context updated.",
+        }
+
+
+def create_visual_observation(
+    summary: str,
+    source: str = "manual",
+    confidence: float | None = None,
+    related_focus_id: str = "",
+    captured_at: str = "",
+) -> dict:
+    clean_summary = (summary or "").strip()
+    if not clean_summary:
+        raise MemoryStoreError("Visual observation summary cannot be empty.")
+
+    with _STORE_LOCK:
+        existing = _read_payload_unlocked()
+        active_session = existing["activeSession"]
+        if not related_focus_id and active_session:
+            related_focus_id = active_session.get("id", "")
+
+        observation = _sanitize_visual_observation(
+            {
+                "id": _new_visual_observation_id(),
+                "source": source,
+                "summary": clean_summary,
+                "capturedAt": captured_at or _now_iso(),
+                "confidence": confidence,
+                "relatedFocusId": related_focus_id,
+            }
+        )
+        if not observation:
+            raise MemoryStoreError("Visual observation could not be saved.")
+
+        current_visual_context = existing["visualContext"]
+        next_observations = [observation] + [
+            item
+            for item in current_visual_context.get("recentObservations", [])
+            if item.get("id") != observation["id"]
+        ]
+        next_context = {
+            "enabled": current_visual_context.get("enabled", False),
+            "lastObservation": observation,
+            "recentObservations": next_observations[:24],
+        }
+
+        payload = _write_payload_unlocked(
+            existing["tasks"],
+            existing["recentActions"],
+            existing["notes"],
+            existing["activeSession"],
+            existing["recentFocusSessions"],
+            next_context,
+            preserve_active_session=False,
+            preserve_recent_focus_sessions=False,
+            preserve_visual_context=False,
+        )
+        return {
+            "ok": True,
+            "provider": "local-json",
+            "visualContext": payload["visualContext"],
+            "observation": observation,
+            "message": "Visual observation saved.",
+        }
+
+
+def delete_visual_observation(observation_id: str) -> dict:
+    clean_observation_id = (observation_id or "").strip()
+    if not clean_observation_id:
+        raise MemoryStoreError("Visual observation id cannot be empty.")
+
+    with _STORE_LOCK:
+        existing = _read_payload_unlocked()
+        current_visual_context = existing["visualContext"]
+        current_observations = current_visual_context.get("recentObservations", [])
+        next_observations = [
+            observation
+            for observation in current_observations
+            if observation.get("id") != clean_observation_id
+        ]
+        if len(next_observations) == len(current_observations):
+            raise MemoryStoreError("Visual observation was not found.")
+
+        last_observation = current_visual_context.get("lastObservation")
+        if last_observation and last_observation.get("id") == clean_observation_id:
+            last_observation = next_observations[0] if next_observations else None
+
+        next_context = {
+            "enabled": current_visual_context.get("enabled", False),
+            "lastObservation": last_observation,
+            "recentObservations": next_observations,
+        }
+        payload = _write_payload_unlocked(
+            existing["tasks"],
+            existing["recentActions"],
+            existing["notes"],
+            existing["activeSession"],
+            existing["recentFocusSessions"],
+            next_context,
+            preserve_active_session=False,
+            preserve_recent_focus_sessions=False,
+            preserve_visual_context=False,
+        )
+        return {
+            "ok": True,
+            "provider": "local-json",
+            "deletedVisualObservationId": clean_observation_id,
+            "visualContext": payload["visualContext"],
+            "message": "Visual observation deleted.",
+        }
+
+
+def clear_visual_context() -> dict:
+    with _STORE_LOCK:
+        existing = _read_payload_unlocked()
+        removed_count = len(existing["visualContext"].get("recentObservations", []))
+        was_enabled = bool(existing["visualContext"].get("enabled", False))
+        payload = _write_payload_unlocked(
+            existing["tasks"],
+            existing["recentActions"],
+            existing["notes"],
+            existing["activeSession"],
+            existing["recentFocusSessions"],
+            _empty_visual_context(),
+            preserve_active_session=False,
+            preserve_recent_focus_sessions=False,
+            preserve_visual_context=False,
+        )
+        return {
+            "ok": True,
+            "provider": "local-json",
+            "removedCount": removed_count,
+            "removedVisualObservationCount": removed_count,
+            "removedVisualContextEnabled": was_enabled,
+            "visualContext": payload["visualContext"],
+            "message": "Visual context cleared.",
+        }
+
+
 def clear_memory_context() -> dict:
     with _STORE_LOCK:
         existing = _read_payload_unlocked()
@@ -1151,14 +1487,17 @@ def clear_memory_context() -> dict:
         removed_notes = len(existing["notes"])
         removed_session = existing["activeSession"] is not None
         removed_focus_sessions = len(existing["recentFocusSessions"])
+        removed_visual_observations = len(existing["visualContext"].get("recentObservations", []))
         _write_payload_unlocked(
             [],
             [],
             [],
             None,
             [],
+            _empty_visual_context(),
             preserve_active_session=False,
             preserve_recent_focus_sessions=False,
+            preserve_visual_context=False,
         )
         return {
             "ok": True,
@@ -1168,12 +1507,14 @@ def clear_memory_context() -> dict:
             "notes": [],
             "activeSession": None,
             "recentFocusSessions": [],
+            "visualContext": _empty_visual_context(),
             "removedTaskCount": removed_tasks,
             "removedActionCount": removed_actions,
             "removedNoteCount": removed_notes,
             "removedActiveSession": removed_session,
             "removedRecentFocusSessionCount": removed_focus_sessions,
-            "message": "Cleared all backend memory, notes, work context, active session, and focus history.",
+            "removedVisualObservationCount": removed_visual_observations,
+            "message": "Cleared all backend memory, notes, work context, active session, focus history, and visual context.",
         }
 
 
@@ -1190,6 +1531,7 @@ def export_memory_context() -> dict:
             "notes": payload["notes"],
             "activeSession": payload["activeSession"],
             "recentFocusSessions": payload["recentFocusSessions"],
+            "visualContext": payload["visualContext"],
             "message": "Memory export loaded from the backend.",
         }
 
@@ -1200,6 +1542,7 @@ def import_memory_context(
     notes: list[dict],
     active_session: dict | None = None,
     recent_focus_sessions: list[dict] | None = None,
+    visual_context: dict | None = None,
 ) -> dict:
     with _STORE_LOCK:
         payload = _write_payload_unlocked(
@@ -1208,8 +1551,10 @@ def import_memory_context(
             notes,
             active_session,
             recent_focus_sessions,
+            visual_context or _empty_visual_context(),
             preserve_active_session=False,
             preserve_recent_focus_sessions=False,
+            preserve_visual_context=False,
         )
         return {
             "ok": True,
@@ -1219,5 +1564,6 @@ def import_memory_context(
             "notes": payload["notes"],
             "activeSession": payload["activeSession"],
             "recentFocusSessions": payload["recentFocusSessions"],
-            "message": "Imported memory, notes, work context, active session, and focus history into the backend.",
+            "visualContext": payload["visualContext"],
+            "message": "Imported memory, notes, work context, active session, focus history, and visual context into the backend.",
         }

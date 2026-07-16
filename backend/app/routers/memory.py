@@ -8,17 +8,21 @@ from app.memory_store import (
     clear_memory_notes,
     clear_recent_actions,
     clear_recent_focus_sessions,
+    clear_visual_context,
     create_memory_note,
     create_memory_task,
     create_recent_action,
+    create_visual_observation,
     delete_memory_note,
     delete_memory_task,
     delete_recent_action,
     delete_recent_focus_session,
+    delete_visual_observation,
     export_memory_context,
     get_active_session,
     get_memory_context,
     get_memory_status,
+    get_visual_context,
     import_memory_context,
     list_memory_notes,
     list_memory_tasks,
@@ -30,7 +34,9 @@ from app.memory_store import (
     replace_memory_tasks,
     replace_recent_actions,
     replace_recent_focus_sessions,
+    replace_visual_context,
     update_active_session,
+    update_visual_context,
     update_memory_task,
 )
 from app.schemas import (
@@ -64,6 +70,13 @@ from app.schemas import (
     RecentFocusSessionsClearResponse,
     RecentFocusSessionsReplaceRequest,
     RecentFocusSessionsResponse,
+    VisualContextClearResponse,
+    VisualContextReplaceRequest,
+    VisualContextResponse,
+    VisualContextUpdateRequest,
+    VisualObservationCreateRequest,
+    VisualObservationCreateResponse,
+    VisualObservationDeleteResponse,
 )
 
 
@@ -121,6 +134,11 @@ async def memory_replace_context(req: MemoryContextReplaceRequest):
             if "recentFocusSessions" in sent_fields
             else None
         )
+        visual_context = (
+            _model_to_dict(req.visualContext)
+            if "visualContext" in sent_fields
+            else None
+        )
 
         return MemoryContextResponse(
             **replace_memory_context(
@@ -129,6 +147,7 @@ async def memory_replace_context(req: MemoryContextReplaceRequest):
                 notes=[_model_to_dict(note) for note in req.notes],
                 active_session=_model_to_dict(req.activeSession),
                 recent_focus_sessions=recent_focus_sessions,
+                visual_context=visual_context,
             )
         )
     except MemoryStoreError as exc:
@@ -165,6 +184,7 @@ async def memory_import_context(req: MemoryContextImportRequest):
                 recent_focus_sessions=[
                     _model_to_dict(session) for session in req.recentFocusSessions
                 ],
+                visual_context=_model_to_dict(req.visualContext),
             )
         )
     except MemoryStoreError as exc:
@@ -310,6 +330,116 @@ async def memory_delete_recent_focus_session(session_id: str):
         raise HTTPException(
             status_code=500,
             detail="QMeet could not delete recent focus session.",
+        )
+
+
+@router.get("/visual", response_model=VisualContextResponse)
+async def memory_visual_context():
+    try:
+        return VisualContextResponse(**get_visual_context())
+    except MemoryStoreError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not read visual context.",
+        )
+
+
+@router.put("/visual", response_model=VisualContextResponse)
+async def memory_replace_visual_context(req: VisualContextReplaceRequest):
+    try:
+        return VisualContextResponse(
+            **replace_visual_context(_model_to_dict(req.visualContext))
+        )
+    except MemoryStoreError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not save visual context.",
+        )
+
+
+@router.patch("/visual", response_model=VisualContextResponse)
+async def memory_update_visual_context(req: VisualContextUpdateRequest):
+    try:
+        sent_fields = _model_fields_set(req)
+        return VisualContextResponse(
+            **update_visual_context(
+                enabled=req.enabled if "enabled" in sent_fields else None,
+                last_observation=(
+                    _model_to_dict(req.lastObservation)
+                    if "lastObservation" in sent_fields
+                    else None
+                ),
+                recent_observations=(
+                    [_model_to_dict(item) for item in (req.recentObservations or [])]
+                    if "recentObservations" in sent_fields
+                    else None
+                ),
+                update_last_observation="lastObservation" in sent_fields,
+                update_recent_observations="recentObservations" in sent_fields,
+            )
+        )
+    except MemoryStoreError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not update visual context.",
+        )
+
+
+@router.post("/visual/observations", response_model=VisualObservationCreateResponse)
+async def memory_create_visual_observation(req: VisualObservationCreateRequest):
+    try:
+        return VisualObservationCreateResponse(
+            **create_visual_observation(
+                summary=req.summary,
+                source=req.source,
+                captured_at=req.capturedAt or "",
+                confidence=req.confidence,
+                related_focus_id=req.relatedFocusId,
+            )
+        )
+    except MemoryStoreError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not save visual observation.",
+        )
+
+
+@router.post("/visual/clear", response_model=VisualContextClearResponse)
+async def memory_clear_visual_context():
+    try:
+        return VisualContextClearResponse(**clear_visual_context())
+    except MemoryStoreError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not clear visual context.",
+        )
+
+
+@router.delete(
+    "/visual/observations/{observation_id}",
+    response_model=VisualObservationDeleteResponse,
+)
+async def memory_delete_visual_observation(observation_id: str):
+    try:
+        return VisualObservationDeleteResponse(
+            **delete_visual_observation(observation_id)
+        )
+    except MemoryStoreError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not delete visual observation.",
         )
 
 
