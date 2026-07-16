@@ -44,7 +44,7 @@ const RECENT_ACTIONS_STORAGE_KEY = 'qmeet-recent-actions';
 const RECENT_FOCUS_SESSIONS_STORAGE_KEY = 'qmeet-recent-focus-sessions';
 const VISUAL_CONTEXT_STORAGE_KEY = 'qmeet-visual-context';
 const VISUAL_CONTEXT_STATE_EVENT = 'qmeet-visual-context-state';
-const ACTIVE_SESSION_COMMAND_HANDLER_MARKER = 'phase14c-v1-manual-visual';
+const ACTIVE_SESSION_COMMAND_HANDLER_MARKER = 'phase14h-v2-visual-readout-fix';
 
 function createId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -321,6 +321,82 @@ function describeVisualContext(visualContext: VisualContext): string {
     : '';
 
   return `Last visual observation: ${describeVisualObservation(lastObservation)}.${recentText}`;
+}
+
+
+function describeLastVisualObservation(visualContext: VisualContext): string {
+  const normalizedContext = normalizeVisualContext(visualContext);
+  const lastObservation = normalizedContext.lastObservation ?? normalizedContext.recentObservations[0] ?? null;
+
+  if (!lastObservation) {
+    return 'No visual observations have been saved yet.';
+  }
+
+  return `Last visual observation: ${describeVisualObservation(lastObservation)}.`;
+}
+
+function describeVisualHistory(visualContext: VisualContext): string {
+  const normalizedContext = normalizeVisualContext(visualContext);
+  const observations = normalizedContext.recentObservations.slice(0, 5);
+
+  if (observations.length === 0) {
+    return 'No visual observations have been saved yet.';
+  }
+
+  const lines = observations.map((observation, index) => {
+    return `${index + 1}. ${describeVisualObservation(observation)}`;
+  });
+  const remaining = normalizedContext.recentObservations.length - observations.length;
+
+  return `Recent visual observations: ${lines.join('; ')}${remaining > 0 ? `; plus ${remaining} more` : ''}.`;
+}
+
+function describeVisualContextSummary(visualContext: VisualContext): string {
+  const normalizedContext = normalizeVisualContext(visualContext);
+  const observations = normalizedContext.recentObservations;
+  const lastObservation = normalizedContext.lastObservation ?? observations[0] ?? null;
+
+  if (!lastObservation) {
+    return normalizedContext.enabled
+      ? 'Visual context is enabled, but no visual observations have been saved yet.'
+      : 'Visual context is empty. Use a manual visual note or Analyze Snapshot to add an observation.';
+  }
+
+  const sourceCounts = observations.reduce<Record<string, number>>((counts, observation) => {
+    counts[observation.source] = (counts[observation.source] ?? 0) + 1;
+    return counts;
+  }, {});
+  const sourceText = Object.entries(sourceCounts)
+    .map(([source, count]) => `${count} ${source}`)
+    .join(', ');
+  const linkedCount = observations.filter((observation) => observation.relatedFocusId).length;
+
+  return [
+    `Visual context summary: ${observations.length} saved observation${observations.length === 1 ? '' : 's'}${sourceText ? ` (${sourceText})` : ''}.`,
+    `Latest: ${describeVisualObservation(lastObservation)}.`,
+    linkedCount > 0
+      ? `${linkedCount} observation${linkedCount === 1 ? '' : 's'} linked to a focus session.`
+      : 'No observations are linked to a focus session yet.',
+  ].join(' ');
+}
+
+
+function describeVisualContextByReadMode(visualContext: VisualContext, readMode: string | undefined): string {
+  const normalizedReadMode = (readMode ?? '').toLowerCase().trim();
+
+  if (normalizedReadMode === 'last') {
+    return describeLastVisualObservation(visualContext);
+  }
+
+  if (normalizedReadMode === 'history' || normalizedReadMode === 'observations') {
+    return describeVisualHistory(visualContext);
+  }
+
+  if (normalizedReadMode === 'summary' || normalizedReadMode === 'recap') {
+    return describeVisualContextSummary(visualContext);
+  }
+
+  return describeVisualContext(visualContext);
 }
 
 function addLocalVisualObservation(summary: string): VisualObservation | null {
@@ -1612,7 +1688,37 @@ export function handleMemoryCommand(
       deps.setActivePanel('memory');
       return {
         handled: true,
-        confirmationContent: describeVisualContext(readStoredVisualContext()),
+        confirmationContent: describeVisualContextByReadMode(
+          readStoredVisualContext(),
+          commandMatch.payload,
+        ),
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+
+    case 'read-last-visual-observation': {
+      deps.setActivePanel('memory');
+      return {
+        handled: true,
+        confirmationContent: describeLastVisualObservation(readStoredVisualContext()),
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+
+    case 'read-visual-history': {
+      deps.setActivePanel('memory');
+      return {
+        handled: true,
+        confirmationContent: describeVisualHistory(readStoredVisualContext()),
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+
+    case 'summarize-visual-context': {
+      deps.setActivePanel('memory');
+      return {
+        handled: true,
+        confirmationContent: describeVisualContextSummary(readStoredVisualContext()),
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }

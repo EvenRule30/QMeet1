@@ -153,15 +153,52 @@ def _visual_context_intent(message: str) -> dict[str, Any] | None:
             reason="Backend visual-context interpreter matched a delete-last command.",
         )
 
+    summarize_patterns = [
+        r"^(?:please\s+)?(?:summarize|recap|review)\s+(?:the\s+|my\s+|our\s+)?(?:visual\s+context|visual\s+memory|visual\s+observations|camera\s+context|camera\s+memory)$",
+        r"^(?:please\s+)?(?:give\s+me\s+|make\s+me\s+|create\s+)?(?:a\s+)?(?:visual|camera)\s+(?:summary|recap|review)$",
+    ]
+    if _first_match(summarize_patterns, lowered):
+        return _command_response(
+            action="summarize_visual_context",
+            frontend_command="summarize visual context",
+            confidence=0.98,
+            reason="Backend visual-context interpreter matched a visual summary command.",
+        )
+
+    history_patterns = [
+        r"^(?:please\s+)?(?:show|read|list|display|open)\s+(?:the\s+|my\s+|our\s+)?(?:recent\s+|saved\s+|all\s+)?(?:visual\s+observations|visual\s+history|camera\s+observations|camera\s+history|things\s+(?:i|we)\s+saw)$",
+        r"^(?:please\s+)?(?:what\s+(?:have|did)\s+(?:i|we)\s+(?:seen|looked\s+at|saved\s+visually))$",
+        r"^(?:visual\s+history|camera\s+history|visual\s+observations)$",
+    ]
+    if _first_match(history_patterns, lowered):
+        return _command_response(
+            action="read_visual_history",
+            frontend_command="show visual observations",
+            confidence=0.98,
+            reason="Backend visual-context interpreter matched a visual history command.",
+        )
+
+    last_patterns = [
+        r"^(?:please\s+)?(?:what\s+(?:was|is)|show|read|tell\s+me|display)\s+(?:the\s+|my\s+|our\s+)?(?:last|latest|most\s+recent)\s+(?:visual\s+observation|visual\s+note|visual\s+memory|camera\s+observation|camera\s+memory|thing\s+(?:i|we)\s+saw)$",
+        r"^(?:please\s+)?(?:what\s+(?:did|do)\s+(?:i|we)\s+(?:last\s+)?(?:see|look\s+at)|what\s+(?:am|are)\s+(?:i|we)\s+looking\s+at|what\s+did\s+you\s+last\s+see|what\s+was\s+the\s+last\s+thing\s+you\s+saw)$",
+        r"^(?:please\s+)?(?:last|latest)\s+(?:visual|camera)\s+(?:observation|memory|note)$",
+    ]
+    if _first_match(last_patterns, lowered):
+        return _command_response(
+            action="read_last_visual_observation",
+            frontend_command="what was the last visual observation",
+            confidence=0.98,
+            reason="Backend visual-context interpreter matched a last-visual-observation command.",
+        )
+
     read_patterns = [
-        r"^(?:please\s+)?(?:what\s+(?:was|is)|show|read|tell\s+me|display|open|summarize)\s+(?:the\s+|my\s+|our\s+)?(?:last\s+|latest\s+|recent\s+|current\s+)?(?:visual\s+context|visual\s+memory|visual\s+observations|visual\s+observation|camera\s+context|camera\s+memory|camera\s+observation)$",
-        r"^(?:please\s+)?(?:what\s+(?:did|do)\s+(?:i|we)\s+(?:last\s+)?(?:see|look\s+at)|what\s+(?:am|are)\s+(?:i|we)\s+looking\s+at)$",
-        r"^(?:visual\s+context|visual\s+memory|visual\s+observations|camera\s+context)$",
+        r"^(?:please\s+)?(?:what\s+(?:was|is)|show|read|tell\s+me|display|open)\s+(?:the\s+|my\s+|our\s+)?(?:current\s+)?(?:visual\s+context|visual\s+memory|camera\s+context|camera\s+memory)$",
+        r"^(?:visual\s+context|visual\s+memory|camera\s+context)$",
     ]
     if _first_match(read_patterns, lowered):
         return _command_response(
             action="read_visual_context",
-            frontend_command="what was the last visual observation",
+            frontend_command="show visual context",
             confidence=0.98,
             reason="Backend visual-context interpreter matched a read command.",
         )
@@ -562,6 +599,10 @@ async def command_interpret(req: CommandInterpretRequest):
     message = req.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
+
+    visual_intent = _visual_context_intent(message)
+    if visual_intent is not None:
+        return CommandInterpretResponse(**visual_intent)
 
     focus_intent = _focus_command_intent(message)
     if focus_intent is not None:

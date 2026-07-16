@@ -32,6 +32,9 @@ export type LocalCommand =
   | 'enhanced-focus-recap'
   | 'create-visual-observation'
   | 'read-visual-context'
+  | 'read-last-visual-observation'
+  | 'read-visual-history'
+  | 'summarize-visual-context'
   | 'clear-visual-context'
   | 'delete-last-visual-observation'
   | 'remember-task'
@@ -107,6 +110,7 @@ export interface FocusSessionCommandPayload {
 // Phase 13F-v1: local focus/work recap commands.
 // Phase 13F-v2: LLM-enhanced recap commands.
 // Phase 14C-v1: manual visual observation commands.
+// Phase 14H-v2: visual read/history/summary commands route through read-visual-context payloads.
 
 export interface CommandMatch {
   command: LocalCommand;
@@ -120,7 +124,7 @@ export interface CommandMatch {
 }
 
 const HELP_MESSAGE =
-  "I'm QMeet, your local AI orb interface. I can control the local UI without sending those commands to OpenAI. I can open Menu, Settings, Status, Notes, Memory, Calendar, and real Web Search. Notes: say \"note that buy milk,\" \"read my notes,\" or \"delete last note.\" Memory/tasks: say \"what was I working on,\" \"start a coding session for Phase 12,\" \"set my goal to wire focus commands,\" \"remember to test the Pi as a task,\" \"mark task done,\" or \"open memory.\" Search: say \"search for raspberry pi kiosk mode,\" \"look up chromium flags,\" or \"clear search\" to run real web searches. Calendar: say \"add event tomorrow at 3 called meeting,\" \"reschedule last event to tomorrow at 4,\" \"rename last event to project sync,\" \"show today's events,\" \"what's on my calendar,\" \"refresh calendar,\" \"delete last event,\" or \"clear calendar.\" Voice: say \"mute voice,\" \"unmute voice,\" \"speak slower,\" \"speak faster,\" or \"normal voice.\" Navigation: say \"go home,\" \"close panel,\" \"cancel,\" or \"what did you hear.\"";
+  "I'm QMeet, your local AI orb interface. I can control the local UI without sending those commands to OpenAI. I can open Menu, Settings, Status, Notes, Memory, Calendar, and real Web Search. Notes: say \"note that buy milk,\" \"read my notes,\" or \"delete last note.\" Memory/tasks: say \"what was I working on,\" \"start a coding session for Phase 12,\" \"set my goal to wire focus commands,\" \"remember to test the Pi as a task,\" \"mark task done,\" or \"open memory.\" Search: say \"search for raspberry pi kiosk mode,\" \"look up chromium flags,\" or \"clear search\" to run real web searches. Calendar: say \"add event tomorrow at 3 called meeting,\" \"reschedule last event to tomorrow at 4,\" \"rename last event to project sync,\" \"show today's events,\" \"what's on my calendar,\" \"refresh calendar,\" \"delete last event,\" or \"clear calendar.\" Visual context: say \"what was the last thing you saw,\" \"show visual observations,\" or \"summarize visual context.\" Voice: say \"mute voice,\" \"unmute voice,\" \"speak slower,\" \"speak faster,\" or \"normal voice.\" Navigation: say \"go home,\" \"close panel,\" \"cancel,\" or \"what did you hear.\"";
 
 const CONFIRMATIONS: Record<LocalCommand, string> = {
   help: HELP_MESSAGE,
@@ -158,6 +162,9 @@ const CONFIRMATIONS: Record<LocalCommand, string> = {
   'enhanced-focus-recap': 'Preparing enhanced focus recap.',
   'create-visual-observation': 'Saved visual observation.',
   'read-visual-context': 'Reading visual context.',
+  'read-last-visual-observation': 'Reading last visual observation.',
+  'read-visual-history': 'Reading recent visual observations.',
+  'summarize-visual-context': 'Summarizing visual context.',
   'clear-visual-context': 'Clearing visual context.',
   'delete-last-visual-observation': 'Deleted last visual observation.',
   'remember-task': 'Saved task.',
@@ -843,10 +850,47 @@ function extractVisualContextIntent(normalized: string): CommandMatch | null {
     };
   }
 
+  const summarizePatterns = [
+    /^(?:please\s+)?(?:summarize|recap|review)\s+(?:the\s+|my\s+|our\s+)?(?:visual\s+context|visual\s+memory|visual\s+observations|camera\s+context|camera\s+memory)$/i,
+    /^(?:please\s+)?(?:give\s+me\s+|make\s+me\s+|create\s+)?(?:a\s+)?(?:visual|camera)\s+(?:summary|recap|review)$/i,
+  ];
+  if (summarizePatterns.some((pattern) => pattern.test(commandText))) {
+    return {
+      command: 'read-visual-context',
+      confirmation: CONFIRMATIONS['read-visual-context'],
+      payload: 'summary',
+    };
+  }
+
+  const historyPatterns = [
+    /^(?:please\s+)?(?:show|read|list|display|open)\s+(?:the\s+|my\s+|our\s+)?(?:recent\s+|saved\s+|all\s+)?(?:visual\s+observations|visual\s+history|camera\s+observations|camera\s+history|things\s+(?:i|we)\s+saw)$/i,
+    /^(?:please\s+)?(?:what\s+(?:have|did)\s+(?:i|we)\s+(?:seen|looked\s+at|saved\s+visually))$/i,
+    /^(?:visual\s+history|camera\s+history|visual\s+observations)$/i,
+  ];
+  if (historyPatterns.some((pattern) => pattern.test(commandText))) {
+    return {
+      command: 'read-visual-context',
+      confirmation: CONFIRMATIONS['read-visual-context'],
+      payload: 'history',
+    };
+  }
+
+  const lastPatterns = [
+    /^(?:please\s+)?(?:what\s+(?:was|is)|show|read|tell\s+me|display)\s+(?:the\s+|my\s+|our\s+)?(?:last|latest|most\s+recent)\s+(?:visual\s+observation|visual\s+note|visual\s+memory|camera\s+observation|camera\s+memory|thing\s+(?:i|we)\s+saw)$/i,
+    /^(?:please\s+)?(?:what\s+(?:did|do)\s+(?:i|we)\s+(?:last\s+)?(?:see|look\s+at)|what\s+(?:am|are)\s+(?:i|we)\s+looking\s+at|what\s+did\s+you\s+last\s+see|what\s+was\s+the\s+last\s+thing\s+you\s+saw)$/i,
+    /^(?:please\s+)?(?:last|latest)\s+(?:visual|camera)\s+(?:observation|memory|note)$/i,
+  ];
+  if (lastPatterns.some((pattern) => pattern.test(commandText))) {
+    return {
+      command: 'read-visual-context',
+      confirmation: CONFIRMATIONS['read-visual-context'],
+      payload: 'last',
+    };
+  }
+
   const readPatterns = [
-    /^(?:please\s+)?(?:what\s+(?:was|is)|show|read|tell\s+me|display|open|summarize)\s+(?:the\s+|my\s+|our\s+)?(?:last\s+|latest\s+|recent\s+|current\s+)?(?:visual\s+context|visual\s+memory|visual\s+observations|visual\s+observation|camera\s+context|camera\s+memory|camera\s+observation)$/i,
-    /^(?:please\s+)?(?:what\s+(?:did|do)\s+(?:i|we)\s+(?:last\s+)?(?:see|look\s+at)|what\s+(?:am|are)\s+(?:i|we)\s+looking\s+at)$/i,
-    /^(?:visual\s+context|visual\s+memory|visual\s+observations|camera\s+context)$/i,
+    /^(?:please\s+)?(?:what\s+(?:was|is)|show|read|tell\s+me|display|open)\s+(?:the\s+|my\s+|our\s+)?(?:current\s+)?(?:visual\s+context|visual\s+memory|camera\s+context|camera\s+memory)$/i,
+    /^(?:visual\s+context|visual\s+memory|camera\s+context)$/i,
   ];
   if (readPatterns.some((pattern) => pattern.test(commandText))) {
     return {

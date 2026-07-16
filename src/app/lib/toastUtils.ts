@@ -67,6 +67,9 @@ export function getBriefToolSpeech(command: string, fullText: string): string {
     case 'create-visual-observation':
       return 'Visual observation saved.';
     case 'read-visual-context':
+    case 'read-last-visual-observation':
+    case 'read-visual-history':
+    case 'summarize-visual-context':
       return trimmed;
     case 'clear-visual-context':
       return 'Visual context cleared.';
