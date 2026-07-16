@@ -24,6 +24,10 @@ type ActiveSessionStateEventDetail = {
   activeSession: ActiveSession | null;
 };
 
+type PromptCommandEventDetail = {
+  command: string;
+};
+
 type MemoryOverlayProps = {
   memorySyncState: MemorySyncState;
   memorySyncMessage: string;
@@ -51,7 +55,8 @@ const ACTIVE_SESSION_STORAGE_KEY = 'qmeet-active-session';
 const ACTIVE_SESSION_SESSION_STORAGE_KEY = 'qmeet-active-session-live';
 const ACTIVE_SESSION_COMMAND_EVENT = 'qmeet-active-session-command';
 const ACTIVE_SESSION_STATE_EVENT = 'qmeet-active-session-state';
-const MEMORY_OVERLAY_FOCUS_MARKER = 'phase13a-v1-focus-nudge-engine';
+const QMEET_PROMPT_COMMAND_EVENT = 'qmeet-prompt-command';
+const MEMORY_OVERLAY_FOCUS_MARKER = 'phase13b-v1-clickable-focus-nudges';
 
 function normalizeActiveSession(value: unknown): ActiveSession | null {
   if (!value || typeof value !== 'object') return null;
@@ -158,6 +163,7 @@ type FocusNudge = {
   title: string;
   detail: string;
   command: string;
+  actionLabel: string;
 };
 
 function findLinkedTasks(
@@ -187,6 +193,7 @@ function buildFocusNudges(
         title: 'Start with a focus session',
         detail: 'Set the current work context so QMeet can connect chat, tasks, and notes.',
         command: 'start a focus session for …',
+        actionLabel: 'Start focus',
       },
     ];
   }
@@ -203,6 +210,7 @@ function buildFocusNudges(
       title: 'Add a goal',
       detail: 'A goal makes focus-aware chat, summaries, and next steps more useful.',
       command: 'set my goal to …',
+      actionLabel: 'Set goal',
     });
   }
 
@@ -212,6 +220,7 @@ function buildFocusNudges(
       title: 'Turn this focus into tasks',
       detail: 'Create a short checklist from the current focus and goal.',
       command: 'turn this focus into tasks',
+      actionLabel: 'Create tasks',
     });
   }
 
@@ -220,7 +229,8 @@ function buildFocusNudges(
       id: 'next-linked-task',
       title: 'Next linked task',
       detail: openLinkedTasks[0].title,
-      command: `work on ${openLinkedTasks[0].title}`,
+      command: 'what should I do next for this focus',
+      actionLabel: 'Ask next step',
     });
   }
 
@@ -232,6 +242,7 @@ function buildFocusNudges(
         completedLinkedTasks.length === 1 ? '' : 's'
       }. Capture the outcome before ending the focus.`,
       command: 'save this focus as a note',
+      actionLabel: 'Save note',
     });
   }
 
@@ -245,6 +256,7 @@ function buildFocusNudges(
       title: 'Save a progress note',
       detail: 'This focus has been active for a while and has not pinned a summary note yet.',
       command: 'save this focus as a note',
+      actionLabel: 'Save note',
     });
   }
 
@@ -254,10 +266,62 @@ function buildFocusNudges(
       title: 'Keep momentum',
       detail: 'Your focus has a goal and linked context. Ask QMeet for the next step when you are ready.',
       command: 'what should I do next for this focus',
+      actionLabel: 'Ask QMeet',
     });
   }
 
   return nudges.slice(0, 3);
+}
+
+function promptForNudgeValue(nudge: FocusNudge): string | null {
+  if (typeof window === 'undefined') return null;
+
+  if (nudge.id === 'start-focus') {
+    const title = window.prompt('What should this focus session be called?');
+    const trimmedTitle = title?.trim();
+    return trimmedTitle ? `start a focus session for ${trimmedTitle}` : null;
+  }
+
+  if (nudge.id === 'set-goal') {
+    const goal = window.prompt('What goal should QMeet track for this focus?');
+    const trimmedGoal = goal?.trim();
+    return trimmedGoal ? `set my goal to ${trimmedGoal}` : null;
+  }
+
+  return null;
+}
+
+function resolveNudgeCommand(nudge: FocusNudge): string | null {
+  if (nudge.command.includes('…')) {
+    return promptForNudgeValue(nudge);
+  }
+
+  return nudge.command;
+}
+
+function dispatchPromptCommand(command: string) {
+  if (typeof window === 'undefined') return;
+
+  window.dispatchEvent(
+    new CustomEvent<PromptCommandEventDetail>(QMEET_PROMPT_COMMAND_EVENT, {
+      detail: { command },
+    }),
+  );
+}
+
+function runFocusNudge(
+  nudge: FocusNudge,
+  pushResultToast: (toastInput: ToastInput) => void,
+) {
+  const command = resolveNudgeCommand(nudge);
+  if (!command) return;
+
+  dispatchPromptCommand(command);
+  pushResultToast({
+    kind: 'info',
+    title: 'Nudge action',
+    detail: command,
+  });
 }
 
 export function MemoryOverlay({
@@ -397,8 +461,17 @@ export function MemoryOverlay({
                     <div className="memory-action-title">{nudge.title}</div>
                     <div className="memory-task-meta">{nudge.detail}</div>
                     <p className="panel-section-text">
-                      Say “{nudge.command}”
+                      Say “{nudge.command}” or tap the action.
                     </p>
+                  </div>
+                  <div className="memory-task-actions">
+                    <button
+                      className="panel-action-btn"
+                      type="button"
+                      onClick={() => runFocusNudge(nudge, pushResultToast)}
+                    >
+                      {nudge.actionLabel}
+                    </button>
                   </div>
                 </div>
               ))}
