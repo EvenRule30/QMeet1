@@ -151,6 +151,45 @@ class ActiveSessionItem(BaseModel):
     summary: str | None = None
 
 
+class RecentFocusSessionItem(BaseModel):
+    id: str
+    title: str
+    mode: MemorySessionMode = "general"
+    goal: str = ""
+    startedAt: str
+    endedAt: str
+    pinnedNoteIds: list[str] = Field(default_factory=list)
+    linkedTaskIds: list[str] = Field(default_factory=list)
+    summary: str | None = None
+    summaryNoteId: str | None = None
+
+
+class RecentFocusSessionsReplaceRequest(BaseModel):
+    recentFocusSessions: list[RecentFocusSessionItem] = Field(default_factory=list)
+
+
+class RecentFocusSessionsResponse(BaseModel):
+    ok: bool = True
+    provider: Literal["local-json"] = "local-json"
+    recentFocusSessions: list[RecentFocusSessionItem] = Field(default_factory=list)
+    message: str = ""
+
+
+class RecentFocusSessionDeleteResponse(BaseModel):
+    ok: bool = True
+    provider: Literal["local-json"] = "local-json"
+    deletedRecentFocusSessionId: str = ""
+    message: str = ""
+
+
+class RecentFocusSessionsClearResponse(BaseModel):
+    ok: bool = True
+    provider: Literal["local-json"] = "local-json"
+    removedCount: int = 0
+    recentFocusSessions: list[RecentFocusSessionItem] = Field(default_factory=list)
+    message: str = ""
+
+
 class ActiveSessionReplaceRequest(BaseModel):
     activeSession: ActiveSessionItem | None = None
 
@@ -175,6 +214,8 @@ class ActiveSessionClearResponse(BaseModel):
     ok: bool = True
     provider: Literal["local-json"] = "local-json"
     activeSession: ActiveSessionItem | None = None
+    recentFocusSessions: list[RecentFocusSessionItem] = Field(default_factory=list)
+    archivedFocusSession: RecentFocusSessionItem | None = None
     removedActiveSession: bool = False
     message: str = ""
 
@@ -190,6 +231,8 @@ class MemoryStatusResponse(BaseModel):
     noteCount: int = 0
     activeSessionSet: bool = False
     activeSessionTitle: str = ""
+    recentFocusSessionCount: int = 0
+    lastFocusSessionTitle: str = ""
     message: str = ""
 
 
@@ -233,6 +276,7 @@ class MemoryContextReplaceRequest(BaseModel):
     recentActions: list[RecentActionItem] = Field(default_factory=list)
     notes: list[MemoryNoteItem] = Field(default_factory=list)
     activeSession: ActiveSessionItem | None = None
+    recentFocusSessions: list[RecentFocusSessionItem] = Field(default_factory=list)
 
 
 class MemoryContextResponse(BaseModel):
@@ -242,6 +286,7 @@ class MemoryContextResponse(BaseModel):
     recentActions: list[RecentActionItem] = Field(default_factory=list)
     notes: list[MemoryNoteItem] = Field(default_factory=list)
     activeSession: ActiveSessionItem | None = None
+    recentFocusSessions: list[RecentFocusSessionItem] = Field(default_factory=list)
     message: str = ""
 
 
@@ -252,22 +297,25 @@ class MemoryContextClearResponse(BaseModel):
     recentActions: list[RecentActionItem] = Field(default_factory=list)
     notes: list[MemoryNoteItem] = Field(default_factory=list)
     activeSession: ActiveSessionItem | None = None
+    recentFocusSessions: list[RecentFocusSessionItem] = Field(default_factory=list)
     removedTaskCount: int = 0
     removedActionCount: int = 0
     removedNoteCount: int = 0
     removedActiveSession: bool = False
+    removedRecentFocusSessionCount: int = 0
     message: str = ""
 
 
 class MemoryContextExportResponse(BaseModel):
     ok: bool = True
     provider: Literal["local-json"] = "local-json"
-    version: int = 5
+    version: int = 6
     exportedAt: str = ""
     tasks: list[MemoryTaskItem] = Field(default_factory=list)
     recentActions: list[RecentActionItem] = Field(default_factory=list)
     notes: list[MemoryNoteItem] = Field(default_factory=list)
     activeSession: ActiveSessionItem | None = None
+    recentFocusSessions: list[RecentFocusSessionItem] = Field(default_factory=list)
     message: str = ""
 
 
@@ -276,6 +324,7 @@ class MemoryContextImportRequest(BaseModel):
     recentActions: list[RecentActionItem] = Field(default_factory=list)
     notes: list[MemoryNoteItem] = Field(default_factory=list)
     activeSession: ActiveSessionItem | None = None
+    recentFocusSessions: list[RecentFocusSessionItem] = Field(default_factory=list)
 
 
 class RecentActionCreateRequest(BaseModel):
