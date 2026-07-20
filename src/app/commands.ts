@@ -116,6 +116,7 @@ export interface FocusSessionCommandPayload {
 // Phase 14H-v2: visual read/history/summary commands route through read-visual-context payloads.
 // Phase 15A-v1: visual-focus fusion commands link/read observations related to the active focus.
 // Phase 16A-v1: calendar-focus prep routes next calendar events into active focus sessions.
+// Phase 16B-v1: calendar-focus prep also creates linked meeting-prep tasks.
 
 export interface CommandMatch {
   command: LocalCommand;
@@ -165,7 +166,7 @@ const CONFIRMATIONS: Record<LocalCommand, string> = {
   'resume-last-focus-session': 'Resuming last focus session.',
   'recap-focus-activity': 'Recapping recent focus activity.',
   'enhanced-focus-recap': 'Preparing enhanced focus recap.',
-  'prepare-calendar-focus': 'Preparing focus from your next calendar event.',
+  'prepare-calendar-focus': 'Preparing focus and tasks from your next calendar event.',
   'create-visual-observation': 'Saved visual observation.',
   'read-visual-context': 'Reading visual context.',
   'read-last-visual-observation': 'Reading last visual observation.',
@@ -947,6 +948,9 @@ function extractCalendarFocusIntent(normalized: string): CommandMatch | null {
     /^(?:please\s+)?(?:summarize|review|check)\s+(?:my\s+)?(?:schedule|calendar|agenda)\s+and\s+(?:focus\s+)?(?:priorities|priority|prep|preparation)$/i,
     /^(?:please\s+)?(?:calendar|meeting|event)\s+(?:focus|prep|preparation)$/i,
     /^(?:please\s+)?(?:focus|prep|prepare)\s+(?:for\s+)?(?:next|upcoming)\s+(?:calendar\s+)?(?:event|meeting|appointment|call)$/i,
+    /^(?:please\s+)?(?:make|create|add|generate|build)\s+(?:prep|preparation|meeting\s+prep|calendar\s+prep)?\s*tasks?\s+(?:for|from|based\s+on)\s+(?:my\s+)?(?:next|upcoming)\s+(?:calendar\s+)?(?:event|meeting|appointment|call)$/i,
+    /^(?:please\s+)?(?:turn|convert|break\s+down)\s+(?:my\s+)?(?:next|upcoming)\s+(?:calendar\s+)?(?:event|meeting|appointment|call)\s+(?:into|in\s+to)\s+(?:prep\s+)?tasks?$/i,
+    /^(?:please\s+)?(?:next|upcoming)\s+(?:meeting|event|calendar\s+event|appointment|call)\s+(?:prep\s+)?tasks?$/i,
   ];
 
   if (preparePatterns.some((pattern) => pattern.test(text))) {

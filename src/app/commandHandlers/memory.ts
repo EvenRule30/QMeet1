@@ -51,7 +51,7 @@ const RECENT_FOCUS_SESSIONS_STORAGE_KEY = 'qmeet-recent-focus-sessions';
 const VISUAL_CONTEXT_STORAGE_KEY = 'qmeet-visual-context';
 const VISUAL_CONTEXT_STATE_EVENT = 'qmeet-visual-context-state';
 const CALENDAR_FOCUS_PREP_EVENT = 'qmeet-calendar-focus-prep-command';
-const ACTIVE_SESSION_COMMAND_HANDLER_MARKER = 'phase16a-v1-calendar-focus';
+const ACTIVE_SESSION_COMMAND_HANDLER_MARKER = 'phase16b-v1-calendar-focus-tasks';
 
 function createId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -1551,7 +1551,7 @@ export function handleMemoryCommand(
       return {
         handled: true,
         confirmationContent:
-          'Preparing focus from your next calendar event. I will refresh your calendar, start a meeting prep focus if I find an upcoming event, and show the calendar panel.',
+          'Preparing focus and tasks from your next calendar event. I will refresh your calendar, start a meeting prep focus, create linked prep tasks if I find an upcoming event, and show the calendar panel.',
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }

@@ -123,7 +123,7 @@ def _default_focus_title(mode: str) -> str:
 
 
 def _calendar_focus_intent(message: str) -> dict[str, Any] | None:
-    """Catch calendar-to-focus prep commands before the general interpreter."""
+    """Catch calendar-to-focus prep/task commands before the general interpreter."""
     text = _collapse_command_text(message)
     if not text:
         return None
@@ -136,6 +136,9 @@ def _calendar_focus_intent(message: str) -> dict[str, Any] | None:
         r"^(?:please\s+)?(?:summarize|review|check)\s+(?:my\s+)?(?:schedule|calendar|agenda)\s+and\s+(?:focus\s+)?(?:priorities|priority|prep|preparation)$",
         r"^(?:please\s+)?(?:calendar|meeting|event)\s+(?:focus|prep|preparation)$",
         r"^(?:please\s+)?(?:focus|prep|prepare)\s+(?:for\s+)?(?:next|upcoming)\s+(?:calendar\s+)?(?:event|meeting|appointment|call)$",
+        r"^(?:please\s+)?(?:make|create|add|generate|build)\s+(?:prep|preparation|meeting\s+prep|calendar\s+prep)?\s*tasks?\s+(?:for|from|based\s+on)\s+(?:my\s+)?(?:next|upcoming)\s+(?:calendar\s+)?(?:event|meeting|appointment|call)$",
+        r"^(?:please\s+)?(?:turn|convert|break\s+down)\s+(?:my\s+)?(?:next|upcoming)\s+(?:calendar\s+)?(?:event|meeting|appointment|call)\s+(?:into|in\s+to)\s+(?:prep\s+)?tasks?$",
+        r"^(?:please\s+)?(?:next|upcoming)\s+(?:meeting|event|calendar\s+event|appointment|call)\s+(?:prep\s+)?tasks?$",
     ]
 
     if _first_match(patterns, lowered):
@@ -143,7 +146,7 @@ def _calendar_focus_intent(message: str) -> dict[str, Any] | None:
             action="prepare_calendar_focus",
             frontend_command="prepare me for my next meeting",
             confidence=0.98,
-            reason="Backend calendar-focus interpreter matched a next-event prep command.",
+            reason="Backend calendar-focus interpreter matched a next-event prep/task command.",
         )
 
     return None

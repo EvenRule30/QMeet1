@@ -6,6 +6,7 @@ import {
   getCalendarEvents,
   getCalendarStatus,
   replaceActiveSession,
+  replaceMemoryTasks,
   resetCalendarAuth,
   startCalendarAuth,
   updateGoogleCalendarEvent,
@@ -16,6 +17,7 @@ import {
   CalendarBackendView,
   CalendarEvent,
   ActiveSession,
+  MemoryTask,
 } from '../types';
 import {
   getDateKeyForCalendarView,
@@ -31,6 +33,8 @@ const CALENDAR_EVENTS_STORAGE_KEY = 'qmeet-calendar-events';
 const ACTIVE_SESSION_STORAGE_KEY = 'qmeet-active-session';
 const ACTIVE_SESSION_SESSION_STORAGE_KEY = 'qmeet-active-session-live';
 const ACTIVE_SESSION_STATE_EVENT = 'qmeet-active-session-state';
+const MEMORY_TASKS_STORAGE_KEY = 'qmeet-memory-tasks';
+const MEMORY_TASKS_STATE_EVENT = 'qmeet-memory-tasks-state';
 const CALENDAR_FOCUS_PREP_EVENT = 'qmeet-calendar-focus-prep-command';
 const LEGACY_CALENDAR_EVENTS_STORAGE_KEYS = [
   'qmeet-calendar',
@@ -194,6 +198,106 @@ function applyCalendarFocusSession(session: ActiveSession) {
       detail: { activeSession: session },
     }),
   );
+}
+
+
+function createId(prefix: string): string {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function normalizeTaskTitle(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function readStoredMemoryTasks(): MemoryTask[] {
+  if (typeof window === 'undefined') return [];
+
+  try {
+    const rawTasks = window.localStorage.getItem(MEMORY_TASKS_STORAGE_KEY);
+    if (!rawTasks) return [];
+    const parsedTasks = JSON.parse(rawTasks);
+    if (!Array.isArray(parsedTasks)) return [];
+
+    return parsedTasks
+      .filter((task) => task && typeof task.title === 'string')
+      .map((task) => ({
+        id: typeof task.id === 'string' && task.id.trim() ? task.id : createId('task'),
+        title: task.title.trim(),
+        createdAt:
+          typeof task.createdAt === 'string' && task.createdAt.trim()
+            ? task.createdAt
+            : new Date().toISOString(),
+        ...(typeof task.completedAt === 'string' && task.completedAt.trim()
+          ? { completedAt: task.completedAt }
+          : {}),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function writeStoredMemoryTasks(tasks: MemoryTask[]) {
+  if (typeof window === 'undefined') return;
+
+  try {
+    window.localStorage.setItem(MEMORY_TASKS_STORAGE_KEY, JSON.stringify(tasks));
+    window.dispatchEvent(
+      new CustomEvent(MEMORY_TASKS_STATE_EVENT, {
+        detail: { tasks },
+      }),
+    );
+  } catch (error) {
+    console.warn('Failed to save generated meeting prep tasks locally:', error);
+  }
+}
+
+function getEventDetailSnippet(event: CalendarEvent): string {
+  const description = event.description?.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!description) return '';
+  return description.length > 90 ? `${description.slice(0, 87).trim()}...` : description;
+}
+
+function generateMeetingPrepTaskTitles(event: CalendarEvent): string[] {
+  const eventTitle = event.title.trim() || 'calendar event';
+  const taskTitles = [
+    `Review details for ${eventTitle}`,
+    `Gather relevant notes or documents for ${eventTitle}`,
+    `Prepare questions for ${eventTitle}`,
+    `Identify decisions or next steps needed for ${eventTitle}`,
+  ];
+
+  if (event.location?.trim()) {
+    taskTitles.push(`Check the location or meeting link for ${eventTitle}: ${event.location.trim()}`);
+  }
+
+  const detailSnippet = getEventDetailSnippet(event);
+  if (detailSnippet) {
+    taskTitles.push(`Review the event description for ${eventTitle}: ${detailSnippet}`);
+  }
+
+  taskTitles.push(`Capture follow-up items after ${eventTitle}`);
+  return taskTitles.slice(0, 6);
+}
+
+function createMeetingPrepTasks(event: CalendarEvent, existingTasks: MemoryTask[]): MemoryTask[] {
+  const existingTitles = new Set(existingTasks.map((task) => normalizeTaskTitle(task.title)));
+  const now = new Date().toISOString();
+
+  return generateMeetingPrepTaskTitles(event)
+    .filter((title) => !existingTitles.has(normalizeTaskTitle(title)))
+    .map((title) => ({
+      id: createId('task'),
+      title,
+      createdAt: now,
+    }));
+}
+
+async function persistMeetingPrepTasks(tasks: MemoryTask[]) {
+  try {
+    await replaceMemoryTasks({ tasks });
+  } catch (error) {
+    console.warn('Failed to persist meeting prep tasks to backend:', error);
+  }
 }
 
 export function useCalendarController({
@@ -826,11 +930,29 @@ export function useCalendarController({
         return null;
       }
 
-      const session = createCalendarFocusSession(targetEvent);
+      const baseSession = createCalendarFocusSession(targetEvent);
+      const existingTasks = readStoredMemoryTasks();
+      const createdTasks = createMeetingPrepTasks(targetEvent, existingTasks);
+      const updatedTasks = createdTasks.length > 0
+        ? [...createdTasks, ...existingTasks]
+        : existingTasks;
+      const session: ActiveSession = {
+        ...baseSession,
+        linkedTaskIds: createdTasks.map((task) => task.id),
+        updatedAt: new Date().toISOString(),
+      };
+
+      if (createdTasks.length > 0) {
+        writeStoredMemoryTasks(updatedTasks);
+        persistMeetingPrepTasks(updatedTasks);
+      }
+
       applyCalendarFocusSession(session);
       await replaceActiveSession(session);
       setGoogleCalendarError(
-        `Started meeting prep focus from calendar: ${targetEvent.title}.`,
+        createdTasks.length > 0
+          ? `Started meeting prep focus from calendar and created ${createdTasks.length} prep tasks: ${targetEvent.title}.`
+          : `Started meeting prep focus from calendar: ${targetEvent.title}. Existing prep tasks were already present.`,
       );
       return session;
     } catch (error) {

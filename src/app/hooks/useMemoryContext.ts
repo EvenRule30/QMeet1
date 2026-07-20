@@ -61,12 +61,17 @@ type VisualContextStateEventDetail = {
   visualContext: VisualContext;
 };
 
+type MemoryTasksStateEventDetail = {
+  tasks: MemoryTask[];
+};
+
 const MEMORY_TASKS_STORAGE_KEY = 'qmeet-memory-tasks';
 const RECENT_ACTIONS_STORAGE_KEY = 'qmeet-recent-actions';
 const RECENT_FOCUS_SESSIONS_STORAGE_KEY = 'qmeet-recent-focus-sessions';
 const NOTES_STORAGE_KEY = 'qmeet-notes';
 const ACTIVE_SESSION_STORAGE_KEY = 'qmeet-active-session';
 const VISUAL_CONTEXT_STORAGE_KEY = 'qmeet-visual-context';
+const MEMORY_TASKS_STATE_EVENT = 'qmeet-memory-tasks-state';
 const VISUAL_CONTEXT_STATE_EVENT = 'qmeet-visual-context-state';
 
 function createId(prefix: string): string {
@@ -490,6 +495,12 @@ export function useMemoryContext({
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
+    const handleMemoryTasksState = (event: Event) => {
+      const detail = (event as CustomEvent<MemoryTasksStateEventDetail>).detail;
+      if (!Array.isArray(detail?.tasks)) return;
+      setMemoryTasks(detail.tasks);
+    };
+
     const handleVisualContextState = (event: Event) => {
       const detail = (event as CustomEvent<VisualContextStateEventDetail>).detail;
       if (!detail?.visualContext) return;
@@ -500,6 +511,11 @@ export function useMemoryContext({
     };
 
     const handleStorage = (event: StorageEvent) => {
+      if (event.key === MEMORY_TASKS_STORAGE_KEY) {
+        setMemoryTasks(readStoredMemoryTasks());
+        return;
+      }
+
       if (event.key !== VISUAL_CONTEXT_STORAGE_KEY) return;
       setVisualContext((prev) => {
         const nextVisualContext = readStoredVisualContext();
@@ -507,10 +523,12 @@ export function useMemoryContext({
       });
     };
 
+    window.addEventListener(MEMORY_TASKS_STATE_EVENT, handleMemoryTasksState);
     window.addEventListener(VISUAL_CONTEXT_STATE_EVENT, handleVisualContextState);
     window.addEventListener('storage', handleStorage);
 
     return () => {
+      window.removeEventListener(MEMORY_TASKS_STATE_EVENT, handleMemoryTasksState);
       window.removeEventListener(VISUAL_CONTEXT_STATE_EVENT, handleVisualContextState);
       window.removeEventListener('storage', handleStorage);
     };

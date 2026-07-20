@@ -64,7 +64,7 @@ export function getBriefToolSpeech(command: string, fullText: string): string {
     case 'recap-focus-activity':
       return trimmed;
     case 'prepare-calendar-focus':
-      return 'Preparing calendar focus.';
+      return 'Preparing calendar focus and tasks.';
 
     case 'enhanced-focus-recap':
       return trimmed;
@@ -381,7 +381,7 @@ export function getResultToastForCommand(
       return {
         kind: 'calendar',
         title: 'Calendar focus prep',
-        detail: 'Preparing from next calendar event.',
+        detail: 'Preparing focus and tasks from next calendar event.',
       };
     case 'run-search':
       return trimmed === 'Opening search.'
