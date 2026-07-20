@@ -70,7 +70,10 @@ export function getBriefToolSpeech(command: string, fullText: string): string {
     case 'read-last-visual-observation':
     case 'read-visual-history':
     case 'summarize-visual-context':
+    case 'read-focus-visuals':
       return trimmed;
+    case 'link-visual-to-focus':
+      return 'Visual context linked to focus.';
     case 'clear-visual-context':
       return 'Visual context cleared.';
     case 'delete-last-visual-observation':
@@ -275,6 +278,18 @@ export function getResultToastForCommand(
       return {
         kind: 'info',
         title: 'Visual context',
+        detail: compactToastDetail(trimmed),
+      };
+    case 'read-focus-visuals':
+      return {
+        kind: 'info',
+        title: 'Focus visuals',
+        detail: compactToastDetail(trimmed),
+      };
+    case 'link-visual-to-focus':
+      return {
+        kind: 'success',
+        title: 'Visual linked',
         detail: compactToastDetail(trimmed),
       };
     case 'clear-visual-context':

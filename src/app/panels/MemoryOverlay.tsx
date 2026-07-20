@@ -76,7 +76,7 @@ const ACTIVE_SESSION_COMMAND_EVENT = 'qmeet-active-session-command';
 const ACTIVE_SESSION_STATE_EVENT = 'qmeet-active-session-state';
 const QMEET_PROMPT_COMMAND_EVENT = 'qmeet-prompt-command';
 const VISUAL_CONTEXT_STATE_EVENT = 'qmeet-visual-context-state';
-const MEMORY_OVERLAY_FOCUS_MARKER = 'phase14c-v1-manual-visual';
+const MEMORY_OVERLAY_FOCUS_MARKER = 'phase15a-v1-visual-focus-fusion';
 
 function normalizeActiveSession(value: unknown): ActiveSession | null {
   if (!value || typeof value !== 'object') return null;
@@ -271,6 +271,16 @@ function getVisualObservationMeta(observation: VisualObservation) {
   }
 
   return pieces.join(' · ');
+}
+
+function getFocusLinkedVisualObservations(
+  activeSession: ActiveSession | null,
+  visualContext: VisualContext,
+) {
+  if (!activeSession) return [];
+  return visualContext.recentObservations.filter(
+    (observation) => observation.relatedFocusId === activeSession.id,
+  );
 }
 
 function readStoredActiveSession(): ActiveSession | null {
@@ -569,6 +579,10 @@ export function MemoryOverlay({
   const openTasks = memoryTasks.filter((task) => !task.completedAt);
   const completedTasks = memoryTasks.filter((task) => task.completedAt);
   const focusNudges = buildFocusNudges(activeSession, memoryTasks);
+  const focusLinkedVisualObservations = getFocusLinkedVisualObservations(
+    activeSession,
+    visualContext,
+  );
 
   const loadRecentFocusSessions = useCallback(async () => {
     try {
@@ -835,6 +849,20 @@ export function MemoryOverlay({
                       <button
                         className="panel-action-btn"
                         type="button"
+                        disabled={!visualContext.lastObservation}
+                        onClick={() =>
+                          runFocusQuickAction(
+                            'save this visual context to my focus',
+                            'Link visual',
+                            pushResultToast,
+                          )
+                        }
+                      >
+                        Link visual
+                      </button>
+                      <button
+                        className="panel-action-btn"
+                        type="button"
                         onClick={() =>
                           runFocusQuickAction(
                             'end and summarize this focus',
@@ -846,6 +874,25 @@ export function MemoryOverlay({
                         End with summary
                       </button>
                     </div>
+                    {focusLinkedVisualObservations.length > 0 && (
+                      <div className="memory-list">
+                        {focusLinkedVisualObservations.slice(0, 3).map((observation) => (
+                          <div className="memory-action-item" key={observation.id}>
+                            <div className="memory-task-copy">
+                              <div className="memory-action-title">
+                                Linked {formatVisualSource(observation.source)} visual
+                              </div>
+                              <div className="memory-task-meta">
+                                {getVisualObservationMeta(observation)}
+                              </div>
+                              <p className="panel-section-text">
+                                {observation.summary}
+                              </p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   <div className="memory-task-actions">
                     <button
@@ -1253,8 +1300,8 @@ export function MemoryOverlay({
               Say “start a coding focus session for QMeet Phase 12,” “what am I
               focused on,” “set my goal to wire focus commands,” “end focus
               session,” “remember to test the Pi as a task,” “mark task done,”
-              or use the focus action buttons for tasks, notes, summaries, and ending the session. You can also say “what should I do next” or “clear completed tasks.” Notes, focus history, visual context, and
-              recent actions sync in the background.
+              or use the focus action buttons for tasks, notes, summaries, and ending the session. You can also say “what should I do next” or “clear completed tasks.” Notes, focus history, visual context, linked focus visuals, and
+              recent actions sync in the background. Say “save this visual context to my focus” to attach the latest observation to the current focus.
             </p>
           </div>
 

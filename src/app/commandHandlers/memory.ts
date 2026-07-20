@@ -7,6 +7,7 @@ import {
   deleteVisualObservationById,
   replaceActiveSession,
   updateActiveSession,
+  updateVisualContext,
 } from '../api';
 
 
@@ -44,7 +45,7 @@ const RECENT_ACTIONS_STORAGE_KEY = 'qmeet-recent-actions';
 const RECENT_FOCUS_SESSIONS_STORAGE_KEY = 'qmeet-recent-focus-sessions';
 const VISUAL_CONTEXT_STORAGE_KEY = 'qmeet-visual-context';
 const VISUAL_CONTEXT_STATE_EVENT = 'qmeet-visual-context-state';
-const ACTIVE_SESSION_COMMAND_HANDLER_MARKER = 'phase14h-v2-visual-readout-fix';
+const ACTIVE_SESSION_COMMAND_HANDLER_MARKER = 'phase15a-v1-visual-focus-fusion';
 
 function createId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -397,6 +398,103 @@ function describeVisualContextByReadMode(visualContext: VisualContext, readMode:
   }
 
   return describeVisualContext(visualContext);
+}
+
+function getFocusLinkedVisualObservations(
+  visualContext: VisualContext,
+  activeSession: ActiveSession | null,
+): VisualObservation[] {
+  if (!activeSession) return [];
+  return normalizeVisualContext(visualContext).recentObservations.filter(
+    (observation) => observation.relatedFocusId === activeSession.id,
+  );
+}
+
+function describeFocusVisualObservations(activeSession: ActiveSession | null): string {
+  if (!activeSession) {
+    return 'No active focus session is running, so there are no focus-linked visual observations to show.';
+  }
+
+  const linkedObservations = getFocusLinkedVisualObservations(
+    readStoredVisualContext(),
+    activeSession,
+  );
+
+  if (linkedObservations.length === 0) {
+    return `No visual observations are linked to the current focus: ${activeSession.title}. Use "save this visual context to my focus" after a camera analysis or manual visual note to attach one.`;
+  }
+
+  const lines = linkedObservations.slice(0, 5).map((observation, index) => {
+    return `${index + 1}. ${describeVisualObservation(observation)}`;
+  });
+  const remaining = linkedObservations.length - lines.length;
+
+  return `Visual observations linked to ${activeSession.title}: ${lines.join('; ')}${remaining > 0 ? `; plus ${remaining} more` : ''}.`;
+}
+
+function linkLatestVisualObservationToFocus(): {
+  activeSession: ActiveSession | null;
+  observation: VisualObservation | null;
+  visualContext: VisualContext;
+  alreadyLinked: boolean;
+} {
+  const activeSession = readStoredActiveSession();
+  const previousContext = readStoredVisualContext();
+  const observation = previousContext.lastObservation ?? previousContext.recentObservations[0] ?? null;
+
+  if (!activeSession || !observation) {
+    return {
+      activeSession,
+      observation,
+      visualContext: previousContext,
+      alreadyLinked: false,
+    };
+  }
+
+  if (observation.relatedFocusId === activeSession.id) {
+    return {
+      activeSession,
+      observation,
+      visualContext: previousContext,
+      alreadyLinked: true,
+    };
+  }
+
+  const linkedObservation: VisualObservation = {
+    ...observation,
+    relatedFocusId: activeSession.id,
+  };
+  const recentObservations = [
+    linkedObservation,
+    ...previousContext.recentObservations.filter(
+      (item) => item.id !== observation.id,
+    ),
+  ].slice(0, 20);
+  const nextContext = normalizeVisualContext({
+    enabled: true,
+    lastObservation: linkedObservation,
+    recentObservations,
+  });
+
+  applyVisualContext(nextContext);
+  updateVisualContext({
+    lastObservation: linkedObservation,
+    recentObservations,
+    enabled: true,
+  }).then((response) => {
+    if (response.visualContext) {
+      applyVisualContext(normalizeVisualContext(response.visualContext));
+    }
+  }).catch((error) => {
+    console.warn('Visual focus-link backend update failed:', error);
+  });
+
+  return {
+    activeSession,
+    observation: linkedObservation,
+    visualContext: nextContext,
+    alreadyLinked: false,
+  };
 }
 
 function addLocalVisualObservation(summary: string): VisualObservation | null {
@@ -1104,8 +1202,18 @@ function describeActiveSession(activeSession: ActiveSession | null): string {
           activeSession.pinnedNoteIds.length === 1 ? '' : 's'
         }.`
       : '';
+  const linkedVisualCount = getFocusLinkedVisualObservations(
+    readStoredVisualContext(),
+    activeSession,
+  ).length;
+  const linkedVisualText =
+    linkedVisualCount > 0
+      ? ` ${linkedVisualCount} linked visual observation${
+          linkedVisualCount === 1 ? '' : 's'
+        }.`
+      : '';
 
-  return `Current focus: ${activeSession.title}. Mode: ${activeSession.mode}.${goalText}${linkedTaskText}${pinnedNoteText}`;
+  return `Current focus: ${activeSession.title}. Mode: ${activeSession.mode}.${goalText}${linkedTaskText}${pinnedNoteText}${linkedVisualText}`;
 }
 
 function normalizeFocusPayload(
@@ -1269,6 +1377,10 @@ function buildFocusSummary(activeSession: ActiveSession): string {
     .map((action) =>
       action.detail ? `${action.label}: ${action.detail}` : action.label,
     );
+  const linkedVisualObservations = getFocusLinkedVisualObservations(
+    readStoredVisualContext(),
+    activeSession,
+  );
 
   const lines = [
     `Focus summary - ${activeSession.title}`,
@@ -1282,6 +1394,12 @@ function buildFocusSummary(activeSession: ActiveSession): string {
           '',
         )}`.trim()
       : 'Linked tasks: None yet',
+    linkedVisualObservations.length > 0
+      ? `Linked visual observations: ${linkedVisualObservations.length}. ${sentenceList(
+          linkedVisualObservations.slice(0, 3).map((observation) => observation.summary),
+          '',
+        )}`.trim()
+      : 'Linked visual observations: None yet',
     recentFocusActions.length > 0
       ? `Recent focus actions: ${sentenceList(recentFocusActions, 'None yet')}`
       : 'Recent focus actions: None yet',
@@ -1297,9 +1415,16 @@ function describeFocusSummary(activeSession: ActiveSession): string {
   const taskText = linkedTasks.length > 0
     ? ` ${linkedTasks.length} linked task${linkedTasks.length === 1 ? '' : 's'}.`
     : '';
+  const linkedVisualCount = getFocusLinkedVisualObservations(
+    readStoredVisualContext(),
+    activeSession,
+  ).length;
+  const visualText = linkedVisualCount > 0
+    ? ` ${linkedVisualCount} linked visual observation${linkedVisualCount === 1 ? '' : 's'}.`
+    : '';
   const goalText = activeSession.goal ? ` Goal: ${activeSession.goal}.` : ' No goal has been set yet.';
 
-  return `Focus summary for ${activeSession.title}. Mode: ${activeSession.mode}.${goalText}${taskText}`;
+  return `Focus summary for ${activeSession.title}. Mode: ${activeSession.mode}.${goalText}${taskText}${visualText}`;
 }
 
 function hasSavedFocusSummary(activeSession: ActiveSession): boolean {
@@ -1668,6 +1793,46 @@ export function handleMemoryCommand(
       return {
         handled: true,
         confirmationContent: describeFocusTasks(activeSession, createdTasks),
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+
+    case 'link-visual-to-focus': {
+      deps.setActivePanel('memory');
+      const result = linkLatestVisualObservationToFocus();
+
+      if (!result.activeSession) {
+        return {
+          handled: true,
+          confirmationContent:
+            'No active focus session is running. Start a focus first, then I can link the latest visual observation to it.',
+          shouldSpeakConfirmation: deps.voiceOutputEnabled,
+        };
+      }
+
+      if (!result.observation) {
+        return {
+          handled: true,
+          confirmationContent:
+            'No visual observation has been saved yet. Take and analyze a snapshot, or add a manual visual note first.',
+          shouldSpeakConfirmation: deps.voiceOutputEnabled,
+        };
+      }
+
+      return {
+        handled: true,
+        confirmationContent: result.alreadyLinked
+          ? `The latest visual observation is already linked to ${result.activeSession.title}: ${result.observation.summary}.`
+          : `Linked latest visual observation to ${result.activeSession.title}: ${result.observation.summary}.`,
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+
+    case 'read-focus-visuals': {
+      deps.setActivePanel('memory');
+      return {
+        handled: true,
+        confirmationContent: describeFocusVisualObservations(readStoredActiveSession()),
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }

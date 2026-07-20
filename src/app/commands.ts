@@ -35,6 +35,8 @@ export type LocalCommand =
   | 'read-last-visual-observation'
   | 'read-visual-history'
   | 'summarize-visual-context'
+  | 'link-visual-to-focus'
+  | 'read-focus-visuals'
   | 'clear-visual-context'
   | 'delete-last-visual-observation'
   | 'remember-task'
@@ -111,6 +113,7 @@ export interface FocusSessionCommandPayload {
 // Phase 13F-v2: LLM-enhanced recap commands.
 // Phase 14C-v1: manual visual observation commands.
 // Phase 14H-v2: visual read/history/summary commands route through read-visual-context payloads.
+// Phase 15A-v1: visual-focus fusion commands link/read observations related to the active focus.
 
 export interface CommandMatch {
   command: LocalCommand;
@@ -165,6 +168,8 @@ const CONFIRMATIONS: Record<LocalCommand, string> = {
   'read-last-visual-observation': 'Reading last visual observation.',
   'read-visual-history': 'Reading recent visual observations.',
   'summarize-visual-context': 'Summarizing visual context.',
+  'link-visual-to-focus': 'Linking visual context to focus.',
+  'read-focus-visuals': 'Reading focus visual context.',
   'clear-visual-context': 'Clearing visual context.',
   'delete-last-visual-observation': 'Deleted last visual observation.',
   'remember-task': 'Saved task.',
@@ -827,6 +832,31 @@ function extractVisualContextIntent(normalized: string): CommandMatch | null {
     .replace(/^(?:hey\s+)?(?:qmeet|orb|assistant)\s+/i, '')
     .trim();
   const commandText = normalizeCommandText(text);
+
+  const linkFocusPatterns = [
+    /^(?:please\s+)?(?:link|attach|pin|connect|save|add)\s+(?:the\s+|this\s+|my\s+|our\s+)?(?:last|latest|current|most\s+recent)?\s*(?:visual\s+)?(?:observation|visual\s+context|visual\s+memory|camera\s+observation|camera\s+memory|thing\s+(?:i|we)\s+saw|what\s+(?:i|we)\s+saw|what\s+you\s+saw)\s+(?:to|with|into|under|for)\s+(?:the\s+|my\s+|our\s+|current\s+|active\s+)?(?:focus|focus\s+session|session)$/i,
+    /^(?:please\s+)?(?:save|pin|attach|link)\s+(?:what\s+)?(?:you\s+)?(?:last\s+)?(?:saw|observed|captured)\s+(?:to|with|into|under|for)\s+(?:the\s+|my\s+|our\s+|current\s+|active\s+)?(?:focus|focus\s+session|session)$/i,
+    /^(?:please\s+)?(?:use|keep)\s+(?:the\s+|this\s+)?(?:visual\s+context|camera\s+observation|last\s+observation)\s+(?:for|with|under)\s+(?:the\s+|my\s+|our\s+|current\s+|active\s+)?(?:focus|focus\s+session|session)$/i,
+  ];
+  if (linkFocusPatterns.some((pattern) => pattern.test(commandText))) {
+    return {
+      command: 'link-visual-to-focus',
+      confirmation: CONFIRMATIONS['link-visual-to-focus'],
+    };
+  }
+
+  const focusVisualPatterns = [
+    /^(?:please\s+)?(?:show|read|list|display|summarize|recap|review)\s+(?:the\s+|my\s+|our\s+)?(?:visuals|visual\s+observations|visual\s+context|camera\s+observations|camera\s+context)\s+(?:for|linked\s+to|related\s+to|under|with)\s+(?:the\s+|my\s+|our\s+|current\s+|active\s+)?(?:focus|focus\s+session|session)$/i,
+    /^(?:please\s+)?(?:what\s+)?(?:visual\s+context|visuals|camera\s+context|things\s+(?:i|we)\s+saw)\s+(?:is|are)?\s*(?:linked\s+to|related\s+to|saved\s+for|under)\s+(?:the\s+|my\s+|our\s+|current\s+|active\s+)?(?:focus|focus\s+session|session)$/i,
+    /^(?:please\s+)?(?:show|read|list|summarize)?\s*(?:focus\s+visuals|focus\s+visual\s+context|focus\s+camera\s+context)$/i,
+    /^(?:please\s+)?(?:what\s+did\s+(?:you|qmeet)\s+see|what\s+was\s+seen)\s+(?:for|during|in)\s+(?:the\s+|my\s+|our\s+|current\s+|active\s+)?(?:focus|focus\s+session|session)$/i,
+  ];
+  if (focusVisualPatterns.some((pattern) => pattern.test(commandText))) {
+    return {
+      command: 'read-focus-visuals',
+      confirmation: CONFIRMATIONS['read-focus-visuals'],
+    };
+  }
 
   const clearPatterns = [
     /^(?:please\s+)?(?:clear|reset|wipe|forget|delete)\s+(?:the\s+|my\s+|all\s+)?(?:visual\s+context|visual\s+memory|visual\s+observations|camera\s+context|camera\s+memory)$/i,

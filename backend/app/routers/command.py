@@ -129,6 +129,33 @@ def _visual_context_intent(message: str) -> dict[str, Any] | None:
 
     lowered = text.lower()
 
+    link_focus_patterns = [
+        r"^(?:please\s+)?(?:link|attach|pin|connect|save|add)\s+(?:the\s+|this\s+|my\s+|our\s+)?(?:last|latest|current|most\s+recent)?\s*(?:visual\s+)?(?:observation|visual\s+context|visual\s+memory|camera\s+observation|camera\s+memory|thing\s+(?:i|we)\s+saw|what\s+(?:i|we)\s+saw|what\s+you\s+saw)\s+(?:to|with|into|under|for)\s+(?:the\s+|my\s+|our\s+|current\s+|active\s+)?(?:focus|focus\s+session|session)$",
+        r"^(?:please\s+)?(?:save|pin|attach|link)\s+(?:what\s+)?(?:you\s+)?(?:last\s+)?(?:saw|observed|captured)\s+(?:to|with|into|under|for)\s+(?:the\s+|my\s+|our\s+|current\s+|active\s+)?(?:focus|focus\s+session|session)$",
+        r"^(?:please\s+)?(?:use|keep)\s+(?:the\s+|this\s+)?(?:visual\s+context|camera\s+observation|last\s+observation)\s+(?:for|with|under)\s+(?:the\s+|my\s+|our\s+|current\s+|active\s+)?(?:focus|focus\s+session|session)$",
+    ]
+    if _first_match(link_focus_patterns, lowered):
+        return _command_response(
+            action="link_visual_to_focus",
+            frontend_command="save this visual context to my focus",
+            confidence=0.98,
+            reason="Backend visual-focus interpreter matched a link visual-to-focus command.",
+        )
+
+    focus_visual_patterns = [
+        r"^(?:please\s+)?(?:show|read|list|display|summarize|recap|review)\s+(?:the\s+|my\s+|our\s+)?(?:visuals|visual\s+observations|visual\s+context|camera\s+observations|camera\s+context)\s+(?:for|linked\s+to|related\s+to|under|with)\s+(?:the\s+|my\s+|our\s+|current\s+|active\s+)?(?:focus|focus\s+session|session)$",
+        r"^(?:please\s+)?(?:what\s+)?(?:visual\s+context|visuals|camera\s+context|things\s+(?:i|we)\s+saw)\s+(?:is|are)?\s*(?:linked\s+to|related\s+to|saved\s+for|under)\s+(?:the\s+|my\s+|our\s+|current\s+|active\s+)?(?:focus|focus\s+session|session)$",
+        r"^(?:please\s+)?(?:show|read|list|summarize)?\s*(?:focus\s+visuals|focus\s+visual\s+context|focus\s+camera\s+context)$",
+        r"^(?:please\s+)?(?:what\s+did\s+(?:you|qmeet)\s+see|what\s+was\s+seen)\s+(?:for|during|in)\s+(?:the\s+|my\s+|our\s+|current\s+|active\s+)?(?:focus|focus\s+session|session)$",
+    ]
+    if _first_match(focus_visual_patterns, lowered):
+        return _command_response(
+            action="read_focus_visuals",
+            frontend_command="show visuals for my focus",
+            confidence=0.98,
+            reason="Backend visual-focus interpreter matched a read focus-linked visual command.",
+        )
+
     clear_patterns = [
         r"^(?:please\s+)?(?:clear|reset|wipe|forget|delete)\s+(?:the\s+|my\s+|all\s+)?(?:visual\s+context|visual\s+memory|visual\s+observations|camera\s+context|camera\s+memory)$",
         r"^(?:please\s+)?(?:clear|reset|wipe|forget|delete)\s+(?:everything\s+)?(?:i|we)\s+(?:saw|looked\s+at|were\s+looking\s+at)$",
