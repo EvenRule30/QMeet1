@@ -53,6 +53,10 @@ export function getBriefToolSpeech(command: string, fullText: string): string {
       return 'Task saved.';
     case 'focus-to-tasks':
       return 'Tasks created.';
+    case 'create-meeting-follow-up-tasks':
+      return 'Follow-up tasks created.';
+    case 'wrap-up-meeting-focus':
+      return 'Meeting wrapped up.';
     case 'summarize-focus-session':
       return trimmed;
     case 'save-focus-summary':
@@ -222,6 +226,18 @@ export function getResultToastForCommand(
       return {
         kind: 'success',
         title: 'Focus tasks created',
+        detail: compactToastDetail(trimmed),
+      };
+    case 'create-meeting-follow-up-tasks':
+      return {
+        kind: 'success',
+        title: 'Follow-up tasks created',
+        detail: compactToastDetail(trimmed),
+      };
+    case 'wrap-up-meeting-focus':
+      return {
+        kind: 'notes',
+        title: 'Meeting wrapped up',
         detail: compactToastDetail(trimmed),
       };
     case 'summarize-focus-session':

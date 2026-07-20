@@ -31,6 +31,8 @@ export type LocalCommand =
   | 'recap-focus-activity'
   | 'enhanced-focus-recap'
   | 'prepare-calendar-focus'
+  | 'create-meeting-follow-up-tasks'
+  | 'wrap-up-meeting-focus'
   | 'create-visual-observation'
   | 'read-visual-context'
   | 'read-last-visual-observation'
@@ -117,6 +119,7 @@ export interface FocusSessionCommandPayload {
 // Phase 15A-v1: visual-focus fusion commands link/read observations related to the active focus.
 // Phase 16A-v1: calendar-focus prep routes next calendar events into active focus sessions.
 // Phase 16B-v1: calendar-focus prep also creates linked meeting-prep tasks.
+// Phase 16C-v1: meeting wrap-up commands save summaries and create follow-up tasks.
 
 export interface CommandMatch {
   command: LocalCommand;
@@ -167,6 +170,8 @@ const CONFIRMATIONS: Record<LocalCommand, string> = {
   'recap-focus-activity': 'Recapping recent focus activity.',
   'enhanced-focus-recap': 'Preparing enhanced focus recap.',
   'prepare-calendar-focus': 'Preparing focus and tasks from your next calendar event.',
+  'create-meeting-follow-up-tasks': 'Creating meeting follow-up tasks.',
+  'wrap-up-meeting-focus': 'Wrapping up meeting focus.',
   'create-visual-observation': 'Saved visual observation.',
   'read-visual-context': 'Reading visual context.',
   'read-last-visual-observation': 'Reading last visual observation.',
@@ -705,7 +710,9 @@ type FocusSessionIntent = {
     | 'read-focus-history'
     | 'resume-last-focus-session'
     | 'recap-focus-activity'
-    | 'enhanced-focus-recap';
+    | 'enhanced-focus-recap'
+    | 'create-meeting-follow-up-tasks'
+    | 'wrap-up-meeting-focus';
   focusSession?: FocusSessionCommandPayload;
   payload?: string;
   confirmation?: string;
@@ -966,6 +973,63 @@ function extractCalendarFocusIntent(normalized: string): CommandMatch | null {
 
 function extractFocusSessionIntent(normalized: string): FocusSessionIntent | null {
   const focusText = normalizeFocusCommandPhrase(normalized);
+
+
+  const meetingWrapPatterns = [
+    /^(?:please\s+)?(?:wrap\s+up|close\s+out|finish|end)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:meeting|meeting\s+focus|meeting\s+session|meeting\s+prep|call|appointment)(?:\s+(?:with|and\s+save|and\s+write)\s+(?:a\s+)?(?:summary|recap|note|notes))?$/i,
+    /^(?:please\s+)?(?:end|finish|wrap\s+up|close)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:meeting|meeting\s+focus|meeting\s+session|call|appointment)\s+(?:with\s+)?(?:a\s+)?(?:summary|recap|note|notes)$/i,
+    /^(?:please\s+)?(?:summarize|recap|save\s+(?:a\s+)?summary\s+of|save)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:meeting|meeting\s+focus|meeting\s+session|call|appointment)\s+(?:and\s+)?(?:end|finish|close|wrap\s+up)(?:\s+it)?$/i,
+    /^(?:please\s+)?(?:save\s+(?:a\s+)?meeting\s+(?:summary|recap|note|notes)\s+and\s+end|save\s+and\s+end\s+(?:the\s+)?meeting)$/i,
+    /^(?:please\s+)?(?:meeting|call|appointment)\s+(?:wrap\s+up|closeout|close\s+out)$/i,
+  ];
+  if (meetingWrapPatterns.some((pattern) => pattern.test(focusText))) {
+    return makeFocusSessionIntent(
+      'wrap-up-meeting-focus',
+      undefined,
+      'Wrapping up meeting focus with summary and follow-up tasks.',
+    );
+  }
+
+  const meetingFollowUpPatterns = [
+    /^(?:please\s+)?(?:create|make|add|generate|build|capture|save)\s+(?:meeting\s+)?(?:follow\s*-?\s*up|followup|action)\s+(?:tasks|task\s+list|items|item|actions|next\s+steps|steps)\s+(?:for|from|based\s+on)?\s*(?:(?:this|the|my|our|current|active)\s+)*(?:meeting|meeting\s+focus|meeting\s+session|call|appointment|focus|session)?$/i,
+    /^(?:please\s+)?(?:turn|convert|break\s+down)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:meeting|meeting\s+focus|meeting\s+session|call|appointment)\s+(?:into|in\s+to)\s+(?:follow\s*-?\s*up\s+)?(?:tasks|task\s+list|action\s+items|next\s+steps|steps|checklist)$/i,
+    /^(?:please\s+)?(?:meeting|call|appointment)\s+(?:follow\s*-?\s*up|followup|action)\s+(?:tasks|items|next\s+steps)$/i,
+    /^(?:please\s+)?(?:what\s+are|show|list|create)\s+(?:the\s+)?(?:follow\s*-?\s*ups|followups|action\s+items|next\s+steps)\s+(?:from|for)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:meeting|call|appointment)$/i,
+  ];
+  if (meetingFollowUpPatterns.some((pattern) => pattern.test(focusText))) {
+    return makeFocusSessionIntent(
+      'create-meeting-follow-up-tasks',
+      undefined,
+      'Creating meeting follow-up tasks.',
+    );
+  }
+
+  const saveMeetingSummaryPatterns = [
+    /^(?:please\s+)?(?:save|store|remember|write)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:meeting|call|appointment)\s+(?:as|to|in)\s+(?:a\s+)?(?:note|notes|memory|summary)$/i,
+    /^(?:please\s+)?(?:save|store|remember|write)\s+(?:a\s+)?(?:meeting\s+)?(?:summary|recap|note|notes)\s+(?:of|for)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:meeting|call|appointment)?$/i,
+    /^(?:please\s+)?(?:save|store|remember|write)\s+(?:the\s+)?(?:meeting|call|appointment)\s+(?:summary|recap|notes?)(?:\s+(?:as|to|in)\s+(?:a\s+)?(?:note|notes|memory))?$/i,
+    /^(?:please\s+)?(?:save|write)\s+(?:meeting\s+)?notes$/i,
+  ];
+  if (saveMeetingSummaryPatterns.some((pattern) => pattern.test(focusText))) {
+    return makeFocusSessionIntent(
+      'save-focus-summary',
+      undefined,
+      'Saving meeting summary note.',
+    );
+  }
+
+  const summarizeMeetingPatterns = [
+    /^(?:please\s+)?(?:summarize|recap|review)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:meeting|meeting\s+focus|meeting\s+session|call|appointment)$/i,
+    /^(?:please\s+)?(?:give\s+me\s+|make\s+me\s+|create\s+)?(?:a\s+)?(?:meeting|call|appointment)\s+(?:summary|recap|review)$/i,
+    /^(?:please\s+)?(?:what\s+happened|what\s+changed|what\s+did\s+(?:i|we)\s+do)\s+(?:in|during|for)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:meeting|call|appointment)$/i,
+  ];
+  if (summarizeMeetingPatterns.some((pattern) => pattern.test(focusText))) {
+    return makeFocusSessionIntent(
+      'summarize-focus-session',
+      undefined,
+      'Summarizing meeting focus.',
+    );
+  }
 
   const forceEndPatterns = [
     /^(?:please\s+)?(?:end|finish|stop|close|clear|discard)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session|focus\s+mode)\s+(?:anyway|without\s+(?:saving|a\s+summary|summary|a\s+note|note))$/i,

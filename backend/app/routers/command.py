@@ -152,6 +152,70 @@ def _calendar_focus_intent(message: str) -> dict[str, Any] | None:
     return None
 
 
+
+def _meeting_wrapup_intent(message: str) -> dict[str, Any] | None:
+    """Catch Phase 16C current-meeting wrap-up and follow-up commands."""
+    text = _collapse_command_text(message)
+    if not text:
+        return None
+    lowered = text.lower()
+
+    wrap_patterns = [
+        r"^(?:please\s+)?(?:wrap\s+up|close\s+out|finish|end)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:meeting|meeting\s+focus|meeting\s+session|meeting\s+prep|call|appointment)(?:\s+(?:with|and\s+save|and\s+write)\s+(?:a\s+)?(?:summary|recap|note|notes))?$",
+        r"^(?:please\s+)?(?:end|finish|wrap\s+up|close)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:meeting|meeting\s+focus|meeting\s+session|call|appointment)\s+(?:with\s+)?(?:a\s+)?(?:summary|recap|note|notes)$",
+        r"^(?:please\s+)?(?:summarize|recap|save\s+(?:a\s+)?summary\s+of|save)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:meeting|meeting\s+focus|meeting\s+session|call|appointment)\s+(?:and\s+)?(?:end|finish|close|wrap\s+up)(?:\s+it)?$",
+        r"^(?:please\s+)?(?:save\s+(?:a\s+)?meeting\s+(?:summary|recap|note|notes)\s+and\s+end|save\s+and\s+end\s+(?:the\s+)?meeting)$",
+        r"^(?:please\s+)?(?:meeting|call|appointment)\s+(?:wrap\s+up|closeout|close\s+out)$",
+    ]
+    if _first_match(wrap_patterns, lowered):
+        return _command_response(
+            action="wrap_up_meeting_focus",
+            frontend_command="wrap up this meeting",
+            confidence=0.98,
+            reason="Backend meeting wrap-up interpreter matched a summary-and-end command.",
+        )
+
+    follow_up_patterns = [
+        r"^(?:please\s+)?(?:create|make|add|generate|build|capture|save)\s+(?:meeting\s+)?(?:follow\s*-?\s*up|followup|action)\s+(?:tasks|task\s+list|items|item|actions|next\s+steps|steps)\s+(?:for|from|based\s+on)?\s*(?:(?:this|the|my|our|current|active)\s+)*(?:meeting|meeting\s+focus|meeting\s+session|call|appointment|focus|session)?$",
+        r"^(?:please\s+)?(?:turn|convert|break\s+down)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:meeting|meeting\s+focus|meeting\s+session|call|appointment)\s+(?:into|in\s+to)\s+(?:follow\s*-?\s*up\s+)?(?:tasks|task\s+list|action\s+items|next\s+steps|steps|checklist)$",
+        r"^(?:please\s+)?(?:meeting|call|appointment)\s+(?:follow\s*-?\s*up|followup|action)\s+(?:tasks|items|next\s+steps)$",
+        r"^(?:please\s+)?(?:what\s+are|show|list|create)\s+(?:the\s+)?(?:follow\s*-?\s*ups|followups|action\s+items|next\s+steps)\s+(?:from|for)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:meeting|call|appointment)$",
+    ]
+    if _first_match(follow_up_patterns, lowered):
+        return _command_response(
+            action="create_meeting_follow_up_tasks",
+            frontend_command="create follow-up tasks from this meeting",
+            confidence=0.98,
+            reason="Backend meeting wrap-up interpreter matched a follow-up task command.",
+        )
+
+    save_summary_patterns = [
+        r"^(?:please\s+)?(?:save|store|remember|write)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:meeting|call|appointment)\s+(?:as|to|in)\s+(?:a\s+)?(?:note|notes|memory|summary)$",
+        r"^(?:please\s+)?(?:save|store|remember|write)\s+(?:a\s+)?(?:meeting\s+)?(?:summary|recap|note|notes)\s+(?:of|for)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:meeting|call|appointment)?$",
+        r"^(?:please\s+)?(?:save|write)\s+(?:meeting\s+)?notes$",
+    ]
+    if _first_match(save_summary_patterns, lowered):
+        return _command_response(
+            action="save_meeting_summary",
+            frontend_command="save meeting notes",
+            confidence=0.96,
+            reason="Backend meeting wrap-up interpreter matched a save-meeting-notes command.",
+        )
+
+    summarize_patterns = [
+        r"^(?:please\s+)?(?:summarize|recap|review)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:meeting|meeting\s+focus|meeting\s+session|call|appointment)$",
+        r"^(?:please\s+)?(?:give\s+me\s+|make\s+me\s+|create\s+)?(?:a\s+)?(?:meeting|call|appointment)\s+(?:summary|recap|review)$",
+    ]
+    if _first_match(summarize_patterns, lowered):
+        return _command_response(
+            action="summarize_meeting_focus",
+            frontend_command="summarize this meeting",
+            confidence=0.95,
+            reason="Backend meeting wrap-up interpreter matched a summarize-current-meeting command.",
+        )
+
+    return None
+
 def _visual_context_intent(message: str) -> dict[str, Any] | None:
     """Catch Phase 14 manual visual-context commands before the general interpreter."""
     text = _collapse_command_text(message)
@@ -661,6 +725,10 @@ async def command_interpret(req: CommandInterpretRequest):
     calendar_focus_intent = _calendar_focus_intent(message)
     if calendar_focus_intent is not None:
         return CommandInterpretResponse(**calendar_focus_intent)
+
+    meeting_wrapup_intent = _meeting_wrapup_intent(message)
+    if meeting_wrapup_intent is not None:
+        return CommandInterpretResponse(**meeting_wrapup_intent)
 
     visual_intent = _visual_context_intent(message)
     if visual_intent is not None:

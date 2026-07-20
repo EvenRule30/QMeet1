@@ -51,7 +51,7 @@ const RECENT_FOCUS_SESSIONS_STORAGE_KEY = 'qmeet-recent-focus-sessions';
 const VISUAL_CONTEXT_STORAGE_KEY = 'qmeet-visual-context';
 const VISUAL_CONTEXT_STATE_EVENT = 'qmeet-visual-context-state';
 const CALENDAR_FOCUS_PREP_EVENT = 'qmeet-calendar-focus-prep-command';
-const ACTIVE_SESSION_COMMAND_HANDLER_MARKER = 'phase16b-v1-calendar-focus-tasks';
+const ACTIVE_SESSION_COMMAND_HANDLER_MARKER = 'phase16c-v1-meeting-wrapup';
 
 function createId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -1329,6 +1329,82 @@ function linkTasksToActiveSession(
   };
 }
 
+
+function getMeetingSubject(activeSession: ActiveSession): string {
+  const withoutPrepPrefix = activeSession.title
+    .replace(/^prepare\s+for\s+/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return compactTaskSubject(withoutPrepPrefix || activeSession.title, 'this meeting');
+}
+
+function generateMeetingFollowUpTaskTitles(
+  activeSession: ActiveSession,
+  existingTasks: MemoryTask[],
+): string[] {
+  const meetingSubject = getMeetingSubject(activeSession);
+  const existingKeys = new Set(
+    existingTasks.map((task) => task.title.replace(/\s+/g, ' ').trim().toLowerCase()),
+  );
+  const candidates = uniqueTaskTitles([
+    `Capture decisions and outcomes from ${meetingSubject}`,
+    `Send follow-up notes for ${meetingSubject}`,
+    `Confirm owners and deadlines for action items from ${meetingSubject}`,
+    `Schedule or confirm the next step after ${meetingSubject}`,
+    `Update QMeet memory with remaining open questions from ${meetingSubject}`,
+  ]);
+
+  return candidates.filter((title) => !existingKeys.has(title.toLowerCase()));
+}
+
+function describeMeetingFollowUpTasks(
+  activeSession: ActiveSession,
+  tasks: MemoryTask[],
+): string {
+  if (tasks.length === 0) {
+    return `No new follow-up tasks were created for ${getMeetingSubject(activeSession)}. Matching tasks may already exist.`;
+  }
+
+  const taskList = tasks
+    .map((task, index) => `${index + 1}. ${task.title}`)
+    .join(' ');
+
+  return `Created ${tasks.length} follow-up task${tasks.length === 1 ? '' : 's'} for ${getMeetingSubject(activeSession)}: ${taskList}`;
+}
+
+function buildMeetingWrapSummary(
+  activeSession: ActiveSession,
+  followUpTasks: MemoryTask[],
+): string {
+  const baseSummary = buildFocusSummary(activeSession);
+  const followUpText = followUpTasks.length > 0
+    ? `Follow-up tasks created: ${followUpTasks.map((task) => task.title).join('; ')}`
+    : 'Follow-up tasks created: None; existing tasks may already cover the follow-up work.';
+
+  return `${baseSummary}\n${followUpText}`;
+}
+
+function createAndLinkMeetingFollowUpTasks(
+  activeSession: ActiveSession,
+  saveMemoryTask: (title: string) => MemoryTask | null,
+): { tasks: MemoryTask[]; updatedSession: ActiveSession } {
+  const existingTasks = readStoredMemoryTasks();
+  const createdTasks = generateMeetingFollowUpTaskTitles(activeSession, existingTasks)
+    .map((title) => saveMemoryTask(title))
+    .filter((task): task is MemoryTask => task !== null);
+
+  const updatedSession = createdTasks.length > 0
+    ? linkTasksToActiveSession(activeSession, createdTasks)
+    : activeSession;
+
+  if (createdTasks.length > 0) {
+    applyActiveSession(updatedSession);
+    patchActiveSessionInBackend({ linkedTaskIds: updatedSession.linkedTaskIds });
+  }
+
+  return { tasks: createdTasks, updatedSession };
+}
+
 function describeFocusTasks(activeSession: ActiveSession, tasks: MemoryTask[]): string {
   if (tasks.length === 0) {
     return `I could not create tasks for ${activeSession.title}.`;
@@ -1794,6 +1870,64 @@ export function handleMemoryCommand(
       return {
         handled: true,
         confirmationContent: `Saved a summary note and ended focus session: ${activeSession.title}.`,
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+
+
+    case 'create-meeting-follow-up-tasks': {
+      const activeSession = readStoredActiveSession();
+      deps.setActivePanel('memory');
+
+      if (!activeSession) {
+        return {
+          handled: true,
+          confirmationContent:
+            'No active focus session is running. Start or prepare a meeting focus first, then I can create follow-up tasks.',
+          shouldSpeakConfirmation: deps.voiceOutputEnabled,
+        };
+      }
+
+      const { tasks } = createAndLinkMeetingFollowUpTasks(
+        activeSession,
+        deps.saveMemoryTask,
+      );
+
+      return {
+        handled: true,
+        confirmationContent: describeMeetingFollowUpTasks(activeSession, tasks),
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+
+    case 'wrap-up-meeting-focus': {
+      const activeSession = readStoredActiveSession();
+
+      if (!activeSession) {
+        deps.setActivePanel('memory');
+        return {
+          handled: true,
+          confirmationContent:
+            'No active focus session is running. Start or prepare a meeting focus first, then I can wrap it up.',
+          shouldSpeakConfirmation: deps.voiceOutputEnabled,
+        };
+      }
+
+      const { tasks, updatedSession } = createAndLinkMeetingFollowUpTasks(
+        activeSession,
+        deps.saveMemoryTask,
+      );
+      const summary = buildMeetingWrapSummary(updatedSession, tasks);
+      dispatchFocusSummaryNote(updatedSession, summary, { endAfterSave: true });
+      applyActiveSession(null);
+      persistActiveSessionToBackend(null);
+      deps.setActivePanel('notes');
+
+      return {
+        handled: true,
+        confirmationContent: tasks.length > 0
+          ? `Saved a meeting summary note, created ${tasks.length} follow-up task${tasks.length === 1 ? '' : 's'}, and ended focus session: ${updatedSession.title}.`
+          : `Saved a meeting summary note and ended focus session: ${updatedSession.title}. No new follow-up tasks were created because matching tasks may already exist.`,
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }

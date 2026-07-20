@@ -65,6 +65,13 @@ type MemoryTasksStateEventDetail = {
   tasks: MemoryTask[];
 };
 
+type FocusSummaryNoteEventDetail = {
+  sessionId?: string;
+  title?: string;
+  summary?: string;
+  endAfterSave?: boolean;
+};
+
 const MEMORY_TASKS_STORAGE_KEY = 'qmeet-memory-tasks';
 const RECENT_ACTIONS_STORAGE_KEY = 'qmeet-recent-actions';
 const RECENT_FOCUS_SESSIONS_STORAGE_KEY = 'qmeet-recent-focus-sessions';
@@ -73,6 +80,7 @@ const ACTIVE_SESSION_STORAGE_KEY = 'qmeet-active-session';
 const VISUAL_CONTEXT_STORAGE_KEY = 'qmeet-visual-context';
 const MEMORY_TASKS_STATE_EVENT = 'qmeet-memory-tasks-state';
 const VISUAL_CONTEXT_STATE_EVENT = 'qmeet-visual-context-state';
+const SAVE_FOCUS_SUMMARY_NOTE_EVENT = 'qmeet-save-focus-summary-note';
 
 function createId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -510,6 +518,38 @@ export function useMemoryContext({
       });
     };
 
+    const handleFocusSummaryNote = (event: Event) => {
+      const detail = (event as CustomEvent<FocusSummaryNoteEventDetail>).detail;
+      const summary = typeof detail?.summary === 'string' ? detail.summary.trim() : '';
+      if (!summary) return;
+
+      const note: Note = {
+        id: createId('note'),
+        content: summary,
+        createdAt: new Date().toISOString(),
+      };
+
+      setNotes((prev) => [note, ...prev]);
+      setActiveSession((prev) => {
+        if (detail?.endAfterSave) {
+          return null;
+        }
+
+        if (!prev) return prev;
+        if (detail?.sessionId && prev.id !== detail.sessionId) return prev;
+
+        return {
+          ...prev,
+          summary,
+          pinnedNoteIds: [
+            note.id,
+            ...prev.pinnedNoteIds.filter((id) => id !== note.id),
+          ],
+          updatedAt: new Date().toISOString(),
+        };
+      });
+    };
+
     const handleStorage = (event: StorageEvent) => {
       if (event.key === MEMORY_TASKS_STORAGE_KEY) {
         setMemoryTasks(readStoredMemoryTasks());
@@ -525,11 +565,13 @@ export function useMemoryContext({
 
     window.addEventListener(MEMORY_TASKS_STATE_EVENT, handleMemoryTasksState);
     window.addEventListener(VISUAL_CONTEXT_STATE_EVENT, handleVisualContextState);
+    window.addEventListener(SAVE_FOCUS_SUMMARY_NOTE_EVENT, handleFocusSummaryNote);
     window.addEventListener('storage', handleStorage);
 
     return () => {
       window.removeEventListener(MEMORY_TASKS_STATE_EVENT, handleMemoryTasksState);
       window.removeEventListener(VISUAL_CONTEXT_STATE_EVENT, handleVisualContextState);
+      window.removeEventListener(SAVE_FOCUS_SUMMARY_NOTE_EVENT, handleFocusSummaryNote);
       window.removeEventListener('storage', handleStorage);
     };
   }, []);
