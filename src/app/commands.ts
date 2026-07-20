@@ -123,6 +123,7 @@ export interface FocusSessionCommandPayload {
 // Phase 16B-v1: calendar-focus prep also creates linked meeting-prep tasks.
 // Phase 16C-v1: meeting wrap-up commands save summaries and create follow-up tasks.
 // Phase 17B-v2: guided onboarding catches broader capability/schedule questions and natural prep-block phrases.
+// Phase 17B-v3: contextual guide catches follow-up UI questions and maps focus menu wording to Memory.
 
 export interface CommandMatch {
   command: LocalCommand;
@@ -235,6 +236,10 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
     [
       /^(?:help|commands?|command list|voice commands?|show commands?|show me commands?|show help|show me help)$/i,
       /^(?:what can (?:you|qmeet|the orb) do)$/i,
+      /^(?:what (?:are you|is qmeet|is the orb) able to do)$/i,
+      /^(?:what is focus|what is a focus|what is a focus session)$/i,
+      /^(?:what can i do now(?: with (?:it|this|that))?|what can i do with (?:it|this|that)|now what|what should i do next)$/i,
+      /^(?:what was that (?:menu|panel|screen)|how (?:do|to) i open (?:it|that|this) again|can i (?:click|tap|press) (?:any one of these|one of these|these|this))$/i,
       /^(?:what (?:can|should) i say)$/i,
       /^(?:how do i use (?:this|qmeet|the orb))$/i,
       /^(?:what menus can (?:you|qmeet|the orb) open)$/i,
@@ -344,7 +349,9 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
     'open-memory',
     [
       rx(`^${REQUEST_PREFIX}${OPEN_VERB}\\s+(?:me\\s+)?(?:the\\s+)?(?:memory|tasks?|task\\s+list|work\\s+log)(?:\\s+(?:panel|screen|menu))?$`),
+      rx(`^${REQUEST_PREFIX}${OPEN_VERB}\\s+(?:me\\s+)?(?:the\\s+)?(?:focus|focus\\s+session|current\\s+focus|active\\s+focus)(?:\\s+(?:menu|panel|controls?|screen))?$`),
       /^(?:memory|memory panel|tasks|task list|work log)$/i,
+      /^(?:show focus menu|open focus menu|focus menu|focus panel|focus controls|current focus panel|active focus panel)$/i,
     ],
   ],
   [

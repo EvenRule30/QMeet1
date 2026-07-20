@@ -51,6 +51,7 @@ import {
   VisualSnapshotAnalysisResponse,
   SearchResponse,
 } from './types';
+import { collectQMeetRuntimeContext } from './lib/qmeetRuntimeContext';
 
 export type ChatApiResponse = {
   reply: string;
@@ -166,6 +167,8 @@ export async function resetConversation(): Promise<void> {
 export async function interpretCommandIntent(
   message: string,
 ): Promise<CommandIntentResponse> {
+  const runtimeContext = collectQMeetRuntimeContext();
+
   return fetchJson<CommandIntentResponse>(
     '/api/command/interpret',
     {
@@ -173,7 +176,13 @@ export async function interpretCommandIntent(
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({
+        message,
+        uiState: runtimeContext.uiState,
+        clientContext: {
+          memoryState: runtimeContext.memoryState,
+        },
+      }),
     },
     'Command interpreter error.',
   );

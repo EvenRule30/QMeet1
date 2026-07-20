@@ -14,6 +14,8 @@ class ChatResponse(BaseModel):
 
 class CommandInterpretRequest(BaseModel):
     message: str
+    uiState: dict[str, Any] = Field(default_factory=dict)
+    clientContext: dict[str, Any] = Field(default_factory=dict)
 
 
 class CommandInterpretResponse(BaseModel):

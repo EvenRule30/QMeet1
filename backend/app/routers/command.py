@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.agent import AgentUserFacingError, interpret_command_intent
 from app.schemas import CommandInterpretRequest, CommandInterpretResponse
+from app.qmeet_orchestrator import interpret_qmeet_orchestrator
 
 router = APIRouter(prefix="/api/command", tags=["command"])
 
@@ -121,6 +122,29 @@ def _default_focus_title(mode: str) -> str:
 
 
 
+def _ui_shortcut_intent(message: str) -> dict[str, Any] | None:
+    """Catch UI wording that the general interpreter tends to misread."""
+    text = _collapse_command_text(message)
+    lowered = text.lower()
+    if not lowered:
+        return None
+
+    focus_menu_patterns = [
+        r"^(?:please\s+)?(?:show|open|bring up|pull up|display)\s+(?:the\s+|my\s+)?(?:focus|current focus|active focus|focus session)\s+(?:menu|panel|controls?|screen)$",
+        r"^(?:please\s+)?(?:show|open|bring up|pull up|display)\s+(?:the\s+)?(?:focus menu|focus panel|focus controls)$",
+        r"^(?:please\s+)?(?:focus menu|focus panel|focus controls)$",
+    ]
+    if _first_match(focus_menu_patterns, lowered):
+        return _command_response(
+            action="open_memory",
+            frontend_command="open memory",
+            confidence=0.98,
+            reason="Backend UI shortcut mapped focus menu wording to the Memory panel.",
+        )
+
+    return None
+
+
 def _qmeet_guide_intent(message: str) -> dict[str, Any] | None:
     """Route broad QMeet help/capability questions into the local bite-sized guide."""
     text = _collapse_command_text(message)
@@ -135,15 +159,39 @@ def _qmeet_guide_intent(message: str) -> dict[str, Any] | None:
         r"\bhow\s+(?:are|do)\s+(?:you|q\s*meet|qmeet|the\s+orb)\s+(?:able\s+to\s+help|able\s+to\s+do|work|operate)\b",
         r"\bwhat\s+(?:can|should)\s+i\s+say\b",
         r"\bhow\s+do\s+i\s+use\s+(?:this|q\s*meet|qmeet|the\s+orb)\b",
+        r"\bwhat\s+(?:is|are)\s+(?:a\s+|the\s+)?(?:focus|focus\s+session|memory|visual\s+context|recap|meeting\s+prep)\b",
+        r"\bwhat\s+can\s+i\s+do\s+(?:now|next|with\s+it|with\s+this|with\s+that)\b",
+        r"\bwhat\s+should\s+i\s+do\s+(?:now|next)\b",
+        r"\bnow\s+what\b",
+        r"\bwhat\s+are\s+my\s+options\b",
+        r"\bwhat\s+was\s+that\s+(?:menu|panel|screen|thing)\b",
+        r"\bwhat\s+(?:menu|panel|screen)\s+(?:appeared|opened|showed\s+up)\b",
+        r"\bhow\s+(?:do|to)\s+i\s+open\s+(?:it|that|this)\s+again\b",
+        r"\bcan\s+i\s+(?:click|tap|press)\s+(?:on\s+)?(?:these|this|any\s+(?:one\s+)?of\s+these|one\s+of\s+these|the\s+buttons?)\b",
         r"\b(?:can|could|would)\s+(?:you|q\s*meet|qmeet|the\s+orb)\s+(?:make|create|build|help\s+me\s+(?:make|create|build))\s+(?:me\s+)?(?:a\s+)?(?:schedule|agenda|day\s+plan|plan)\b",
         r"\b(?:i\s+need|help\s+me)\s+(?:a\s+)?(?:schedule|agenda|day\s+plan)\b",
         r"\b(?:help|guide|teach)\s+me\s+(?:with|through|on)\s+",
         r"\b(?:examples?|sample commands?)\s+(?:for|of)\s+",
+        r"\bwhat\s+(?:tools|features|capabilities)\s+(?:do|does)\s+(?:you|q\s*meet|qmeet|the\s+orb)\s+have\b",
+        r"\bwhat\s+local\s+(?:tools|commands)\s+(?:do|does)\s+(?:you|q\s*meet|qmeet|the\s+orb)\s+have\b",
     ]
     if not _first_match(help_patterns, lowered):
         return None
 
     topic = "overview"
+    if re.search(
+        r"\b(?:what\s+can\s+i\s+do\s+(?:now|next|with\s+it|with\s+this|with\s+that)|what\s+should\s+i\s+do\s+(?:now|next)|now\s+what|what\s+are\s+my\s+options|can\s+i\s+(?:click|tap|press))\b",
+        lowered,
+        flags=re.IGNORECASE,
+    ):
+        topic = "context"
+    elif re.search(
+        r"\b(?:what\s+was\s+that\s+(?:menu|panel|screen|thing)|what\s+(?:menu|panel|screen)\s+(?:appeared|opened|showed\s+up)|how\s+(?:do|to)\s+i\s+open\s+(?:it|that|this)\s+again)\b",
+        lowered,
+        flags=re.IGNORECASE,
+    ):
+        topic = "screen"
+
     topic_patterns = [
         ("meetings", r"\b(?:meeting|meetings|meet|event prep|wrap up|follow up|follow-up)\b"),
         ("calendar", r"\b(?:calendar|schedule|agenda|event|events|google calendar|appointment|appointments)\b"),
@@ -155,14 +203,20 @@ def _qmeet_guide_intent(message: str) -> dict[str, Any] | None:
         ("memory", r"\b(?:memory|remember|stored|context|recent actions)\b"),
         ("search", r"\b(?:search|web|look up|lookup|internet)\b"),
         ("voice", r"\b(?:voice|speech|speak|mute|unmute|listen|heard|transcript)\b"),
-        ("ui", r"\b(?:ui|interface|menu|panel|settings|status|chat log|chatbox|orb|button|home)\b"),
+        ("ui", r"\b(?:ui|interface|menu|panel|settings|status|chat log|chatbox|orb|button|home|click|tap)\b"),
     ]
-    for candidate, pattern in topic_patterns:
-        if re.search(pattern, lowered, flags=re.IGNORECASE):
-            topic = candidate
-            break
+    if topic == "overview":
+        for candidate, pattern in topic_patterns:
+            if re.search(pattern, lowered, flags=re.IGNORECASE):
+                topic = candidate
+                break
 
-    command = "what can you do" if topic == "overview" else f"help with {topic}"
+    if topic == "context":
+        command = "what can I do now with it"
+    elif topic == "screen":
+        command = "what was that menu"
+    else:
+        command = "what can you do" if topic == "overview" else f"help with {topic}"
     return _command_response(
         action="qmeet_guide",
         frontend_command=command,
@@ -829,6 +883,10 @@ async def command_interpret(req: CommandInterpretRequest):
     if not message:
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
 
+    ui_shortcut_intent = _ui_shortcut_intent(message)
+    if ui_shortcut_intent is not None:
+        return CommandInterpretResponse(**ui_shortcut_intent)
+
     qmeet_guide_intent = _qmeet_guide_intent(message)
     if qmeet_guide_intent is not None:
         return CommandInterpretResponse(**qmeet_guide_intent)
@@ -852,6 +910,14 @@ async def command_interpret(req: CommandInterpretRequest):
     focus_intent = _focus_command_intent(message)
     if focus_intent is not None:
         return CommandInterpretResponse(**focus_intent)
+
+    orchestrator_intent = await interpret_qmeet_orchestrator(
+        message,
+        ui_state=req.uiState,
+        client_context=req.clientContext,
+    )
+    if orchestrator_intent is not None and orchestrator_intent.get("intent") == "command":
+        return CommandInterpretResponse(**orchestrator_intent)
 
     try:
         intent = await interpret_command_intent(message)

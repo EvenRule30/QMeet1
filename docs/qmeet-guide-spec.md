@@ -1,62 +1,91 @@
-# QMeet Guide Spec
+# QMeet Guide Spec — Phase 17B v3
 
-Phase 17B-v2 turns QMeet help into a small feature guide instead of one long paragraph.
+Phase 17B adds a friendly, bite-sized guide layer for people who do not know QMeet's exact commands yet.
 
 ## Goals
 
-- Let new users ask normal questions like `what are you able to do?` or `can you make me a schedule?`.
-- Return short, topic-specific answers with commands they can try immediately.
-- Steer users toward real QMeet tools: focus, memory, notes, tasks, calendar, meetings, visual context, search, voice, UI, and recaps.
-- Avoid stealing normal work prompts such as `help me complete my focus`.
+- Keep `what can you do` short and useful.
+- Let users ask topic-specific questions like `help with focus` or `what is focus`.
+- Route common onboarding questions into tool-aware answers instead of generic ChatGPT replies.
+- Steer users toward real QMeet panels and commands.
+- Answer simple UI follow-ups such as `what was that menu`, `how do I open it again`, and `can I click on these`.
 
 ## Guide topics
 
 - Overview
+- Context-sensitive next actions
+- Current screen / panel help
 - Focus
 - Memory
 - Tasks
 - Notes
-- Calendar / schedule
+- Calendar
 - Meetings
-- Camera / visual context
+- Visual / camera context
 - Search
 - Voice
 - UI
 - Recaps
 
-## New natural examples
+## Important command behavior
 
-These should route to bite-sized guide responses:
+`what is focus` explains the feature.
+
+`what is my focus` still reads the active focus session.
+
+`show focus menu`, `open focus menu`, and `focus controls` open the Memory panel, because the Current Focus card and focus actions live there.
+
+`what can I do now with it` returns context-aware suggestions. If an active focus exists, QMeet suggests commands such as:
+
+- `set my goal to ...`
+- `turn this focus into tasks`
+- `save this focus as a note`
+- `what should I do next`
+- `open memory`
+
+`can I click on any one of these` gives screen-aware UI guidance when QMeet can infer the current panel from the DOM.
+
+## UI context detection
+
+The guide infers the currently visible panel from the browser DOM instead of adding new global app state. It checks for recognizable text or elements for:
+
+- Menu
+- Memory
+- Notes
+- Calendar
+- Search
+- Settings
+- Status
+- Camera
+- Chat
+
+This is intentionally lightweight. If no panel is detected, QMeet gives a safe generic answer and points users to `open menu` or `open memory`.
+
+## Backend routing
+
+The backend command router now catches the same common guide/follow-up phrases before the general interpreter. It also maps focus-menu wording to `open memory` so fuzzy routing does not mislead users with `open menu`.
+
+## Regression prompts
 
 ```text
+what are you
 what are you able to do
-what can you help me with
-how are you able to help
-how are you able to do
-can you make me a schedule
-help with calendar
+what is focus
 help with focus
-examples for camera
+I'm working on a Java program for my class
+what can I do now with it?
+what was that menu that appeared before when the focus session started?
+how do I open it again?
+show focus menu
+open menu
+can I click on any one of these
+what is my focus
 ```
 
-## Natural prep examples
+Expected results:
 
-These should route to actual focus tools instead of generic chat:
-
-```text
-I have an appointment at 6:00 p.m. today I need to prepare for
-you can start that focus preparation block
-start the prep block
-```
-
-Expected result: QMeet creates a meeting-prep focus session rather than merely saying it will.
-
-## Style
-
-Guide answers should be short, practical, and example-driven. Prefer:
-
-```text
-I can do X. Try: "command one", "command two", or "command three".
-```
-
-over large paragraphs.
+- Feature explanation prompts are short and command-oriented.
+- `what is focus` teaches the feature.
+- `what is my focus` reads the actual active focus.
+- `show focus menu` opens Memory.
+- UI follow-up questions do not fall through to generic ChatGPT when the local guide can answer them.
