@@ -1,6 +1,6 @@
 # QMeet Architecture Snapshot
 
-This document describes the current QMeet architecture after Phase 14H visual-context and camera-snapshot work. QMeet is still a prototype: the frontend owns the tablet/orb experience and the backend owns LLM calls, search, Google Calendar integration, fuzzy command routing, backend-local persistent memory, and snapshot analysis.
+This document describes the current QMeet architecture after Phase 15C visual-focus and UI polish work. QMeet is still a prototype: the frontend owns the tablet/orb experience and the backend owns LLM calls, search, Google Calendar integration, fuzzy command routing, visual analysis, and backend-local persistent memory.
 
 ## High-level architecture
 
@@ -10,13 +10,14 @@ User
 │
 Frontend
 ├─ Orb and chat interface
+├─ discreet chat-log toggle
 ├─ local exact command parser
 ├─ fuzzy command interpreter client
 ├─ panels for notes, memory, calendar, search, settings, status, menu
-├─ camera capture overlay
+├─ camera capture/upload overlay
 ├─ hooks for backend status, memory, search, calendar, speech, chat streaming
 ├─ active focus/session UI and recent focus history
-├─ visualContext UI and saved visual observations
+├─ visual context UI and visual-focus linking
 ├─ focus nudges and clickable focus actions
 ├─ command/result toast system
 └─ typed API client for FastAPI
@@ -25,7 +26,7 @@ Backend
 ├─ FastAPI app
 ├─ feature routers
 ├─ OpenAI chat/search/command interpreter service
-├─ OpenAI vision snapshot analysis route
+├─ OpenAI vision snapshot analysis endpoint
 ├─ Google Calendar service
 └─ local JSON memory store
 │
@@ -36,33 +37,34 @@ External services
 
 ## Frontend responsibilities
 
-The frontend owns the tablet user experience. It handles visual state, orb state, panel state, camera preview/capture, speech recognition, speech synthesis, streaming response display, local command execution, confirmation gates, workflow memory controls, visual context controls, and fallback browser state.
+The frontend owns the tablet user experience. It handles visual state, orb state, panel state, camera overlay state, speech recognition, speech synthesis, streaming response display, local command execution, confirmation gates, workflow memory controls, visual-context controls, and fallback browser state.
 
 ```text
 src/app/
 ├─ App.tsx
 │  └─ top-level orchestration and remaining command flow
 ├─ api.ts
-│  └─ typed client for FastAPI endpoints, snapshot analysis, and chat SSE parsing
+│  └─ typed client for FastAPI endpoints, chat SSE parsing, visual analysis upload
 ├─ commands.ts
 │  └─ exact local command parser
 ├─ types.ts
 │  └─ shared frontend request/response/UI types
 ├─ camera/
 │  └─ CameraCaptureOverlay.tsx
+├─ components/
+│  ├─ ChatLogToggle.tsx
+│  └─ reusable UI components
 ├─ hooks/
 │  └─ feature state controllers
 ├─ commandHandlers/
 │  └─ command execution branches grouped by feature
 ├─ lib/
 │  └─ pure helper utilities
-├─ panels/
-│  └─ overlay wrappers for panel UI
-└─ components/
-   └─ reusable UI components
+└─ panels/
+   └─ overlay wrappers for panel UI
 ```
 
-## Important frontend hooks
+## Important frontend hooks and components
 
 ```text
 useBackendStatus
@@ -76,10 +78,9 @@ useMemoryContext
 ├─ syncs tasks, notes, recent actions, activeSession, recentFocusSessions, and visualContext
 ├─ keeps localStorage fallback active
 ├─ prevents stale fallback state from overwriting initialized backend memory
-├─ preserves focus history and visualContext through debounced full-context saves
 ├─ handles memory import/export/reset controls
 ├─ exposes task/note/focus/history/visual actions
-└─ mirrors active focus and visual context state for immediate UI readback
+└─ mirrors active focus and visual state for immediate UI readback
 
 useSearchController
 ├─ owns search query/result/loading/error state
@@ -104,7 +105,7 @@ useChatStreamController
 ├─ owns streaming abort state
 ├─ sends normal streaming chat
 ├─ injects active focus context into chat when relevant
-├─ injects last saved visual observation text into chat when relevant
+├─ injects latest visual observation context when available
 ├─ supports LLM-enhanced recap requests from memory commands
 ├─ cancels active responses
 └─ surfaces backend/SSE errors through the chat UI
@@ -115,6 +116,21 @@ useSpeechRecognitionController
 ├─ handles silence timeout
 ├─ handles microphone/browser errors
 └─ sends final transcript to App command routing
+
+CameraCaptureOverlay
+├─ browser getUserMedia preview
+├─ one-shot webcam snapshots
+├─ image upload analysis path
+├─ backend snapshot/image analysis call
+├─ text-only visual observation save
+├─ Reset preview workaround for blurry webcam preview
+└─ compact upload metadata/no-preview fallback
+
+ChatLogToggle
+├─ discreet lower-left chat-log opener
+├─ opens chat/prompt without starting voice input
+├─ uses smooth chat/orb layout transition
+└─ closes idle peek with Escape
 ```
 
 ## Command flow
@@ -163,7 +179,7 @@ For spoken prompts, the orb should enter a thinking/routing state as soon as the
 
 ## Backend responsibilities
 
-The backend owns LLM calls, web search, snapshot analysis, Google Calendar integration, persistent memory storage, and API routing.
+The backend owns LLM calls, web search, Google Calendar integration, snapshot/image analysis, persistent memory storage, and API routing.
 
 ```text
 backend/app/
@@ -191,8 +207,8 @@ backend/app/
 
 ```text
 Core
-├─ GET  /health
-└─ GET  /api/status
+├─ GET /health
+└─ GET /api/status
 
 Chat
 ├─ POST /api/chat
@@ -209,66 +225,66 @@ Visual analysis
 └─ POST /api/visual/analyze-snapshot
 
 Calendar
-├─ GET    /api/calendar/status
-├─ POST   /api/calendar/auth/start
-├─ GET    /api/calendar/auth/callback
-├─ POST   /api/calendar/auth/reset
-├─ GET    /api/calendar/events
-├─ POST   /api/calendar/events
-├─ PATCH  /api/calendar/events/{event_id}
+├─ GET /api/calendar/status
+├─ POST /api/calendar/auth/start
+├─ GET /api/calendar/auth/callback
+├─ POST /api/calendar/auth/reset
+├─ GET /api/calendar/events
+├─ POST /api/calendar/events
+├─ PATCH /api/calendar/events/{event_id}
 └─ DELETE /api/calendar/events/{event_id}
 
 Memory state
 └─ GET /api/memory/initialization
 
 Memory context
-├─ GET  /api/memory/status
-├─ GET  /api/memory/context
-├─ PUT  /api/memory/context
-├─ GET  /api/memory/export
+├─ GET /api/memory/status
+├─ GET /api/memory/context
+├─ PUT /api/memory/context
+├─ GET /api/memory/export
 ├─ POST /api/memory/import
 └─ POST /api/memory/clear
 
 Tasks
-├─ GET    /api/memory/tasks
-├─ PUT    /api/memory/tasks
-├─ POST   /api/memory/tasks
-├─ PATCH  /api/memory/tasks/{task_id}
+├─ GET /api/memory/tasks
+├─ PUT /api/memory/tasks
+├─ POST /api/memory/tasks
+├─ PATCH /api/memory/tasks/{task_id}
 ├─ DELETE /api/memory/tasks/{task_id}
-└─ POST   /api/memory/tasks/clear-completed
+└─ POST /api/memory/tasks/clear-completed
 
 Notes
-├─ GET    /api/memory/notes
-├─ PUT    /api/memory/notes
-├─ POST   /api/memory/notes
+├─ GET /api/memory/notes
+├─ PUT /api/memory/notes
+├─ POST /api/memory/notes
 ├─ DELETE /api/memory/notes/{note_id}
-└─ POST   /api/memory/notes/clear
+└─ POST /api/memory/notes/clear
 
 Recent actions
-├─ GET    /api/memory/actions
-├─ PUT    /api/memory/actions
-├─ POST   /api/memory/actions
+├─ GET /api/memory/actions
+├─ PUT /api/memory/actions
+├─ POST /api/memory/actions
 ├─ DELETE /api/memory/actions/{action_id}
-└─ POST   /api/memory/actions/clear
+└─ POST /api/memory/actions/clear
 
 Active focus session
-├─ GET    /api/memory/session
-├─ PUT    /api/memory/session
-├─ PATCH  /api/memory/session
+├─ GET /api/memory/session
+├─ PUT /api/memory/session
+├─ PATCH /api/memory/session
 └─ DELETE /api/memory/session
 
 Recent focus sessions
-├─ GET    /api/memory/sessions/recent
-├─ PUT    /api/memory/sessions/recent
-├─ POST   /api/memory/sessions/recent/clear
+├─ GET /api/memory/sessions/recent
+├─ PUT /api/memory/sessions/recent
+├─ POST /api/memory/sessions/recent/clear
 └─ DELETE /api/memory/sessions/recent/{session_id}
 
 Visual context
-├─ GET    /api/memory/visual
-├─ PUT    /api/memory/visual
-├─ PATCH  /api/memory/visual
-├─ POST   /api/memory/visual/observations
-├─ POST   /api/memory/visual/clear
+├─ GET /api/memory/visual
+├─ PUT /api/memory/visual
+├─ PATCH /api/memory/visual
+├─ POST /api/memory/visual/observations
+├─ POST /api/memory/visual/clear
 └─ DELETE /api/memory/visual/observations/{observation_id}
 ```
 
@@ -352,12 +368,12 @@ Important memory rules:
 - Clearing activeSession should archive it into recentFocusSessions when appropriate.
 - Context saves that omit recentFocusSessions should preserve backend history.
 - Context saves that omit visualContext should preserve backend visual context.
-- Camera images are not stored in qmeet_memory.json; only text observations are stored.
+- QMeet stores visual observations as text; raw images are not persisted by default.
 ```
 
 ## Active Context / Focus Session model
 
-The active context layer is the current bridge between simple memory and perception-aware assistance.
+The active context layer is the bridge between simple memory, workflow memory, and perception-aware assistance.
 
 ```text
 Active Focus
@@ -366,8 +382,9 @@ Active Focus
 ├─ goal
 ├─ linked tasks
 ├─ pinned summary notes
+├─ linked visual observations
 ├─ recent actions
-└─ visual observations
+└─ eventual richer perception observations
 ```
 
 Current implemented behavior:
@@ -381,8 +398,52 @@ Current implemented behavior:
 - ended focus sessions archive into recentFocusSessions
 - recent focus sessions can be recalled, listed, removed, cleared, or resumed
 - chat receives neutral active focus context when relevant
-- enhanced recap can send memory/focus context into the normal chat stream
-- visual observations can link to the active focus through relatedFocusId
+- enhanced recap can send memory/focus/visual context into the normal chat stream
+- latest visual observation can be linked to the active focus
+- focus summaries include linked visual observations
+```
+
+## Visual context model
+
+Phase 14 and Phase 15 added the first visual loop:
+
+```text
+manual visual note
+or camera snapshot
+or uploaded image
+   -> backend/model description
+   -> VisualObservation text record
+   -> Memory panel / chat context / focus link
+```
+
+Sources:
+
+```text
+manual  user-provided visual note
+camera  webcam snapshot analyzed through backend/OpenAI
+screen  reserved for future screen/context observation support
+```
+
+Current camera/upload behavior:
+
+```text
+- camera preview uses browser getUserMedia
+- Snapshot captures one frame in memory
+- Analyze Snapshot sends image bytes to /api/visual/analyze-snapshot
+- backend uses OpenAI vision when configured
+- QMeet saves only returned text description
+- uploaded images use same analysis route
+- uploaded image UI intentionally avoids embedded previews because preview rendering was inconsistent
+```
+
+Known caveats:
+
+```text
+- Webcam preview can blur on some browser/device combinations.
+- Reset preview performs a close/reopen-style lifecycle inside the overlay and is the current workaround.
+- A blurry preview does not necessarily mean the actual snapshot or OpenAI analysis is blurry.
+- Uploaded images are analyzed from their original file blob, not from any embedded preview rendering.
+- Use Open original for inspecting an uploaded file.
 ```
 
 ## Focus nudges and actions
@@ -412,43 +473,7 @@ Common focus actions are available directly when a focus exists:
 Create tasks
 Save note
 End with summary
-```
-
-## Visual context model
-
-Visual context is QMeet's first perception-aware memory layer. It currently supports manual observations and one-shot camera snapshot observations.
-
-```text
-Manual observation
-└─ user says: note visually that the tablet is on the desk
-   └─ QMeet creates VisualObservation(source='manual')
-
-Camera observation
-└─ user opens camera, takes snapshot, clicks Analyze Snapshot
-   ├─ browser sends one image to backend
-   ├─ backend sends image to OpenAI vision
-   ├─ backend returns text summary
-   └─ frontend saves VisualObservation(source='camera')
-```
-
-Current behavior:
-
-```text
-- Memory panel shows Visual Context.
-- Last visual observation is included in normal chat context.
-- Explicit visual commands can read, list, summarize, delete, or clear observations.
-- The camera overlay has local preview, snapshot, and analysis controls.
-- Raw images are not persisted by QMeet.
-```
-
-Privacy/storage boundary:
-
-```text
-- Camera preview is browser-local.
-- Snapshot is in browser memory only until closed/cleared/analyzed.
-- Analyze Snapshot sends the image to the backend, then OpenAI.
-- QMeet stores only the returned text observation.
-- OpenAI receives the image when the OpenAI vision path is used.
+Link visual
 ```
 
 ## Chat streaming model
@@ -475,7 +500,7 @@ The frontend SSE parser should tolerate:
 
 If a stream closes before `done` or `error`, the frontend should surface a clear stream-closed error and reset active response state.
 
-Focus-aware and visual-aware chat context is neutral. QMeet passes active focus and last saved visual observation as user-provided context, not as a custom safety filter or policy layer. Normal assistant safety still applies at the model layer.
+Focus-aware and visual-aware chat context is neutral: QMeet passes the active focus and last saved visual observation as user-provided context, not as a custom safety filter or policy layer. Normal assistant safety still applies at the model layer.
 
 ## Recap model
 
@@ -492,6 +517,7 @@ Local recap
 
 Enhanced recap
 ├─ compact memory snapshot
+├─ visual context when available
 ├─ sent through the normal chat stream
 ├─ asks model for concise recap
 ├─ asks what changed
@@ -499,38 +525,29 @@ Enhanced recap
 └─ suggests next action
 ```
 
-A future recap can include visual observations as another signal.
-
-## Camera/snapshot analysis model
-
-Phase 14E/F use a browser-first, one-shot snapshot model.
+## Camera/upload privacy model
 
 ```text
-Browser camera overlay
-├─ getUserMedia preview
-├─ one-shot snapshot to canvas/blob
-├─ no image persistence
-└─ Analyze Snapshot button
+QMeet local app
+├─ does not store raw webcam snapshots in memory
+├─ does not store uploaded image files in memory
+├─ stores only generated text observations
+└─ links observations to focus through relatedFocusId when requested
 
-Backend visual route
-├─ POST /api/visual/analyze-snapshot
-├─ validates image/jpeg, image/png, image/webp
-├─ enforces QMEET_MAX_SNAPSHOT_BYTES
+Backend
+├─ receives image bytes for /api/visual/analyze-snapshot
+├─ validates content type and size
 ├─ sends image to OpenAI vision when configured
-├─ returns summary/model/contentType/bytes/confidence
-└─ does not store the raw image
-
-Frontend save path
-├─ receives summary
-├─ creates camera VisualObservation
-├─ links relatedFocusId when activeSession exists
-├─ updates visualContext immediately
-└─ Memory panel and chat context see the observation
+└─ returns text summary without saving raw image
 ```
+
+OpenAI receives images for analysis when OpenAI vision is enabled. API data is not used for model training by default, but may be temporarily retained under OpenAI's API data-retention policy depending on account settings.
 
 ## Google Calendar model
 
-QMeet supports both local fallback calendar events and connected Google Calendar events. Calendar writes are guarded by confirmations where appropriate, especially delete/edit operations. For connected Google Calendar, confirmed cold-start edit/delete flows should refresh Google Calendar and resolve the target from the fresh result instead of relying only on React state that may not have committed yet.
+QMeet supports both local fallback calendar events and connected Google Calendar events. Calendar writes are guarded by confirmations where appropriate, especially delete/edit operations.
+
+For connected Google Calendar, confirmed cold-start edit/delete flows should refresh Google Calendar and resolve the target from the fresh result instead of relying only on React state that may not have committed yet.
 
 ## Deployment notes
 
@@ -545,7 +562,6 @@ The app is still a prototype. Likely future deployment improvements:
 ├─ automated endpoint tests
 ├─ calendar-aware chat context
 ├─ richer active context/event timeline
-├─ visual observations in recaps
-├─ optional snapshot resizing/compression
-└─ optional continuous or interval visual awareness with explicit opt-in
+├─ optional screen observation model
+└─ optional continuous/periodic camera awareness with explicit user controls
 ```

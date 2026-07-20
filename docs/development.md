@@ -4,17 +4,18 @@ This file keeps detailed project/setup information out of the main README.
 
 ## Current project state
 
-QMeet is currently through Phase 14H.
+QMeet is currently through Phase 15C.
 
 ```text
 Phase 10 completed: backend-backed persistent memory
 Phase 11 completed: regression audit and bug hardening
 Phase 12 completed: active context / focus sessions
 Phase 13 completed: workflow memory, nudges, focus history, and recaps
-Phase 14 completed through 14H: visual context, camera snapshot analysis, and visual commands
+Phase 14 completed: visual context, camera snapshot analysis, visual chat context
+Phase 15 completed through 15C: visual-focus fusion, uploaded-image analysis fallback, discreet chat-log toggle
 ```
 
-The most important current architecture rule is that backend memory is primary after initialization. Browser `localStorage` is still used as a fallback and migration source, but it should not overwrite intentionally empty backend memory, backend focus history archives, or backend visual context.
+The most important architecture rule remains that backend memory is primary after initialization. Browser `localStorage` is still used as fallback and migration source, but it should not overwrite initialized backend memory, focus history, or visual context.
 
 ## Architecture
 
@@ -27,14 +28,15 @@ QMeet
 │  ├─ local exact command parser
 │  ├─ backend fuzzy command interpreter client
 │  ├─ command/result toast cards
-│  ├─ notes, memory, calendar, search, settings, status, camera panels/overlays
+│  ├─ notes, memory, calendar, search, settings, status, menu panels
 │  ├─ active focus/session state and recent focus history
-│  ├─ visualContext state and manual/camera visual observations
-│  └─ chat streaming controller with focus-aware and visual-context-aware prompts
+│  ├─ visual context, camera overlay, snapshot/image analysis UI
+│  ├─ discreet chat-log toggle
+│  └─ chat streaming controller with focus + visual context
 └─ FastAPI backend
    ├─ OpenAI chat streaming
-   ├─ OpenAI vision snapshot analysis
    ├─ OpenAI web search wrapper
+   ├─ OpenAI vision snapshot analysis endpoint
    ├─ command interpretation endpoint
    ├─ Google Calendar OAuth/API integration
    └─ backend-local JSON memory store
@@ -83,14 +85,14 @@ npm run build
 
 ## Backend environment
 
-`backend/.env` controls model, CORS, snapshot limits, and Google Calendar behavior.
+`backend/.env` controls model, CORS, calendar, and vision behavior.
 
 ```env
 LLM_PROVIDER=openai
 OPENAI_API_KEY=your_openai_key_here
 OPENAI_MODEL=gpt-4.1-mini
-OPENAI_VISION_MODEL=gpt-4.1-mini
 OPENAI_MAX_OUTPUT_TOKENS=300
+OPENAI_VISION_MODEL=gpt-4.1-mini
 QMEET_MAX_SNAPSHOT_BYTES=6291456
 FRONTEND_ORIGIN=http://localhost:5173
 GOOGLE_CALENDAR_ENABLED=true
@@ -176,23 +178,14 @@ clear completed tasks
 close memory
 ```
 
-Behavior:
-
-```text
-Open Tasks visible in Memory panel
-Completed Tasks visible in Memory panel until cleared
-Recent Actions stored internally for summary context
-Destructive task actions are confirmation-gated through the existing command safety flow
-```
-
 ## Active focus / context commands
 
 Main commands:
 
 ```text
-start a coding focus session for QMeet Phase 14
+start a coding focus session for QMeet Phase 15
 coding focus
-set my goal to test visual context
+set my goal to test visual-focus fusion
 what is my current focus
 end focus
 end focus anyway
@@ -240,51 +233,75 @@ weekly work recap with recommendations
 
 Local recap is deterministic and uses memory data directly. Enhanced recap sends a compact memory snapshot through the normal chat stream and asks the model for a concise recap, what changed, open loops, and a suggested next action.
 
-## Visual context and camera commands
+## Visual context and camera/image analysis
 
-Manual visual observation commands:
+Visual context commands:
 
 ```text
 note visually that the prototype tablet is on the desk
 remember visually that I am looking at the whiteboard
-visual note that the charger is plugged in
-```
-
-Visual read/history/summary commands:
-
-```text
 what was the last thing you saw
-what did you last see
-what am I looking at
 show visual observations
-visual history
-camera history
 summarize visual context
-visual recap
 show visual context
 delete last visual observation
 clear visual context
 ```
 
-Camera overlay commands through the prompt bar:
+Camera and upload flow:
 
 ```text
 open camera
-camera preview
+allow browser camera permission
 take snapshot
-capture snapshot
-close camera
+Analyze Snapshot
+open memory
 ```
 
-Camera behavior:
+Image upload is available inside the camera overlay. It uses the same backend analysis endpoint as webcam snapshots.
+
+Important caveats:
 
 ```text
-- Browser preview uses getUserMedia.
-- Snapshot stays in browser memory until cleared/closed/analyzed.
-- Analyze Snapshot sends the current image through the backend to OpenAI vision.
-- QMeet stores only the returned text summary as a camera VisualObservation.
-- Raw images are not stored in localStorage, sessionStorage, backend/data, or qmeet_memory.json.
-- Normal chat receives the last saved visual observation as text context, not live camera access.
+- Webcam preview can blur on some browser/device combinations.
+- Reset preview performs the reliable close/reopen lifecycle without manually closing the overlay.
+- Camera snapshots and OpenAI analysis can still be sharp even when the preview looks blurry.
+- Uploaded images are analyzed from the original uploaded file blob.
+- Uploaded images intentionally use a compact no-preview UI because embedded previews showed inconsistent blur artifacts.
+- Use Open original when you need to visually inspect the uploaded file.
+- QMeet stores only the returned text observation, not the raw uploaded image or snapshot.
+```
+
+Visual-focus fusion commands:
+
+```text
+save this visual context to my focus
+link latest visual observation to my focus
+pin what you saw to the current focus
+show visuals for my focus
+show visual observations linked to my focus
+```
+
+Behavior:
+
+```text
+- Latest visual observation can be linked to activeSession via relatedFocusId.
+- Current Focus card shows linked visual observations.
+- Focus summaries include linked visual observations.
+- Chat receives compact visual context when available.
+```
+
+## Chat-log toggle
+
+Phase 15C added a discreet chat-log button near the lower-left of the UI.
+
+Behavior:
+
+```text
+- opens the chat log/prompt area without starting voice input
+- does not change orb-click voice behavior
+- uses the same smooth layout transition as the normal chat panel
+- Escape closes the peek view when idle
 ```
 
 ## Google Calendar setup
@@ -299,7 +316,9 @@ calendar_auth_state.json
 
 `google_credentials.json` comes from Google Cloud OAuth credentials. The token/state files are generated locally after authorization.
 
-Calendar writing is guarded by frontend confirmations for destructive or real-calendar actions. Examples:
+Calendar writing is guarded by frontend confirmations for destructive or real-calendar actions.
+
+Examples:
 
 ```text
 add event tomorrow at 3 called project sync
@@ -325,7 +344,7 @@ Invoke-RestMethod http://localhost:8000/api/memory/sessions/recent
 Invoke-RestMethod http://localhost:8000/api/memory/visual
 ```
 
-Snapshot analysis test from PowerShell:
+Visual snapshot endpoint test with PowerShell:
 
 ```powershell
 Invoke-RestMethod `
@@ -335,26 +354,6 @@ Invoke-RestMethod `
   -InFile ".\snapshot.png"
 ```
 
-Search test:
-
-```powershell
-Invoke-RestMethod `
-  -Uri "http://localhost:8000/api/search" `
-  -Method POST `
-  -ContentType "application/json" `
-  -Body '{"query":"raspberry pi chromium kiosk mode"}'
-```
-
-Memory context test:
-
-```powershell
-Invoke-RestMethod `
-  -Uri "http://localhost:8000/api/memory/tasks" `
-  -Method POST `
-  -ContentType "application/json" `
-  -Body '{"title":"Test persistent memory"}'
-```
-
 ## Regression test script
 
 After major memory/focus/visual changes, run this manually from the QMeet prompt:
@@ -362,9 +361,13 @@ After major memory/focus/visual changes, run this manually from the QMeet prompt
 ```text
 open memory
 start a coding focus session for regression testing
-set my goal to verify focus lifecycle
+set my goal to verify focus and visual lifecycle
 what is my current focus
 turn this focus into tasks
+note visually that the prototype is on the desk
+what was the last thing you saw
+save this visual context to my focus
+show visuals for my focus
 save this focus as a note
 end focus
 cancel
@@ -374,16 +377,35 @@ resume my last focus
 what should I focus on next
 summarize what I worked on today
 give me a better recap of today
-note visually that the prototype tablet is on the desk
-what was the last thing you saw
-show visual observations
-summarize visual context
-open camera
-take snapshot
-Analyze Snapshot
-what am I looking at
 end focus anyway
 show recent focus sessions
+```
+
+Camera/upload regression checks:
+
+```text
+open camera
+verify buttons fit in 1024x600
+take snapshot
+Analyze Snapshot
+open Memory and verify camera observation appears
+if webcam preview blurs, use Reset preview
+upload an image
+Analyze image
+open Memory and verify manual/upload observation appears
+use Open original to inspect uploaded image if needed
+clear visual context
+```
+
+Chat-log toggle checks:
+
+```text
+click the small chat button in lower-left
+verify chat opens without starting voice input
+press Escape
+verify chat peek closes when idle
+click the orb
+verify normal voice behavior still works
 ```
 
 Expected results:
@@ -391,21 +413,23 @@ Expected results:
 ```text
 - focus appears in top status bar and Memory panel
 - linked tasks are created
+- visual observation is saved and can link to focus
 - saved summary opens Notes
 - plain end focus guard asks to save or end anyway when needed
 - end with summary archives the session
 - last focus recall reads the archived session
 - resume creates a new active session from history
 - local recap returns deterministic memory summary
-- enhanced recap streams a ChatGPT response using memory context
-- manual visual note appears in Memory panel Visual Context
-- camera snapshot can be analyzed into a camera observation
-- chat can answer from the last saved visual observation without claiming live camera access
+- enhanced recap streams a ChatGPT response using memory and visual context
+- camera analysis stores text observations only
+- uploaded images are not embedded-preview dependent
 ```
 
 ## Layout notes
 
-The UI target is Raspberry Pi 1024x600 landscape. Normal laptop development should still use the browser/devtools workflow:
+The UI target is Raspberry Pi 1024x600 landscape.
+
+Normal laptop development should still use the browser/devtools workflow:
 
 ```text
 npm run dev
@@ -437,7 +461,7 @@ Browser speech recognition depends on browser support and microphone permissions
 
 This should be fixed by the Phase 11 voice feedback patch. After final speech transcript submission, the orb should immediately enter a thinking/routing state while command interpretation or chat startup runs.
 
-### Memory/tasks/focus/visual context disappeared
+### Memory/tasks/focus disappeared
 
 Check whether the backend memory file exists:
 
@@ -470,7 +494,6 @@ Application -> Local storage -> qmeet-visual-context
 Check:
 
 ```text
-- backend was restarted after applying focus-history backend files
 - backend/data/qmeet_memory.json has recentFocusSessions
 - frontend useMemoryContext includes recentFocusSessions
 - browser localStorage key qmeet-recent-focus-sessions is not stale or malformed
@@ -478,29 +501,29 @@ Check:
 
 Ending a focus should archive it before clearing `activeSession`.
 
-### Camera preview does not work
+### Camera preview blurs
 
-Check:
+Known current workaround:
 
 ```text
-- browser supports getUserMedia
-- page is running on localhost or HTTPS
-- camera permission is allowed
-- no other app is locking the camera
-- camera overlay was opened from the prompt or floating camera control
+Use Reset preview from the camera overlay.
 ```
 
-### Snapshot analysis fails
+The preview may blur on some browser/device combinations. The actual captured snapshot and OpenAI analysis may still be sharp. The current workaround reproduces the reliable close/reopen lifecycle without requiring the user to manually close the camera menu.
+
+### Uploaded image preview looks blurry
+
+QMeet intentionally does not rely on embedded uploaded-image previews anymore. Uploaded images are analyzed from the original uploaded file blob. Use **Open original** to inspect the image in the browser's native viewer.
+
+### Visual observation did not save
 
 Check:
 
 ```text
 - backend is running
-- backend/app/routers/visual.py is included from backend/app/main.py
-- OPENAI_API_KEY is set if using real vision
-- OPENAI_VISION_MODEL is set or defaulted
-- image is jpeg/png/webp
-- image size is below QMEET_MAX_SNAPSHOT_BYTES
+- /api/memory/visual returns visualContext
+- /api/visual/analyze-snapshot returns ok: true for a test image
+- browser localStorage key qmeet-visual-context is not stale or malformed
 ```
 
 ### Google Calendar says not connected
@@ -540,8 +563,6 @@ backend/calendar_auth_state.json
 backend/data/qmeet_memory.json
 ```
 
-Do not commit snapshot images or camera test images unless they are intentional fixture assets.
-
 ## Completed phase summary
 
 ```text
@@ -579,31 +600,13 @@ Phase 14A Backend visualContext persistence
 Phase 14B Frontend visualContext integration
 Phase 14C Manual visual observation commands
 Phase 14D Camera readiness architecture doc
-Phase 14E One-shot camera preview and snapshot UI
-Phase 14F Snapshot analysis and camera observations
+Phase 14E One-shot camera capture UI and close/reset polish
+Phase 14F Backend snapshot analysis and camera overlay integration
 Phase 14G Visual context in chat
-Phase 14H Visual context command polish
-Phase 14I Docs update for camera and visual context
-```
-
-## Phase 11 regression hardening log
-
-```text
-- Backend memory writes are locked and atomic.
-- Task completion PATCH handling preserves completedAt when the field is omitted.
-- Duplicate close-memory toast switch case removed.
-- Chat stream SSE parsing is more robust and reports premature stream closure.
-- Chat failure message uses configured VITE_QMEET_API_URL instead of hardcoded localhost.
-- Spoken prompt submission immediately sets the orb into a thinking/routing state.
-- Google Calendar confirmed delete/edit refreshes connected calendar state before resolving cold-start targets.
-```
-
-## Next direction
-
-Phase 14 has established the first visual loop: camera/manual observation -> visualContext -> Memory panel -> chat context -> explicit visual commands. The next major direction can be either:
-
-```text
-Phase 15A Visual-focus fusion polish
-Phase 15B Calendar/focus workflow integration
-Phase 15C Optional visual recaps that include recent observations
+Phase 14H Visual command polish
+Phase 14I Camera/visual docs update
+Phase 15A Visual-focus fusion
+Phase 15B Image upload analysis and compact no-preview upload UI
+Phase 15C Discreet chat-log toggle
+Phase 15D Docs and regression checklist
 ```
