@@ -121,6 +121,34 @@ def _default_focus_title(mode: str) -> str:
 
 
 
+
+def _calendar_focus_intent(message: str) -> dict[str, Any] | None:
+    """Catch calendar-to-focus prep commands before the general interpreter."""
+    text = _collapse_command_text(message)
+    if not text:
+        return None
+
+    lowered = text.lower()
+    patterns = [
+        r"^(?:please\s+)?(?:prepare|prep)\s+(?:me\s+)?(?:for\s+)?(?:my\s+)?(?:next|upcoming)\s+(?:calendar\s+)?(?:event|meeting|appointment|call)$",
+        r"^(?:please\s+)?(?:start|begin|create|open)\s+(?:a\s+)?(?:focus|focus\s+session|meeting\s+prep\s+focus|prep\s+session)\s+(?:for|from|based\s+on)\s+(?:my\s+)?(?:next|upcoming)\s+(?:calendar\s+)?(?:event|meeting|appointment|call)$",
+        r"^(?:please\s+)?(?:what\s+should\s+i\s+work\s+on|what\s+should\s+i\s+prepare|what\s+do\s+i\s+need\s+to\s+prepare)\s+(?:before|for)\s+(?:my\s+)?(?:next|upcoming)\s+(?:calendar\s+)?(?:event|meeting|appointment|call)$",
+        r"^(?:please\s+)?(?:summarize|review|check)\s+(?:my\s+)?(?:schedule|calendar|agenda)\s+and\s+(?:focus\s+)?(?:priorities|priority|prep|preparation)$",
+        r"^(?:please\s+)?(?:calendar|meeting|event)\s+(?:focus|prep|preparation)$",
+        r"^(?:please\s+)?(?:focus|prep|prepare)\s+(?:for\s+)?(?:next|upcoming)\s+(?:calendar\s+)?(?:event|meeting|appointment|call)$",
+    ]
+
+    if _first_match(patterns, lowered):
+        return _command_response(
+            action="prepare_calendar_focus",
+            frontend_command="prepare me for my next meeting",
+            confidence=0.98,
+            reason="Backend calendar-focus interpreter matched a next-event prep command.",
+        )
+
+    return None
+
+
 def _visual_context_intent(message: str) -> dict[str, Any] | None:
     """Catch Phase 14 manual visual-context commands before the general interpreter."""
     text = _collapse_command_text(message)
@@ -626,6 +654,10 @@ async def command_interpret(req: CommandInterpretRequest):
     message = req.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
+
+    calendar_focus_intent = _calendar_focus_intent(message)
+    if calendar_focus_intent is not None:
+        return CommandInterpretResponse(**calendar_focus_intent)
 
     visual_intent = _visual_context_intent(message)
     if visual_intent is not None:

@@ -5,6 +5,7 @@ import {
   deleteGoogleCalendarEvent,
   getCalendarEvents,
   getCalendarStatus,
+  replaceActiveSession,
   resetCalendarAuth,
   startCalendarAuth,
   updateGoogleCalendarEvent,
@@ -14,6 +15,7 @@ import {
   CalendarBackendStatus,
   CalendarBackendView,
   CalendarEvent,
+  ActiveSession,
 } from '../types';
 import {
   getDateKeyForCalendarView,
@@ -26,6 +28,10 @@ import {
 } from '../lib/calendarUtils';
 
 const CALENDAR_EVENTS_STORAGE_KEY = 'qmeet-calendar-events';
+const ACTIVE_SESSION_STORAGE_KEY = 'qmeet-active-session';
+const ACTIVE_SESSION_SESSION_STORAGE_KEY = 'qmeet-active-session-live';
+const ACTIVE_SESSION_STATE_EVENT = 'qmeet-active-session-state';
+const CALENDAR_FOCUS_PREP_EVENT = 'qmeet-calendar-focus-prep-command';
 const LEGACY_CALENDAR_EVENTS_STORAGE_KEYS = [
   'qmeet-calendar',
   'qmeet-events',
@@ -99,6 +105,95 @@ function selectMostRecentlyCreatedEvent(
   );
 
   return sortedEvents[0] ?? null;
+}
+
+
+function parseClockTimeForDate(dateKey: string, time: string): number | null {
+  const baseDate = new Date(`${dateKey}T00:00:00`);
+  if (Number.isNaN(baseDate.getTime())) return null;
+
+  const cleanedTime = time.trim().toLowerCase();
+  if (!cleanedTime || cleanedTime === 'later' || cleanedTime === 'all day') {
+    baseDate.setHours(12, 0, 0, 0);
+    return baseDate.getTime();
+  }
+
+  const match = cleanedTime.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i);
+  if (!match) {
+    baseDate.setHours(12, 0, 0, 0);
+    return baseDate.getTime();
+  }
+
+  let hours = Number(match[1]);
+  const minutes = Number(match[2] ?? '0');
+  const meridiem = match[3]?.toLowerCase();
+
+  if (meridiem === 'pm' && hours < 12) hours += 12;
+  if (meridiem === 'am' && hours === 12) hours = 0;
+
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  baseDate.setHours(hours, minutes, 0, 0);
+  return baseDate.getTime();
+}
+
+function getCalendarEventStartTimestamp(event: CalendarEvent): number {
+  if (event.start) {
+    const parsedStart = Date.parse(event.start);
+    if (Number.isFinite(parsedStart)) return parsedStart;
+  }
+
+  if (event.dateKey) {
+    const parsedDateKey = parseClockTimeForDate(event.dateKey, event.time || 'Later');
+    if (parsedDateKey !== null) return parsedDateKey;
+  }
+
+  return getCreatedTimestamp(event);
+}
+
+function selectNextCalendarEvent(events: CalendarEvent[]): CalendarEvent | null {
+  const now = Date.now();
+  const withTimestamps = events
+    .map((event) => ({ event, timestamp: getCalendarEventStartTimestamp(event) }))
+    .filter(({ timestamp }) => Number.isFinite(timestamp));
+
+  const upcoming = withTimestamps
+    .filter(({ timestamp }) => timestamp >= now - 5 * 60 * 1000)
+    .sort((left, right) => left.timestamp - right.timestamp);
+
+  if (upcoming[0]) return upcoming[0].event;
+
+  return withTimestamps.sort((left, right) => right.timestamp - left.timestamp)[0]?.event ?? null;
+}
+
+function createCalendarFocusSession(event: CalendarEvent): ActiveSession {
+  const now = new Date().toISOString();
+  const timeLabel = event.time?.trim() || 'scheduled time';
+  const locationLabel = event.location?.trim() ? ` at ${event.location.trim()}` : '';
+  const eventTitle = event.title.trim() || 'Calendar event';
+
+  return {
+    id: `session-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    title: `Prepare for ${eventTitle}`,
+    mode: 'meeting',
+    goal: `Prepare for ${eventTitle}${timeLabel ? ` at ${timeLabel}` : ''}${locationLabel}. Review the event details, gather relevant notes, prepare questions, and identify next steps.`,
+    startedAt: now,
+    updatedAt: now,
+    pinnedNoteIds: [],
+    linkedTaskIds: [],
+  };
+}
+
+function applyCalendarFocusSession(session: ActiveSession) {
+  if (typeof window === 'undefined') return;
+
+  const serializedSession = JSON.stringify(session);
+  window.localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, serializedSession);
+  window.sessionStorage.setItem(ACTIVE_SESSION_SESSION_STORAGE_KEY, serializedSession);
+  window.dispatchEvent(
+    new CustomEvent(ACTIVE_SESSION_STATE_EVENT, {
+      detail: { activeSession: session },
+    }),
+  );
 }
 
 export function useCalendarController({
@@ -708,6 +803,47 @@ export function useCalendarController({
     }
   }, [loadGoogleCalendarStatus]);
 
+
+  const prepareFocusFromNextCalendarEvent = useCallback(async () => {
+    setGoogleCalendarLoading(true);
+    setGoogleCalendarError('');
+
+    try {
+      const status = await getCalendarStatus();
+      setGoogleCalendarStatus(status);
+
+      const sourceEvents = status.connected
+        ? await refreshGoogleCalendar('week')
+        : calendarEvents;
+      const targetEvent = selectNextCalendarEvent(sourceEvents);
+
+      if (!targetEvent) {
+        setGoogleCalendarError(
+          status.connected
+            ? 'No upcoming Google Calendar events were found to prepare for.'
+            : 'No local calendar events were found to prepare for. Connect Google Calendar or add an event first.',
+        );
+        return null;
+      }
+
+      const session = createCalendarFocusSession(targetEvent);
+      applyCalendarFocusSession(session);
+      await replaceActiveSession(session);
+      setGoogleCalendarError(
+        `Started meeting prep focus from calendar: ${targetEvent.title}.`,
+      );
+      return session;
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : 'Could not prepare focus from the next calendar event.';
+      setGoogleCalendarError(message);
+      return null;
+    } finally {
+      setGoogleCalendarLoading(false);
+    }
+  }, [calendarEvents, refreshGoogleCalendar]);
+
   useEffect(() => {
     loadGoogleCalendarStatus();
   }, [loadGoogleCalendarStatus]);
@@ -717,6 +853,20 @@ export function useCalendarController({
       refreshGoogleCalendar(calendarView);
     }
   }, [activePanel, calendarView, refreshGoogleCalendar]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const handleCalendarFocusPrep = () => {
+      prepareFocusFromNextCalendarEvent();
+    };
+
+    window.addEventListener(CALENDAR_FOCUS_PREP_EVENT, handleCalendarFocusPrep);
+    return () => {
+      window.removeEventListener(CALENDAR_FOCUS_PREP_EVENT, handleCalendarFocusPrep);
+    };
+  }, [prepareFocusFromNextCalendarEvent]);
+
 
   return {
     calendarView,
@@ -743,5 +893,6 @@ export function useCalendarController({
     deleteCalendarEventByCriteria,
     handleStartGoogleCalendarAuth,
     handleResetGoogleCalendarAuth,
+    prepareFocusFromNextCalendarEvent,
   };
 }

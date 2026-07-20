@@ -62,6 +62,10 @@ export function getBriefToolSpeech(command: string, fullText: string): string {
     case 'read-last-focus-session':
     case 'read-focus-history':
     case 'recap-focus-activity':
+      return trimmed;
+    case 'prepare-calendar-focus':
+      return 'Preparing calendar focus.';
+
     case 'enhanced-focus-recap':
       return trimmed;
     case 'create-visual-observation':
@@ -372,6 +376,12 @@ export function getResultToastForCommand(
         kind: 'calendar',
         title: 'Calendar open',
         detail: 'Calendar panel is visible.',
+      };
+    case 'prepare-calendar-focus':
+      return {
+        kind: 'calendar',
+        title: 'Calendar focus prep',
+        detail: 'Preparing from next calendar event.',
       };
     case 'run-search':
       return trimmed === 'Opening search.'

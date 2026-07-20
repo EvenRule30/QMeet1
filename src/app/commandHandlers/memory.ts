@@ -18,6 +18,11 @@ type EnhancedFocusRecapChatEventDetail = {
   visibleText: string;
 };
 
+type CalendarFocusPrepEventDetail = {
+  requestedAt: string;
+  source: 'memory-command';
+};
+
 export type MemoryCommandResult = {
   handled: boolean;
   confirmationContent?: string;
@@ -45,7 +50,8 @@ const RECENT_ACTIONS_STORAGE_KEY = 'qmeet-recent-actions';
 const RECENT_FOCUS_SESSIONS_STORAGE_KEY = 'qmeet-recent-focus-sessions';
 const VISUAL_CONTEXT_STORAGE_KEY = 'qmeet-visual-context';
 const VISUAL_CONTEXT_STATE_EVENT = 'qmeet-visual-context-state';
-const ACTIVE_SESSION_COMMAND_HANDLER_MARKER = 'phase15a-v1-visual-focus-fusion';
+const CALENDAR_FOCUS_PREP_EVENT = 'qmeet-calendar-focus-prep-command';
+const ACTIVE_SESSION_COMMAND_HANDLER_MARKER = 'phase16a-v1-calendar-focus';
 
 function createId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -1481,6 +1487,19 @@ function describeFocusUpdate(payload: FocusSessionCommandPayload | undefined) {
     : 'Focus session updated.';
 }
 
+
+function dispatchCalendarFocusPrep() {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(
+    new CustomEvent<CalendarFocusPrepEventDetail>(CALENDAR_FOCUS_PREP_EVENT, {
+      detail: {
+        requestedAt: new Date().toISOString(),
+        source: 'memory-command',
+      },
+    }),
+  );
+}
+
 export function handleMemoryCommand(
   commandMatch: CommandMatch,
   deps: {
@@ -1522,6 +1541,18 @@ export function handleMemoryCommand(
         confirmationContent:
           'Preparing an enhanced recap from your focus history, tasks, notes, and recent actions.',
         shouldSpeakConfirmation: false,
+      };
+    }
+
+
+    case 'prepare-calendar-focus': {
+      deps.setActivePanel('calendar');
+      dispatchCalendarFocusPrep();
+      return {
+        handled: true,
+        confirmationContent:
+          'Preparing focus from your next calendar event. I will refresh your calendar, start a meeting prep focus if I find an upcoming event, and show the calendar panel.',
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }
 

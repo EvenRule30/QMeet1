@@ -30,6 +30,7 @@ export type LocalCommand =
   | 'resume-last-focus-session'
   | 'recap-focus-activity'
   | 'enhanced-focus-recap'
+  | 'prepare-calendar-focus'
   | 'create-visual-observation'
   | 'read-visual-context'
   | 'read-last-visual-observation'
@@ -114,6 +115,7 @@ export interface FocusSessionCommandPayload {
 // Phase 14C-v1: manual visual observation commands.
 // Phase 14H-v2: visual read/history/summary commands route through read-visual-context payloads.
 // Phase 15A-v1: visual-focus fusion commands link/read observations related to the active focus.
+// Phase 16A-v1: calendar-focus prep routes next calendar events into active focus sessions.
 
 export interface CommandMatch {
   command: LocalCommand;
@@ -163,6 +165,7 @@ const CONFIRMATIONS: Record<LocalCommand, string> = {
   'resume-last-focus-session': 'Resuming last focus session.',
   'recap-focus-activity': 'Recapping recent focus activity.',
   'enhanced-focus-recap': 'Preparing enhanced focus recap.',
+  'prepare-calendar-focus': 'Preparing focus from your next calendar event.',
   'create-visual-observation': 'Saved visual observation.',
   'read-visual-context': 'Reading visual context.',
   'read-last-visual-observation': 'Reading last visual observation.',
@@ -926,6 +929,31 @@ function extractVisualContextIntent(normalized: string): CommandMatch | null {
     return {
       command: 'read-visual-context',
       confirmation: CONFIRMATIONS['read-visual-context'],
+    };
+  }
+
+  return null;
+}
+
+
+function extractCalendarFocusIntent(normalized: string): CommandMatch | null {
+  const text = normalizeFocusCommandPhrase(normalized);
+
+  const preparePatterns = [
+    /^(?:please\s+)?(?:prepare|prep)\s+(?:me\s+)?(?:for\s+)?(?:my\s+)?(?:next|upcoming)\s+(?:calendar\s+)?(?:event|meeting|appointment|call)$/i,
+    /^(?:please\s+)?(?:start|begin|create|open)\s+(?:a\s+)?(?:focus|focus\s+session|meeting\s+prep\s+focus|prep\s+session)\s+(?:for|from|based\s+on)\s+(?:my\s+)?(?:next|upcoming)\s+(?:calendar\s+)?(?:event|meeting|appointment|call)$/i,
+    /^(?:please\s+)?(?:start|begin|create|open)\s+(?:a\s+)?(?:focus|focus\s+session|meeting\s+prep\s+focus|prep\s+session)\s+(?:for|from|based\s+on)\s+(?:the\s+)?(?:next|upcoming)\s+(?:calendar\s+)?(?:event|meeting|appointment|call)\s+(?:on|in)\s+(?:my\s+)?(?:calendar|schedule|agenda)$/i,
+    /^(?:please\s+)?(?:what\s+should\s+i\s+work\s+on|what\s+should\s+i\s+prepare|what\s+do\s+i\s+need\s+to\s+prepare)\s+(?:before|for)\s+(?:my\s+)?(?:next|upcoming)\s+(?:calendar\s+)?(?:event|meeting|appointment|call)$/i,
+    /^(?:please\s+)?(?:summarize|review|check)\s+(?:my\s+)?(?:schedule|calendar|agenda)\s+and\s+(?:focus\s+)?(?:priorities|priority|prep|preparation)$/i,
+    /^(?:please\s+)?(?:calendar|meeting|event)\s+(?:focus|prep|preparation)$/i,
+    /^(?:please\s+)?(?:focus|prep|prepare)\s+(?:for\s+)?(?:next|upcoming)\s+(?:calendar\s+)?(?:event|meeting|appointment|call)$/i,
+  ];
+
+  if (preparePatterns.some((pattern) => pattern.test(text))) {
+    return {
+      command: 'prepare-calendar-focus',
+      confirmation: CONFIRMATIONS['prepare-calendar-focus'],
+      focusSession: { mode: 'meeting' },
     };
   }
 
@@ -1794,6 +1822,15 @@ export function debugCommandParse(text: string): {
           confirmation: `Saved visual observation: ${visualObservationPayload}.`,
           payload: visualObservationPayload,
         },
+      };
+    }
+
+    const calendarFocusIntent = extractCalendarFocusIntent(payloadSource);
+    if (calendarFocusIntent) {
+      return {
+        rawText: text,
+        normalizedText: normalized,
+        match: calendarFocusIntent,
       };
     }
 

@@ -102,13 +102,13 @@ const previewWrapStyle: CSSProperties = {
 
 const uploadedPreviewWrapStyle: CSSProperties = {
   ...previewWrapStyle,
-  minHeight: 132,
-  maxHeight: 'none',
+  minHeight: 220,
+  maxHeight: 'min(360px, 54vh)',
   placeItems: 'center',
   alignItems: 'center',
   overflow: 'hidden',
-  padding: 6,
-  background: 'rgba(2, 8, 18, 0.98)',
+  padding: 0,
+  background: '#020812',
   overscrollBehavior: 'contain',
 };
 
@@ -179,6 +179,38 @@ const uploadMetaStyle: CSSProperties = {
   color: 'rgba(233, 247, 255, 0.66)',
   fontSize: 11,
   lineHeight: 1.45,
+};
+
+const uploadedImageStyle: CSSProperties = {
+  display: 'block',
+  maxWidth: '100%',
+  maxHeight: 'min(360px, 54vh)',
+  width: 'auto',
+  height: 'auto',
+  objectFit: 'contain',
+  background: '#020812',
+  filter: 'none',
+  transform: 'none',
+  imageRendering: 'auto',
+};
+
+const uploadedMetaBadgeStyle: CSSProperties = {
+  position: 'absolute',
+  left: 8,
+  right: 8,
+  bottom: 8,
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  gap: 8,
+  padding: '5px 8px',
+  borderRadius: 999,
+  background: 'rgba(2, 8, 18, 0.72)',
+  border: '1px solid rgba(124, 219, 255, 0.18)',
+  color: 'rgba(233, 247, 255, 0.78)',
+  fontSize: 10,
+  lineHeight: 1.2,
+  pointerEvents: 'none',
 };
 
 const footerStyle: CSSProperties = {
@@ -793,11 +825,9 @@ export function CameraCaptureOverlay() {
     uploadedImageSize && uploadedImageSize.height > uploadedImageSize.width,
   );
   const uploadFileSizeLabel = formatFileSize(uploadFileSizeBytes);
-  const activeOverlayStyle: CSSProperties = isUploadedSnapshot
-    ? { ...overlayStyle, backdropFilter: 'none' }
-    : overlayStyle;
+  const activeOverlayStyle: CSSProperties = overlayStyle;
   const previewLabel = isUploadedSnapshot
-    ? 'Uploaded image ready. Preview is hidden; analyze uses the original file.'
+    ? 'Uploaded image preview. Analyze uses the original file and saves only text.'
     : 'Snapshot ready. Analyze saves a text-only camera observation.';
 
   return (
@@ -805,7 +835,7 @@ export function CameraCaptureOverlay() {
       <div style={panelStyle} onClick={(event) => event.stopPropagation()}>
         <div style={headerStyle}>
           <div>
-            <h2 style={titleStyle}>Camera Preview</h2>
+            <h2 style={titleStyle}>Camera / Image Preview</h2>
             <p style={subtitleStyle}>
               One-shot visual analysis. Analyze sends one image; QMeet stores only text.
             </p>
@@ -829,18 +859,26 @@ export function CameraCaptureOverlay() {
             style={snapshotSource === 'upload' ? uploadedPreviewWrapStyle : previewWrapStyle}
           >
             {snapshotPreviewUrl && isUploadedSnapshot ? (
-              <div key={`upload-card-${snapshotSurfaceKey}-${snapshotPreviewUrl}`} style={uploadCardStyle}>
-                <div style={uploadIconStyle}>▧</div>
-                <p style={uploadNameStyle}>{uploadFileName ?? 'Uploaded image'}</p>
-                <p style={uploadMetaStyle}>
-                  {uploadedImageSize
-                    ? `${uploadedImageSize.width}×${uploadedImageSize.height}`
-                    : 'Reading dimensions'}
-                  {uploadFileSizeLabel ? ` · ${uploadFileSizeLabel}` : ''}
-                  {uploadedIsPortrait ? ' · Portrait' : uploadedImageSize ? ' · Landscape/square' : ''}
-                </p>
-                <p style={uploadMetaStyle}>Preview hidden to avoid blur. Use Open original to inspect; Analyze uses the original file.</p>
-              </div>
+              <>
+                <img
+                  key={`upload-preview-${snapshotSurfaceKey}-${snapshotPreviewUrl}`}
+                  src={snapshotPreviewUrl}
+                  alt={uploadFileName ? `Uploaded image: ${uploadFileName}` : 'Uploaded visual preview'}
+                  style={uploadedImageStyle}
+                  decoding="sync"
+                  draggable={false}
+                />
+                <div style={uploadedMetaBadgeStyle}>
+                  <span>{uploadFileName ?? 'Uploaded image'}</span>
+                  <span>
+                    {uploadedImageSize
+                      ? `${uploadedImageSize.width}×${uploadedImageSize.height}`
+                      : 'Reading dimensions'}
+                    {uploadFileSizeLabel ? ` · ${uploadFileSizeLabel}` : ''}
+                    {uploadedIsPortrait ? ' · Portrait' : uploadedImageSize ? ' · Landscape/square' : ''}
+                  </span>
+                </div>
+              </>
             ) : snapshotPreviewUrl ? (
               <img
                 key={`${snapshotSource ?? 'snapshot'}-${snapshotSurfaceKey}-${snapshotPreviewUrl}`}
