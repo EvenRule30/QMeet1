@@ -1,3 +1,5 @@
+import { getQMeetGuideResponse, getQMeetGuideTopic } from './lib/qmeetGuide';
+
 export type LocalCommand = 
   | 'help'
   | 'identity'
@@ -120,6 +122,7 @@ export interface FocusSessionCommandPayload {
 // Phase 16A-v1: calendar-focus prep routes next calendar events into active focus sessions.
 // Phase 16B-v1: calendar-focus prep also creates linked meeting-prep tasks.
 // Phase 16C-v1: meeting wrap-up commands save summaries and create follow-up tasks.
+// Phase 17B-v2: guided onboarding catches broader capability/schedule questions and natural prep-block phrases.
 
 export interface CommandMatch {
   command: LocalCommand;
@@ -132,12 +135,11 @@ export interface CommandMatch {
   calendarView?: 'today' | 'tomorrow' | 'all';
 }
 
-const HELP_MESSAGE =
-  "I'm QMeet, your local AI orb interface. I can control the local UI without sending those commands to OpenAI. I can open Menu, Settings, Status, Notes, Memory, Calendar, and real Web Search. Notes: say \"note that buy milk,\" \"read my notes,\" or \"delete last note.\" Memory/tasks: say \"what was I working on,\" \"start a coding session for Phase 12,\" \"set my goal to wire focus commands,\" \"remember to test the Pi as a task,\" \"mark task done,\" or \"open memory.\" Search: say \"search for raspberry pi kiosk mode,\" \"look up chromium flags,\" or \"clear search\" to run real web searches. Calendar: say \"add event tomorrow at 3 called meeting,\" \"reschedule last event to tomorrow at 4,\" \"rename last event to project sync,\" \"show today's events,\" \"what's on my calendar,\" \"refresh calendar,\" \"delete last event,\" or \"clear calendar.\" Visual context: say \"what was the last thing you saw,\" \"show visual observations,\" or \"summarize visual context.\" Voice: say \"mute voice,\" \"unmute voice,\" \"speak slower,\" \"speak faster,\" or \"normal voice.\" Navigation: say \"go home,\" \"close panel,\" \"cancel,\" or \"what did you hear.\"";
+const HELP_MESSAGE = getQMeetGuideResponse('overview');
 
 const CONFIRMATIONS: Record<LocalCommand, string> = {
   help: HELP_MESSAGE,
-  identity: "I'm QMeet, your local AI orb interface.",
+  identity: "I'm QMeet, your local AI orb interface. I can help with focus, memory, calendar, meetings, camera/visual context, search, and recaps. Ask 'what can you do' or 'help with focus' for quick examples.",
   'open-menu': 'Opening menu.',
   'close-menu': 'Closing menu.',
   'open-settings': 'Opening settings.',
@@ -943,6 +945,64 @@ function extractVisualContextIntent(normalized: string): CommandMatch | null {
   return null;
 }
 
+
+
+function normalizePrepTimeText(value: string): string {
+  return value
+    .replace(/^(\d{1,2})\s+(\d{2})\b/, '$1:$2')
+    .replace(/\bp\s*\.?\s*m\.?\b/gi, 'PM')
+    .replace(/\ba\s*\.?\s*m\.?\b/gi, 'AM')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractAdHocPreparationFocusIntent(normalized: string): CommandMatch | null {
+  const text = normalizeFocusCommandPhrase(normalized);
+  const lowered = text.toLowerCase();
+
+  const genericPrepPatterns = [
+    /^(?:yes\s+|yeah\s+|yep\s+|sure\s+|ok(?:ay)?\s+)?(?:please\s+)?(?:start|begin|create|open)\s+(?:that\s+|the\s+|my\s+)?(?:focus\s+)?(?:preparation|prep)\s+(?:block|focus|session)$/i,
+    /^(?:yes\s+|yeah\s+|yep\s+|sure\s+|ok(?:ay)?\s+)?(?:please\s+)?(?:start|begin|create|open)\s+(?:that\s+|the\s+|my\s+)?(?:focus\s+block|prep\s+block|prep\s+session)$/i,
+    /^(?:yes\s+|yeah\s+|yep\s+|sure\s+|ok(?:ay)?\s+)?(?:you\s+can\s+)?(?:start|begin|create|open)\s+(?:that\s+|the\s+|my\s+)?(?:focus\s+)?(?:preparation|prep)\s+(?:block|focus|session)$/i,
+  ];
+  if (genericPrepPatterns.some((pattern) => pattern.test(text))) {
+    return {
+      command: 'start-focus-session',
+      confirmation: 'Started meeting prep focus session: Preparation block.',
+      focusSession: {
+        title: 'Preparation block',
+        mode: 'meeting',
+        goal: 'Prepare for the upcoming appointment, meeting, or event. Review details, gather notes, prepare questions, and identify next steps.',
+      },
+    };
+  }
+
+  const hasPrepIntent = /\b(?:need|needs|want|wants|have|has|should|must)\s+to\s+(?:prepare|prep|get\s+ready)|\b(?:prepare|prep|get\s+ready)\s+(?:for|before)\b/i.test(text);
+  const eventWordMatch = text.match(/\b(appointment|meeting|event|call)\b/i);
+  if (!hasPrepIntent || !eventWordMatch) return null;
+
+  const timeMatch = text.match(/\b(?:at|around|by|before)\s+((?:\d{1,2}:\d{2}|\d{1,2}\s+\d{2}|\d{1,2})\s*(?:a\s*\.?\s*m\.?|p\s*\.?\s*m\.?|am|pm)?)\b/i);
+  const dayMatch = text.match(/\b(today|tomorrow)\b/i);
+  const eventWord = eventWordMatch[1].toLowerCase();
+  const timeText = timeMatch?.[1] ? normalizePrepTimeText(timeMatch[1]) : '';
+  const dayText = dayMatch?.[1] ? dayMatch[1].toLowerCase() : '';
+  const titleParts = [timeText, dayText, eventWord].filter(Boolean);
+  const title = titleParts.length ? titleParts.join(' ') : `${eventWord} preparation`;
+  const goalParts = [`Prepare for the ${eventWord}`];
+  if (timeText) goalParts.push(`at ${timeText}`);
+  if (dayText) goalParts.push(dayText);
+  const goal = `${goalParts.join(' ')}. Review details, gather notes, prepare questions, and identify next steps.`;
+
+  return {
+    command: 'start-focus-session',
+    confirmation: `Started meeting prep focus session: ${title}.`,
+    focusSession: {
+      title,
+      mode: 'meeting',
+      goal,
+    },
+  };
+}
 
 function extractCalendarFocusIntent(normalized: string): CommandMatch | null {
   const text = normalizeFocusCommandPhrase(normalized);
@@ -1870,7 +1930,29 @@ export function debugCommandParse(text: string): {
       .replace(/\s+/g, ' ')
       .replace(/^(?:hey\s+)?(?:qmeet|orb|assistant)\s+/i, '')
       .trim();
+
+    const qmeetGuideTopic = getQMeetGuideTopic(payloadSource);
+    if (qmeetGuideTopic) {
+      return {
+        rawText: text,
+        normalizedText: normalized,
+        match: {
+          command: 'help',
+          confirmation: getQMeetGuideResponse(qmeetGuideTopic),
+          payload: qmeetGuideTopic,
+        },
+      };
+    }
   
+    const adHocPrepFocusIntent = extractAdHocPreparationFocusIntent(payloadSource);
+    if (adHocPrepFocusIntent) {
+      return {
+        rawText: text,
+        normalizedText: normalized,
+        match: adHocPrepFocusIntent,
+      };
+    }
+
     const visualContextIntent = extractVisualContextIntent(payloadSource);
     if (visualContextIntent) {
       return {

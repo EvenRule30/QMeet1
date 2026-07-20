@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 const CHAT_LOG_OPEN_CLASS = 'qmeet-chat-log-open';
-const CHAT_LOG_STYLE_ID = 'qmeet-chat-log-toggle-styles-v3';
+const CHAT_LOG_STYLE_ID = 'qmeet-chat-log-toggle-styles-v4';
 
 function getReactChatVisible(): boolean {
   if (typeof document === 'undefined') return false;
@@ -120,6 +120,13 @@ function installChatLogStyles(): void {
       opacity: 0.28;
     }
 
+    .qmeet-chat-log-toggle-hidden {
+      opacity: 0;
+      transform: translateY(6px) scale(0.92);
+      pointer-events: none;
+      visibility: hidden;
+    }
+
     @media (max-width: 720px) {
       .qmeet-chat-log-toggle {
         left: 12px;
@@ -197,11 +204,15 @@ export function ChatLogToggle() {
     setPeekOpen((current) => !current);
   }, [reactChatVisible]);
 
-  const open = reactChatVisible || peekOpen;
+  // Hide the discreet affordance when the real chat console is already open.
+  // In that state the button is redundant and can collide with command/result toasts.
+  // Keep it visible for its own temporary peek mode so the same button can close the peek.
+  const hiddenByConsole = reactChatVisible;
+  const open = peekOpen;
 
   return (
     <button
-      className={`qmeet-chat-log-toggle${open ? ' qmeet-chat-log-toggle-open' : ''}`}
+      className={`qmeet-chat-log-toggle${open ? ' qmeet-chat-log-toggle-open' : ''}${hiddenByConsole ? ' qmeet-chat-log-toggle-hidden' : ''}`}
       type="button"
       aria-label={open ? 'Hide chat log preview' : 'Open chat log'}
       aria-pressed={open}
