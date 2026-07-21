@@ -141,6 +141,18 @@ function formatUpdatedAt(value: string) {
   })}`;
 }
 
+function shouldShowContextPrompt(context: BackgroundWorkContext) {
+  if (context.stage === 'complete' || context.openQuestions.length === 0) {
+    return false;
+  }
+
+  return (
+    context.stage === 'discovery' ||
+    context.confidence < 0.72 ||
+    context.knownFacts.length <= 2
+  );
+}
+
 function findCurrentFocusSection(memoryBody: HTMLElement) {
   return Array.from(memoryBody.children).find((child) => {
     if (!(child instanceof HTMLElement)) return false;
@@ -325,6 +337,48 @@ function WorkContextStyles() {
         background: rgba(183, 161, 255, 0.68);
       }
 
+      .qmeet-work-context-onboarding {
+        margin-bottom: 10px;
+        border: 1px solid rgba(184, 159, 255, 0.3);
+        border-radius: 12px;
+        background:
+          linear-gradient(135deg, rgba(124, 91, 223, 0.2), rgba(76, 54, 139, 0.1)),
+          rgba(17, 13, 30, 0.52);
+        padding: 11px 12px;
+        box-shadow: 0 10px 26px rgba(8, 5, 17, 0.18);
+      }
+
+      .qmeet-work-context-onboarding-label {
+        display: inline-flex;
+        align-items: center;
+        min-height: 20px;
+        border: 1px solid rgba(206, 191, 255, 0.2);
+        border-radius: 999px;
+        background: rgba(171, 143, 255, 0.12);
+        color: rgba(234, 227, 255, 0.82);
+        padding: 0 7px;
+        font-size: 9px;
+        font-weight: 760;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .qmeet-work-context-onboarding-question {
+        margin-top: 7px;
+        color: rgba(252, 250, 255, 0.96);
+        font-size: 13px;
+        font-weight: 680;
+        line-height: 1.38;
+        overflow-wrap: anywhere;
+      }
+
+      .qmeet-work-context-onboarding-hint {
+        margin-top: 5px;
+        color: rgba(224, 216, 247, 0.64);
+        font-size: 10px;
+        line-height: 1.4;
+      }
+
       .qmeet-work-context-question {
         margin-top: 8px;
         border: 1px solid rgba(227, 210, 154, 0.15);
@@ -387,6 +441,8 @@ function WorkContextSection({
   onRefresh: () => void;
 }) {
   const context = response?.activeContext ?? null;
+  const promptQuestion = context?.openQuestions[0] ?? '';
+  const showContextPrompt = context ? shouldShowContextPrompt(context) : false;
 
   let content: ReactNode;
   if (loadState === 'error') {
@@ -430,6 +486,24 @@ function WorkContextSection({
           </div>
         </div>
 
+        {showContextPrompt && promptQuestion && (
+          <div
+            className="qmeet-work-context-onboarding"
+            aria-live="polite"
+          >
+            <div className="qmeet-work-context-onboarding-label">
+              Help QMeet learn this focus
+            </div>
+            <div className="qmeet-work-context-onboarding-question">
+              {promptQuestion}
+            </div>
+            <div className="qmeet-work-context-onboarding-hint">
+              Answer naturally by speaking or typing. QMeet will add the detail to
+              this focus and use it in later guidance.
+            </div>
+          </div>
+        )}
+
         <div className="qmeet-work-context-primary-grid">
           <div className="qmeet-work-context-primary-card">
             <div className="qmeet-work-context-card-label">Goal</div>
@@ -455,7 +529,7 @@ function WorkContextSection({
           />
         </div>
 
-        {context.openQuestions.length > 0 && (
+        {!showContextPrompt && context.openQuestions.length > 0 && (
           <div className="qmeet-work-context-question">
             <div className="qmeet-work-context-card-label">
               Most useful open question

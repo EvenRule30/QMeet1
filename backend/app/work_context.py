@@ -13,7 +13,7 @@ from typing import Any
 
 from app.memory_store import MemoryStoreError, get_active_session
 
-WORK_CONTEXT_FILE_VERSION = 2
+WORK_CONTEXT_FILE_VERSION = 3
 MAX_FACTS = 14
 MAX_CONSTRAINTS = 10
 MAX_DECISIONS = 8
@@ -280,7 +280,16 @@ def _context_from_session(session: dict[str, Any]) -> dict[str, Any]:
         "confidence": 0.45 if objective else 0.3,
         "updatedAt": _now_iso(),
     }
-    _refresh_questions_and_next_action(context, "")
+
+    # The first natural focus request often already contains useful context: a
+    # deadline, language, tool, event, person, preference, or concrete outcome.
+    # Seed the richer context from the session title and goal so Memory is useful
+    # immediately instead of waiting for the user to repeat those details.
+    seed_text = ". ".join(part for part in (title, objective) if part)
+    if seed_text:
+        context, _ = _apply_user_update(context, seed_text)
+    else:
+        _refresh_questions_and_next_action(context, "")
     return context
 
 
@@ -409,7 +418,7 @@ def _extract_objective(text: str) -> str:
 
 
 def _extract_tool_or_environment(text: str) -> str:
-    return _first_match(
+    candidate = _first_match(
         [
             r"\bi(?:'m|\s+am)\s+using\s+(.+)$",
             r"\bi\s+use\s+(.+)$",
@@ -418,6 +427,18 @@ def _extract_tool_or_environment(text: str) -> str:
         ],
         text,
     )
+    if not candidate:
+        return ""
+
+    # Decisions such as "we are using your old message" describe chosen work,
+    # not a software tool or environment.
+    if re.search(
+        r"\b(?:message|wording|draft|note|card|plan|idea|suggestion|response|answer)\b",
+        candidate,
+        flags=re.IGNORECASE,
+    ):
+        return ""
+    return candidate
 
 
 def _extract_constraint(text: str) -> str:
@@ -485,8 +506,9 @@ def _extract_preference(text: str, context: dict[str, Any]) -> str:
 
 def _extract_deadline(text: str, context: dict[str, Any]) -> str:
     person = _focus_person(context)
+    day_count = r"(?:\d+|one|two|three|four|five|six|seven|a|an)"
     birthday_match = re.search(
-        r"\bbirthday(?:\s+which)?\s+is\s+(in\s+\d+\s+days?|today|tomorrow|this\s+week|next\s+week|on\s+.+)$",
+        rf"\b(?:(?:his|her|their|[A-Z][a-z]+['’]s)\s+)?birthday(?:\s+which)?\s+is\s+(in\s+{day_count}\s+days?|today|tomorrow|this\s+week|next\s+week|on\s+.+?)(?:[.?!])?$",
         text,
         flags=re.IGNORECASE,
     )
@@ -496,12 +518,34 @@ def _extract_deadline(text: str, context: dict[str, Any]) -> str:
         return f"{prefix} birthday is {timing}."
 
     generic_match = re.search(
-        r"\b(?:it|this|the\s+event|the\s+project|the\s+assignment)\s+is\s+(?:due\s+)?(in\s+\d+\s+days?|today|tomorrow|this\s+week|next\s+week|on\s+.+)$",
+        rf"\b(?:it|this|the\s+event|the\s+project|the\s+assignment)\s+is\s+(?:due\s+)?(in\s+{day_count}\s+days?|today|tomorrow|this\s+week|next\s+week|on\s+.+?)(?:[.?!])?$",
         text,
         flags=re.IGNORECASE,
     )
     if generic_match:
         return f"The focus deadline is {_sentence_fragment(generic_match.group(1), 120)}."
+
+    # A naturally started focus often places its deadline directly inside the
+    # objective: "finish the report by Friday" or "presentation due next week."
+    inline_match = re.search(
+        rf"\b(?:due(?:\s+by)?|by)\s+"
+        rf"(today|tomorrow|tonight|this\s+week|next\s+week|next\s+month|"
+        rf"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+        rf"\d{{1,2}}[/-]\d{{1,2}}(?:[/-]\d{{2,4}})?|"
+        rf"[A-Z][a-z]+\s+\d{{1,2}}(?:,\s+\d{{4}})?)(?:\b|[.?!])",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if inline_match:
+        return f"The focus deadline is {_sentence_fragment(inline_match.group(1), 120)}."
+
+    relative_match = re.search(
+        rf"\b(in\s+{day_count}\s+(?:hours?|days?|weeks?|months?))(?:\b|[.?!])",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if relative_match:
+        return f"The focus deadline is {_sentence_fragment(relative_match.group(1), 120)}."
     return ""
 
 
@@ -619,6 +663,35 @@ def _has_decision(context: dict[str, Any], *phrases: str) -> bool:
     return any(phrase.casefold() in decisions for phrase in phrases)
 
 
+def _capture_open_question_answer(
+    text: str,
+    context: dict[str, Any],
+) -> tuple[str, str] | None:
+    questions = _clean_list(context.get("openQuestions"), MAX_OPEN_QUESTIONS, 220)
+    if not questions:
+        return None
+
+    answer = _sentence_fragment(text, 260)
+    if not answer or answer.endswith("?"):
+        return None
+    if re.match(
+        r"^(?:open|show|search|find|look up|help me|can you|could you|would you|"
+        r"what|why|when|where|who|how)\b",
+        answer,
+        flags=re.IGNORECASE,
+    ):
+        return None
+
+    question = questions[0].casefold()
+    if "requirement" in question or "audience" in question:
+        return "constraints", f"User-provided requirement: {answer}."
+    if "smallest working version" in question:
+        return "knownFacts", f"The smallest working version should {answer}."
+    if "who is the presentation for" in question:
+        return "knownFacts", f"Presentation context: {answer}."
+    return None
+
+
 def _question_answered(question: str, text: str, context: dict[str, Any]) -> bool:
     normalized_question = question.casefold()
     normalized_text = text.casefold()
@@ -631,6 +704,12 @@ def _question_answered(question: str, text: str, context: dict[str, Any]) -> boo
         return _has_deadline(context)
     if "when and where" in normalized_question and "give" in normalized_question:
         return _has_progress(context, "flowers were given")
+    if "requirement" in normalized_question or "audience" in normalized_question:
+        return "user-provided requirement" in _context_text(context, "constraints")
+    if "smallest working version" in normalized_question:
+        return "smallest working version should" in _context_text(context, "knownFacts")
+    if "who is the presentation for" in normalized_question:
+        return "presentation context" in _context_text(context, "knownFacts")
     if "need to do" in normalized_question or "exact question" in normalized_question:
         return bool(context.get("objective")) or any(
             token in normalized_text
@@ -673,20 +752,38 @@ def _specific_questions(context: dict[str, Any]) -> list[str]:
     if context.get("stage") == "complete":
         return []
 
-    if not _is_gift_or_flower_focus(context):
-        return []
+    if _is_gift_or_flower_focus(context):
+        person = _focus_person(context) or "the recipient"
+        questions: list[str] = []
 
-    person = _focus_person(context) or "the recipient"
+        if not _has_flower_preference(context):
+            questions.append(f"What flowers does {person} like?")
+        if not _has_deadline(context):
+            questions.append(f"When is {person}'s birthday?")
+        if not _has_relationship(context):
+            questions.append(f"What is your relationship with {person}?")
+        if _has_progress(context, "flowers have been obtained") and not _has_progress(context, "flowers were given"):
+            questions.append(f"When and where will you give {person} the flowers?")
+        return questions
+
+    haystack = " ".join(
+        [
+            _clean_text(context.get("title"), 120),
+            _clean_text(context.get("objective"), 500),
+        ]
+    ).casefold()
     questions: list[str] = []
 
-    if not _has_flower_preference(context):
-        questions.append(f"What flowers does {person} like?")
-    if not _has_deadline(context):
-        questions.append(f"When is {person}'s birthday?")
-    if not _has_relationship(context):
-        questions.append(f"What is your relationship with {person}?")
-    if _has_progress(context, "flowers have been obtained") and not _has_progress(context, "flowers were given"):
-        questions.append(f"When and where will you give {person} the flowers?")
+    if any(token in haystack for token in ("report", "paper", "essay", "proposal")):
+        questions.append("What requirements or audience should shape this document?")
+    elif "presentation" in haystack:
+        questions.append("Who is the presentation for, and what must it accomplish?")
+    elif any(token in haystack for token in ("assignment", "homework", "coursework")):
+        questions.append("What requirements does the assignment have?")
+
+    if context.get("mode") == "coding":
+        questions.append("What does the smallest working version need to do?")
+
     return questions
 
 
@@ -758,7 +855,13 @@ def _refresh_questions_and_next_action(context: dict[str, Any], user_text: str) 
         remaining_questions.append(question)
 
     if context.get("stage") == "complete":
-        remaining_questions = []
+        context["openQuestions"] = []
+        context["nextAction"] = (
+            "The focus is complete. End it when ready and save a concise outcome summary; "
+            "do not create follow-up work unless the user explicitly asks for it."
+        )
+        return
+
     context["openQuestions"] = remaining_questions[:MAX_OPEN_QUESTIONS]
 
     blocker = _extract_blocker(user_text)
@@ -796,6 +899,14 @@ def _apply_user_update(context: dict[str, Any], user_text: str) -> tuple[dict[st
     deadline = _extract_deadline(text, context)
     decision = _extract_decision(text, context)
     progress_items = _extract_progress_items(text, context)
+    open_question_answer = _capture_open_question_answer(text, context)
+
+    if open_question_answer:
+        answer_key, answer_value = open_question_answer
+        answer_limit = MAX_CONSTRAINTS if answer_key == "constraints" else MAX_FACTS
+        changed = _prepend_unique(
+            context, answer_key, answer_value, answer_limit
+        ) or changed
 
     if objective and context.get("objective") != objective:
         context["objective"] = objective
@@ -900,6 +1011,20 @@ def _assistant_action_conflicts_with_progress(context: dict[str, Any], action: s
 
 def _apply_assistant_update(context: dict[str, Any], reply: str) -> tuple[dict[str, Any], bool]:
     if not _clean_text(reply, 2400):
+        return context, False
+
+    # Once the user has completed the focus, assistant suggestions must not reopen
+    # the project or replace the completion state with optional extra work.
+    if context.get("stage") == "complete":
+        completion_action = (
+            "The focus is complete. End it when ready and save a concise outcome summary; "
+            "do not create follow-up work unless the user explicitly asks for it."
+        )
+        if context.get("nextAction") != completion_action:
+            context["nextAction"] = completion_action
+            context["openQuestions"] = []
+            context["updatedAt"] = _now_iso()
+            return context, True
         return context, False
 
     next_step = _extract_assistant_next_action(reply)
@@ -1066,6 +1191,8 @@ def prepare_background_chat_message(message: str) -> tuple[str, str]:
         "- If important information is missing, answer what you can first, then ask at most one useful follow-up question.",
         "- Prefer the first open question below; do not ask a generic or already-answered question.",
         "- Keep progress guidance easy to scan with short sections, bullets, or numbered steps.",
+        "- Match the response to the current stage: discovery asks one useful question; planning chooses a concrete first step; in-progress advances the next unfinished step; ready prepares the final handoff; complete acknowledges the result and stops adding work.",
+        "- If the focus stage is complete, briefly acknowledge what was accomplished. Do not propose another project step, do not ask a follow-up question, and do not create tasks unless the user explicitly requests them.",
         "- Do not mention this private context, its file, storage, confidence score, or implementation.",
         "",
         f"Focus title: {context['title']}",
