@@ -72,10 +72,13 @@ type MemoryOverlayProps = {
 
 const ACTIVE_SESSION_STORAGE_KEY = 'qmeet-active-session';
 const ACTIVE_SESSION_SESSION_STORAGE_KEY = 'qmeet-active-session-live';
+const RECENT_FOCUS_SESSIONS_STORAGE_KEY = 'qmeet-recent-focus-sessions';
+const VISUAL_CONTEXT_STORAGE_KEY = 'qmeet-visual-context';
 const ACTIVE_SESSION_COMMAND_EVENT = 'qmeet-active-session-command';
 const ACTIVE_SESSION_STATE_EVENT = 'qmeet-active-session-state';
 const QMEET_PROMPT_COMMAND_EVENT = 'qmeet-prompt-command';
 const VISUAL_CONTEXT_STATE_EVENT = 'qmeet-visual-context-state';
+const RECENT_FOCUS_SESSIONS_STATE_EVENT = 'qmeet-recent-focus-sessions-state';
 const MEMORY_OVERLAY_FOCUS_MARKER = 'phase15a-v1-visual-focus-fusion';
 
 function normalizeActiveSession(value: unknown): ActiveSession | null {
@@ -314,6 +317,46 @@ function dispatchActiveSessionState(activeSession: ActiveSession | null) {
   window.dispatchEvent(
     new CustomEvent<ActiveSessionStateEventDetail>(ACTIVE_SESSION_STATE_EVENT, {
       detail: { activeSession },
+    }),
+  );
+}
+
+function dispatchRecentFocusSessionsState(
+  recentFocusSessions: RecentFocusSession[],
+) {
+  if (typeof window === 'undefined') return;
+
+  try {
+    window.localStorage.setItem(
+      RECENT_FOCUS_SESSIONS_STORAGE_KEY,
+      JSON.stringify(recentFocusSessions),
+    );
+  } catch (error) {
+    console.error('Failed to write recent focus sessions fallback:', error);
+  }
+
+  window.dispatchEvent(
+    new CustomEvent(RECENT_FOCUS_SESSIONS_STATE_EVENT, {
+      detail: { recentFocusSessions },
+    }),
+  );
+}
+
+function dispatchVisualContextState(visualContext: VisualContext) {
+  if (typeof window === 'undefined') return;
+
+  try {
+    window.localStorage.setItem(
+      VISUAL_CONTEXT_STORAGE_KEY,
+      JSON.stringify(visualContext),
+    );
+  } catch (error) {
+    console.error('Failed to write visual context fallback:', error);
+  }
+
+  window.dispatchEvent(
+    new CustomEvent<VisualContextStateEventDetail>(VISUAL_CONTEXT_STATE_EVENT, {
+      detail: { visualContext },
     }),
   );
 }
@@ -674,9 +717,11 @@ export function MemoryOverlay({
   const handleDeleteRecentFocusSession = async (sessionId: string) => {
     try {
       await deleteRecentFocusSessionById(sessionId);
-      setRecentFocusSessions((prev) =>
-        prev.filter((session) => session.id !== sessionId),
-      );
+      setRecentFocusSessions((prev) => {
+        const nextSessions = prev.filter((session) => session.id !== sessionId);
+        dispatchRecentFocusSessionsState(nextSessions);
+        return nextSessions;
+      });
       pushResultToast({
         kind: 'warning',
         title: 'Focus history removed',
@@ -699,7 +744,11 @@ export function MemoryOverlay({
 
     try {
       const response = await clearRecentFocusSessions();
-      setRecentFocusSessions(response.recentFocusSessions ?? []);
+      const nextSessions = normalizeRecentFocusSessions(
+        response.recentFocusSessions ?? [],
+      );
+      setRecentFocusSessions(nextSessions);
+      dispatchRecentFocusSessionsState(nextSessions);
       setRecentFocusSessionMessage(
         response.message || 'Recent focus sessions cleared.',
       );
@@ -728,7 +777,9 @@ export function MemoryOverlay({
   const handleDeleteVisualObservation = async (observationId: string) => {
     try {
       const response = await deleteVisualObservationById(observationId);
-      setVisualContext(normalizeVisualContext(response.visualContext));
+      const nextVisualContext = normalizeVisualContext(response.visualContext);
+      setVisualContext(nextVisualContext);
+      dispatchVisualContextState(nextVisualContext);
       pushResultToast({
         kind: 'warning',
         title: 'Observation removed',
@@ -751,7 +802,9 @@ export function MemoryOverlay({
 
     try {
       const response = await clearVisualContext();
-      setVisualContext(normalizeVisualContext(response.visualContext));
+      const nextVisualContext = normalizeVisualContext(response.visualContext);
+      setVisualContext(nextVisualContext);
+      dispatchVisualContextState(nextVisualContext);
       setVisualContextMessage(response.message || 'Visual context cleared.');
       pushResultToast({
         kind: 'warning',

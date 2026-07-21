@@ -61,6 +61,14 @@ type VisualContextStateEventDetail = {
   visualContext: VisualContext;
 };
 
+type ActiveSessionStateEventDetail = {
+  activeSession: ActiveSession | null;
+};
+
+type RecentFocusSessionsStateEventDetail = {
+  recentFocusSessions: RecentFocusSession[];
+};
+
 type MemoryTasksStateEventDetail = {
   tasks: MemoryTask[];
 };
@@ -78,6 +86,8 @@ const RECENT_FOCUS_SESSIONS_STORAGE_KEY = 'qmeet-recent-focus-sessions';
 const NOTES_STORAGE_KEY = 'qmeet-notes';
 const ACTIVE_SESSION_STORAGE_KEY = 'qmeet-active-session';
 const VISUAL_CONTEXT_STORAGE_KEY = 'qmeet-visual-context';
+const ACTIVE_SESSION_STATE_EVENT = 'qmeet-active-session-state';
+const RECENT_FOCUS_SESSIONS_STATE_EVENT = 'qmeet-recent-focus-sessions-state';
 const MEMORY_TASKS_STATE_EVENT = 'qmeet-memory-tasks-state';
 const VISUAL_CONTEXT_STATE_EVENT = 'qmeet-visual-context-state';
 const SAVE_FOCUS_SUMMARY_NOTE_EVENT = 'qmeet-save-focus-summary-note';
@@ -509,6 +519,20 @@ export function useMemoryContext({
       setMemoryTasks(detail.tasks);
     };
 
+    const handleActiveSessionState = (event: Event) => {
+      const detail = (event as CustomEvent<ActiveSessionStateEventDetail>).detail;
+      setActiveSession(normalizeActiveSession(detail?.activeSession ?? null));
+    };
+
+    const handleRecentFocusSessionsState = (event: Event) => {
+      const detail = (event as CustomEvent<RecentFocusSessionsStateEventDetail>).detail;
+      if (!Array.isArray(detail?.recentFocusSessions)) return;
+      setRecentFocusSessions((prev) => {
+        const nextSessions = normalizeRecentFocusSessions(detail.recentFocusSessions);
+        return recentFocusSessionsAreSame(prev, nextSessions) ? prev : nextSessions;
+      });
+    };
+
     const handleVisualContextState = (event: Event) => {
       const detail = (event as CustomEvent<VisualContextStateEventDetail>).detail;
       if (!detail?.visualContext) return;
@@ -556,6 +580,19 @@ export function useMemoryContext({
         return;
       }
 
+      if (event.key === ACTIVE_SESSION_STORAGE_KEY) {
+        setActiveSession(readStoredActiveSession());
+        return;
+      }
+
+      if (event.key === RECENT_FOCUS_SESSIONS_STORAGE_KEY) {
+        setRecentFocusSessions((prev) => {
+          const nextSessions = readStoredRecentFocusSessions();
+          return recentFocusSessionsAreSame(prev, nextSessions) ? prev : nextSessions;
+        });
+        return;
+      }
+
       if (event.key !== VISUAL_CONTEXT_STORAGE_KEY) return;
       setVisualContext((prev) => {
         const nextVisualContext = readStoredVisualContext();
@@ -564,12 +601,16 @@ export function useMemoryContext({
     };
 
     window.addEventListener(MEMORY_TASKS_STATE_EVENT, handleMemoryTasksState);
+    window.addEventListener(ACTIVE_SESSION_STATE_EVENT, handleActiveSessionState);
+    window.addEventListener(RECENT_FOCUS_SESSIONS_STATE_EVENT, handleRecentFocusSessionsState);
     window.addEventListener(VISUAL_CONTEXT_STATE_EVENT, handleVisualContextState);
     window.addEventListener(SAVE_FOCUS_SUMMARY_NOTE_EVENT, handleFocusSummaryNote);
     window.addEventListener('storage', handleStorage);
 
     return () => {
       window.removeEventListener(MEMORY_TASKS_STATE_EVENT, handleMemoryTasksState);
+      window.removeEventListener(ACTIVE_SESSION_STATE_EVENT, handleActiveSessionState);
+      window.removeEventListener(RECENT_FOCUS_SESSIONS_STATE_EVENT, handleRecentFocusSessionsState);
       window.removeEventListener(VISUAL_CONTEXT_STATE_EVENT, handleVisualContextState);
       window.removeEventListener(SAVE_FOCUS_SUMMARY_NOTE_EVENT, handleFocusSummaryNote);
       window.removeEventListener('storage', handleStorage);
@@ -1392,6 +1433,51 @@ export function useMemoryContext({
     [enqueueMemoryWrite, pushResultToast],
   );
 
+  const broadcastMemoryStateSnapshot = useCallback(
+    (snapshot: {
+      tasks?: MemoryTask[];
+      activeSession?: ActiveSession | null;
+      recentFocusSessions?: RecentFocusSession[];
+      visualContext?: VisualContext;
+    }) => {
+      if (typeof window === 'undefined') return;
+
+      if (snapshot.tasks) {
+        window.dispatchEvent(
+          new CustomEvent<MemoryTasksStateEventDetail>(MEMORY_TASKS_STATE_EVENT, {
+            detail: { tasks: snapshot.tasks },
+          }),
+        );
+      }
+
+      if ('activeSession' in snapshot) {
+        window.dispatchEvent(
+          new CustomEvent<ActiveSessionStateEventDetail>(ACTIVE_SESSION_STATE_EVENT, {
+            detail: { activeSession: snapshot.activeSession ?? null },
+          }),
+        );
+      }
+
+      if (snapshot.recentFocusSessions) {
+        window.dispatchEvent(
+          new CustomEvent<RecentFocusSessionsStateEventDetail>(
+            RECENT_FOCUS_SESSIONS_STATE_EVENT,
+            { detail: { recentFocusSessions: snapshot.recentFocusSessions } },
+          ),
+        );
+      }
+
+      if (snapshot.visualContext) {
+        window.dispatchEvent(
+          new CustomEvent<VisualContextStateEventDetail>(VISUAL_CONTEXT_STATE_EVENT, {
+            detail: { visualContext: snapshot.visualContext },
+          }),
+        );
+      }
+    },
+    [],
+  );
+
   const handleClearAllMemory = useCallback(async () => {
     const confirmed = window.confirm(
       'Clear all QMeet tasks, completed tasks, notes, active focus session, visual context, and hidden recent work context? This cannot be undone unless you exported a backup.',
@@ -1400,13 +1486,21 @@ export function useMemoryContext({
       return;
     }
 
+    const emptyVisualContext = createEmptyVisualContext();
+
     setMemoryTasks([]);
     setRecentActions([]);
     setRecentFocusSessions([]);
     setNotes([]);
     setActiveSession(null);
-    setVisualContext(createEmptyVisualContext());
+    setVisualContext(emptyVisualContext);
     setMemoryTaskDraft('');
+    broadcastMemoryStateSnapshot({
+      tasks: [],
+      activeSession: null,
+      recentFocusSessions: [],
+      visualContext: emptyVisualContext,
+    });
 
     try {
       window.localStorage.removeItem(MEMORY_TASKS_STORAGE_KEY);
@@ -1451,7 +1545,7 @@ export function useMemoryContext({
         detail: 'Backend clear failed; browser fallback was cleared.',
       });
     }
-  }, [enqueueMemoryWrite, pushResultToast]);
+  }, [broadcastMemoryStateSnapshot, enqueueMemoryWrite, pushResultToast]);
 
   const handleResetTasksOnly = useCallback(() => {
     const confirmed = window.confirm(

@@ -61,6 +61,34 @@ def _first_match(patterns: list[str], text: str) -> re.Match[str] | None:
             return match
     return None
 
+def _active_session_title_from_context(client_context: dict[str, Any] | None) -> str:
+    if not isinstance(client_context, dict):
+        return ""
+    memory_state = client_context.get("memoryState")
+    if not isinstance(memory_state, dict):
+        return ""
+    active_session = memory_state.get("activeSession")
+    if not isinstance(active_session, dict):
+        return ""
+    title = active_session.get("title")
+    return title.strip() if isinstance(title, str) else ""
+
+
+def _is_active_focus_work_help(lowered: str) -> bool:
+    patterns = [
+        r"\bwhat\s+(?:do|should|can)\s+i\s+do\s+(?:now|next)\b",
+        r"\bwhat\s+can\s+i\s+do\s+(?:with\s+(?:it|this|that)|now|next)\b",
+        r"\bnow\s+what\b",
+        r"\bwhat\s+more\s+do\s+you\s+need\s+to\s+know\b",
+        r"\bwhat\s+do\s+you\s+need\s+(?:to\s+know|from\s+me)\b",
+        r"\b(?:can|could|will|would)\s+you\s+help\s+me\s+(?:with|do|write|fix|debug|finish|complete|get|getting|build|make)",
+        r"\b(?:i\s+)?(?:just\s+)?(?:want|need)\s+help\s+(?:with|doing|writing|fixing|debugging|finishing|getting|building|making)",
+        r"\bi\s+(?:do\s+not|don'?t)\s+like\s+those\s+tasks\b",
+        r"\bhelp\s+me\s+(?:do|write|fix|debug|finish|complete|build|make|understand)\b",
+    ]
+    return any(re.search(pattern, lowered, flags=re.IGNORECASE) for pattern in patterns)
+
+
 
 def _clean_payload(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip()).strip(" .,:;?!\"'")
@@ -145,11 +173,14 @@ def _ui_shortcut_intent(message: str) -> dict[str, Any] | None:
     return None
 
 
-def _qmeet_guide_intent(message: str) -> dict[str, Any] | None:
+def _qmeet_guide_intent(message: str, client_context: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """Route broad QMeet help/capability questions into the local bite-sized guide."""
     text = _collapse_command_text(message)
     lowered = text.lower()
     if not lowered:
+        return None
+
+    if _active_session_title_from_context(client_context) and _is_active_focus_work_help(lowered):
         return None
 
     help_patterns = [
@@ -887,7 +918,7 @@ async def command_interpret(req: CommandInterpretRequest):
     if ui_shortcut_intent is not None:
         return CommandInterpretResponse(**ui_shortcut_intent)
 
-    qmeet_guide_intent = _qmeet_guide_intent(message)
+    qmeet_guide_intent = _qmeet_guide_intent(message, req.clientContext)
     if qmeet_guide_intent is not None:
         return CommandInterpretResponse(**qmeet_guide_intent)
 
@@ -916,7 +947,7 @@ async def command_interpret(req: CommandInterpretRequest):
         ui_state=req.uiState,
         client_context=req.clientContext,
     )
-    if orchestrator_intent is not None and orchestrator_intent.get("intent") == "command":
+    if orchestrator_intent is not None:
         return CommandInterpretResponse(**orchestrator_intent)
 
     try:

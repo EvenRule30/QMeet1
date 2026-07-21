@@ -124,6 +124,7 @@ export interface FocusSessionCommandPayload {
 // Phase 16C-v1: meeting wrap-up commands save summaries and create follow-up tasks.
 // Phase 17B-v2: guided onboarding catches broader capability/schedule questions and natural prep-block phrases.
 // Phase 17B-v3: contextual guide catches follow-up UI questions and maps focus menu wording to Memory.
+// Phase 17D-v2: active-focus work/help questions are allowed through to chat instead of being swallowed by the guide.
 
 export interface CommandMatch {
   command: LocalCommand;
@@ -238,7 +239,6 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
       /^(?:what can (?:you|qmeet|the orb) do)$/i,
       /^(?:what (?:are you|is qmeet|is the orb) able to do)$/i,
       /^(?:what is focus|what is a focus|what is a focus session)$/i,
-      /^(?:what can i do now(?: with (?:it|this|that))?|what can i do with (?:it|this|that)|now what|what should i do next)$/i,
       /^(?:what was that (?:menu|panel|screen)|how (?:do|to) i open (?:it|that|this) again|can i (?:click|tap|press) (?:any one of these|one of these|these|this))$/i,
       /^(?:what (?:can|should) i say)$/i,
       /^(?:how do i use (?:this|qmeet|the orb))$/i,

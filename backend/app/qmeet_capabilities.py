@@ -142,9 +142,11 @@ run a real QMeet action. If so, return exactly one frontendCommand from the allo
 or fill its placeholder. If no QMeet tool/action/help routing is appropriate, return intent "chat".
 
 Rules:
-- Prefer real QMeet commands over generic advice when the user asks how to use QMeet, what to click, what a panel is, what they can do now, or asks to start/update/finish work.
+- Prefer real QMeet commands when the user asks how to use QMeet, what to click, what a panel is, or asks to start/update/finish work.
+- Prefer chat, not a command, when the user wants help doing the actual work inside an active focus.
 - Use uiState.activePanel and visibleHints when the user says "this", "that", "these", "the menu", "open it again", or "what can I do now".
-- If an active focus exists and the user asks what to do with "it" or "my goal", route to guide_screen or enhanced_recap depending on whether they want UI guidance or recommendations.
+- If an active focus exists and the user asks for substantive help with the work itself (for example "what do I do now", "help me do the code", "what more do you need to know", "I don't like those tasks"), return intent "chat" so the main assistant can coach using active focus context. Do not route those to guide_screen or guide_focus.
+- Use guide_screen only for UI questions like what buttons can be clicked, what panel is open, or how to reopen a menu.
 - Do not invent unsupported commands. Use only frontendCommand values from the allowed actions.
 - If using a placeholder command, replace {title}, {goal}, or {query} with a short safe phrase from the user's message.
 - Return compact JSON only.

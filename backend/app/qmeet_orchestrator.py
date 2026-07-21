@@ -80,6 +80,22 @@ def _active_session_title(memory_state: dict[str, Any]) -> str:
     return ""
 
 
+
+def _is_active_focus_work_help(lowered: str) -> bool:
+    """True when the user wants substantive help with the active focus, not QMeet feature help."""
+    patterns = [
+        r"\bwhat\s+(?:do|should|can)\s+i\s+do\s+(?:now|next)\b",
+        r"\bwhat\s+can\s+i\s+do\s+(?:with\s+(?:it|this|that)|now|next)\b",
+        r"\bnow\s+what\b",
+        r"\bwhat\s+more\s+do\s+you\s+need\s+to\s+know\b",
+        r"\bwhat\s+do\s+you\s+need\s+(?:to\s+know|from\s+me)\b",
+        r"\b(?:can|could|will|would)\s+you\s+help\s+me\s+(?:with|do|write|fix|debug|finish|complete|get|getting|build|make)",
+        r"\b(?:i\s+)?(?:just\s+)?(?:want|need)\s+help\s+(?:with|doing|writing|fixing|debugging|finishing|getting|building|making)",
+        r"\bi\s+(?:do\s+not|don'?t)\s+like\s+those\s+tasks\b",
+        r"\bhelp\s+me\s+(?:do|write|fix|debug|finish|complete|build|make|understand)\b",
+    ]
+    return any(re.search(pattern, lowered, flags=re.I) for pattern in patterns)
+
 def _active_panel(ui_state: dict[str, Any] | None) -> str:
     if not isinstance(ui_state, dict):
         return ""
@@ -113,6 +129,12 @@ def _fallback_orchestrator(
 
     if not text:
         return None
+
+    if active_title and _is_active_focus_work_help(lowered):
+        return _chat_response(
+            "User is asking for substantive help with the active focus, so normal chat should answer using focus context instead of routing to a QMeet guide/tool.",
+            0.92,
+        )
 
     if re.search(r"\b(?:what\s+are\s+you|who\s+are\s+you|what\s+is\s+q\s*meet)\b", lowered):
         return _command_response(
@@ -328,6 +350,9 @@ async def interpret_qmeet_orchestrator(
 ) -> dict[str, Any] | None:
     """Return a CommandInterpretResponse-compatible dict, or None to keep routing."""
     fallback = _fallback_orchestrator(message, ui_state=ui_state, client_context=client_context)
+
+    if fallback and fallback.get("intent") == "chat" and float(fallback.get("confidence") or 0) >= 0.85:
+        return fallback
 
     if not _is_openai_enabled() or not os.getenv("OPENAI_API_KEY") or AsyncOpenAI is None:
         return fallback

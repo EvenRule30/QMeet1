@@ -75,9 +75,6 @@ const HELP_INTENT_PATTERNS: RegExp[] = [
 ];
 
 const CONTEXTUAL_GUIDE_PATTERNS: RegExp[] = [
-  /\bwhat\s+can\s+i\s+do\s+(?:now|next|with\s+it|with\s+this|with\s+that)\b/i,
-  /\bwhat\s+should\s+i\s+do\s+(?:now|next)\b/i,
-  /\bnow\s+what\b/i,
   /\bwhat\s+are\s+my\s+options\b/i,
   /\bwhat\s+can\s+i\s+(?:click|tap|press)\b/i,
   /\bcan\s+i\s+(?:click|tap|press)\s+(?:on\s+)?(?:these|this|any\s+(?:one\s+)?of\s+these|one\s+of\s+these|the\s+buttons?)\b/i,
@@ -95,33 +92,33 @@ const SCREEN_GUIDE_PATTERNS: RegExp[] = [
 
 const TOPIC_RESPONSES: Record<QMeetGuideTopic, string> = {
   overview:
-    'I am QMeet, the local orb interface for this tablet. I can help with focus sessions, memory/tasks/notes, calendar and meeting prep, camera/visual context, search, voice controls, and recaps. Try: "start a focus session for UI cleanup", "prepare me for my next meeting", "open camera", or "open memory". Ask "help with focus", "help with calendar", or "help with camera" for a smaller guide.',
+    '**I am QMeet.** I am the local orb assistant for this tablet.\n\n**I can help with:**\n- Focus sessions, tasks, notes, and memory.\n- Calendar prep, meeting notes, and follow-ups.\n- Camera/image analysis, search, voice, and recaps.\n\n**Try saying:** "start a focus session for UI cleanup", "prepare me for my next meeting", or "open memory".',
   context:
     '',
   screen:
     '',
   focus:
-    'A focus session is QMeet\'s current work context. It tells the orb what you are working on so chat, tasks, notes, visuals, and recaps can connect to it. Try: "start a coding focus for my Java class", "set my goal to finish the parser", "what is my focus", "turn this focus into tasks", or "save this focus as a note". To see the focus controls, say "open memory" or "show focus menu".',
+    '**Focus is how I orient around your current work.** When a focus is active, I use it to make chat, tasks, notes, visuals, and recaps more relevant.\n\n**Try saying:**\n- "start a coding focus for my Java class"\n- "set my goal to finish the parser"\n- "turn this focus into tasks"\n- "save this focus as a note"\n\n**To see controls:** say "open memory" or "show focus menu".',
   memory:
-    'Memory keeps tasks, notes, recent actions, active focus, focus history, and visual observations. Try: "open memory", "what was I working on", "show recent focus sessions", or "summarize what I worked on today".',
+    '**Memory is where I keep your working context.** It includes tasks, notes, active focus, focus history, recent actions, and visual observations.\n\n**Try saying:** "open memory", "what was I working on", "show recent focus sessions", or "summarize what I worked on today".',
   tasks:
-    'Tasks are lightweight to-dos. Try: "remember to test the Pi as a task", "mark task done", "clear completed tasks", or "turn this focus into tasks". Focus, meeting-prep, and follow-up tasks can be linked to the current session.',
+    '**Tasks are lightweight to-dos I can track for you.**\n\n**Try saying:**\n- "remember to test the Pi as a task"\n- "mark task done"\n- "turn this focus into tasks"\n\nTasks can also link to your current focus or meeting prep.',
   notes:
-    'Notes store snippets and summaries. Try: "note that the prototype needs UI polish", "read my notes", "save this focus as a note", or "save meeting notes".',
+    '**Notes store snippets, summaries, and meeting/focus captures.**\n\n**Try saying:** "note that the prototype needs UI polish", "read my notes", "save this focus as a note", or "save meeting notes".',
   calendar:
-    'Calendar tools can show events, add events, and turn meetings into focus sessions. Try: "show today", "add event today at 6 PM called appointment", "prepare me for my next meeting", or "make prep tasks for my next meeting". For a new schedule, tell me the events/tasks and I can help turn them into calendar items, tasks, and focus blocks.',
+    '**Calendar helps me connect your schedule to your work.** I can show events, add events, and turn meetings into focus sessions.\n\n**Try saying:**\n- "show today"\n- "add event today at 6 PM called appointment"\n- "prepare me for my next meeting"\n- "make prep tasks for my next meeting"',
   meetings:
-    'Meeting workflows connect Calendar, Focus, Tasks, and Notes. Try: "prepare me for my next meeting", "make prep tasks for my next meeting", "save meeting notes", "create follow-up tasks from this meeting", or "wrap up this meeting".',
+    '**Meeting mode connects Calendar, Focus, Tasks, and Notes.**\n\n**Before:** "prepare me for my next meeting" or "make prep tasks for my next meeting".\n**After:** "save meeting notes", "create follow-up tasks from this meeting", or "wrap up this meeting".',
   visual:
-    'Visual context stores text observations from manual notes, webcam snapshots, or uploaded images. Try: "open camera", "analyze snapshot", "what was the last thing you saw", "show visual observations", or "save this visual context to my focus". QMeet stores the text description, not the raw image.',
+    '**Visual context lets me use camera snapshots, uploaded images, or manual visual notes.** I store the text observation, not the raw image.\n\n**Try saying:** "open camera", "analyze snapshot", "what was the last thing you saw", or "save this visual context to my focus".',
   search:
-    'Search runs real web searches from QMeet. Try: "search for Raspberry Pi kiosk mode", "look up Chromium flags", or "clear search". Search results can support the current focus.',
+    '**Search lets me look things up from the web.**\n\n**Try saying:** "search for Raspberry Pi kiosk mode", "look up Chromium flags", or "clear search". Search can support your current focus.',
   voice:
-    'Voice controls adjust QMeet speech and listening. Try: "mute voice", "unmute voice", "speak slower", "speak faster", "normal voice", "stop speaking", or "what did you hear".',
+    '**Voice controls adjust how I speak and listen.**\n\n**Try saying:** "mute voice", "unmute voice", "speak slower", "speak faster", "normal voice", "stop speaking", or "what did you hear".',
   ui:
-    'UI commands open panels without needing ChatGPT. Try: "open menu", "open memory", "open notes", "open calendar", "open search", "open settings", or "go home". Menu cards and panel buttons are clickable, and the small chat-log button opens the chat without starting voice input.',
+    '**You can use voice or touch.**\n\n**Open panels:** "open menu", "open memory", "open notes", "open calendar", "open search", or "open settings".\n\nMenu cards and panel buttons are clickable. The small chat-log button opens chat without starting voice input.',
   recap:
-    'Recaps summarize what QMeet remembers. Try: "summarize what I worked on today", "what did I focus on recently", "give me a better recap of today", or "what should I focus on next". Local recaps are deterministic; enhanced recaps use ChatGPT.',
+    '**Recaps summarize what I remember from your work.**\n\n**Try saying:** "summarize what I worked on today", "what did I focus on recently", "give me a better recap of today", or "what should I focus on next".',
 };
 
 export function normalizeQMeetGuideText(value: string): string {
@@ -183,6 +180,23 @@ function detectOpenPanel(): DetectedPanel {
   if (document.querySelector('.chat-area-visible')) return 'chat';
 
   return null;
+}
+
+
+function isActiveFocusWorkQuestion(normalized: string): boolean {
+  return (
+    /\bwhat\s+(?:do|should|can)\s+i\s+do\s+(?:now|next)\b/i.test(normalized) ||
+    /\bwhat\s+can\s+i\s+do\s+(?:with\s+(?:it|this|that)|now|next)\b/i.test(normalized) ||
+    /\bnow\s+what\b/i.test(normalized) ||
+    /\bwhat\s+more\s+do\s+you\s+need\s+to\s+know\b/i.test(normalized) ||
+    /\bwhat\s+do\s+you\s+need\s+(?:to\s+know|from\s+me)\b/i.test(normalized) ||
+    /\b(?:can|could|will|would)\s+you\s+help\s+me\s+(?:with|do|write|fix|debug|finish|complete|get|getting|build|make)\b/i.test(normalized) ||
+    /\b(?:i\s+)?(?:just\s+)?(?:want|need)\s+help\s+(?:with|doing|writing|fixing|debugging|finishing|getting|building|making)\b/i.test(normalized) ||
+    /\b(?:i\s+)?do\s+not\s+like\s+those\s+tasks\b/i.test(normalized) ||
+    /\bi\s+don'?t\s+like\s+those\s+tasks\b/i.test(normalized) ||
+    /\bhelp\s+me\s+(?:do|write|fix|debug|finish|complete|build|make|understand)\b/i.test(normalized) ||
+    /\b(?:help|assist)\s+me\s+with\s+(?:my\s+)?(?:current\s+)?focus\b/i.test(normalized)
+  );
 }
 
 function getScreenGuideResponse(): string {
@@ -250,13 +264,18 @@ function getContextGuideResponse(): string {
 
   if (activeSession) {
     const goalText = activeSession.goal?.trim()
-      ? ` Your goal is: ${activeSession.goal.trim()}.`
-      : ' You have not set a goal yet.';
+      ? `Goal: ${activeSession.goal.trim()}.`
+      : 'No goal is set yet.';
     const linkedTaskCount = activeSession.linkedTaskIds?.length ?? 0;
     const linkedText = linkedTaskCount > 0
-      ? ` You already have ${linkedTaskCount} linked task${linkedTaskCount === 1 ? '' : 's'}.`
-      : ' You can turn this focus into tasks.';
-    return `You are focused on "${activeSession.title}".${goalText}${linkedText} Try: "set my goal to ...", "turn this focus into tasks", "what should I do next", "save this focus as a note", or "open memory" to see the controls.`;
+      ? `${linkedTaskCount} linked task${linkedTaskCount === 1 ? '' : 's'} exist.`
+      : 'No linked tasks yet.';
+    return `**Current focus:** ${activeSession.title}
+
+- ${goalText}
+- ${linkedText}
+
+**Useful controls:** say "open memory" to see buttons, "turn this focus into tasks" to create tasks, or ask me naturally for help with the work itself.`;
   }
 
   return 'A good first step is to set context. Try: "start a focus session for ...", "open memory", "show today", "open camera", or "what can you do with calendar".';
@@ -265,6 +284,11 @@ function getContextGuideResponse(): string {
 export function getQMeetGuideTopic(input: string): QMeetGuideTopic | null {
   const normalized = normalizeQMeetGuideText(input);
   if (!normalized) return null;
+
+  const activeSession = readActiveSession();
+  if (activeSession && isActiveFocusWorkQuestion(normalized)) {
+    return null;
+  }
 
   if (CONTEXTUAL_GUIDE_PATTERNS.some((pattern) => pattern.test(normalized))) {
     return 'context';
