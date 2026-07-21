@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
 
+from app.background_context_middleware import BackgroundWorkContextMiddleware  # noqa: E402
 from app.routers import (  # noqa: E402
     calendar,
     chat,
@@ -13,13 +14,15 @@ from app.routers import (  # noqa: E402
     memory,
     memory_state,
     search,
-    visual,
 )
 
 app = FastAPI(title="QMeet Agent Backend")
 
-frontend_origin = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
+# Add the observer before CORS so CORS remains the outer middleware and also
+# applies to the observer's direct command-interpret responses.
+app.add_middleware(BackgroundWorkContextMiddleware)
 
+frontend_origin = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
 # For prototype LAN/tablet testing this stays permissive. Tighten this before
 # a real deployment by switching allow_origins back to [frontend_origin].
 app.add_middleware(
@@ -47,4 +50,3 @@ app.include_router(search.router)
 app.include_router(calendar.router)
 app.include_router(memory.router)
 app.include_router(memory_state.router)
-app.include_router(visual.router)
