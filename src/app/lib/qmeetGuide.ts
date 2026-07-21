@@ -91,34 +91,75 @@ const SCREEN_GUIDE_PATTERNS: RegExp[] = [
 ];
 
 const TOPIC_RESPONSES: Record<QMeetGuideTopic, string> = {
-  overview:
-    '**I am QMeet.** I am the local orb assistant for this tablet.\n\n**I can help with:**\n- Focus sessions, tasks, notes, and memory.\n- Calendar prep, meeting notes, and follow-ups.\n- Camera/image analysis, search, voice, and recaps.\n\n**Try saying:** "start a focus session for UI cleanup", "prepare me for my next meeting", or "open memory".',
-  context:
-    '',
-  screen:
-    '',
-  focus:
-    '**Focus is how I orient around your current work.** When a focus is active, I use it to make chat, tasks, notes, visuals, and recaps more relevant.\n\n**Try saying:**\n- "start a coding focus for my Java class"\n- "set my goal to finish the parser"\n- "turn this focus into tasks"\n- "save this focus as a note"\n\n**To see controls:** say "open memory" or "show focus menu".',
-  memory:
-    '**Memory is where I keep your working context.** It includes tasks, notes, active focus, focus history, recent actions, and visual observations.\n\n**Try saying:** "open memory", "what was I working on", "show recent focus sessions", or "summarize what I worked on today".',
-  tasks:
-    '**Tasks are lightweight to-dos I can track for you.**\n\n**Try saying:**\n- "remember to test the Pi as a task"\n- "mark task done"\n- "turn this focus into tasks"\n\nTasks can also link to your current focus or meeting prep.',
-  notes:
-    '**Notes store snippets, summaries, and meeting/focus captures.**\n\n**Try saying:** "note that the prototype needs UI polish", "read my notes", "save this focus as a note", or "save meeting notes".',
-  calendar:
-    '**Calendar helps me connect your schedule to your work.** I can show events, add events, and turn meetings into focus sessions.\n\n**Try saying:**\n- "show today"\n- "add event today at 6 PM called appointment"\n- "prepare me for my next meeting"\n- "make prep tasks for my next meeting"',
-  meetings:
-    '**Meeting mode connects Calendar, Focus, Tasks, and Notes.**\n\n**Before:** "prepare me for my next meeting" or "make prep tasks for my next meeting".\n**After:** "save meeting notes", "create follow-up tasks from this meeting", or "wrap up this meeting".',
-  visual:
-    '**Visual context lets me use camera snapshots, uploaded images, or manual visual notes.** I store the text observation, not the raw image.\n\n**Try saying:** "open camera", "analyze snapshot", "what was the last thing you saw", or "save this visual context to my focus".',
-  search:
-    '**Search lets me look things up from the web.**\n\n**Try saying:** "search for Raspberry Pi kiosk mode", "look up Chromium flags", or "clear search". Search can support your current focus.',
-  voice:
-    '**Voice controls adjust how I speak and listen.**\n\n**Try saying:** "mute voice", "unmute voice", "speak slower", "speak faster", "normal voice", "stop speaking", or "what did you hear".',
-  ui:
-    '**You can use voice or touch.**\n\n**Open panels:** "open menu", "open memory", "open notes", "open calendar", "open search", or "open settings".\n\nMenu cards and panel buttons are clickable. The small chat-log button opens chat without starting voice input.',
-  recap:
-    '**Recaps summarize what I remember from your work.**\n\n**Try saying:** "summarize what I worked on today", "what did I focus on recently", "give me a better recap of today", or "what should I focus on next".',
+  overview: `**I am QMeet.** I help you operate this tablet by voice or touch.
+
+**Good first moves:**
+- Say "open menu" to see the main panels.
+- Say "start a focus for ..." to make that work my background context.
+- Say "open memory" to see focus, tasks, notes, and saved context.
+
+**Try:** "start a focus for my Java class", "prepare me for my next meeting", or "what can I do from here?".`,
+  context: '',
+  screen: '',
+  focus: `**Focus is my background work context.** When you tell me what you are working on, I keep that as the main focus until you end it.
+
+**While focus is active, ask naturally:**
+- "what should I do next?"
+- "help me write the code"
+- "what do you need to know?"
+
+**To manage it:** say "open memory", "set my goal to ...", or "end and summarize this focus".`,
+  memory: `**Memory is where I show the context I am using.**
+
+**Inside Memory you can see:**
+- Current focus and goal.
+- Open tasks and completed tasks.
+- Recent focus sessions.
+- Visual context and saved notes.
+
+**Try:** "open memory", "show recent focus sessions", or "clear context".`,
+  tasks: `**Tasks are lightweight to-dos I can track for you.**
+
+**Try saying:**
+- "remember to test the Pi as a task"
+- "mark task done"
+- "turn this focus into tasks"
+
+Tasks can also link to your current focus or meeting prep.`,
+  notes: `**Notes store snippets, summaries, and meeting/focus captures.**
+
+**Try saying:** "note that the prototype needs UI polish", "read my notes", "save this focus as a note", or "save meeting notes".`,
+  calendar: `**Calendar helps me connect your schedule to your work.** I can show events, add events, and turn meetings into focus sessions.
+
+**Try saying:**
+- "show today"
+- "add event today at 6 PM called appointment"
+- "prepare me for my next meeting"
+- "make prep tasks for my next meeting"`,
+  meetings: `**Meeting mode connects Calendar, Focus, Tasks, and Notes.**
+
+**Before:** "prepare me for my next meeting" or "make prep tasks for my next meeting".
+**After:** "save meeting notes", "create follow-up tasks from this meeting", or "wrap up this meeting".`,
+  visual: `**Visual context lets me use camera snapshots, uploaded images, or manual visual notes.** I store the text observation, not the raw image.
+
+**Try saying:** "open camera", "analyze snapshot", "what was the last thing you saw", or "save this visual context to my focus".`,
+  search: `**Search lets me look things up from the web.**
+
+**Try saying:** "search for Raspberry Pi kiosk mode", "look up Chromium flags", or "clear search". Search can support your current focus.`,
+  voice: `**Voice controls adjust how I speak and listen.**
+
+**Try saying:** "mute voice", "unmute voice", "speak slower", "speak faster", "normal voice", "stop speaking", or "what did you hear".`,
+  ui: `**You can use voice or touch.**
+
+**Main panels:**
+- "open menu" shows the launcher.
+- "open memory" shows focus, tasks, notes, and context.
+- "open calendar", "open notes", "open camera", or "open search" open those tools directly.
+
+Buttons and cards are clickable. If you ask "what can I click?", I will use the screen I can detect.`,
+  recap: `**Recaps summarize what I remember from your work.**
+
+**Try saying:** "summarize what I worked on today", "what did I focus on recently", "give me a better recap of today", or "what should I focus on next".`,
 };
 
 export function normalizeQMeetGuideText(value: string): string {
@@ -204,13 +245,27 @@ function getScreenGuideResponse(): string {
   const activeSession = readActiveSession();
 
   if (panel === 'menu') {
-    return 'You are looking at the main Menu. Yes, the cards are clickable: Notes, Memory, Calendar, Search, Settings, and Status all open their panels. You can also say the same actions out loud, like "open memory" or "open calendar". Say "go home" to close panels.';
+    return `**This is the main Menu.**
+
+Yes, the cards are clickable.
+
+**Try:**
+- Tap Memory for focus, tasks, and context.
+- Tap Calendar for events.
+- Tap Notes, Search, Settings, or Status.
+
+You can also say "open memory" or "go home".`;
   }
 
   if (panel === 'memory') {
     return activeSession
-      ? `You are looking at Memory. This is also the focus menu: it shows your current focus, focus action buttons, nudges, tasks, recent focus sessions, and visual context. For your current focus, try "turn this focus into tasks", "save this focus as a note", or "what should I do next".`
-      : 'You are looking at Memory. It shows tasks, saved focus sessions, visual context, and memory sync status. Start a focus with "start a focus session for ...", or add a task with "remember to ... as a task".';
+      ? `**This is Memory.** It is where I show your active focus, tasks, focus history, and visual context.
+
+**For "${activeSession.title}":**
+- Ask "what should I do next?" for direct help.
+- Use the buttons to create tasks, save a note, or end with summary.
+- Use Clear Context if you want to wipe the focus/context state.`
+      : '**This is Memory.** It shows tasks, recent focus sessions, visual context, and memory sync. Start a focus with "start a focus session for ...", or add a task with "remember to ... as a task".';
   }
 
   if (panel === 'calendar') {
@@ -241,13 +296,27 @@ function getContextGuideResponse(): string {
   const activeSession = readActiveSession();
 
   if (panel === 'menu') {
-    return 'Yes. The Menu cards are clickable. Tap Memory for focus/tasks, Notes for notes, Calendar for events, Search for web search, Settings for voice/interface settings, or Status for system diagnostics. You can also say those names out loud.';
+    return `Yes. The Menu cards are clickable.
+
+**Useful cards:**
+- Memory: focus, tasks, and context.
+- Calendar: events and meeting prep.
+- Notes: saved notes.
+- Search: web lookup.
+- Settings and Status: controls and diagnostics.
+
+You can tap a card or say it out loud.`;
   }
 
   if (panel === 'memory') {
     return activeSession
-      ? `With this focus, you can click the Memory action buttons or say: "set my goal to ...", "turn this focus into tasks", "save this focus as a note", "what should I do next", or "end and summarize this focus".`
-      : 'In Memory, you can add tasks, review recent focus sessions, inspect visual context, import/export memory, or start a focus by saying "start a focus session for ...".';
+      ? `You are in Memory, and your current focus is "${activeSession.title}".
+
+**Useful from here:**
+- Ask me "what should I do next?" for direct help with the work.
+- Tap Create tasks, Save note, or End with summary if you want to manage the focus.
+- Use Clear Context when you want to remove focus/context state.`
+      : 'You are in Memory. You can add tasks, review focus history, inspect visual context, import/export memory, or start work by saying "start a focus session for ...".';
   }
 
   if (panel === 'calendar') {

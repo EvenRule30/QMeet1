@@ -376,6 +376,103 @@ function formatSessionMode(mode: ActiveSession['mode']) {
   return mode.charAt(0).toUpperCase() + mode.slice(1);
 }
 
+function getFocusAgeLabel(activeSession: ActiveSession | null) {
+  if (!activeSession) return 'No focus';
+  const startedAt = new Date(activeSession.startedAt).getTime();
+  if (!Number.isFinite(startedAt)) return 'Active';
+  const minutes = Math.max(0, Math.round((Date.now() - startedAt) / 60000));
+  if (minutes < 1) return 'Just started';
+  if (minutes < 60) return `${minutes}m active`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m active` : `${hours}h active`;
+}
+
+function MemoryOverlayStyles() {
+  return (
+    <style>{`
+      .memory-panel-body {
+        gap: 0.75rem;
+      }
+
+      .memory-hero {
+        align-items: flex-start;
+        gap: 0.75rem;
+      }
+
+      .memory-title {
+        line-height: 1.35;
+      }
+
+      .memory-overview-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 0.55rem;
+      }
+
+      .memory-stat-card {
+        border: 1px solid rgba(148, 163, 184, 0.16);
+        border-radius: 0.82rem;
+        background: rgba(8, 20, 32, 0.42);
+        padding: 0.58rem 0.62rem;
+      }
+
+      .memory-stat-label {
+        color: rgba(148, 163, 184, 0.82);
+        font-size: 0.63rem;
+        font-weight: 700;
+        letter-spacing: 0.11em;
+        text-transform: uppercase;
+      }
+
+      .memory-stat-value {
+        margin-top: 0.22rem;
+        color: rgba(236, 253, 245, 0.96);
+        font-size: 0.86rem;
+        font-weight: 760;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .memory-focus-card {
+        border-color: rgba(45, 212, 191, 0.26);
+        background: linear-gradient(135deg, rgba(20, 184, 166, 0.12), rgba(8, 20, 32, 0.4));
+      }
+
+      .memory-focus-goal {
+        border-left: 2px solid rgba(45, 212, 191, 0.52);
+        padding-left: 0.6rem;
+        margin: 0.55rem 0;
+      }
+
+      .memory-control-note {
+        border: 1px solid rgba(251, 191, 36, 0.18);
+        border-radius: 0.74rem;
+        background: rgba(120, 53, 15, 0.12);
+        color: rgba(254, 243, 199, 0.82);
+        padding: 0.52rem 0.62rem;
+        font-size: 0.78rem;
+        line-height: 1.4;
+      }
+
+      .memory-action-item {
+        min-width: 0;
+      }
+
+      .memory-task-copy {
+        min-width: 0;
+      }
+
+      @media (max-width: 820px) {
+        .memory-overview-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+    `}</style>
+  );
+}
+
 
 function formatSessionRange(session: RecentFocusSession) {
   return `${formatMemoryTime(session.startedAt)} → ${formatMemoryTime(
@@ -832,6 +929,7 @@ export function MemoryOverlay({
 
   return (
     <div className="panel-overlay">
+      <MemoryOverlayStyles />
       <div className="panel-content memory-panel">
         <div className="panel-header">Memory</div>
 
@@ -840,8 +938,7 @@ export function MemoryOverlay({
             <div>
               <div className="memory-kicker">Backend Memory</div>
               <div className="memory-title">
-                Tasks, notes, work context, and active focus sync to FastAPI,
-                with browser fallback.
+                Focus, tasks, notes, visuals, and recent work context sync to FastAPI with browser fallback.
               </div>
             </div>
 
@@ -854,20 +951,45 @@ export function MemoryOverlay({
             </div>
           </div>
 
+          <div className="memory-overview-grid" aria-label="Memory overview">
+            <div className="memory-stat-card memory-focus-card">
+              <div className="memory-stat-label">Focus</div>
+              <div className="memory-stat-value">
+                {activeSession ? activeSession.title : 'None'}
+              </div>
+            </div>
+            <div className="memory-stat-card">
+              <div className="memory-stat-label">Tasks</div>
+              <div className="memory-stat-value">
+                {openTasks.length} open · {completedTasks.length} done
+              </div>
+            </div>
+            <div className="memory-stat-card">
+              <div className="memory-stat-label">Sessions</div>
+              <div className="memory-stat-value">{recentFocusSessions.length} recent</div>
+            </div>
+            <div className="memory-stat-card">
+              <div className="memory-stat-label">Visuals</div>
+              <div className="memory-stat-value">
+                {visualContext.recentObservations.length} saved
+              </div>
+            </div>
+          </div>
+
           <div className="panel-section memory-sync-section">
             <div className="panel-section-title">Current Focus</div>
             {activeSession ? (
               <div className="memory-list">
-                <div className="memory-action-item">
+                <div className="memory-action-item memory-focus-card">
                   <div className="memory-task-copy">
                     <div className="memory-action-title">
                       {activeSession.title}
                     </div>
                     <div className="memory-task-meta">
-                      {formatSessionMode(activeSession.mode)} mode · Started{' '}
+                      {formatSessionMode(activeSession.mode)} mode · {getFocusAgeLabel(activeSession)} · Started{' '}
                       {formatMemoryTime(activeSession.startedAt)}
                     </div>
-                    <p className="panel-section-text">
+                    <p className="panel-section-text memory-focus-goal">
                       {activeSession.goal
                         ? `Goal: ${activeSession.goal}`
                         : 'No goal set yet. Say “set my goal to …” to add one.'}
@@ -965,8 +1087,7 @@ export function MemoryOverlay({
               </div>
             ) : (
               <p className="panel-section-text">
-                No active focus session. Say “start a coding focus session for
-                QMeet Phase 12” to create one.
+                No active focus. Say “start a focus for my Java class” or “I am working on the UI cleanup” and I will use it as background context.
               </p>
             )}
           </div>
@@ -1048,7 +1169,7 @@ export function MemoryOverlay({
             ) : (
               <p className="panel-section-text">
                 {visualContextMessage ||
-                  'No visual observations saved yet. Phase 14C will add manual observation commands before camera capture.'}
+                  'No visual observations saved yet. Open Camera or upload an image to create one.'}
               </p>
             )}
 
@@ -1125,8 +1246,7 @@ export function MemoryOverlay({
           <div className="panel-section">
             <div className="panel-section-title">Memory Controls</div>
             <p className="panel-section-text">
-              Export a backup, import a saved QMeet memory JSON file, or reset
-              stored memory categories.
+              Export/import memory, or clear specific categories. Clear Context removes active focus, recent focus sessions, visual context, and hidden recent actions.
             </p>
 
             <input
@@ -1181,7 +1301,7 @@ export function MemoryOverlay({
                 type="button"
                 onClick={onResetRecentContextOnly}
               >
-                Reset Context
+                Clear Context
               </button>
             </div>
           </div>
@@ -1350,11 +1470,7 @@ export function MemoryOverlay({
           <div className="panel-section">
             <div className="panel-section-title">Supported Commands</div>
             <p className="panel-section-text">
-              Say “start a coding focus session for QMeet Phase 12,” “what am I
-              focused on,” “set my goal to wire focus commands,” “end focus
-              session,” “remember to test the Pi as a task,” “mark task done,”
-              or use the focus action buttons for tasks, notes, summaries, and ending the session. You can also say “what should I do next” or “clear completed tasks.” Notes, focus history, visual context, linked focus visuals, and
-              recent actions sync in the background. Say “save this visual context to my focus” to attach the latest observation to the current focus.
+              Start naturally: “I am working on my Java class.” Then ask “what should I do next?” or “what do you need to know?” Use “open memory” to manage focus, tasks, notes, recent sessions, and visual context.
             </p>
           </div>
 

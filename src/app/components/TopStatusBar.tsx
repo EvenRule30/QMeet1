@@ -132,6 +132,76 @@ function formatFocusLabel(session: ActiveFocusSessionSnapshot): string {
   return 'Active focus';
 }
 
+function dispatchPromptCommand(command: string): void {
+  if (typeof window === 'undefined') return;
+
+  window.dispatchEvent(
+    new CustomEvent('qmeet-prompt-command', {
+      detail: { command },
+    }),
+  );
+}
+
+function FocusStatusStyles() {
+  return (
+    <style>{`
+      .status-focus-chip {
+        display: inline-flex;
+        align-items: center;
+        min-width: 0;
+        max-width: min(34vw, 360px);
+        gap: 0.42rem;
+        border: 1px solid rgba(103, 232, 249, 0.22);
+        border-radius: 999px;
+        background: rgba(6, 18, 28, 0.52);
+        color: rgba(221, 253, 255, 0.9);
+        padding: 0.18rem 0.58rem;
+        cursor: pointer;
+        font: inherit;
+        transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+      }
+
+      .status-focus-chip:hover,
+      .status-focus-chip:focus-visible {
+        border-color: rgba(103, 232, 249, 0.42);
+        background: rgba(10, 31, 44, 0.78);
+        box-shadow: 0 0 18px rgba(34, 211, 238, 0.12);
+        transform: translateY(-1px);
+        outline: none;
+      }
+
+      .status-focus-dot {
+        width: 0.42rem;
+        height: 0.42rem;
+        border-radius: 999px;
+        background: rgba(45, 212, 191, 0.95);
+        box-shadow: 0 0 10px rgba(45, 212, 191, 0.6);
+        flex: 0 0 auto;
+      }
+
+      .status-focus-text {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 0.72rem;
+        letter-spacing: 0.04em;
+        text-transform: none;
+      }
+
+      @media (max-width: 720px) {
+        .status-focus-chip {
+          max-width: 38vw;
+          padding-inline: 0.46rem;
+        }
+
+        .status-focus-text {
+          font-size: 0.66rem;
+        }
+      }
+    `}</style>
+  );
+}
+
 function formatFocusTitle(session: ActiveFocusSessionSnapshot): string {
   const lines = ['Current focus'];
   const mode = formatMode(session.mode);
@@ -185,6 +255,11 @@ export function TopStatusBar({ orbState, chatActive, onEnd, backendStatus, activ
         return;
       }
 
+      if (detail && typeof detail === 'object' && 'activeSession' in detail) {
+        setActiveFocusSession(null);
+        return;
+      }
+
       refreshFocusFromStorage();
     };
 
@@ -226,6 +301,7 @@ export function TopStatusBar({ orbState, chatActive, onEnd, backendStatus, activ
 
   return (
     <div className="status-bar">
+      <FocusStatusStyles />
       <div className="status-left">
         <span className="status-logo">QMeet</span>
         <span className="status-divider">|</span>
@@ -243,9 +319,17 @@ export function TopStatusBar({ orbState, chatActive, onEnd, backendStatus, activ
         {activeFocusSession && (
           <>
             <span className="status-divider status-focus-divider">|</span>
-            <span className="status-activity status-focus" title={formatFocusTitle(activeFocusSession)}>
-              Focus: {formatFocusLabel(activeFocusSession)}
-            </span>
+            <button
+              className="status-focus-chip"
+              type="button"
+              title={`${formatFocusTitle(activeFocusSession)}\n\nClick to open Memory.`}
+              onClick={() => dispatchPromptCommand('open memory')}
+            >
+              <span className="status-focus-dot" />
+              <span className="status-focus-text">
+                Focus: {formatFocusLabel(activeFocusSession)}
+              </span>
+            </button>
           </>
         )}
       </div>

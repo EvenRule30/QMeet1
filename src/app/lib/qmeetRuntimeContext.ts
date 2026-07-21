@@ -50,17 +50,55 @@ function getBodyText(): string {
   return document.body?.innerText ?? '';
 }
 
+function isVisible(element: Element | null): boolean {
+  if (!(element instanceof HTMLElement)) return false;
+  const rect = element.getBoundingClientRect();
+  const style = window.getComputedStyle(element);
+  return (
+    rect.width > 1 &&
+    rect.height > 1 &&
+    style.visibility !== 'hidden' &&
+    style.display !== 'none' &&
+    Number(style.opacity || '1') > 0.01
+  );
+}
+
+function hasVisibleText(pattern: RegExp): boolean {
+  return pattern.test(getBodyText());
+}
+
 function detectPanel(): string | null {
   if (typeof document === 'undefined') return null;
-  const text = getBodyText();
-  if (document.querySelector('.qmeet-camera-overlay, [data-qmeet-camera-overlay="true"]')) return 'camera';
-  if (/Choose a QMeet tool by touch/i.test(text)) return 'menu';
-  if (/Current Focus|Backend Memory|Recent Focus Sessions|Visual Context/i.test(text)) return 'memory';
-  if (/Saved Notes|New Note|Write and review local notes/i.test(text)) return 'notes';
-  if (/Google Calendar|Calendar Events|Today|Tomorrow/i.test(text) && /calendar/i.test(text)) return 'calendar';
-  if (/Search the web|Search Results|Web Search/i.test(text)) return 'search';
-  if (/Settings|Voice Output|Speech Rate/i.test(text)) return 'settings';
-  if (/System Status|Interpreter|Last heard|Backend/i.test(text)) return 'status';
+
+  const panelContent = Array.from(document.querySelectorAll('.panel-content')).find(isVisible);
+  const panelText = panelContent?.textContent ?? '';
+
+  if (isVisible(document.querySelector('.qmeet-camera-overlay, [data-qmeet-camera-overlay="true"]'))) return 'camera';
+  if (/Choose a QMeet tool by touch|Notes\s+Memory\s+Calendar/i.test(panelText)) return 'menu';
+  if (/Current Focus|Backend Memory|Recent Focus Sessions|Visual Context|Memory Controls/i.test(panelText)) return 'memory';
+  if (/Saved Notes|New Note|Write and review local notes/i.test(panelText)) return 'notes';
+  if (/Google Calendar|Calendar Events|Today|Tomorrow/i.test(panelText) && /calendar/i.test(panelText)) return 'calendar';
+  if (/Search the web|Search Results|Web Search/i.test(panelText)) return 'search';
+  if (/Settings|Voice Output|Speech Rate/i.test(panelText)) return 'settings';
+  if (/System Status|Interpreter|Last heard|Backend/i.test(panelText)) return 'status';
+
+  if (hasVisibleText(/Choose a QMeet tool by touch/i)) return 'menu';
+  if (hasVisibleText(/Current Focus|Backend Memory|Recent Focus Sessions|Visual Context/i)) return 'memory';
+  if (hasVisibleText(/Saved Notes|New Note|Write and review local notes/i)) return 'notes';
+  if (hasVisibleText(/Google Calendar|Calendar Events|Today|Tomorrow/i) && hasVisibleText(/calendar/i)) return 'calendar';
+  if (hasVisibleText(/Search the web|Search Results|Web Search/i)) return 'search';
+  if (hasVisibleText(/Settings|Voice Output|Speech Rate/i)) return 'settings';
+  if (hasVisibleText(/System Status|Interpreter|Last heard|Backend/i)) return 'status';
+
+  const chatArea = document.querySelector('.chat-area');
+  if (
+    isVisible(chatArea) &&
+    (chatArea?.classList.contains('chat-area-visible') ||
+      (chatArea instanceof HTMLElement && chatArea.getBoundingClientRect().width > 80))
+  ) {
+    return 'chat';
+  }
+
   return null;
 }
 
@@ -70,18 +108,21 @@ function collectVisibleHints(): string[] {
   const hints: string[] = [];
   const checks: Array<[string, RegExp]> = [
     ['current focus card', /Current Focus/i],
+    ['focus goal shown', /Goal:/i],
     ['focus action buttons', /Create tasks|Save note|End with summary/i],
     ['focus nudges', /Focus Nudges/i],
     ['recent focus sessions', /Recent Focus Sessions/i],
     ['visual context', /Visual Context/i],
+    ['memory controls', /Memory Controls|Clear All|Reset Context/i],
     ['calendar auth', /Google Calendar/i],
     ['search results', /Search Results/i],
     ['notes editor', /Saved Notes|New Note/i],
+    ['main menu cards', /Choose a QMeet tool by touch/i],
   ];
   for (const [label, pattern] of checks) {
     if (pattern.test(text)) hints.push(label);
   }
-  return hints.slice(0, 8);
+  return hints.slice(0, 10);
 }
 
 export function collectQMeetRuntimeContext(): QMeetRuntimeContext {
@@ -119,6 +160,7 @@ export function collectQMeetRuntimeContext(): QMeetRuntimeContext {
   const chatArea = document.querySelector('.chat-area');
   const chatOpen = Boolean(
     chatArea &&
+      isVisible(chatArea) &&
       (chatArea.classList.contains('active') ||
         chatArea.classList.contains('chat-area-visible') ||
         chatArea.getBoundingClientRect().width > 80),

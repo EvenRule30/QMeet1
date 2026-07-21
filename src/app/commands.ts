@@ -392,6 +392,7 @@ const COMMAND_PATTERNS: Array<[LocalCommand, RegExp[]]> = [
       /^(?:turn|convert|make|create)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session|goal)\s+(?:into|to)\s+(?:tasks|task\s+list|action\s+items|next\s+steps|steps|checklist)$/i,
       /^(?:make|create|add|generate)\s+(?:tasks|a\s+task\s+list|action\s+items|next\s+steps|steps|a\s+checklist)\s+(?:for|from|based\s+on)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session|goal)$/i,
       /^(?:break|split)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session|goal)\s+(?:into|down\s+into)\s+(?:tasks|steps|next\s+steps|action\s+items)$/i,
+      /^(?:can|could|would)\s+(?:you|we)\s+(?:please\s+)?(?:break|split|turn|convert)\s+(?:it|this|that|these|the\s+work)?\s*(?:into|down\s+into|to)\s+(?:(?:a\s+)?(?:task\s+list|checklist)|tasks|steps|next\s+steps|action\s+items)$/i,
     ],
   ],
 
@@ -1358,6 +1359,7 @@ function extractFocusSessionIntent(normalized: string): FocusSessionIntent | nul
     /^(?:please\s+)?(?:turn|convert|make|create)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session|goal)\s+(?:into|to)\s+(?:tasks|task\s+list|action\s+items|next\s+steps|steps|checklist)$/i,
     /^(?:please\s+)?(?:make|create|add|generate)\s+(?:tasks|a\s+task\s+list|action\s+items|next\s+steps|steps|a\s+checklist)\s+(?:for|from|based\s+on)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session|goal)$/i,
     /^(?:please\s+)?(?:break|split)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session|goal)\s+(?:into|down\s+into)\s+(?:tasks|steps|next\s+steps|action\s+items)$/i,
+    /^(?:can|could|would)\s+(?:you|we)\s+(?:please\s+)?(?:break|split|turn|convert)\s+(?:it|this|that|these|the\s+work)?\s*(?:into|down\s+into|to)\s+(?:(?:a\s+)?(?:task\s+list|checklist)|tasks|steps|next\s+steps|action\s+items)$/i,
     /^(?:please\s+)?(?:add|save)\s+(?:tasks|next\s+steps|action\s+items)\s+(?:for|from)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session|goal)$/i,
     /^(?:please\s+)?(?:turn|convert)\s+(?:it|this|that)\s+(?:into|to)\s+(?:tasks|task\s+list|action\s+items|next\s+steps|steps|checklist)$/i,
   ];

@@ -85,6 +85,7 @@ const RECENT_ACTIONS_STORAGE_KEY = 'qmeet-recent-actions';
 const RECENT_FOCUS_SESSIONS_STORAGE_KEY = 'qmeet-recent-focus-sessions';
 const NOTES_STORAGE_KEY = 'qmeet-notes';
 const ACTIVE_SESSION_STORAGE_KEY = 'qmeet-active-session';
+const ACTIVE_SESSION_SESSION_STORAGE_KEY = 'qmeet-active-session-live';
 const VISUAL_CONTEXT_STORAGE_KEY = 'qmeet-visual-context';
 const ACTIVE_SESSION_STATE_EVENT = 'qmeet-active-session-state';
 const RECENT_FOCUS_SESSIONS_STATE_EVENT = 'qmeet-recent-focus-sessions-state';
@@ -359,7 +360,9 @@ function readStoredActiveSession(): ActiveSession | null {
   if (typeof window === 'undefined') return null;
 
   try {
-    const rawSession = window.localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY);
+    const rawSession =
+      window.sessionStorage.getItem(ACTIVE_SESSION_SESSION_STORAGE_KEY) ??
+      window.localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY);
     if (!rawSession) return null;
     return normalizeActiveSession(JSON.parse(rawSession));
   } catch {
@@ -493,6 +496,7 @@ export function useMemoryContext({
         );
       } else {
         window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
+        window.sessionStorage.removeItem(ACTIVE_SESSION_SESSION_STORAGE_KEY);
       }
     } catch (error) {
       console.error('Failed to save active session:', error);
@@ -580,7 +584,7 @@ export function useMemoryContext({
         return;
       }
 
-      if (event.key === ACTIVE_SESSION_STORAGE_KEY) {
+      if (event.key === ACTIVE_SESSION_STORAGE_KEY || event.key === ACTIVE_SESSION_SESSION_STORAGE_KEY) {
         setActiveSession(readStoredActiveSession());
         return;
       }
@@ -1508,6 +1512,7 @@ export function useMemoryContext({
       window.localStorage.removeItem(RECENT_FOCUS_SESSIONS_STORAGE_KEY);
       window.localStorage.removeItem(NOTES_STORAGE_KEY);
       window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
+      window.sessionStorage.removeItem(ACTIVE_SESSION_SESSION_STORAGE_KEY);
       window.localStorage.removeItem(VISUAL_CONTEXT_STORAGE_KEY);
     } catch (error) {
       console.error('Failed to clear local memory fallback:', error);
@@ -1606,26 +1611,43 @@ export function useMemoryContext({
 
   const handleResetRecentContextOnly = useCallback(() => {
     const confirmed = window.confirm(
-      'Clear hidden recent work context only? Tasks, notes, and active focus session will stay.',
+      'Clear active focus, recent focus sessions, visual context, and hidden recent actions? Tasks and notes will stay.',
     );
     if (!confirmed) {
       return;
     }
 
+    const emptyVisualContext = createEmptyVisualContext();
+
     setRecentActions([]);
+    setRecentFocusSessions([]);
+    setActiveSession(null);
+    setVisualContext(emptyVisualContext);
+    broadcastMemoryStateSnapshot({
+      activeSession: null,
+      recentFocusSessions: [],
+      visualContext: emptyVisualContext,
+    });
 
     try {
       window.localStorage.removeItem(RECENT_ACTIONS_STORAGE_KEY);
+      window.localStorage.removeItem(RECENT_FOCUS_SESSIONS_STORAGE_KEY);
+      window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
+      window.sessionStorage.removeItem(ACTIVE_SESSION_SESSION_STORAGE_KEY);
+      window.localStorage.setItem(
+        VISUAL_CONTEXT_STORAGE_KEY,
+        JSON.stringify(emptyVisualContext),
+      );
     } catch (error) {
-      console.error('Failed to clear recent actions fallback:', error);
+      console.error('Failed to clear context fallback:', error);
     }
 
     pushResultToast({
       kind: 'warning',
-      title: 'Work context reset',
-      detail: 'Hidden recent actions cleared.',
+      title: 'Context cleared',
+      detail: 'Active focus, recent focus sessions, visual context, and hidden recent actions cleared.',
     });
-  }, [pushResultToast]);
+  }, [broadcastMemoryStateSnapshot, pushResultToast]);
 
   const getMemoryReadout = useCallback(() => {
     const openTasks = memoryTasks.filter((task) => !task.completedAt);

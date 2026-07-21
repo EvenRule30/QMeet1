@@ -1259,54 +1259,88 @@ function uniqueTaskTitles(titles: string[]): string[] {
   return uniqueTitles.slice(0, 5);
 }
 
+function inferFocusTaskKind(activeSession: ActiveSession): 'java-hello-world' | 'coding' | MemorySessionMode {
+  const combined = `${activeSession.title} ${activeSession.goal}`.toLowerCase();
+
+  if (/\b(java|javac|jdk|eclipse|intellij|netbeans)\b/.test(combined) && /hello\s*world/.test(combined)) {
+    return 'java-hello-world';
+  }
+
+  if (
+    activeSession.mode === 'coding' ||
+    /\b(code|coding|program|programming|script|app|bug|debug|compile|compiler|function|class|method|java|python|javascript|typescript|react|html|css|sql)\b/.test(combined)
+  ) {
+    return 'coding';
+  }
+
+  return activeSession.mode;
+}
+
+function generateCodingFocusTaskTitles(activeSession: ActiveSession): string[] {
+  const title = compactTaskSubject(activeSession.title, 'current coding focus');
+  const goal = compactTaskSubject(activeSession.goal, title);
+  const target = activeSession.goal ? goal : title;
+
+  return uniqueTaskTitles([
+    `Write down the exact expected result for ${target}`,
+    `Create the smallest working version of ${target}`,
+    `Run it and copy the first error or output back into QMeet`,
+    `Fix one issue at a time until ${target} runs correctly`,
+    `Save or submit the finished ${title} work`,
+  ]);
+}
+
 function generateFocusTaskTitles(activeSession: ActiveSession): string[] {
   const title = compactTaskSubject(activeSession.title, 'current focus');
   const goal = compactTaskSubject(activeSession.goal, title);
   const target = activeSession.goal ? goal : title;
+  const taskKind = inferFocusTaskKind(activeSession);
 
-  switch (activeSession.mode) {
-    case 'coding':
+  switch (taskKind) {
+    case 'java-hello-world':
       return uniqueTaskTitles([
-        `Define the target behavior for ${title}`,
-        `Inspect the relevant code paths for ${title}`,
-        `Implement the smallest working change for ${target}`,
-        `Test ${title} from the UI and backend`,
-        `Commit the finished ${title} changes`,
+        'Create `HelloWorld.java` with a `public class HelloWorld`',
+        'Add `public static void main(String[] args)`',
+        'Print `Hello, world!` from inside `main`',
+        'Compile with `javac HelloWorld.java`',
+        'Run with `java HelloWorld` and verify the output',
       ]);
+    case 'coding':
+      return generateCodingFocusTaskTitles(activeSession);
     case 'research':
       return uniqueTaskTitles([
-        `List the key questions for ${title}`,
-        `Gather useful sources or examples for ${target}`,
-        `Compare findings and note tradeoffs for ${title}`,
-        `Decide the next action from the ${title} research`,
+        `Write the main question you need answered for ${title}`,
+        `Find two useful sources or examples for ${target}`,
+        `Compare the sources and note the tradeoffs for ${title}`,
+        `Choose the next action from the ${title} research`,
       ]);
     case 'meeting':
       return uniqueTaskTitles([
-        `Clarify the meeting objective for ${title}`,
-        `Prepare agenda points for ${target}`,
+        `Write the meeting objective for ${title}`,
+        `Prepare the three agenda points for ${target}`,
         `Capture decisions from ${title}`,
         `Save follow-up tasks after ${title}`,
       ]);
     case 'planning':
       return uniqueTaskTitles([
-        `Define the desired outcome for ${title}`,
-        `Break ${target} into milestones`,
-        `Identify blockers and dependencies for ${title}`,
-        `Choose the first next action for ${title}`,
+        `Define the finished outcome for ${title}`,
+        `Break ${target} into visible milestones`,
+        `Identify blockers or dependencies for ${title}`,
+        `Choose the first action you can do in 10 minutes`,
       ]);
     case 'personal':
       return uniqueTaskTitles([
-        `Clarify what success looks like for ${title}`,
+        `Describe what done looks like for ${title}`,
         `Choose one small next step for ${target}`,
         `Set aside time for ${title}`,
         `Review progress on ${title}`,
       ]);
     default:
       return uniqueTaskTitles([
-        `Clarify the outcome for ${title}`,
-        `Break ${target} into smaller steps`,
-        `Identify the next concrete action for ${title}`,
-        `Review progress and update the focus session`,
+        `Decide the finished result for ${title}`,
+        `Write the first concrete step for ${target}`,
+        `Do the first step and report what happened`,
+        `Ask QMeet for help with the first blocker`,
       ]);
   }
 }

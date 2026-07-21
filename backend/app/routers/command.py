@@ -571,6 +571,7 @@ def _focus_command_intent(message: str) -> dict[str, Any] | None:
         r"^(?:please\s+)?(?:turn|convert|make|create)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session|goal)\s+(?:into|to)\s+(?:tasks|task list|action items|next steps|steps|checklist)$",
         r"^(?:please\s+)?(?:make|create|add|generate)\s+(?:tasks|a task list|action items|next steps|steps|a checklist)\s+(?:for|from|based on)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session|goal)$",
         r"^(?:please\s+)?(?:break|split)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session|goal)\s+(?:into|down into)\s+(?:tasks|steps|next steps|action items)$",
+        r"^(?:can|could|would)\s+(?:you|we)\s+(?:please\s+)?(?:break|split|turn|convert)\s+(?:it|this|that|these|the work)?\s*(?:into|down into|to)\s+(?:(?:a\s+)?(?:task list|checklist)|tasks|steps|next steps|action items)$",
         r"^(?:please\s+)?(?:add|save)\s+(?:tasks|next steps|action items)\s+(?:for|from)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session|goal)$",
         r"^(?:please\s+)?(?:turn|convert)\s+(?:it|this|that)\s+(?:into|to)\s+(?:tasks|task list|action items|next steps|steps|checklist)$",
     ]
