@@ -13,7 +13,7 @@ from typing import Any
 
 from app.memory_store import MemoryStoreError, get_active_session
 
-WORK_CONTEXT_FILE_VERSION = 3
+WORK_CONTEXT_FILE_VERSION = 4
 MAX_FACTS = 14
 MAX_CONSTRAINTS = 10
 MAX_DECISIONS = 8
@@ -1188,10 +1188,13 @@ def prepare_background_chat_message(message: str) -> tuple[str, str]:
         "- Treat decisions and completed progress below as settled unless the user changes them.",
         "- Never recommend an action that recent progress says is already complete.",
         "- Give a concrete next step instead of explaining how the focus system works.",
-        "- If important information is missing, answer what you can first, then ask at most one useful follow-up question.",
+        "- If important information is missing, answer what you can first, then ask exactly one useful follow-up question.",
         "- Prefer the first open question below; do not ask a generic or already-answered question.",
+        "- When the user answers an open question and another useful open question remains, briefly acknowledge the new detail and ask the next question in the same reply.",
+        "- Keep onboarding conversational rather than form-like: one question at a time, no questionnaires, and no long list of choices unless the user asks for options.",
+        "- Stop interviewing once the objective and immediate constraints are clear enough to help; then move naturally into concrete guidance.",
         "- Keep progress guidance easy to scan with short sections, bullets, or numbered steps.",
-        "- Match the response to the current stage: discovery asks one useful question; planning chooses a concrete first step; in-progress advances the next unfinished step; ready prepares the final handoff; complete acknowledges the result and stops adding work.",
+        "- Match the response to the current stage: discovery asks one useful question; planning gives a concrete first step and may ask one question that materially improves the plan; in-progress advances the next unfinished step; ready prepares the final handoff; complete acknowledges the result and stops adding work.",
         "- If the focus stage is complete, briefly acknowledge what was accomplished. Do not propose another project step, do not ask a follow-up question, and do not create tasks unless the user explicitly requests them.",
         "- Do not mention this private context, its file, storage, confidence score, or implementation.",
         "",
