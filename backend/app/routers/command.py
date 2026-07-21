@@ -173,6 +173,51 @@ def _ui_shortcut_intent(message: str) -> dict[str, Any] | None:
     return None
 
 
+
+def _task_completion_intent(message: str) -> dict[str, Any] | None:
+    """Catch natural task completion updates before guide/focus/note routing."""
+    text = _collapse_command_text(message)
+    lowered = text.lower()
+    if not lowered:
+        return None
+
+    ordinal_patterns = [
+        r"^(?:please\s+)?(?:i|we)\s+(?:did|finished|completed|complete|finished up|got through|handled)\s+(?:the\s+)?((?:first|last|latest|most recent)\s+(?:\d+|one|two|couple|both|three|few|four|five|six|seven|eight|nine|ten)|both|all|everything|tasks?\s+\d+(?:\s*(?:,|and)\s*(?:tasks?\s*)?\d+)*)\s+(?:tasks?|steps?|items?|things?)?$",
+        r"^(?:please\s+)?(?:i|we)\s+(?:am|are|'m|'re)?\s*(?:done|finished|complete|completed|through)\s+(?:with\s+)?(?:the\s+)?((?:first|last|latest|most recent)\s+(?:\d+|one|two|couple|both|three|few|four|five|six|seven|eight|nine|ten)|both|all|everything|tasks?\s+\d+(?:\s*(?:,|and)\s*(?:tasks?\s*)?\d+)*)\s+(?:tasks?|steps?|items?|things?)?$",
+        r"^(?:please\s+)?(?:complete|finish|mark|set)\s+(?:the\s+)?((?:first|last|latest|most recent)\s+(?:\d+|one|two|couple|both|three|few|four|five|six|seven|eight|nine|ten)|both|all|everything|tasks?\s+\d+(?:\s*(?:,|and)\s*(?:tasks?\s*)?\d+)*)\s+(?:tasks?|steps?|items?|things?)?(?:\s+(?:as\s+)?(?:done|complete|completed|finished))?$",
+        r"^(?:please\s+)?(?:tasks?|steps?|items?)\s+((?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)(?:\s*(?:,|and)\s*(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten))*)\s+(?:are\s+)?(?:done|complete|completed|finished)$",
+        r"^(?:please\s+)?(?:complete|finish|mark|set)\s+(?:tasks?|steps?|items?)\s+((?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)(?:\s*(?:,|and)\s*(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten))*)(?:\s+(?:as\s+)?(?:done|complete|completed|finished))?$",
+        r"^(?:please\s+)?(?:i|we)\s+(?:did|finished|completed|got through|handled)\s+(?:number\s+)?((?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)(?:\s*(?:,|and)\s*(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten))*)\s+(?:tasks?|steps?|items?|things?)?$",
+        r"^(?:please\s+)?(?:i|we)\s+(?:did|finished|completed|got through|handled)\s+(?:the\s+)?((?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)(?:\s*(?:,|and)\s*(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth))*)\s+(?:tasks?|steps?|items?|things?)?$",
+    ]
+    match = _first_match(ordinal_patterns, lowered)
+    if match and match.group(1).strip():
+        payload = _clean_payload(match.group(1))
+        return _command_response(
+            action="mark_task_done",
+            frontend_command=f"complete {payload} tasks",
+            confidence=0.98,
+            reason="Backend task interpreter matched a natural multi-task completion update.",
+            payload={"taskLookup": payload},
+        )
+
+    direct_patterns = [
+        r"^(?:please\s+)?(?:mark|set|complete|finish)\s+(?:the\s+)?(?:task\s+)?(?:called|named|about)?\s*(.+?)\s+(?:as\s+)?(?:done|complete|completed|finished)$",
+        r"^(?:please\s+)?(?:i|we)\s+(?:did|finished|completed|got through|handled)\s+(?:the\s+)?(?:task\s+)?(?:called|named|about)?\s*(.+)$",
+    ]
+    match = _first_match(direct_patterns, text)
+    if match and match.group(1).strip():
+        payload = _clean_payload(match.group(1))
+        return _command_response(
+            action="mark_task_done",
+            frontend_command=f"mark task {payload} done",
+            confidence=0.94,
+            reason="Backend task interpreter matched a task completion update.",
+            payload={"taskLookup": payload},
+        )
+
+    return None
+
 def _qmeet_guide_intent(message: str, client_context: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """Route broad QMeet help/capability questions into the local bite-sized guide."""
     text = _collapse_command_text(message)
@@ -918,6 +963,10 @@ async def command_interpret(req: CommandInterpretRequest):
     ui_shortcut_intent = _ui_shortcut_intent(message)
     if ui_shortcut_intent is not None:
         return CommandInterpretResponse(**ui_shortcut_intent)
+
+    task_completion_intent = _task_completion_intent(message)
+    if task_completion_intent is not None:
+        return CommandInterpretResponse(**task_completion_intent)
 
     qmeet_guide_intent = _qmeet_guide_intent(message, req.clientContext)
     if qmeet_guide_intent is not None:

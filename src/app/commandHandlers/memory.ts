@@ -45,13 +45,14 @@ const ACTIVE_SESSION_SESSION_STORAGE_KEY = 'qmeet-active-session-live';
 const ACTIVE_SESSION_STATE_EVENT = 'qmeet-active-session-state';
 const SAVE_FOCUS_SUMMARY_NOTE_EVENT = 'qmeet-save-focus-summary-note';
 const MEMORY_TASKS_STORAGE_KEY = 'qmeet-memory-tasks';
+const MEMORY_TASKS_STATE_EVENT = 'qmeet-memory-tasks-state';
 const NOTES_STORAGE_KEY = 'qmeet-notes';
 const RECENT_ACTIONS_STORAGE_KEY = 'qmeet-recent-actions';
 const RECENT_FOCUS_SESSIONS_STORAGE_KEY = 'qmeet-recent-focus-sessions';
 const VISUAL_CONTEXT_STORAGE_KEY = 'qmeet-visual-context';
 const VISUAL_CONTEXT_STATE_EVENT = 'qmeet-visual-context-state';
 const CALENDAR_FOCUS_PREP_EVENT = 'qmeet-calendar-focus-prep-command';
-const ACTIVE_SESSION_COMMAND_HANDLER_MARKER = 'phase16c-v1-meeting-wrapup';
+const ACTIVE_SESSION_COMMAND_HANDLER_MARKER = 'phase17h-v2-task-completion-hotfix';
 
 function createId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -687,6 +688,251 @@ function readStoredMemoryTasks(): MemoryTask[] {
   } catch {
     return [];
   }
+}
+
+
+function writeStoredMemoryTasks(tasks: MemoryTask[]) {
+  if (typeof window === 'undefined') return;
+
+  try {
+    window.localStorage.setItem(MEMORY_TASKS_STORAGE_KEY, JSON.stringify(tasks));
+  } catch (error) {
+    console.warn('Memory task local save failed:', error);
+  }
+}
+
+function dispatchMemoryTasksState(tasks: MemoryTask[]) {
+  if (typeof window === 'undefined') return;
+
+  window.dispatchEvent(
+    new CustomEvent(MEMORY_TASKS_STATE_EVENT, {
+      detail: { tasks },
+    }),
+  );
+}
+
+function normalizeTaskLookup(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[`"']/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function readSmallNumber(value: string | undefined): number | null {
+  if (!value) return null;
+  const text = value.toLowerCase().trim();
+  if (/^\d+$/.test(text)) return Number.parseInt(text, 10);
+
+  const words: Record<string, number> = {
+    one: 1,
+    first: 1,
+    two: 2,
+    second: 2,
+    couple: 2,
+    both: 2,
+    three: 3,
+    third: 3,
+    few: 3,
+    four: 4,
+    fourth: 4,
+    five: 5,
+    fifth: 5,
+    six: 6,
+    sixth: 6,
+    seven: 7,
+    seventh: 7,
+    eight: 8,
+    eighth: 8,
+    nine: 9,
+    ninth: 9,
+    ten: 10,
+    tenth: 10,
+  };
+
+  return words[text] ?? null;
+}
+
+type TaskCompletionSpec =
+  | { kind: 'first'; count: number }
+  | { kind: 'last'; count: number }
+  | { kind: 'indexes'; indexes: number[] }
+  | { kind: 'all' }
+  | { kind: 'lookup'; lookup: string };
+
+function parseTaskCompletionSpec(payload: string | undefined): TaskCompletionSpec {
+  const rawPayload = (payload ?? '').replace(/\s+/g, ' ').trim();
+  if (!rawPayload) return { kind: 'first', count: 1 };
+
+  const normalized = rawPayload
+    .toLowerCase()
+    .replace(/[.,;:!?]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (/\b(?:all|everything|the whole list|every task|all tasks)\b/.test(normalized)) {
+    return { kind: 'all' };
+  }
+
+  const firstMatch = normalized.match(/\bfirst\s+(\d+|one|two|couple|both|three|few|four|five|six|seven|eight|nine|ten)\b/);
+  const firstCount = readSmallNumber(firstMatch?.[1]);
+  if (firstCount && firstCount > 0) {
+    return { kind: 'first', count: firstCount };
+  }
+
+  const lastMatch = normalized.match(/\b(?:last|latest|most recent)\s+(\d+|one|two|couple|both|three|few|four|five|six|seven|eight|nine|ten)\b/);
+  const lastCount = readSmallNumber(lastMatch?.[1]);
+  if (lastCount && lastCount > 0) {
+    return { kind: 'last', count: lastCount };
+  }
+
+  if (/\b(?:both|the two|these two|those two)\b/.test(normalized)) {
+    return { kind: 'first', count: 2 };
+  }
+
+  const ordinalWords: Record<string, number> = {
+    first: 1,
+    second: 2,
+    third: 3,
+    fourth: 4,
+    fifth: 5,
+    sixth: 6,
+    seventh: 7,
+    eighth: 8,
+    ninth: 9,
+    tenth: 10,
+  };
+  const wordIndexes = Array.from(
+    normalized.matchAll(/\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\b/g),
+  ).map((match) => ordinalWords[match[1]]).filter(Boolean);
+  if (wordIndexes.length > 0 && !/\bfirst\s+(?:task|tasks)?\b/.test(normalized)) {
+    return { kind: 'indexes', indexes: Array.from(new Set(wordIndexes)) };
+  }
+
+  const cardinalIndexWords: Record<string, number> = {
+    one: 1,
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+    six: 6,
+    seven: 7,
+    eight: 8,
+    nine: 9,
+    ten: 10,
+  };
+  const cardinalIndexes = Array.from(
+    normalized.replace(/\bnumber\s+/g, '').matchAll(/\b(one|two|three|four|five|six|seven|eight|nine|ten)\b/g),
+  ).map((match) => cardinalIndexWords[match[1]]).filter(Boolean);
+  if (cardinalIndexes.length > 0 && /\b(?:and|,)\b/.test(normalized)) {
+    return { kind: 'indexes', indexes: Array.from(new Set(cardinalIndexes)) };
+  }
+
+  const numericIndexMatches = Array.from(
+    normalized.matchAll(/(?:^|\b)(?:task\s*)?(\d+)(?:\b|$)/g),
+  ).map((match) => Number.parseInt(match[1], 10));
+  if (numericIndexMatches.length > 0) {
+    return {
+      kind: 'indexes',
+      indexes: Array.from(new Set(numericIndexMatches.filter((value) => value > 0))),
+    };
+  }
+
+  const lookup = rawPayload
+    .replace(/^(?:the\s+)?(?:task|tasks)\s+(?:called|named|about)?\s*/i, '')
+    .replace(/\s+(?:task|tasks)$/i, '')
+    .trim();
+
+  return { kind: 'lookup', lookup };
+}
+
+function orderedOpenTasksForCompletion(
+  tasks: MemoryTask[],
+  activeSession: ActiveSession | null,
+): MemoryTask[] {
+  const openTaskById = new Map(
+    tasks.filter((task) => !task.completedAt).map((task) => [task.id, task]),
+  );
+  const linkedOpenTasks = activeSession
+    ? activeSession.linkedTaskIds
+        .map((taskId) => openTaskById.get(taskId))
+        .filter((task): task is MemoryTask => Boolean(task))
+    : [];
+
+  if (linkedOpenTasks.length > 0) return linkedOpenTasks;
+  return tasks.filter((task) => !task.completedAt);
+}
+
+function completeMemoryTasksFromPayload(payload: string | undefined): MemoryTask[] {
+  const storedTasks = readStoredMemoryTasks();
+  const activeSession = readStoredActiveSession();
+  const candidateTasks = orderedOpenTasksForCompletion(storedTasks, activeSession);
+  if (candidateTasks.length === 0) return [];
+
+  const spec = parseTaskCompletionSpec(payload);
+  let selectedTasks: MemoryTask[] = [];
+
+  if (spec.kind === 'all') {
+    selectedTasks = candidateTasks;
+  } else if (spec.kind === 'first') {
+    selectedTasks = candidateTasks.slice(0, Math.max(1, spec.count));
+  } else if (spec.kind === 'last') {
+    selectedTasks = candidateTasks.slice(-Math.max(1, spec.count));
+  } else if (spec.kind === 'indexes') {
+    selectedTasks = spec.indexes
+      .map((index) => candidateTasks[index - 1])
+      .filter((task): task is MemoryTask => Boolean(task));
+  } else {
+    const lookup = normalizeTaskLookup(spec.lookup);
+    selectedTasks = lookup
+      ? candidateTasks.filter((task) => {
+          const title = normalizeTaskLookup(task.title);
+          return title.includes(lookup) || lookup.includes(title);
+        }).slice(0, 3)
+      : [];
+  }
+
+  const uniqueSelectedTasks = Array.from(
+    new Map(selectedTasks.map((task) => [task.id, task])).values(),
+  );
+  if (uniqueSelectedTasks.length === 0) return [];
+
+  const completedAt = new Date().toISOString();
+  const selectedTaskIds = new Set(uniqueSelectedTasks.map((task) => task.id));
+  const nextTasks = storedTasks.map((task) =>
+    selectedTaskIds.has(task.id) && !task.completedAt
+      ? { ...task, completedAt }
+      : task,
+  );
+
+  writeStoredMemoryTasks(nextTasks);
+  dispatchMemoryTasksState(nextTasks);
+
+  const completedById = new Map(nextTasks.map((task) => [task.id, task]));
+  return uniqueSelectedTasks
+    .map((task) => completedById.get(task.id))
+    .filter((task): task is MemoryTask => Boolean(task));
+}
+
+function isMultiTaskCompletionPayload(payload: string | undefined): boolean {
+  const text = (payload ?? '').toLowerCase();
+  return /\b(?:first|last|both|all|everything|\d+\s*(?:and|,)|one|two|three|four|five)\b/.test(text);
+}
+
+function describeCompletedMemoryTasks(tasks: MemoryTask[], payload: string | undefined): string {
+  if (tasks.length === 0) {
+    return payload
+      ? `I could not find open tasks matching "${payload}".`
+      : 'No open tasks to complete.';
+  }
+
+  if (tasks.length === 1) {
+    return `Marked task done:\n- ${tasks[0].title}`;
+  }
+
+  const taskLines = tasks.map((task, index) => `${index + 1}. ${task.title}`).join('\n');
+  return `Marked ${tasks.length} tasks done:\n${taskLines}\n\nNext step:\n- Keep going with the next open task, or ask me for help with the code.`;
 }
 
 type StoredRecentAction = {
@@ -1446,9 +1692,9 @@ function describeFocusTasks(activeSession: ActiveSession, tasks: MemoryTask[]): 
 
   const taskList = tasks
     .map((task, index) => `${index + 1}. ${task.title}`)
-    .join(' ');
+    .join('\n');
 
-  return `Added ${tasks.length} task${tasks.length === 1 ? '' : 's'} for ${activeSession.title}: ${taskList}`;
+  return `Added ${tasks.length} task${tasks.length === 1 ? '' : 's'} for ${activeSession.title}:\n${taskList}`;
 }
 
 
@@ -1471,6 +1717,15 @@ function sentenceList(items: string[], fallback: string): string {
 
   if (cleanedItems.length === 0) return fallback;
   return cleanedItems.join('; ');
+}
+
+function formatFocusSummaryTaskSection(
+  label: string,
+  tasks: MemoryTask[],
+  fallback: string,
+): string[] {
+  if (tasks.length === 0) return [`- ${fallback}`];
+  return [`**${label}:**`, ...tasks.slice(0, 8).map((task) => `- ${task.title}`)];
 }
 
 function buildFocusSummary(activeSession: ActiveSession): string {
@@ -1499,26 +1754,38 @@ function buildFocusSummary(activeSession: ActiveSession): string {
   );
 
   const lines = [
-    `Focus summary - ${activeSession.title}`,
-    `Mode: ${activeSession.mode}`,
-    activeSession.goal ? `Goal: ${activeSession.goal}` : 'Goal: No goal set',
-    `Started: ${formatFocusSummaryTime(activeSession.startedAt)}`,
-    `Last updated: ${formatFocusSummaryTime(activeSession.updatedAt)}`,
+    `**Focus summary — ${activeSession.title}**`,
+    '',
+    `**Mode:** ${activeSession.mode}`,
+    activeSession.goal ? `**Goal:** ${activeSession.goal}` : '**Goal:** No goal set',
+    `**Started:** ${formatFocusSummaryTime(activeSession.startedAt)}`,
+    `**Last updated:** ${formatFocusSummaryTime(activeSession.updatedAt)}`,
+    '',
+    '**Tasks:**',
     linkedTasks.length > 0
-      ? `Linked tasks: ${linkedTasks.length} total, ${openLinkedTasks.length} open, ${completedLinkedTasks.length} completed. ${sentenceList(
-          linkedTasks.slice(0, 5).map((task) => task.title),
-          '',
-        )}`.trim()
-      : 'Linked tasks: None yet',
+      ? `- ${linkedTasks.length} linked task${linkedTasks.length === 1 ? '' : 's'}: ${openLinkedTasks.length} open, ${completedLinkedTasks.length} done.`
+      : '- No linked tasks yet.',
+    ...formatFocusSummaryTaskSection(
+      'Completed',
+      completedLinkedTasks,
+      'No completed linked tasks yet.',
+    ),
+    ...formatFocusSummaryTaskSection(
+      'Still open',
+      openLinkedTasks,
+      'No open linked tasks.',
+    ),
+    '',
+    '**Visual context:**',
     linkedVisualObservations.length > 0
-      ? `Linked visual observations: ${linkedVisualObservations.length}. ${sentenceList(
-          linkedVisualObservations.slice(0, 3).map((observation) => observation.summary),
-          '',
-        )}`.trim()
-      : 'Linked visual observations: None yet',
-    recentFocusActions.length > 0
-      ? `Recent focus actions: ${sentenceList(recentFocusActions, 'None yet')}`
-      : 'Recent focus actions: None yet',
+      ? `- ${linkedVisualObservations.length} linked visual observation${linkedVisualObservations.length === 1 ? '' : 's'}.`
+      : '- No linked visual observations yet.',
+    ...linkedVisualObservations.slice(0, 3).map((observation) => `- ${observation.summary}`),
+    '',
+    '**Recent focus actions:**',
+    ...(recentFocusActions.length > 0
+      ? recentFocusActions.map((action) => `- ${action}`)
+      : ['- None yet.']),
   ];
 
   return lines.join('\n');
@@ -2126,15 +2393,23 @@ export function handleMemoryCommand(
     }
 
     case 'mark-task-done': {
-      const completedTask = deps.markMemoryTaskDone(commandMatch.payload);
+      const completedTasks = completeMemoryTasksFromPayload(commandMatch.payload);
       deps.setActivePanel('memory');
+
+      if (completedTasks.length > 0 || isMultiTaskCompletionPayload(commandMatch.payload)) {
+        return {
+          handled: true,
+          confirmationContent: describeCompletedMemoryTasks(completedTasks, commandMatch.payload),
+          shouldSpeakConfirmation: deps.voiceOutputEnabled,
+        };
+      }
+
+      const completedTask = deps.markMemoryTaskDone(commandMatch.payload);
       return {
         handled: true,
         confirmationContent: completedTask
-          ? `Marked task done: ${completedTask.title}.`
-          : commandMatch.payload
-            ? `I could not find an open task matching "${commandMatch.payload}".`
-            : 'No open tasks to complete.',
+          ? `Marked task done:\n- ${completedTask.title}`
+          : describeCompletedMemoryTasks([], commandMatch.payload),
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }

@@ -125,6 +125,7 @@ export interface FocusSessionCommandPayload {
 // Phase 17B-v2: guided onboarding catches broader capability/schedule questions and natural prep-block phrases.
 // Phase 17B-v3: contextual guide catches follow-up UI questions and maps focus menu wording to Memory.
 // Phase 17D-v2: active-focus work/help questions are allowed through to chat instead of being swallowed by the guide.
+// Phase 17H-v2: task-completion updates are routed before focus/note parsing so "I finished the first two" marks tasks instead of saving notes.
 
 export interface CommandMatch {
   command: LocalCommand;
@@ -660,9 +661,26 @@ function extractTaskDonePayload(normalized: string): string | null {
     return '';
   }
 
+  const ordinalTaskPatterns = [
+    /^(?:please\s+)?(?:i|we)\s+(?:did|finished|completed|complete|finished up|got through|handled)\s+(?:the\s+)?((?:first|last|latest|most\s+recent)\s+(?:\d+|one|two|couple|both|three|few|four|five|six|seven|eight|nine|ten)|both|all|everything|tasks?\s+\d+(?:\s*(?:,|and)\s*(?:tasks?\s*)?\d+)*)\s+(?:tasks?|steps?|items?|things?)?$/i,
+    /^(?:please\s+)?(?:i|we)\s+(?:am|are|'m|'re)?\s*(?:done|finished|complete|completed|through)\s+(?:with\s+)?(?:the\s+)?((?:first|last|latest|most\s+recent)\s+(?:\d+|one|two|couple|both|three|few|four|five|six|seven|eight|nine|ten)|both|all|everything|tasks?\s+\d+(?:\s*(?:,|and)\s*(?:tasks?\s*)?\d+)*)\s+(?:tasks?|steps?|items?|things?)?$/i,
+    /^(?:please\s+)?(?:complete|finish|mark|set)\s+(?:the\s+)?((?:first|last|latest|most\s+recent)\s+(?:\d+|one|two|couple|both|three|few|four|five|six|seven|eight|nine|ten)|both|all|everything|tasks?\s+\d+(?:\s*(?:,|and)\s*(?:tasks?\s*)?\d+)*)\s+(?:tasks?|steps?|items?|things?)?(?:\s+(?:as\s+)?(?:done|complete|completed|finished))?$/i,
+    /^(?:please\s+)?(?:tasks?|steps?|items?)\s+((?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)(?:\s*(?:,|and)\s*(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten))*)\s+(?:are\s+)?(?:done|complete|completed|finished)$/i,
+    /^(?:please\s+)?(?:complete|finish|mark|set)\s+(?:tasks?|steps?|items?|things?)\s+((?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)(?:\s*(?:,|and)\s*(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten))*)(?:\s+(?:as\s+)?(?:done|complete|completed|finished))?$/i,
+    /^(?:please\s+)?(?:i|we)\s+(?:did|finished|completed|got through|handled)\s+(?:number\s+)?((?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)(?:\s*(?:,|and)\s*(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten))*)\s+(?:tasks?|steps?|items?|things?)?$/i,
+    /^(?:please\s+)?(?:i|we)\s+(?:did|finished|completed|got through|handled)\s+(?:the\s+)?((?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)(?:\s*(?:,|and)\s*(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth))*)\s+(?:tasks?|steps?|items?|things?)?$/i,
+  ];
+
+  for (const pattern of ordinalTaskPatterns) {
+    const match = normalized.match(pattern);
+    const payload = match?.[1] ? cleanCommandPayload(match[1]) : '';
+    if (payload) return payload;
+  }
+
   const patterns = [
     /^(?:please\s+)?(?:mark|set|complete|finish)\s+(?:the\s+)?(?:task\s+)?(?:called|named|about)?\s*(.+?)\s+(?:as\s+)?(?:done|complete|completed|finished)$/i,
     /^(?:please\s+)?(?:mark|set)\s+(?:the\s+)?(?:task\s+)?(.+?)\s+(?:as\s+)?(?:done|complete|completed|finished)$/i,
+    /^(?:please\s+)?(?:i|we)\s+(?:did|finished|completed|got through|handled)\s+(?:the\s+)?(?:task\s+)?(?:called|named|about)?\s*(.+)$/i,
   ];
 
   for (const pattern of patterns) {
@@ -1984,6 +2002,19 @@ export function debugCommandParse(text: string): {
       };
     }
 
+    const taskDonePayload = extractTaskDonePayload(payloadSource);
+    if (taskDonePayload !== null) {
+      return {
+        rawText: text,
+        normalizedText: normalized,
+        match: {
+          command: 'mark-task-done',
+          confirmation: CONFIRMATIONS['mark-task-done'],
+          payload: taskDonePayload,
+        },
+      };
+    }
+
     const calendarFocusIntent = extractCalendarFocusIntent(payloadSource);
     if (calendarFocusIntent) {
       return {
@@ -2022,16 +2053,12 @@ export function debugCommandParse(text: string): {
       };
     }
 
-    const taskDonePayload = extractTaskDonePayload(payloadSource);
-    if (taskDonePayload !== null) {
+    // Do not save likely task-completion/progress updates as notes. If no task matched, leave it for chat.
+    if (/\b(?:finished|completed|done|did|got through|handled)\b/i.test(payloadSource) && /\b(?:first|second|third|fourth|fifth|task|tasks|step|steps|item|items|thing|things|\d+)\b/i.test(payloadSource)) {
       return {
         rawText: text,
         normalizedText: normalized,
-        match: {
-          command: 'mark-task-done',
-          confirmation: CONFIRMATIONS['mark-task-done'],
-          payload: taskDonePayload,
-        },
+        match: null,
       };
     }
 

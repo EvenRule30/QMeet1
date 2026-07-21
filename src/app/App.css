@@ -3098,3 +3098,220 @@ body,
   background: rgba(255, 210, 90, 0.08);
   color: rgba(255, 220, 120, 0.96);
 }
+
+/* =====================================================
+   Notes overlay containment fix
+   Append this at the VERY END of src/app/App.css.
+   ===================================================== */
+
+/* The overlay itself never blocks the orb or bottom controls. */
+.notes-overlay {
+  position: absolute;
+  inset: 40px 0 0;
+  z-index: 100;
+  overflow: hidden;
+  pointer-events: none;
+  background: transparent;
+  backdrop-filter: none;
+  animation: none;
+}
+
+/* Only the Notes card receives pointer events. */
+.notes-overlay .notes-panel {
+  position: absolute;
+  top: 24px;
+  right: 24px;
+  bottom: 72px;
+  left: 42%;
+  width: auto;
+  height: auto;
+  min-width: 0;
+  min-height: 0;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 24px;
+  z-index: 110;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  pointer-events: auto;
+  animation: none;
+  transform: none;
+  contain: layout paint style;
+}
+
+.notes-overlay .notes-panel-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+}
+
+.notes-overlay .notes-compose-section,
+.notes-overlay .notes-help-section,
+.notes-overlay .notes-panel-footer {
+  flex: 0 0 auto;
+}
+
+.notes-overlay .notes-list-section {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-right: 10px;
+}
+
+.notes-overlay .notes-scroll-area {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 180, 255, 0.22) transparent;
+}
+
+.notes-overlay .notes-scroll-area::-webkit-scrollbar {
+  width: 4px;
+}
+
+.notes-overlay .notes-scroll-area::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.notes-overlay .notes-scroll-area::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(0, 180, 255, 0.22);
+}
+
+.notes-overlay .notes-list,
+.notes-overlay .note-item,
+.notes-overlay .note-structured-content,
+.notes-overlay .note-structured-row,
+.notes-overlay .note-footer {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.notes-overlay .note-structured-content {
+  margin-bottom: 8px;
+  color: #c8d8ea;
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.notes-overlay .note-structured-content p {
+  margin: 0 0 7px;
+  white-space: pre-wrap;
+}
+
+.notes-overlay .note-structured-content p:last-child {
+  margin-bottom: 0;
+}
+
+.notes-overlay .note-structured-row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 5px;
+  align-items: start;
+  margin: 0 0 6px;
+}
+
+.notes-overlay .note-structured-marker {
+  color: rgba(0, 212, 255, 0.88);
+  font-family: 'Exo 2', sans-serif;
+  font-weight: 700;
+  text-align: right;
+}
+
+.notes-overlay .note-structured-gap {
+  height: 7px;
+}
+
+.notes-overlay .notes-panel-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 10px;
+}
+
+.notes-overlay .close-panel-btn {
+  position: static;
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+/* Prevent the active orb's animated gradient from escaping its own column. */
+.orb-area.orb-area-active {
+  overflow: hidden;
+}
+
+.orb-area.orb-area-active .orb-container {
+  flex: 0 0 auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+@media (max-width: 1100px), (max-height: 650px) {
+  .notes-overlay {
+    inset: 36px 0 0;
+  }
+
+  .notes-overlay .notes-panel {
+    top: 10px;
+    right: 12px;
+    bottom: 12px;
+    left: 38%;
+    padding: 16px;
+    border-radius: 16px;
+  }
+
+  .notes-overlay .notes-panel .panel-header {
+    margin-bottom: 10px;
+    font-size: 20px;
+  }
+
+  .notes-overlay .notes-panel-body {
+    gap: 9px;
+  }
+
+  .notes-overlay .notes-panel .panel-section {
+    padding: 9px 10px 9px 12px;
+  }
+
+  .notes-overlay .note-input {
+    height: 48px;
+    padding: 9px 10px;
+    font-size: 13px;
+  }
+
+  .notes-overlay .notes-help-section {
+    display: none;
+  }
+
+  .notes-overlay .note-structured-content {
+    font-size: 13px;
+    line-height: 1.4;
+  }
+
+  .orb-area.orb-area-active .orb-container {
+    width: 142px !important;
+    height: 142px !important;
+    max-width: 142px;
+    max-height: 142px;
+  }
+}
+
+@media (max-width: 900px) {
+  .notes-overlay .notes-panel {
+    left: 36%;
+  }
+}
