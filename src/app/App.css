@@ -3315,3 +3315,110 @@ body,
     left: 36%;
   }
 }
+
+/* =====================================================
+   Notes rich-text formatting
+   Append at the VERY END of src/app/App.css.
+   This builds on the existing notes-overlay containment fix.
+   ===================================================== */
+
+.notes-overlay .note-formatted-content {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  flex-direction: column;
+  gap: 0.42rem;
+  margin-bottom: 8px;
+  color: #c8d8ea;
+  font-size: 14px;
+  line-height: 1.48;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.notes-overlay .note-formatted-paragraph,
+.notes-overlay .note-formatted-heading {
+  margin: 0;
+  line-height: 1.48;
+}
+
+.notes-overlay .note-formatted-heading {
+  color: #e9f7ff;
+  font-size: 1em;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.notes-overlay .note-formatted-list {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.notes-overlay .note-formatted-list-row {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 1.45rem minmax(0, 1fr);
+  gap: 0.38rem;
+  align-items: start;
+}
+
+.notes-overlay .note-formatted-marker {
+  color: rgba(0, 212, 255, 0.9);
+  font-family: 'Exo 2', sans-serif;
+  font-weight: 800;
+  text-align: right;
+  user-select: none;
+}
+
+.notes-overlay .note-formatted-callout {
+  min-width: 0;
+  border: 1px solid rgba(82, 210, 255, 0.22);
+  border-radius: 0.7rem;
+  background: rgba(18, 67, 106, 0.18);
+  padding: 0.52rem 0.62rem;
+}
+
+.notes-overlay .note-formatted-callout strong,
+.notes-overlay .note-formatted-content strong {
+  color: #edf9ff;
+  font-weight: 800;
+}
+
+.notes-overlay .note-formatted-code {
+  max-width: 100%;
+  margin: 0;
+  overflow-x: auto;
+  border: 1px solid rgba(92, 210, 255, 0.18);
+  border-radius: 0.72rem;
+  background: rgba(3, 11, 23, 0.72);
+  padding: 0.62rem 0.72rem;
+  color: #d8efff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.86em;
+  line-height: 1.45;
+  white-space: pre;
+}
+
+.notes-overlay .note-inline-code {
+  border: 1px solid rgba(92, 210, 255, 0.16);
+  border-radius: 0.32rem;
+  background: rgba(3, 11, 23, 0.62);
+  padding: 0.08rem 0.28rem;
+  color: #d8efff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.9em;
+}
+
+@media (max-width: 1100px), (max-height: 650px) {
+  .notes-overlay .note-formatted-content {
+    font-size: 13px;
+    line-height: 1.4;
+  }
+
+  .notes-overlay .note-formatted-list-row {
+    grid-template-columns: 1.25rem minmax(0, 1fr);
+    gap: 0.3rem;
+  }
+}
