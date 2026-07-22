@@ -10,6 +10,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from app.work_context import (
     WorkContextError,
     get_background_work_context,
+    get_purchase_search_handoff,
     observe_background_user_message,
     should_keep_focus_message_in_chat,
 )
@@ -163,6 +164,12 @@ def _clean_focus_text(value: str, max_length: int = 180) -> str:
 
 def _normalize_goal(candidate: str) -> str:
     goal = _clean_focus_text(candidate)
+    goal = re.sub(
+        r"^(?:help(?:\s+me)?)(?:\s+with)?\s+(?=(?:buy|buying|purchase|purchasing|shop|shopping|get|getting)\b)",
+        "",
+        goal,
+        flags=re.IGNORECASE,
+    ).strip()
     goal = re.sub(r"^(?:with|on|about)\s+", "", goal, flags=re.IGNORECASE)
     goal = re.sub(r"^(?:a|an|the)\s+", lambda match: match.group(0), goal)
     goal = re.sub(
@@ -328,6 +335,18 @@ def _implicit_focus_candidate(message: str) -> tuple[str, int] | None:
 
     patterns: list[tuple[str, int]] = [
         (
+            r"^(?:i(?:'d| would)?\s+like|i\s+like|i\s+want|i\s+need)\s+"
+            r"(?:some\s+)?help\s+(?:(?:with|in|on)\s+)?"
+            r"((?:buying|purchasing|shopping\s+for|getting|choosing|comparing)\s+.+)$",
+            6,
+        ),
+        (
+            r"^(?:can|could|would|will)\s+you\s+(?:please\s+)?help\s+(?:me|us)\s+"
+            r"(?:(?:with|in|on)\s+)?"
+            r"((?:buying|purchasing|shopping\s+for|getting|choosing|comparing)\s+.+)$",
+            6,
+        ),
+        (
             r"^(?:my|our)\s+(?:current\s+)?(?:project|assignment|goal|priority|"
             r"main task|big task|next project)\s+(?:is|is to|involves|will be)\s+(.+)$",
             4,
@@ -407,6 +426,46 @@ def _implicit_focus_candidate(message: str) -> tuple[str, int] | None:
         return raw_candidate, score
 
     return None
+
+
+def _is_contextual_followup_fragment(message: str) -> bool:
+    """Return True for answers that should not become a new standalone focus.
+
+    These phrases usually answer a question from the immediately preceding chat turn.
+    Starting a focus from them loses the original object, as in "this would be for
+    machine learning tasks" after asking for help buying a laptop.
+    """
+
+    text = _clean_focus_text(message, 420)
+    if not text:
+        return False
+    return bool(
+        re.fullmatch(
+            r"(?:this|that|it)\s+(?:would|will|should|could|is|was)\s+"
+            r"(?:be\s+)?(?:for|about|used\s+for|mainly\s+for)\s+.+|"
+            r"(?:mainly|mostly|primarily|especially)\s+(?:for|to)\s+.+",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _contextual_followup_response(message: str) -> JSONResponse | None:
+    if not _is_contextual_followup_fragment(message):
+        return None
+    return JSONResponse(
+        {
+            "intent": "chat",
+            "action": "none",
+            "confidence": 0.995,
+            "frontendCommand": "",
+            "payload": {},
+            "reason": (
+                "This message is a contextual answer fragment, not a complete new "
+                "focus. Keep it in chat so the original subject is not discarded."
+            ),
+        }
+    )
 
 
 def _implicit_focus_start_response(
@@ -562,6 +621,78 @@ def _focus_correction_response(message: str) -> JSONResponse | None:
     )
 
 
+def _purchase_focus_repair_response(
+    message: str,
+    request_payload: dict[str, Any],
+) -> JSONResponse | None:
+    """Repair an active focus after an ASR or phrasing correction.
+
+    A correction such as "the voice did not pick me up; I meant getting a laptop
+    that can do ML well" must replace a wrongly scoped session instead of merely
+    adding a fact to it.
+    """
+
+    if _active_context() is None and not _client_has_active_session(request_payload):
+        return None
+
+    text = _clean_focus_text(message, 520)
+    if not text:
+        return None
+
+    patterns = [
+        r"^(?:no|actually|wait|sorry|correction)[, ]+.*?"
+        r"(?:i\s+meant|what\s+i\s+meant\s+was|i\s+was\s+trying\s+to\s+say)\s+(.+)$",
+        r"^(?:no|actually|wait|sorry|correction)[, ]+(?:the\s+)?"
+        r"(?:focus|project|goal)\s+(?:is|should\s+be|was\s+supposed\s+to\s+be)\s+(.+)$",
+        r"^(?:no|actually|wait|sorry|correction)[, ]+(?:this|that|it)\s+"
+        r"(?:is|was)\s+(?:really\s+)?(?:about|for)\s+(.+)$",
+    ]
+    raw_candidate = ""
+    for pattern in patterns:
+        match = re.fullmatch(pattern, text, flags=re.IGNORECASE)
+        if match:
+            raw_candidate = _clean_focus_text(match.group(1), 300)
+            break
+    if not raw_candidate:
+        return None
+
+    raw_candidate = re.sub(
+        r"^(?:help(?:ing)?\s+(?:me|us)\s+(?:with|to)\s+)",
+        "",
+        raw_candidate,
+        flags=re.IGNORECASE,
+    ).strip()
+    raw_candidate = re.sub(
+        r"^(?:getting|buying|purchasing)\s+(?:a\s+)?laptop\s+that\s+can\s+"
+        r"(?:do|handle|run)\s+(?:ml|machine\s+learning)(?:\s+tasks?)?(?:\s+well)?$",
+        "buying a laptop for machine learning",
+        raw_candidate,
+        flags=re.IGNORECASE,
+    ).strip()
+    if not raw_candidate or _is_vague_focus_payload(raw_candidate):
+        return None
+
+    goal = _normalize_goal(raw_candidate)
+    if not goal:
+        return None
+    title = _focus_title(goal)
+    mode = _infer_focus_mode(goal)
+    canonical_command = f"start a {mode} focus session for {title} with goal to {goal}"
+    return JSONResponse(
+        {
+            "intent": "command",
+            "action": "start_focus_session",
+            "confidence": 0.997,
+            "frontendCommand": canonical_command,
+            "payload": {"title": title, "mode": mode, "goal": goal},
+            "reason": (
+                "The user corrected a transcription or scope error. Replace the "
+                "mis-scoped active focus with the complete intended objective."
+            ),
+        }
+    )
+
+
 def _focus_completion_response(context: dict[str, Any]) -> JSONResponse:
     title = str(context.get("title") or "the current focus").strip()
     return JSONResponse(
@@ -575,6 +706,221 @@ def _focus_completion_response(context: dict[str, Any]) -> JSONResponse:
                 "Background work context routed natural completion of "
                 f"{title} to a normal focus summary. Meeting follow-up tasks are only "
                 "created for an explicit meeting wrap-up request."
+            ),
+        }
+    )
+
+
+def _purchase_search_response(handoff: dict[str, str]) -> JSONResponse:
+    query = str(handoff.get("query") or "").strip()
+    handoff_action = str(handoff.get("action") or "run_search").strip().casefold()
+    if handoff_action == "open_existing":
+        return JSONResponse(
+            {
+                "intent": "command",
+                "action": "open_search",
+                "confidence": 0.995,
+                "frontendCommand": "open search",
+                "payload": {"query": query, "reuseExisting": True},
+                "reason": handoff.get("reason") or (
+                    "The relevant live Search already completed, so QMeet reopened "
+                    "the existing Search results instead of running it again."
+                ),
+            }
+        )
+
+    return JSONResponse(
+        {
+            "intent": "command",
+            "action": "run_search",
+            "confidence": 0.995,
+            "frontendCommand": f"search for {query}",
+            "payload": {"query": query},
+            "reason": handoff.get("reason") or (
+                "Background purchase context routed the user's confirmation to "
+                "QMeet's live Search action."
+            ),
+        }
+    )
+
+
+def _normal_focus_end_response(message: str) -> JSONResponse | None:
+    """Route ordinary focus-closing language to the real summary-and-end action.
+
+    A normal close preserves the work as a summary. Explicit phrases such as
+    "end focus without a summary" are intentionally left to the existing force-end
+    command route.
+    """
+
+    context = _active_context()
+    if context is None:
+        return None
+
+    normalized = re.sub(r"[?!.,;:]+", " ", message.casefold())
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if not normalized:
+        return None
+
+    force_end_markers = (
+        "anyway",
+        "without summary",
+        "without a summary",
+        "without note",
+        "without a note",
+        "without saving",
+        "do not save",
+        "don't save",
+        "dont save",
+        "skip the summary",
+        "discard the summary",
+    )
+    if any(marker in normalized for marker in force_end_markers):
+        return None
+
+    voice_summary_patterns = (
+        r"^(?:endless|and with|end with|end the) (?:a )?summary$",
+        r"^(?:end|close|finish) (?:it|this|that) with (?:a )?summary$",
+    )
+    normal_end_patterns = (
+        r"^(?:please )?(?:(?:can|could|would|will) you (?:please )?)?"
+        r"(?:end|close|finish|stop|wrap up) "
+        r"(?:(?:the|my|our|this|that|current|active) )?"
+        r"(?:focus|focus session|active session|session)"
+        r"(?: (?:now|for me))?$",
+        r"^(?:please )?(?:end|close|finish|stop|wrap up) focus$",
+    )
+    if not any(
+        re.fullmatch(pattern, normalized)
+        for pattern in (*voice_summary_patterns, *normal_end_patterns)
+    ):
+        return None
+
+    return _focus_completion_response(context)
+
+
+def _is_research_context(context: dict[str, Any] | None) -> bool:
+    if not isinstance(context, dict):
+        return False
+    mode = str(context.get("mode") or "").strip().casefold()
+    focus_type = str(context.get("focusType") or "").strip().casefold()
+    if mode == "research" or focus_type in {
+        "research",
+        "document",
+        "review",
+        "presentation",
+    }:
+        return True
+    haystack = " ".join(
+        str(context.get(key) or "")
+        for key in ("title", "objective", "subject")
+    ).casefold()
+    return bool(
+        re.search(
+            r"\b(?:essay|paper|report|research|review|article|sources?|"
+            r"literature|history|school assignment)\b",
+            haystack,
+        )
+    )
+
+
+def _is_research_source_search_request(
+    message: str,
+    context: dict[str, Any] | None,
+) -> bool:
+    if not _is_research_context(context):
+        return False
+    visible = _clean_focus_text(message, 900)
+    if not visible:
+        return False
+    lowered = visible.casefold()
+    has_search_action = bool(
+        re.search(
+            r"\b(?:search(?:es|ing)?|find|look up|lookup|gather|locate|"
+            r"pull up|give me|show me)\b",
+            lowered,
+        )
+    )
+    has_source_target = bool(
+        re.search(
+            r"\b(?:sources?|articles?|papers?|studies|citations?|references?|"
+            r"links?|peer[ -]?reviewed|academic|scholarly|evidence|websites?)\b",
+            lowered,
+        )
+    )
+    explicit_search_phrase = bool(
+        re.search(
+            r"\b(?:do|run|perform) (?:some |a )?(?:general |web |online )?search",
+            lowered,
+        )
+    )
+    return (has_search_action and has_source_target) or (
+        explicit_search_phrase and has_source_target
+    )
+
+
+def _build_research_search_query(
+    message: str,
+    context: dict[str, Any],
+) -> str:
+    visible = _clean_focus_text(message, 700)
+    title = _clean_focus_text(str(context.get("title") or ""), 180)
+    objective = _clean_focus_text(str(context.get("objective") or ""), 260)
+    subject = _clean_focus_text(str(context.get("subject") or ""), 220)
+
+    focus_parts: list[str] = []
+    if subject:
+        focus_parts.append(f"subject: {subject}")
+    elif title:
+        focus_parts.append(f"focus: {title}")
+    if objective and objective.casefold() not in {
+        title.casefold(),
+        subject.casefold(),
+    }:
+        focus_parts.append(f"objective: {objective}")
+
+    requirements = [
+        "Return verifiable sources with exact titles, publishers or authors, dates when available, and direct source links.",
+        "Do not invent citations, links, publication details, or claims.",
+    ]
+    lowered = visible.casefold()
+    if re.search(
+        r"\b(?:general|not necessarily academic|not academic|nonacademic|web)\b",
+        lowered,
+    ):
+        requirements.append(
+            "Include reputable general sources and clearly identify the source type."
+        )
+    elif re.search(
+        r"\b(?:peer[ -]?(?:reviewed|research)|academic|scholarly|journal)\b",
+        lowered,
+    ):
+        requirements.append(
+            "Prioritize genuinely peer-reviewed or scholarly sources and clearly label any source that is not peer-reviewed."
+        )
+
+    parts = [visible]
+    if focus_parts:
+        parts.append("Active research context: " + "; ".join(focus_parts) + ".")
+    parts.extend(requirements)
+    return " ".join(part for part in parts if part).strip()
+
+
+def _research_search_response(
+    message: str,
+    context: dict[str, Any],
+) -> JSONResponse:
+    query = _build_research_search_query(message, context)
+    return JSONResponse(
+        {
+            "intent": "command",
+            "action": "run_search",
+            "confidence": 0.997,
+            "frontendCommand": f"search for {query}",
+            "payload": {"query": query},
+            "reason": (
+                "The user explicitly requested research sources. Route the request "
+                "to QMeet's real Search action instead of answering with generic "
+                "source suggestions or fabricated citations."
             ),
         }
     )
@@ -636,14 +982,14 @@ class BackgroundWorkContextMiddleware:
         request_payload = _extract_payload(body, content_type)
         user_message = _extract_message(path, request_payload)
 
-        if user_message:
-            try:
-                observe_background_user_message(user_message, source=path)
-            except WorkContextError:
-                # Background observation must never make the primary request fail.
-                pass
-
         if path == "/api/command/interpret" and user_message:
+            # Scope-changing turns must be handled before observation so a correction
+            # does not contaminate the old, mis-scoped context.
+            repair = _purchase_focus_repair_response(user_message, request_payload)
+            if repair is not None:
+                await repair(scope, replay_receive, send)
+                return
+
             correction = _focus_correction_response(user_message)
             if correction is not None:
                 await correction(scope, replay_receive, send)
@@ -654,6 +1000,12 @@ class BackgroundWorkContextMiddleware:
                 await vague_focus(scope, replay_receive, send)
                 return
 
+            if _active_context() is None and not _client_has_active_session(request_payload):
+                followup_fragment = _contextual_followup_response(user_message)
+                if followup_fragment is not None:
+                    await followup_fragment(scope, replay_receive, send)
+                    return
+
             implicit_start = _implicit_focus_start_response(
                 user_message,
                 request_payload,
@@ -662,6 +1014,19 @@ class BackgroundWorkContextMiddleware:
                 await implicit_start(scope, replay_receive, send)
                 return
 
+            normal_focus_end = _normal_focus_end_response(user_message)
+            if normal_focus_end is not None:
+                await normal_focus_end(scope, replay_receive, send)
+                return
+
+        if user_message:
+            try:
+                observe_background_user_message(user_message, source=path)
+            except WorkContextError:
+                # Background observation must never make the primary request fail.
+                pass
+
+        if path == "/api/command/interpret" and user_message:
             # Natural completion of a personal, coding, research, planning, or general
             # focus should archive the focus with a summary. It must not fall through
             # to the meeting wrap-up command, which creates follow-up tasks.
@@ -671,6 +1036,24 @@ class BackgroundWorkContextMiddleware:
                     response = _focus_completion_response(context)
                     await response(scope, replay_receive, send)
                     return
+
+            context = _active_context()
+            if _is_research_source_search_request(user_message, context):
+                response = _research_search_response(user_message, context or {})
+                await response(scope, replay_receive, send)
+                return
+
+            try:
+                search_handoff = get_purchase_search_handoff(
+                    user_message,
+                    consume=True,
+                )
+            except WorkContextError:
+                search_handoff = None
+            if search_handoff is not None:
+                response = _purchase_search_response(search_handoff)
+                await response(scope, replay_receive, send)
+                return
 
             try:
                 keep_in_chat = should_keep_focus_message_in_chat(user_message)

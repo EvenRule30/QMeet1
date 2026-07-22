@@ -5101,3 +5101,1871 @@ def prepare_background_chat_message(message: str) -> tuple[str, str]:
             1,
         )
     return contextual_message, visible_user_message
+
+
+# ---------------------------------------------------------------------------
+# Phase 18: purchase confirmation safety and live-search handoff
+# ---------------------------------------------------------------------------
+# Purchase conversations often use short confirmations after QMeet offers to
+# search. Those confirmations are actions, not product facts. This layer keeps
+# words such as "sure" and "yes" out of the brand field and exposes a small
+# search-handoff API for the request middleware.
+
+WORK_CONTEXT_FILE_VERSION = 9
+
+_purchase_handoff_base_normalize_brand = _normalize_brand
+_purchase_handoff_base_purchase_brand = _purchase_brand
+_purchase_handoff_base_capture_requirements = _capture_purchase_requirements
+_purchase_handoff_base_apply_user_update = _apply_user_update
+_purchase_handoff_base_apply_assistant_update = _apply_assistant_update
+_purchase_handoff_base_sanitize_context = _sanitize_context
+_purchase_handoff_base_refresh_objective = _refresh_derived_objective
+_purchase_handoff_base_refresh_questions = _refresh_questions_and_next_action
+_purchase_handoff_base_prepare_chat = prepare_background_chat_message
+
+_PURCHASE_ACK_WORDS = {
+    "yes", "yeah", "yep", "yup", "sure", "okay", "ok", "alright",
+    "all right", "please", "go ahead", "do it", "sounds good",
+}
+_PURCHASE_INVALID_BRANDS = {
+    *_PURCHASE_ACK_WORDS,
+    "no", "nope", "maybe", "whatever", "anything", "either", "both",
+    "search", "current", "now", "help", "compare", "options", "models",
+}
+_PURCHASE_KNOWN_BRANDS = {
+    "acer": "Acer",
+    "alienware": "Alienware",
+    "apple": "Apple",
+    "asus": "ASUS",
+    "dell": "Dell",
+    "framework": "Framework",
+    "gigabyte": "Gigabyte",
+    "google": "Google",
+    "hisense": "Hisense",
+    "hp": "HP",
+    "lenovo": "Lenovo",
+    "lg": "LG",
+    "microsoft": "Microsoft",
+    "msi": "MSI",
+    "panasonic": "Panasonic",
+    "razer": "Razer",
+    "samsung": "Samsung",
+    "sony": "Sony",
+    "tcl": "TCL",
+    "vizio": "Vizio",
+}
+
+
+def _normalized_purchase_reply(value: str) -> str:
+    return re.sub(r"[^a-z0-9']+", " ", _clean_text(value, 240).casefold()).strip()
+
+
+def _is_purchase_acknowledgement(value: str) -> bool:
+    normalized = _normalized_purchase_reply(value)
+    return normalized in _PURCHASE_ACK_WORDS or bool(
+        re.fullmatch(
+            r"(?:yes|yeah|yep|sure|okay|ok|alright|all right)(?: i would| i do| please)?",
+            normalized,
+        )
+    )
+
+
+def _normalize_brand(value: str) -> str:
+    clean = _sentence_fragment(value, 220).strip().rstrip(".")
+    normalized = _normalized_purchase_reply(clean)
+    if not normalized or _is_purchase_acknowledgement(clean):
+        return ""
+
+    for token, label in _PURCHASE_KNOWN_BRANDS.items():
+        if re.search(rf"\b{re.escape(token)}\b", normalized):
+            return label
+
+    explicit = re.search(
+        r"\b(?:brand(?: is)?|prefer|preferred|like|want|choose|go with)\s+"
+        r"(?:the\s+)?([A-Za-z][A-Za-z0-9&+\-]*(?:\s+[A-Za-z0-9&+\-]+){0,2})",
+        clean,
+        flags=re.IGNORECASE,
+    )
+    if not explicit:
+        return ""
+
+    candidate = _clean_text(explicit.group(1), 80).strip().rstrip(".")
+    candidate = re.split(
+        r"\s+(?:but|although|though|and|or|if)\b",
+        candidate,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].strip()
+    if not candidate or candidate.casefold() in _PURCHASE_INVALID_BRANDS:
+        return ""
+    if any(word in _PURCHASE_INVALID_BRANDS for word in candidate.casefold().split()):
+        return ""
+    return candidate
+
+
+def _brand_is_flexible(text: str) -> bool:
+    lowered = _clean_text(text, 500).casefold()
+    return bool(
+        re.search(
+            r"\b(?:doesn'?t|desn'?t|does not|isn'?t|is not)\s+matter(?:\s+too\s+much)?(?:\s+to\s+me)?\b|"
+            r"\b(?:open|flexible)\s+to\s+(?:other|different)\s+brands?\b|"
+            r"\b(?:other|different)\s+brands?\s+(?:are|would be)\s+(?:fine|okay|ok)\b|"
+            r"\b(?:not|isn'?t)\s+(?:too\s+)?(?:important|strict|set)\s+on\s+(?:the\s+)?brand\b|"
+            r"\bbut\s+(?:it|brand)\s+(?:doesn'?t|does not)\s+matter\b",
+            lowered,
+        )
+    )
+
+
+def _brand_decision_value(context: dict[str, Any]) -> str:
+    for item in _clean_list(context.get("decisions"), MAX_DECISIONS, 360):
+        lowered = item.casefold()
+        if "preferred brand" in lowered or "is preferred" in lowered:
+            match = re.match(r"(.+?)\s+(?:is\s+the\s+preferred\s+brand|is\s+preferred)", item, flags=re.IGNORECASE)
+            if match:
+                return _clean_text(match.group(1), 100).strip()
+    return ""
+
+
+def _purchase_brand(context: dict[str, Any]) -> str:
+    preferred = _brand_decision_value(context)
+    return preferred or _purchase_handoff_base_purchase_brand(context)
+
+
+def _remove_invalid_purchase_brand_decisions(context: dict[str, Any]) -> bool:
+    existing = _clean_list(context.get("decisions"), MAX_DECISIONS, 360)
+    filtered: list[str] = []
+    changed = False
+    for item in existing:
+        lowered = item.casefold()
+        if "chosen as the brand" in lowered:
+            brand = item.split(" was chosen", 1)[0].strip().casefold()
+            if brand in _PURCHASE_INVALID_BRANDS:
+                changed = True
+                continue
+        filtered.append(item)
+    if filtered != existing:
+        context["decisions"] = filtered
+    return changed
+
+
+def _remove_purchase_chat_artifacts(context: dict[str, Any]) -> bool:
+    changed = _remove_invalid_purchase_brand_decisions(context)
+
+    facts = _clean_list(context.get("knownFacts"), MAX_FACTS, 340)
+    filtered_facts = [
+        item
+        for item in facts
+        if not re.search(
+            r"\b(?:would likes?|wants?|asked)\s+(?:you|qmeet)\s+to\s+search\b|"
+            r"\b(?:yes|yeah|sure|okay)\s+(?:brand|was chosen)\b",
+            item,
+            flags=re.IGNORECASE,
+        )
+    ]
+    if filtered_facts != facts:
+        context["knownFacts"] = filtered_facts
+        changed = True
+
+    pending = _sanitize_pending_question(context.get("pendingQuestion"))
+    if pending and (
+        _is_action_offer_question(pending["question"])
+        or re.search(r"\b(?:search|gather|find|list|compare)\b.*\b(?:options?|models?|deals?)\b", pending["question"], flags=re.IGNORECASE)
+    ):
+        context["pendingQuestion"] = None
+        changed = True
+
+    questions = _clean_list(context.get("openQuestions"), MAX_OPEN_QUESTIONS, 260)
+    filtered_questions = [
+        question
+        for question in questions
+        if not _is_action_offer_question(question)
+        and not re.search(
+            r"\b(?:search|gather|find|list|compare)\b.*\b(?:options?|models?|deals?)\b",
+            question,
+            flags=re.IGNORECASE,
+        )
+    ]
+    if filtered_questions != questions:
+        context["openQuestions"] = filtered_questions
+        changed = True
+    return changed
+
+
+def _sanitize_pending_action(value: object) -> dict[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    action_type = _clean_text(value.get("type"), 40).casefold()
+    query = _clean_text(value.get("query"), 320)
+    prompt = _clean_text(value.get("prompt"), 320)
+    if action_type != "search" or not query:
+        return None
+    return {"type": "search", "query": query, "prompt": prompt}
+
+
+def _purchase_prefers_alternatives(context: dict[str, Any]) -> bool:
+    return any(
+        "other reputable brands are acceptable" in item.casefold()
+        or "other brands are acceptable" in item.casefold()
+        for item in _clean_list(context.get("decisions"), MAX_DECISIONS, 360)
+    )
+
+
+def _build_purchase_search_query(context: dict[str, Any]) -> str:
+    product = _purchase_subject_base(context)
+    brand = _purchase_brand(context)
+    size = _purchase_size(context)
+    budget = _purchase_budget(context)
+    placement = _purchase_fact(context, "Placement")
+
+    subject_parts: list[str] = []
+    if size and size.casefold() not in {"large", "big"}:
+        subject_parts.append(size)
+    if brand:
+        subject_parts.append(brand)
+    subject_parts.append(product)
+
+    query = "current " + " ".join(part for part in subject_parts if part)
+    if budget and budget.casefold() != "flexible":
+        query += f" under {budget}"
+    if placement:
+        query += f" for {placement}"
+    if brand and _purchase_prefers_alternatives(context):
+        query += f", plus comparable alternatives to {brand} from reputable brands"
+    query += "; compare real current models, prices, availability, and reputable retailers"
+    return _clean_text(query, 320)
+
+
+def _assistant_offers_purchase_search(text: str) -> bool:
+    clean = _clean_text(text, 1600)
+    lowered = clean.casefold()
+    if not re.search(r"\b(?:search|find|gather|look for|list|compare|show)\b", lowered):
+        return False
+    if not re.search(r"\b(?:current|available|options?|models?|deals?|prices?|retailers?)\b", lowered):
+        return False
+    return bool(
+        re.search(
+            r"\b(?:would you like|do you want|want me to|shall i|should i|ready for me to)\b",
+            lowered,
+        )
+    )
+
+
+def _capture_purchase_requirements(context: dict[str, Any], text: str) -> bool:
+    changed = _purchase_handoff_base_capture_requirements(context, text)
+    if not _purchase_context(context):
+        return changed
+
+    changed = _remove_invalid_purchase_brand_decisions(context) or changed
+    if _is_purchase_acknowledgement(text):
+        return changed
+
+    brand = _normalize_brand(text)
+    if brand and _brand_is_flexible(text):
+        existing = _clean_list(context.get("decisions"), MAX_DECISIONS, 360)
+        filtered = [
+            item
+            for item in existing
+            if "chosen as the brand" not in item.casefold()
+            and "preferred brand" not in item.casefold()
+            and "is preferred" not in item.casefold()
+        ]
+        decision = f"{brand} is the preferred brand, but other reputable brands are acceptable."
+        context["decisions"] = [decision, *filtered][:MAX_DECISIONS]
+        changed = True
+    return changed
+
+
+def _refresh_derived_objective(context: dict[str, Any]) -> None:
+    _purchase_handoff_base_refresh_objective(context)
+    if not _purchase_context(context):
+        return
+    subject = _clean_text(context.get("subject"), 360) or "the product"
+    preferred_brand = _brand_decision_value(context)
+    if preferred_brand and _purchase_prefers_alternatives(context):
+        product = _purchase_subject_base(context)
+        budget = _purchase_budget(context)
+        objective = f"Buy a {product}, preferably {preferred_brand}"
+        if budget and budget.casefold() != "flexible":
+            objective += f", within {budget}"
+        objective += ", and confirm it arrives working correctly."
+        context["objective"] = objective
+
+
+def _refresh_questions_and_next_action(context: dict[str, Any], user_text: str) -> None:
+    _purchase_handoff_base_refresh_questions(context, user_text)
+    if not _purchase_context(context):
+        return
+    _remove_purchase_chat_artifacts(context)
+    pending_action = _sanitize_pending_action(context.get("pendingAction"))
+    if pending_action:
+        context["pendingAction"] = pending_action
+        context["nextAction"] = "Run the prepared live product search and review the real results."
+
+
+def _apply_user_update(context: dict[str, Any], user_text: str) -> tuple[dict[str, Any], bool]:
+    prior_brand = _purchase_brand(context) if _purchase_context(context) else ""
+    prior_pending_action = _sanitize_pending_action(context.get("pendingAction"))
+    next_context, changed = _purchase_handoff_base_apply_user_update(context, user_text)
+    if not _purchase_context(next_context):
+        return next_context, changed
+
+    if _remove_purchase_chat_artifacts(next_context):
+        changed = True
+
+    if _is_purchase_acknowledgement(user_text):
+        current_brand = _purchase_brand(next_context)
+        if current_brand.casefold() in _PURCHASE_INVALID_BRANDS:
+            _remove_invalid_purchase_brand_decisions(next_context)
+            changed = True
+        if prior_brand and not _purchase_brand(next_context):
+            changed = _replace_purchase_decision(
+                next_context,
+                "chosen as the brand",
+                f"{prior_brand} was chosen as the brand",
+            ) or changed
+        if prior_pending_action:
+            next_context["pendingAction"] = prior_pending_action
+
+    changed = _capture_purchase_requirements(next_context, user_text) or changed
+    _refresh_derived_objective(next_context)
+    _refresh_questions_and_next_action(next_context, user_text)
+    if changed:
+        next_context["updatedAt"] = _now_iso()
+    return next_context, changed
+
+
+def _apply_assistant_update(
+    context: dict[str, Any],
+    assistant_text: str,
+) -> tuple[dict[str, Any], bool]:
+    next_context, changed = _purchase_handoff_base_apply_assistant_update(context, assistant_text)
+    if not _purchase_context(next_context):
+        return next_context, changed
+
+    if _remove_purchase_chat_artifacts(next_context):
+        changed = True
+
+    if _assistant_offers_purchase_search(assistant_text):
+        pending_action = {
+            "type": "search",
+            "query": _build_purchase_search_query(next_context),
+            "prompt": _clean_text(assistant_text, 320),
+        }
+        if next_context.get("pendingAction") != pending_action:
+            next_context["pendingAction"] = pending_action
+            changed = True
+        next_context["pendingQuestion"] = None
+        next_context["openQuestions"] = []
+        next_context["nextAction"] = "Run the prepared live product search and review the real results."
+
+    if changed:
+        next_context["updatedAt"] = _now_iso()
+    return next_context, changed
+
+
+def _sanitize_context(raw: object) -> dict[str, Any] | None:
+    raw_pending_action = raw.get("pendingAction") if isinstance(raw, dict) else None
+    context = _purchase_handoff_base_sanitize_context(raw)
+    if context is None:
+        return None
+    if not _purchase_context(context):
+        context.pop("pendingAction", None)
+        return context
+
+    pending_action = _sanitize_pending_action(raw_pending_action)
+    if pending_action:
+        context["pendingAction"] = pending_action
+    else:
+        context.pop("pendingAction", None)
+
+    _remove_purchase_chat_artifacts(context)
+    _refresh_derived_objective(context)
+    _refresh_questions_and_next_action(context, "")
+    return context
+
+
+def get_purchase_search_handoff(message: str, consume: bool = False) -> dict[str, str] | None:
+    """Return a concrete live-search query for a purchase continuation.
+
+    A bare acknowledgement only triggers when QMeet previously offered a search.
+    Explicit requests such as "search now" can build a query directly from the
+    active purchase context.
+    """
+
+    visible = _clean_text(_extract_visible_user_message(message), 900)
+    if not visible:
+        return None
+    normalized = _normalized_purchase_reply(visible)
+
+    with _STORE_LOCK:
+        context = _sync_with_active_session_unlocked()
+        if not isinstance(context, dict) or not _purchase_context(context):
+            return None
+
+        pending_action = _sanitize_pending_action(context.get("pendingAction"))
+        acknowledgement = _is_purchase_acknowledgement(visible)
+        explicit_search = bool(
+            re.search(
+                r"\b(?:search|look\s+for|find|gather|compare|show\s+me)\b",
+                visible,
+                flags=re.IGNORECASE,
+            )
+            and re.search(
+                r"\b(?:now|current|available|options?|models?|laptops?|tvs?|deals?|prices?|products?)\b",
+                visible,
+                flags=re.IGNORECASE,
+            )
+        )
+        search_challenge = bool(
+            re.search(
+                r"\b(?:don'?t|do not)\s+you\s+have\s+(?:a\s+)?search\b|"
+                r"\bwhy\s+can'?t\s+you\s+search\b|"
+                r"\buse\s+(?:your\s+)?search(?:\s+function)?\b",
+                visible,
+                flags=re.IGNORECASE,
+            )
+        )
+        if not ((acknowledgement and pending_action) or explicit_search or search_challenge):
+            return None
+
+        query = pending_action["query"] if pending_action else _build_purchase_search_query(context)
+        if not query:
+            return None
+
+        result = {
+            "query": query,
+            "reason": (
+                "The user accepted QMeet's prepared live product search."
+                if acknowledgement and pending_action
+                else "The user explicitly requested QMeet's live product search."
+            ),
+        }
+        if consume:
+            context.pop("pendingAction", None)
+            context["pendingQuestion"] = None
+            context["openQuestions"] = []
+            context["nextAction"] = "Review the live search results and compare the strongest options."
+            _prepend_unique(
+                context,
+                "recentProgress",
+                "A live product search was requested.",
+                MAX_RECENT_PROGRESS,
+            )
+            context["updatedAt"] = _now_iso()
+            _write_context_unlocked(context)
+        return result
+
+
+def prepare_background_chat_message(message: str) -> tuple[str, str]:
+    contextual_message, visible_user_message = _purchase_handoff_base_prepare_chat(message)
+    with _STORE_LOCK:
+        context = _sync_with_active_session_unlocked()
+    if not isinstance(context, dict) or not _purchase_context(context):
+        return contextual_message, visible_user_message
+
+    extra_rules = [
+        "Purchase confirmation and search-handoff rules:",
+        "- Never interpret yes, yeah, sure, okay, go ahead, or do it as a brand, model, retailer, requirement, or fact.",
+        "- If the user says a brand is preferred but not essential, preserve it as a preference and keep other reputable brands eligible.",
+        "- Do not ask the user to authorize a live search more than once. A confirmation should run QMeet's Search action, not become another chat turn.",
+        "- Never say QMeet lacks web search. QMeet has a Search action; current products, prices, availability, and retailer links must be routed to it.",
+        "",
+    ]
+    marker = "Existing request and private context:"
+    if marker in contextual_message:
+        contextual_message = contextual_message.replace(
+            marker,
+            "\n".join(extra_rules) + marker,
+            1,
+        )
+    return contextual_message, visible_user_message
+
+
+# ---------------------------------------------------------------------------
+# Phase 18: purchase intent repair, requirement continuity, and search routing
+# ---------------------------------------------------------------------------
+# This layer addresses three cross-cutting failures:
+# 1. a corrected purchase can remain attached to a generic focus;
+# 2. short confirmations can become product attributes;
+# 3. current-product requests can fall through to ordinary chat.
+# It keeps the public work-context API stable while adding durable purchase
+# requirements and a deterministic handoff to QMeet's real Search action.
+
+WORK_CONTEXT_FILE_VERSION = 10
+
+_purchase_intent_base_question_target = _question_target
+_purchase_intent_base_apply_answer = _apply_answer_to_target
+_purchase_intent_base_capture_requirements = _capture_purchase_requirements
+_purchase_intent_base_apply_user = _apply_user_update
+_purchase_intent_base_apply_assistant = _apply_assistant_update
+_purchase_intent_base_refresh_objective = _refresh_derived_objective
+_purchase_intent_base_specific_questions = _specific_questions
+_purchase_intent_base_refresh_questions = _refresh_questions_and_next_action
+_purchase_intent_base_sanitize = _sanitize_context
+_purchase_intent_base_prepare_chat = prepare_background_chat_message
+_purchase_intent_base_keep_in_chat = should_keep_focus_message_in_chat
+
+_PURCHASE_SEARCH_CONTINUATION_RE = re.compile(
+    r"\b(?:did|have|would|could|can)\s+you\s+(?:find|found|get|got)\s+(?:it|them|anything)|"
+    r"\b(?:i(?:'m| am)\s+still\s+)?waiting\b|"
+    r"\bgive\s+me\s+(?:the\s+)?(?:links?|listings?)\b|"
+    r"\b(?:find|get|show)\s+(?:me\s+)?(?:a\s+)?(?:real\s+)?(?:current\s+)?(?:listing|link)\b",
+    flags=re.IGNORECASE,
+)
+_PURCHASE_UNAVAILABLE_RE = re.compile(
+    r"\b(?:both|all|those|the)\s+(?:products?|models?|links?|listings?)\s+"
+    r"(?:were|are|seem|look)\s+(?:unavailable|out\s+of\s+stock|sold\s+out|dead|invalid)|"
+    r"\b(?:unavailable|out\s+of\s+stock|sold\s+out)\s+(?:too|again|as\s+well)\b|"
+    r"\b(?:link|listing|page)\s+(?:doesn'?t|does\s+not|didn'?t|did\s+not)\s+(?:work|open|exist)\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _purchase_primary_use(context: dict[str, Any]) -> str:
+    return _purchase_fact(context, "Primary use")
+
+
+def _purchase_operating_system(context: dict[str, Any]) -> str:
+    return _purchase_constraint(context, "Operating system")
+
+
+def _purchase_portability_preference(context: dict[str, Any]) -> str:
+    return _purchase_constraint(context, "Portability and size")
+
+
+def _normalize_primary_use(value: str) -> str:
+    clean = _clean_text(value, 500)
+    lowered = clean.casefold()
+    use_cases = [
+        (r"\b(?:machine\s+learning|ml\s+tasks?|deep\s+learning|training\s+(?:ai|models?)|cuda)\b", "machine learning workloads"),
+        (r"\b(?:data\s+science|data\s+analysis|analytics)\b", "data science and analysis"),
+        (r"\b(?:video\s+editing|edit(?:ing)?\s+video|premiere|davinci)\b", "video editing"),
+        (r"\b(?:graphic\s+design|3d\s+rendering|rendering|blender|cad)\b", "graphics and rendering work"),
+        (r"\b(?:gaming|play(?:ing)?\s+games?)\b", "gaming"),
+        (r"\b(?:software\s+development|programming|coding|developer\s+work)\b", "software development"),
+        (r"\b(?:school|college|university|coursework|student\s+work)\b", "schoolwork"),
+        (r"\b(?:office\s+work|work\s+tasks?|business\s+use)\b", "general work"),
+        (r"\b(?:general\s+use|everyday\s+use|web\s+browsing)\b", "general everyday use"),
+    ]
+    for pattern, label in use_cases:
+        if re.search(pattern, lowered, flags=re.IGNORECASE):
+            return label
+    return ""
+
+
+def _normalize_operating_system(value: str) -> str:
+    lowered = _clean_text(value, 300).casefold()
+    if re.search(r"\bwindows\b", lowered):
+        return "Windows"
+    if re.search(r"\b(?:mac|macos|macbook|apple)\b", lowered):
+        return "macOS"
+    if re.search(r"\blinux\b", lowered):
+        return "Linux"
+    if re.search(r"\b(?:no\s+preference|either|doesn'?t\s+matter|any\s+os)\b", lowered):
+        return "no strong preference"
+    return ""
+
+
+def _plain_maximum_budget(value: str) -> str:
+    clean = _clean_text(value, 300)
+    match = re.search(
+        r"\b(?:at\s+most|no\s+more\s+than|not\s+over|under|up\s+to|max(?:imum)?(?:\s+of)?)\s*"
+        r"\$?\s*(\d[\d,]*(?:\.\d{1,2})?)\b",
+        clean,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return ""
+    raw = match.group(1).replace(",", "")
+    try:
+        amount = float(raw)
+    except ValueError:
+        return ""
+    if amount <= 0:
+        return ""
+    if amount.is_integer():
+        return f"${int(amount):,}"
+    return f"${amount:,.2f}"
+
+
+def _question_target(question: str, context: dict[str, Any]) -> str:
+    lowered = _clean_text(question, 500).casefold()
+    if _purchase_context(context):
+        if any(
+            token in lowered
+            for token in (
+                "what will you mainly use",
+                "what will you use",
+                "main use",
+                "primary use",
+                "use the laptop for",
+                "what kind of work",
+                "workload",
+            )
+        ):
+            return "primary_use"
+        if any(token in lowered for token in ("windows or mac", "operating system", "which os", "prefer windows", "prefer a mac")):
+            return "operating_system"
+        if any(token in lowered for token in ("weight for portability", "screen size or weight", "portability", "easy to carry", "laptop weight")):
+            return "portability"
+    return _purchase_intent_base_question_target(question, context)
+
+
+def _apply_answer_to_target(
+    context: dict[str, Any],
+    target: str,
+    raw_answer: str,
+) -> bool:
+    if _purchase_context(context):
+        if target == "primary_use":
+            primary_use = _normalize_primary_use(raw_answer)
+            if not primary_use:
+                answer = _sentence_fragment(raw_answer, 220).strip().rstrip(".?!")
+                if _is_weak_acknowledgement(answer):
+                    return False
+                primary_use = answer
+            return _replace_prefixed_item(
+                context, "knownFacts", "Primary use", primary_use, MAX_FACTS
+            )
+
+        if target == "operating_system":
+            operating_system = _normalize_operating_system(raw_answer)
+            if not operating_system:
+                return False
+            return _replace_prefixed_item(
+                context,
+                "constraints",
+                "Operating system",
+                operating_system,
+                MAX_CONSTRAINTS,
+            )
+
+        if target == "portability":
+            lowered = _clean_text(raw_answer, 300).casefold()
+            if re.fullmatch(
+                r"(?:no|nope|not\s+really|doesn'?t\s+matter|no\s+preference|anything\s+is\s+fine)",
+                re.sub(r"[^a-z0-9']+", " ", lowered).strip(),
+            ):
+                value = "no strong preference"
+            else:
+                value = _sentence_fragment(raw_answer, 180).strip().rstrip(".?!")
+                if _is_weak_acknowledgement(value):
+                    return False
+            return _replace_prefixed_item(
+                context,
+                "constraints",
+                "Portability and size",
+                value,
+                MAX_CONSTRAINTS,
+            )
+
+        if target == "budget":
+            maximum = _plain_maximum_budget(raw_answer)
+            if maximum:
+                return _replace_prefixed_item(
+                    context, "constraints", "Budget", maximum, MAX_CONSTRAINTS
+                )
+
+    return _purchase_intent_base_apply_answer(context, target, raw_answer)
+
+
+def _capture_purchase_requirements(context: dict[str, Any], text: str) -> bool:
+    changed = _purchase_intent_base_capture_requirements(context, text)
+    if not _purchase_context(context):
+        return changed
+
+    if _is_purchase_acknowledgement(text):
+        return changed
+
+    primary_use = _normalize_primary_use(text)
+    if primary_use:
+        changed = _replace_prefixed_item(
+            context, "knownFacts", "Primary use", primary_use, MAX_FACTS
+        ) or changed
+
+    operating_system = _normalize_operating_system(text)
+    if operating_system and re.search(
+        r"\b(?:windows|mac|macos|macbook|linux|operating\s+system|\bos\b|no\s+preference|either)\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        changed = _replace_prefixed_item(
+            context,
+            "constraints",
+            "Operating system",
+            operating_system,
+            MAX_CONSTRAINTS,
+        ) or changed
+
+    maximum = _plain_maximum_budget(text)
+    if maximum:
+        changed = _replace_prefixed_item(
+            context, "constraints", "Budget", maximum, MAX_CONSTRAINTS
+        ) or changed
+
+    return changed
+
+
+def _refresh_derived_objective(context: dict[str, Any]) -> None:
+    _purchase_intent_base_refresh_objective(context)
+    if not _purchase_context(context):
+        return
+
+    product = _purchase_subject_base(context)
+    primary_use = _purchase_primary_use(context)
+    operating_system = _purchase_operating_system(context)
+    budget = _purchase_budget(context)
+    brand = _purchase_brand(context)
+    flexible_brand = _purchase_prefers_alternatives(context)
+
+    subject_parts: list[str] = []
+    if operating_system and operating_system.casefold() != "no strong preference":
+        subject_parts.append(operating_system)
+    if brand and not flexible_brand:
+        subject_parts.append(brand)
+    subject_parts.append(product)
+    subject = " ".join(part for part in subject_parts if part)
+    if primary_use:
+        subject += f" for {primary_use}"
+    context["subject"] = _clean_text(subject, 360)
+
+    article = "an" if context["subject"][:1].casefold() in {"a", "e", "i", "o", "u"} else "a"
+    objective = f"Buy {article} {context['subject']}"
+    if brand and flexible_brand:
+        objective += f", preferably {brand}"
+    if budget and budget.casefold() != "flexible":
+        objective += f", within {budget}"
+    objective += ", and confirm it arrives working correctly."
+    context["objective"] = _clean_text(objective, 600)
+
+    success = _clean_text(context.get("successCriteria"), 500)
+    if (
+        not success
+        or success.casefold() in {
+            "learning tasks as well",
+            "buy product and confirm it arrives working correctly",
+        }
+        or (primary_use and "fits the user's requirements" in success.casefold())
+    ):
+        result = f"Purchase a {product} that"
+        if primary_use:
+            result += f" handles {primary_use} well"
+        else:
+            result += " fits the user's requirements"
+        result += " and arrives working correctly."
+        context["successCriteria"] = result
+
+
+def _specific_questions(context: dict[str, Any]) -> list[str]:
+    if not _purchase_context(context):
+        return _purchase_intent_base_specific_questions(context)
+
+    if _purchase_verified(context):
+        return []
+
+    product = _purchase_subject_base(context).casefold()
+    questions: list[str] = []
+    if product in {"laptop", "computer", "desktop"} and not _purchase_primary_use(context):
+        questions.append("What will you mainly use the computer for?")
+    if not _purchase_budget(context):
+        questions.append("What budget or maximum price should guide this purchase?")
+    if product in {"laptop", "computer", "desktop"} and not _purchase_operating_system(context):
+        questions.append("Do you prefer Windows, macOS, Linux, or have no operating-system preference?")
+    if product in {"tv", "television", "monitor", "projector"} and not _purchase_size(context):
+        questions.append("What screen size do you want, or what is the viewing distance?")
+    if not _purchase_brand(context):
+        questions.append("Do you have a preferred brand, or should QMeet compare reputable brands?")
+    return questions[:MAX_OPEN_QUESTIONS]
+
+
+def _build_purchase_search_query(context: dict[str, Any]) -> str:
+    product = _purchase_subject_base(context)
+    primary_use = _purchase_primary_use(context)
+    operating_system = _purchase_operating_system(context)
+    budget = _purchase_budget(context)
+    brand = _purchase_brand(context)
+    size = _purchase_size(context)
+
+    parts = ["current in-stock"]
+    if size and size.casefold() not in {"large", "big"}:
+        parts.append(size)
+    if operating_system and operating_system.casefold() != "no strong preference":
+        parts.append(operating_system)
+    if brand:
+        parts.append(brand)
+    parts.append(product)
+    if primary_use:
+        parts.append(f"for {primary_use}")
+    query = " ".join(parts)
+    if budget and budget.casefold() != "flexible":
+        query += f" under {budget}"
+    if brand and _purchase_prefers_alternatives(context):
+        query += f", plus comparable alternatives to {brand} from reputable brands"
+    query += (
+        "; return verified current availability, current prices, exact configurations, "
+        "and direct retailer product pages; exclude archived, discontinued, unavailable, "
+        "or generic category pages"
+    )
+    return _clean_text(query, 500)
+
+
+def _assistant_promises_purchase_search(text: str) -> bool:
+    lowered = _clean_text(text, 1600).casefold()
+    return bool(
+        re.search(
+            r"\b(?:i(?:'ll| will)|let\s+me)\s+(?:find|search|gather|look\s+for|prepare|pull)\b",
+            lowered,
+        )
+        and re.search(
+            r"\b(?:current|in-stock|available|models?|options?|deals?|prices?|listings?|buying\s+options?)\b",
+            lowered,
+        )
+    )
+
+
+def _apply_user_update(context: dict[str, Any], user_text: str) -> tuple[dict[str, Any], bool]:
+    next_context, changed = _purchase_intent_base_apply_user(context, user_text)
+    if not _purchase_context(next_context):
+        return next_context, changed
+
+    changed = _capture_purchase_requirements(next_context, user_text) or changed
+    visible = _clean_text(_extract_visible_user_message(user_text), 1200)
+
+    if _PURCHASE_UNAVAILABLE_RE.search(visible):
+        changed = _prepend_unique(
+            next_context,
+            "recentProgress",
+            "Previously suggested product listings were unavailable or invalid.",
+            MAX_RECENT_PROGRESS,
+        ) or changed
+        pending = {
+            "type": "search",
+            "query": _build_purchase_search_query(next_context),
+            "prompt": "Find replacement listings that are verified as currently available.",
+        }
+        if next_context.get("pendingAction") != pending:
+            next_context["pendingAction"] = pending
+            changed = True
+        next_context["pendingQuestion"] = None
+        next_context["openQuestions"] = []
+        next_context["nextAction"] = (
+            "Run a fresh live search for verified in-stock listings and discard the unavailable results."
+        )
+
+    _refresh_derived_objective(next_context)
+    _refresh_questions_and_next_action(next_context, visible)
+    if changed:
+        next_context["updatedAt"] = _now_iso()
+    return next_context, changed
+
+
+def _apply_assistant_update(
+    context: dict[str, Any],
+    assistant_text: str,
+) -> tuple[dict[str, Any], bool]:
+    next_context, changed = _purchase_intent_base_apply_assistant(context, assistant_text)
+    if not _purchase_context(next_context):
+        return next_context, changed
+
+    if _assistant_promises_purchase_search(assistant_text):
+        pending = {
+            "type": "search",
+            "query": _build_purchase_search_query(next_context),
+            "prompt": _clean_text(assistant_text, 320),
+        }
+        if next_context.get("pendingAction") != pending:
+            next_context["pendingAction"] = pending
+            changed = True
+        next_context["pendingQuestion"] = None
+        next_context["openQuestions"] = []
+        next_context["nextAction"] = "Run the prepared live product search now."
+
+    _refresh_derived_objective(next_context)
+    _refresh_questions_and_next_action(next_context, "")
+    if changed:
+        next_context["updatedAt"] = _now_iso()
+    return next_context, changed
+
+
+def _refresh_questions_and_next_action(context: dict[str, Any], user_text: str) -> None:
+    _purchase_intent_base_refresh_questions(context, user_text)
+    if not _purchase_context(context):
+        return
+
+    _refresh_derived_objective(context)
+    context["focusType"] = "purchase"
+    if context.get("mode") == "general":
+        context["mode"] = "planning"
+
+    if _purchase_verified(context) or _purchase_ordered(context):
+        return
+
+    pending_action = _sanitize_pending_action(context.get("pendingAction"))
+    if pending_action:
+        context["pendingAction"] = pending_action
+        context["pendingQuestion"] = None
+        context["openQuestions"] = []
+        context["nextAction"] = "Run the prepared live product search now."
+        return
+
+    questions = _specific_questions(context)
+    context["openQuestions"] = questions
+    pending = _sanitize_pending_question(context.get("pendingQuestion"))
+    if pending and _question_target(pending["question"], context) not in {
+        "primary_use",
+        "budget",
+        "operating_system",
+        "portability",
+        "size",
+        "brand",
+        "model",
+        "retailer",
+        "placement",
+    }:
+        context["pendingQuestion"] = None
+
+    product = _purchase_subject_base(context).casefold()
+    essential_ready = bool(_purchase_budget(context))
+    if product in {"laptop", "computer", "desktop"}:
+        essential_ready = essential_ready and bool(_purchase_primary_use(context)) and bool(
+            _purchase_operating_system(context)
+        )
+
+    if essential_ready:
+        context["nextAction"] = (
+            "Run a live search for current in-stock models that match the recorded requirements."
+        )
+    elif questions:
+        context["nextAction"] = questions[0]
+
+
+def _sanitize_context(raw: object) -> dict[str, Any] | None:
+    context = _purchase_intent_base_sanitize(raw)
+    if context is None or not _purchase_context(context):
+        return context
+
+    context["knownFacts"] = [
+        item
+        for item in _clean_list(context.get("knownFacts"), MAX_FACTS, 340)
+        if not re.search(
+            r"\b(?:just|would)\s+likes?\s+(?:you|qmeet)\s+to\s+search\b|"
+            r"\b(?:yes|sure|okay)\s+(?:was|is)\s+(?:the\s+)?brand\b",
+            item,
+            flags=re.IGNORECASE,
+        )
+    ]
+    context["constraints"] = [
+        item
+        for item in _clean_list(context.get("constraints"), MAX_CONSTRAINTS, 340)
+        if not item.casefold().startswith("requirement: no, the voice")
+    ]
+    _refresh_derived_objective(context)
+    _refresh_questions_and_next_action(context, "")
+    return context
+
+
+def get_purchase_search_handoff(message: str, consume: bool = False) -> dict[str, str] | None:
+    """Resolve purchase-search confirmations and continuations into a real Search query."""
+
+    visible = _clean_text(_extract_visible_user_message(message), 1000)
+    if not visible:
+        return None
+
+    with _STORE_LOCK:
+        context = _sync_with_active_session_unlocked()
+        if not isinstance(context, dict) or not _purchase_context(context):
+            return None
+
+        pending_action = _sanitize_pending_action(context.get("pendingAction"))
+        acknowledgement = _is_purchase_acknowledgement(visible)
+        unavailable = bool(_PURCHASE_UNAVAILABLE_RE.search(visible))
+        continuation = bool(_PURCHASE_SEARCH_CONTINUATION_RE.search(visible))
+        explicit_search = bool(
+            re.search(
+                r"\b(?:search|look\s+for|find|gather|compare|show\s+me|get\s+me|give\s+me)\b",
+                visible,
+                flags=re.IGNORECASE,
+            )
+            and re.search(
+                r"\b(?:now|current|in-stock|available|options?|models?|laptops?|tvs?|deals?|prices?|products?|listings?|links?|retailers?)\b",
+                visible,
+                flags=re.IGNORECASE,
+            )
+        )
+        search_challenge = bool(
+            re.search(
+                r"\b(?:don'?t|do\s+not)\s+you\s+have\s+(?:a\s+)?search\b|"
+                r"\bwhy\s+can'?t\s+you\s+search\b|"
+                r"\buse\s+(?:your\s+)?search(?:\s+function)?\b",
+                visible,
+                flags=re.IGNORECASE,
+            )
+        )
+
+        should_search = bool(
+            (acknowledgement and pending_action)
+            or explicit_search
+            or search_challenge
+            or continuation
+            or unavailable
+        )
+        if not should_search:
+            return None
+
+        query = _build_purchase_search_query(context)
+        if pending_action and not unavailable:
+            query = pending_action["query"]
+        if unavailable or re.search(r"\b(?:real|working|valid)\s+(?:current\s+)?(?:listing|link)\b", visible, flags=re.IGNORECASE):
+            query = _clean_text(
+                query
+                + "; verify each result is in stock now and use exact direct product pages, not category pages",
+                600,
+            )
+        if re.search(r"\b(?:links?|listings?)\b", visible, flags=re.IGNORECASE):
+            query = _clean_text(query + "; prioritize direct purchase links", 600)
+
+        reason = "The user explicitly requested QMeet's live product Search action."
+        if acknowledgement and pending_action:
+            reason = "The user accepted QMeet's prepared live product search."
+        elif continuation:
+            reason = "The user followed up on a promised product search; run Search instead of fabricating results."
+        elif unavailable:
+            reason = "The prior product results were unavailable; run a replacement live search with availability verification."
+
+        result = {"query": query, "reason": reason}
+        if consume:
+            context.pop("pendingAction", None)
+            context["pendingQuestion"] = None
+            context["openQuestions"] = []
+            context["nextAction"] = "Review the live Search results and compare the verified available options."
+            _prepend_unique(
+                context,
+                "recentProgress",
+                "A live product search was requested.",
+                MAX_RECENT_PROGRESS,
+            )
+            context["updatedAt"] = _now_iso()
+            _write_context_unlocked(context)
+        return result
+
+
+def should_keep_focus_message_in_chat(message: str) -> bool:
+    base = _purchase_intent_base_keep_in_chat(message)
+    visible = _clean_text(_extract_visible_user_message(message), 1000)
+    if not visible:
+        return base
+    with _STORE_LOCK:
+        context = _sync_with_active_session_unlocked()
+    if not isinstance(context, dict) or not _purchase_context(context):
+        return base
+    if _PURCHASE_SEARCH_CONTINUATION_RE.search(visible) or _PURCHASE_UNAVAILABLE_RE.search(visible):
+        return False
+    return base
+
+
+def prepare_background_chat_message(message: str) -> tuple[str, str]:
+    contextual_message, visible_user_message = _purchase_intent_base_prepare_chat(message)
+    with _STORE_LOCK:
+        context = _sync_with_active_session_unlocked()
+    if not isinstance(context, dict) or not _purchase_context(context):
+        return contextual_message, visible_user_message
+
+    rules = [
+        "Purchase intent-continuity rules:",
+        "- Preserve the product being purchased when the user describes its purpose. A purpose such as machine learning is not a replacement focus title.",
+        "- Treat yes, sure, okay, no, and not really as answers or action confirmations, never as brands, products, models, or memory facts.",
+        "- Never promise to search and then answer from model memory. Current products, prices, availability, and links must use QMeet's actual Search action.",
+        "- Never invent or guess a current retailer link, stock state, configuration, model year, or price.",
+        "- If a prior recommendation is unavailable, discard it and run a fresh current search rather than weakening requirements without the user's approval.",
+        "- For machine-learning laptops, keep the user's budget, operating system, brand flexibility, and ML workload together in every comparison.",
+        "",
+    ]
+    marker = "Existing request and private context:"
+    if marker in contextual_message:
+        contextual_message = contextual_message.replace(
+            marker, "\n".join(rules) + marker, 1
+        )
+    return contextual_message, visible_user_message
+
+
+# Phase 18: tool-result assimilation and completed-search reuse
+#
+# Search requests were previously remembered, but successful Search results did not
+# advance the focus. This layer records completed searches, resolves "compare
+# reputable brands" confirmations, and reuses the existing Search panel instead of
+# rerunning the same query for follow-ups such as "did you find it?".
+
+WORK_CONTEXT_FILE_VERSION = 8
+
+_tool_result_base_sanitize_context = _sanitize_context
+_tool_result_base_get_purchase_search_handoff = get_purchase_search_handoff
+_tool_result_base_specific_questions = _specific_questions
+_tool_result_base_build_purchase_search_query = _build_purchase_search_query
+_tool_result_base_purchase_prefers_alternatives = _purchase_prefers_alternatives
+
+_TOOL_RESULT_COMPARE_BRANDS_DECISION = "No fixed brand; compare reputable brands."
+_TOOL_RESULT_REUSE_SEARCH_RE = re.compile(
+    r"^(?:"
+    r"did\s+you\s+(?:find|finish|get)\s+(?:it|them|anything)|"
+    r"what\s+did\s+you\s+find|"
+    r"what\s+were\s+the\s+results|"
+    r"show\s+(?:me\s+)?(?:the\s+)?results|"
+    r"open\s+(?:the\s+)?search(?:\s+results)?|"
+    r"give\s+me\s+(?:the\s+)?(?:results|links)|"
+    r"(?:i(?:'m|\s+am)\s+)?still\s+waiting|"
+    r"waiting"
+    r")[?!.\s]*$",
+    flags=re.IGNORECASE,
+)
+_TOOL_RESULT_FORCE_REFRESH_RE = re.compile(
+    r"\b(?:search|look|find|check|try)\s+(?:again|another|more)|"
+    r"\b(?:refresh|rerun|redo|repeat)\s+(?:the\s+)?search\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _sanitize_last_search(value: object) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+
+    status = _clean_text(value.get("status"), 30).casefold()
+    if status not in {"completed", "failed"}:
+        return None
+
+    query = _clean_text(value.get("query"), 600)
+    if not query:
+        return None
+
+    result_count = value.get("resultCount", 0)
+    source_count = value.get("sourceCount", 0)
+    if isinstance(result_count, bool) or not isinstance(result_count, int):
+        result_count = 0
+    if isinstance(source_count, bool) or not isinstance(source_count, int):
+        source_count = 0
+
+    return {
+        "status": status,
+        "query": query,
+        "completedAt": _clean_text(value.get("completedAt"), 80) or _now_iso(),
+        "summary": _clean_text(value.get("summary"), 700),
+        "recommendation": _clean_text(value.get("recommendation"), 500),
+        "resultCount": max(0, result_count),
+        "sourceCount": max(0, source_count),
+        "topResults": _clean_list(value.get("topResults"), 5, 180),
+        "error": _clean_text(value.get("error"), 400),
+    }
+
+
+def _compare_reputable_brands_selected(context: dict[str, Any]) -> bool:
+    return any(
+        item.casefold() == _TOOL_RESULT_COMPARE_BRANDS_DECISION.casefold()
+        or "compare reputable brands" in item.casefold()
+        or "no fixed brand" in item.casefold()
+        for item in _clean_list(context.get("decisions"), MAX_DECISIONS, 360)
+    )
+
+
+def _purchase_prefers_alternatives(context: dict[str, Any]) -> bool:
+    return (
+        _compare_reputable_brands_selected(context)
+        or _tool_result_base_purchase_prefers_alternatives(context)
+    )
+
+
+def _specific_questions(context: dict[str, Any]) -> list[str]:
+    questions = _tool_result_base_specific_questions(context)
+    if not isinstance(context, dict) or not _purchase_context(context):
+        return questions
+    if not _compare_reputable_brands_selected(context):
+        return questions
+    return [
+        question
+        for question in questions
+        if "brand" not in question.casefold()
+    ][:MAX_OPEN_QUESTIONS]
+
+
+def _build_purchase_search_query(context: dict[str, Any]) -> str:
+    query = _tool_result_base_build_purchase_search_query(context)
+    if (
+        _purchase_context(context)
+        and not _purchase_brand(context)
+        and _compare_reputable_brands_selected(context)
+        and "reputable brands" not in query.casefold()
+    ):
+        query = _clean_text(
+            query + "; compare options from reputable brands",
+            600,
+        )
+    return query
+
+
+def _sanitize_context(raw: object) -> dict[str, Any] | None:
+    context = _tool_result_base_sanitize_context(raw)
+    if context is None:
+        return None
+
+    raw_dict = raw if isinstance(raw, dict) else {}
+    last_search = _sanitize_last_search(raw_dict.get("lastSearch"))
+    if last_search is not None:
+        context["lastSearch"] = last_search
+
+    if not _purchase_context(context):
+        return context
+
+    if _compare_reputable_brands_selected(context):
+        context["pendingQuestion"] = None
+        context["openQuestions"] = [
+            question
+            for question in _clean_list(
+                context.get("openQuestions"), MAX_OPEN_QUESTIONS, 260
+            )
+            if "brand" not in question.casefold()
+        ]
+
+    if last_search is not None and last_search["status"] == "completed":
+        context.pop("pendingAction", None)
+        context["pendingQuestion"] = None
+        context["openQuestions"] = []
+        if context.get("stage") not in {"ready", "complete"} and not _purchase_ordered(context):
+            context["stage"] = "in-progress"
+        context["nextAction"] = (
+            "Review the current Search results and select two or three options to compare."
+        )
+    elif last_search is not None and last_search["status"] == "failed":
+        context["nextAction"] = (
+            "Retry the live search or refine the requirements before comparing products."
+        )
+
+    return context
+
+
+def _resolve_brand_comparison_confirmation(
+    context: dict[str, Any],
+    visible_message: str,
+) -> bool:
+    if not _is_purchase_acknowledgement(visible_message) or _purchase_brand(context):
+        return False
+
+    pending_question = _sanitize_pending_question(context.get("pendingQuestion"))
+    pending_action = _sanitize_pending_action(context.get("pendingAction"))
+    question_text = pending_question["question"] if pending_question else ""
+    action_prompt = pending_action["prompt"] if pending_action else ""
+    combined = f"{question_text} {action_prompt}".casefold()
+    if "brand" not in combined or not any(
+        phrase in combined
+        for phrase in ("compare", "reputable", "other brands", "options")
+    ):
+        return False
+
+    changed = _prepend_unique(
+        context,
+        "decisions",
+        _TOOL_RESULT_COMPARE_BRANDS_DECISION,
+        MAX_DECISIONS,
+    )
+    if pending_action is not None:
+        refreshed_action = {
+            **pending_action,
+            "query": _build_purchase_search_query(context),
+        }
+        if context.get("pendingAction") != refreshed_action:
+            context["pendingAction"] = refreshed_action
+            changed = True
+    context["pendingQuestion"] = None
+    context["openQuestions"] = [
+        question
+        for question in _clean_list(context.get("openQuestions"), MAX_OPEN_QUESTIONS, 260)
+        if "brand" not in question.casefold()
+    ]
+    return changed
+
+
+def _last_completed_search(context: dict[str, Any]) -> dict[str, Any] | None:
+    last_search = _sanitize_last_search(context.get("lastSearch"))
+    if last_search is None or last_search["status"] != "completed":
+        return None
+    return last_search
+
+
+def get_purchase_search_handoff(
+    message: str,
+    consume: bool = False,
+) -> dict[str, str] | None:
+    visible = _clean_text(_extract_visible_user_message(message), 1000)
+    if not visible:
+        return None
+
+    with _STORE_LOCK:
+        context = _sync_with_active_session_unlocked()
+        if not isinstance(context, dict) or not _purchase_context(context):
+            return None
+
+        changed = _resolve_brand_comparison_confirmation(context, visible)
+        last_search = _last_completed_search(context)
+        reuse_existing = bool(
+            last_search
+            and _TOOL_RESULT_REUSE_SEARCH_RE.fullmatch(visible.strip())
+            and not _TOOL_RESULT_FORCE_REFRESH_RE.search(visible)
+            and not _PURCHASE_UNAVAILABLE_RE.search(visible)
+        )
+        if reuse_existing:
+            context.pop("pendingAction", None)
+            context["pendingQuestion"] = None
+            context["openQuestions"] = []
+            context["nextAction"] = (
+                "Review the current Search results and select two or three options to compare."
+            )
+            if context.get("stage") not in {"ready", "complete"} and not _purchase_ordered(context):
+                context["stage"] = "in-progress"
+            context["updatedAt"] = _now_iso()
+            if consume or changed:
+                _write_context_unlocked(context)
+            return {
+                "action": "open_existing",
+                "query": last_search["query"],
+                "reason": (
+                    "A matching live Search has already completed. Reopen the existing "
+                    "Search results instead of running the same query again."
+                ),
+            }
+
+        if changed:
+            context["updatedAt"] = _now_iso()
+            _write_context_unlocked(context)
+
+    handoff = _tool_result_base_get_purchase_search_handoff(message, consume=consume)
+    if handoff is None:
+        return None
+    return {
+        **handoff,
+        "action": "run_search",
+    }
+
+
+def _search_query_matches_purchase_context(
+    context: dict[str, Any],
+    query: str,
+) -> bool:
+    if not _purchase_context(context):
+        return False
+
+    lowered_query = query.casefold()
+    progress = _clean_list(context.get("recentProgress"), MAX_RECENT_PROGRESS, 320)
+    if any("live product search was requested" in item.casefold() for item in progress):
+        return True
+
+    next_action = _clean_text(context.get("nextAction"), 500).casefold()
+    if "search" in next_action and any(
+        token in next_action for token in ("product", "model", "listing", "option")
+    ):
+        return True
+
+    match_text = " ".join(
+        part
+        for part in (
+            _purchase_subject_base(context),
+            _purchase_primary_use(context),
+            _purchase_operating_system(context),
+            _purchase_brand(context),
+        )
+        if part
+    ).casefold()
+    terms = {
+        token
+        for token in re.findall(r"[a-z0-9]+", match_text)
+        if len(token) >= 4 and token not in {"with", "from", "that", "this"}
+    }
+    return bool(terms and any(term in lowered_query for term in terms))
+
+
+def _search_result_titles(result: dict[str, Any]) -> list[str]:
+    titles: list[str] = []
+    for collection_name in ("cards", "sources"):
+        collection = result.get(collection_name)
+        if not isinstance(collection, list):
+            continue
+        for item in collection:
+            if not isinstance(item, dict):
+                continue
+            title = _clean_text(item.get("title"), 180)
+            if title and title.casefold() not in {value.casefold() for value in titles}:
+                titles.append(title)
+            if len(titles) >= 5:
+                return titles
+    return titles
+
+
+def record_background_search_result(
+    query: str,
+    result: object,
+) -> dict[str, Any]:
+    clean_query = _clean_text(query, 600)
+    result_dict = result if isinstance(result, dict) else {}
+    if not clean_query:
+        return {"ok": True, "recorded": False, "activeContext": None}
+
+    with _STORE_LOCK:
+        context = _sync_with_active_session_unlocked()
+        if (
+            not isinstance(context, dict)
+            or not _purchase_context(context)
+            or not _search_query_matches_purchase_context(context, clean_query)
+        ):
+            return {
+                "ok": True,
+                "recorded": False,
+                "activeContext": context,
+            }
+
+        cards = result_dict.get("cards")
+        sources = result_dict.get("sources")
+        card_count = len(cards) if isinstance(cards, list) else 0
+        source_count = len(sources) if isinstance(sources, list) else 0
+        last_search = {
+            "status": "completed",
+            "query": clean_query,
+            "completedAt": _now_iso(),
+            "summary": _clean_text(result_dict.get("summary"), 700),
+            "recommendation": _clean_text(result_dict.get("recommendation"), 500),
+            "resultCount": card_count,
+            "sourceCount": source_count,
+            "topResults": _search_result_titles(result_dict),
+            "error": "",
+        }
+        context["lastSearch"] = last_search
+        context.pop("pendingAction", None)
+        context["pendingQuestion"] = None
+        context["openQuestions"] = []
+        context["recentProgress"] = [
+            item
+            for item in _clean_list(
+                context.get("recentProgress"), MAX_RECENT_PROGRESS, 320
+            )
+            if "live product search was requested" not in item.casefold()
+        ]
+        _prepend_unique(
+            context,
+            "recentProgress",
+            "Current matching products and sources are available in Search.",
+            MAX_RECENT_PROGRESS,
+        )
+        _prepend_unique(
+            context,
+            "recentProgress",
+            "A live product search was completed.",
+            MAX_RECENT_PROGRESS,
+        )
+        if context.get("stage") not in {"ready", "complete"} and not _purchase_ordered(context):
+            context["stage"] = "in-progress"
+        context["nextAction"] = (
+            "Review the current Search results and select two or three options to compare."
+        )
+        context["confidence"] = min(
+            0.99,
+            float(context.get("confidence", 0.35)) + 0.04,
+        )
+        context["updatedAt"] = _now_iso()
+        payload = _write_context_unlocked(context)
+        return {
+            "ok": True,
+            "recorded": True,
+            "activeContext": payload.get("activeContext"),
+        }
+
+
+def record_background_search_failure(
+    query: str,
+    error: str,
+) -> dict[str, Any]:
+    clean_query = _clean_text(query, 600)
+    clean_error = _clean_text(error, 400)
+    if not clean_query:
+        return {"ok": True, "recorded": False, "activeContext": None}
+
+    with _STORE_LOCK:
+        context = _sync_with_active_session_unlocked()
+        if (
+            not isinstance(context, dict)
+            or not _purchase_context(context)
+            or not _search_query_matches_purchase_context(context, clean_query)
+        ):
+            return {
+                "ok": True,
+                "recorded": False,
+                "activeContext": context,
+            }
+
+        context["lastSearch"] = {
+            "status": "failed",
+            "query": clean_query,
+            "completedAt": _now_iso(),
+            "summary": "",
+            "recommendation": "",
+            "resultCount": 0,
+            "sourceCount": 0,
+            "topResults": [],
+            "error": clean_error,
+        }
+        context.pop("pendingAction", None)
+        context["nextAction"] = (
+            "Retry the live search or refine the requirements before comparing products."
+        )
+        _prepend_unique(
+            context,
+            "recentProgress",
+            "The most recent live product search did not complete successfully.",
+            MAX_RECENT_PROGRESS,
+        )
+        context["updatedAt"] = _now_iso()
+        payload = _write_context_unlocked(context)
+        return {
+            "ok": True,
+            "recorded": True,
+            "activeContext": payload.get("activeContext"),
+        }
+
+# ---------------------------------------------------------------------------
+# Phase 18: research-source continuity and truthful focus/tool state
+# ---------------------------------------------------------------------------
+# This layer generalizes Search assimilation beyond purchases, keeps factual
+# research grounded in real sources, and recognizes completed/submitted writing.
+
+_phase18_research_base_apply_user_update = _apply_user_update
+_phase18_research_base_prepare_background_chat_message = prepare_background_chat_message
+_phase18_research_base_record_search_result = record_background_search_result
+_phase18_research_base_record_search_failure = record_background_search_failure
+
+
+def _research_or_document_context(context: dict[str, Any] | None) -> bool:
+    if not isinstance(context, dict):
+        return False
+    mode = _clean_text(context.get("mode"), 40).casefold()
+    focus_type = _clean_text(context.get("focusType"), 40).casefold()
+    if mode == "research" or focus_type in {
+        "research",
+        "document",
+        "review",
+        "presentation",
+    }:
+        return True
+    haystack = " ".join(
+        _clean_text(context.get(key), 260)
+        for key in ("title", "objective", "subject")
+    ).casefold()
+    return bool(
+        re.search(
+            r"\b(?:essay|paper|report|research|review|article|sources?|"
+            r"literature|history|school assignment)\b",
+            haystack,
+        )
+    )
+
+
+def _research_search_query_matches_context(
+    context: dict[str, Any],
+    query: str,
+) -> bool:
+    if not _research_or_document_context(context):
+        return False
+    lowered = query.casefold()
+    if re.search(
+        r"\b(?:sources?|articles?|papers?|studies|citations?|references?|"
+        r"peer[ -]?reviewed|academic|scholarly|evidence)\b",
+        lowered,
+    ):
+        return True
+
+    context_text = " ".join(
+        _clean_text(context.get(key), 260)
+        for key in ("title", "objective", "subject")
+    ).casefold()
+    terms = {
+        token
+        for token in re.findall(r"[a-z0-9]+", context_text)
+        if len(token) >= 4
+        and token
+        not in {
+            "with",
+            "from",
+            "that",
+            "this",
+            "write",
+            "essay",
+            "paper",
+            "report",
+            "research",
+        }
+    }
+    return bool(terms and any(term in lowered for term in terms))
+
+
+def _clear_source_questions(context: dict[str, Any]) -> None:
+    pending = _sanitize_pending_question(context.get("pendingQuestion"))
+    if pending and pending.get("target") in {
+        "sources",
+        "evidence",
+        "research",
+        "references",
+    }:
+        context["pendingQuestion"] = None
+
+    context["openQuestions"] = [
+        question
+        for question in _clean_list(
+            context.get("openQuestions"),
+            MAX_OPEN_QUESTIONS,
+            260,
+        )
+        if not re.search(
+            r"\b(?:source|article|citation|reference|evidence|where.*find)\b",
+            question,
+            flags=re.IGNORECASE,
+        )
+    ]
+
+
+def _research_next_action_for_query(query: str) -> str:
+    if re.search(
+        r"\b(?:peer[ -]?reviewed|academic|scholarly|journal)\b",
+        query,
+        flags=re.IGNORECASE,
+    ):
+        return (
+            "Review the gathered sources, verify which entries are genuinely "
+            "peer-reviewed, and select the strongest evidence for the outline or draft."
+        )
+    return (
+        "Review the gathered sources, select the strongest evidence, and update "
+        "the outline or draft with supported claims."
+    )
+
+
+def _apply_user_update(
+    context: dict[str, Any],
+    visible_message: str,
+) -> tuple[dict[str, Any], bool]:
+    next_context, changed = _phase18_research_base_apply_user_update(
+        context,
+        visible_message,
+    )
+    if not _research_or_document_context(next_context):
+        return next_context, changed
+
+    visible = _clean_text(_extract_visible_user_message(visible_message), 1200)
+    lowered = visible.casefold()
+    completed_and_submitted = bool(
+        re.search(
+            r"\b(?:i|we)\s+(?:just\s+)?(?:wrote|finished|completed|finalized)\b",
+            lowered,
+        )
+        and re.search(r"\b(?:essay|paper|report|review|article|draft|it)\b", lowered)
+        and re.search(
+            r"\b(?:sent|submitted|turned\s+in|handed\s+in|emailed|uploaded)\b",
+            lowered,
+        )
+    )
+    if not completed_and_submitted:
+        return next_context, changed
+
+    progress_items = (
+        "The written work was completed.",
+        "The completed work was submitted or sent to its intended recipient.",
+    )
+    for item in progress_items:
+        changed = _prepend_unique(
+            next_context,
+            "recentProgress",
+            item,
+            MAX_RECENT_PROGRESS,
+        ) or changed
+
+    completion_action = (
+        "The writing is complete and submitted. End the focus and save a brief "
+        "outcome summary unless the user identifies another required step."
+    )
+    if next_context.get("stage") != "complete":
+        next_context["stage"] = "complete"
+        changed = True
+    if next_context.get("nextAction") != completion_action:
+        next_context["nextAction"] = completion_action
+        changed = True
+    if next_context.get("pendingQuestion") is not None:
+        next_context["pendingQuestion"] = None
+        changed = True
+    if next_context.get("openQuestions"):
+        next_context["openQuestions"] = []
+        changed = True
+    return next_context, changed
+
+
+def prepare_background_chat_message(message: str) -> tuple[str, str]:
+    prepared, visible = _phase18_research_base_prepare_background_chat_message(message)
+
+    with _STORE_LOCK:
+        context = _sync_with_active_session_unlocked()
+    if not isinstance(context, dict):
+        return prepared, visible
+
+    general_truth_rule = (
+        "- Never claim that a focus, task, Search, note, or other QMeet action "
+        "was completed unless the corresponding local tool or command actually ran."
+    )
+    extra_rules = [general_truth_rule]
+
+    if _research_or_document_context(context):
+        extra_rules.extend(
+            [
+                "- For factual research or school writing, never invent historical claims, dates, inventors, development processes, impacts, quotations, citations, links, authors, or publication details.",
+                "- Never label a source peer-reviewed or scholarly unless the available Search result supports that classification.",
+                "- When the user asks QMeet to find sources, the real Search action must run; do not merely suggest databases, promise to search later, or fabricate links.",
+                "- If no completed Search evidence is available and the user requests a factual draft, provide a clearly labeled outline or provisional draft with evidence placeholders instead of presenting unsupported claims as fact.",
+                "- When completed Search evidence is available, ground factual prose in that evidence and clearly separate sourced facts from interpretation.",
+            ]
+        )
+
+        last_search = _sanitize_last_search(context.get("lastSearch"))
+        if last_search and last_search.get("status") == "completed":
+            search_lines = [
+                "Latest completed research Search:",
+                f"- Query: {last_search.get('query') or 'Not recorded'}",
+                f"- Summary: {last_search.get('summary') or 'No summary was returned'}",
+                f"- Recommendation: {last_search.get('recommendation') or 'No recommendation was returned'}",
+            ]
+            top_results = last_search.get("topResults")
+            if isinstance(top_results, list) and top_results:
+                search_lines.append("- Top source titles:")
+                search_lines.extend(f"  - {title}" for title in top_results[:5])
+            prepared = prepared.replace(
+                "\n\nExisting request and private context:",
+                "\n" + "\n".join(search_lines) + "\n\nExisting request and private context:",
+                1,
+            )
+
+    insertion = "\n".join(extra_rules)
+    prepared = prepared.replace(
+        "Behavior rules:\n",
+        f"Behavior rules:\n{insertion}\n",
+        1,
+    )
+    return prepared, visible
+
+
+def record_background_search_result(
+    query: str,
+    result: object,
+) -> dict[str, Any]:
+    base_result = _phase18_research_base_record_search_result(query, result)
+    if bool(base_result.get("recorded")):
+        return base_result
+
+    clean_query = _clean_text(query, 600)
+    result_dict = result if isinstance(result, dict) else {}
+    if not clean_query:
+        return base_result
+
+    with _STORE_LOCK:
+        context = _sync_with_active_session_unlocked()
+        if (
+            not isinstance(context, dict)
+            or not _research_or_document_context(context)
+            or not _research_search_query_matches_context(context, clean_query)
+        ):
+            return base_result
+
+        cards = result_dict.get("cards")
+        sources = result_dict.get("sources")
+        card_count = len(cards) if isinstance(cards, list) else 0
+        source_count = len(sources) if isinstance(sources, list) else 0
+        context["lastSearch"] = {
+            "status": "completed",
+            "query": clean_query,
+            "completedAt": _now_iso(),
+            "summary": _clean_text(result_dict.get("summary"), 700),
+            "recommendation": _clean_text(result_dict.get("recommendation"), 500),
+            "resultCount": card_count,
+            "sourceCount": source_count,
+            "topResults": _search_result_titles(result_dict),
+            "error": "",
+        }
+        context.pop("pendingAction", None)
+        _clear_source_questions(context)
+        _prepend_unique(
+            context,
+            "recentProgress",
+            "Research sources and results are available in Search.",
+            MAX_RECENT_PROGRESS,
+        )
+        _prepend_unique(
+            context,
+            "recentProgress",
+            "A live source search was completed.",
+            MAX_RECENT_PROGRESS,
+        )
+        if context.get("stage") not in {"ready", "complete"}:
+            context["stage"] = "in-progress"
+        context["nextAction"] = _research_next_action_for_query(clean_query)
+        context["confidence"] = min(
+            0.99,
+            float(context.get("confidence", 0.35)) + 0.04,
+        )
+        context["updatedAt"] = _now_iso()
+        payload = _write_context_unlocked(context)
+        return {
+            "ok": True,
+            "recorded": True,
+            "activeContext": payload.get("activeContext"),
+        }
+
+
+def record_background_search_failure(
+    query: str,
+    error: str,
+) -> dict[str, Any]:
+    base_result = _phase18_research_base_record_search_failure(query, error)
+    if bool(base_result.get("recorded")):
+        return base_result
+
+    clean_query = _clean_text(query, 600)
+    clean_error = _clean_text(error, 400)
+    if not clean_query:
+        return base_result
+
+    with _STORE_LOCK:
+        context = _sync_with_active_session_unlocked()
+        if (
+            not isinstance(context, dict)
+            or not _research_or_document_context(context)
+            or not _research_search_query_matches_context(context, clean_query)
+        ):
+            return base_result
+
+        context["lastSearch"] = {
+            "status": "failed",
+            "query": clean_query,
+            "completedAt": _now_iso(),
+            "summary": "",
+            "recommendation": "",
+            "resultCount": 0,
+            "sourceCount": 0,
+            "topResults": [],
+            "error": clean_error,
+        }
+        context.pop("pendingAction", None)
+        context["nextAction"] = (
+            "Retry the source search with a narrower query or adjust the source requirements."
+        )
+        _prepend_unique(
+            context,
+            "recentProgress",
+            "The most recent source search did not complete successfully.",
+            MAX_RECENT_PROGRESS,
+        )
+        context["updatedAt"] = _now_iso()
+        payload = _write_context_unlocked(context)
+        return {
+            "ok": True,
+            "recorded": True,
+            "activeContext": payload.get("activeContext"),
+        }
