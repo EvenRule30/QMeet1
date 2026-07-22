@@ -18,7 +18,16 @@ type BackgroundWorkContext = {
   sessionId: string;
   title: string;
   mode: string;
+  focusType: string;
   objective: string;
+  subject: string;
+  audience: string;
+  successCriteria: string;
+  approach: string;
+  pendingQuestion: {
+    target: string;
+    question: string;
+  } | null;
   knownFacts: string[];
   constraints: string[];
   decisions: string[];
@@ -90,7 +99,19 @@ function normalizeContext(value: unknown): BackgroundWorkContext | null {
     sessionId,
     title,
     mode: cleanText(candidate.mode, 'general'),
+    focusType: cleanText(candidate.focusType, 'general'),
     objective: cleanText(candidate.objective),
+    subject: cleanText(candidate.subject),
+    audience: cleanText(candidate.audience),
+    successCriteria: cleanText(candidate.successCriteria),
+    approach: cleanText(candidate.approach),
+    pendingQuestion:
+      candidate.pendingQuestion && typeof candidate.pendingQuestion === 'object'
+        ? {
+            target: cleanText(candidate.pendingQuestion.target),
+            question: cleanText(candidate.pendingQuestion.question),
+          }
+        : null,
     knownFacts: cleanList(candidate.knownFacts),
     constraints: cleanList(candidate.constraints),
     decisions: cleanList(candidate.decisions),
@@ -257,7 +278,6 @@ function WorkContextStyles() {
         font: inherit;
         font-size: 10px;
         cursor: pointer;
-      }
 
       .qmeet-work-context-refresh:hover,
       .qmeet-work-context-refresh:focus-visible {
@@ -302,11 +322,20 @@ function WorkContextStyles() {
         background: rgba(117, 86, 213, 0.12);
       }
 
+      .qmeet-work-context-structured-grid,
       .qmeet-work-context-detail-grid {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 8px;
         margin-top: 8px;
+      }
+
+      .qmeet-work-context-structured-card {
+        border: 1px solid rgba(201, 188, 255, 0.13);
+        border-radius: 11px;
+        background: rgba(32, 24, 56, 0.32);
+        padding: 10px;
+        min-width: 0;
       }
 
       .qmeet-work-context-list {
@@ -400,11 +429,29 @@ function WorkContextStyles() {
 
       @media (max-width: 760px) {
         .qmeet-work-context-primary-grid,
+        .qmeet-work-context-structured-grid,
         .qmeet-work-context-detail-grid {
           grid-template-columns: 1fr;
         }
       }
     `}</style>
+  );
+}
+
+function ContextValueCard({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+  if (!value) return null;
+
+  return (
+    <div className="qmeet-work-context-structured-card">
+      <div className="qmeet-work-context-card-label">{label}</div>
+      <div className="qmeet-work-context-card-value">{value}</div>
+    </div>
   );
 }
 
@@ -468,7 +515,12 @@ function WorkContextSection({
             <div className="qmeet-work-context-kicker">Live Work Context</div>
             <div className="qmeet-work-context-title">{context.title}</div>
             <div className="qmeet-work-context-meta">
-              {formatMode(context.mode)} · {formatUpdatedAt(context.updatedAt)}
+              {formatMode(
+                context.focusType !== 'general'
+                  ? context.focusType
+                  : context.mode,
+              )}{' '}
+              · {formatUpdatedAt(context.updatedAt)}
             </div>
           </div>
           <div className="qmeet-work-context-actions">
@@ -518,6 +570,21 @@ function WorkContextSection({
             </div>
           </div>
         </div>
+
+        {(context.subject ||
+          context.audience ||
+          context.successCriteria ||
+          context.approach) && (
+          <div className="qmeet-work-context-structured-grid">
+            <ContextValueCard label="Subject" value={context.subject} />
+            <ContextValueCard label="Audience" value={context.audience} />
+            <ContextValueCard
+              label="Success criteria"
+              value={context.successCriteria}
+            />
+            <ContextValueCard label="Approach" value={context.approach} />
+          </div>
+        )}
 
         <div className="qmeet-work-context-detail-grid">
           <ContextListCard label="What QMeet knows" items={context.knownFacts} />
