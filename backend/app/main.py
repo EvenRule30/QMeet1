@@ -7,10 +7,12 @@ from fastapi.middleware.cors import CORSMiddleware
 load_dotenv()
 
 from app.background_context_middleware import BackgroundWorkContextMiddleware  # noqa: E402
+from app.focus.middleware import FocusShadowMiddleware  # noqa: E402
 from app.routers import (  # noqa: E402
     calendar,
     chat,
     command,
+    focus,
     memory,
     memory_state,
     search,
@@ -19,9 +21,10 @@ from app.routers import (  # noqa: E402
 
 app = FastAPI(title="QMeet Agent Backend")
 
-# Add the observer before CORS so CORS remains the outer middleware and also
-# applies to the observer's direct command-interpret responses.
+# The legacy observer remains active during the architecture reset. Focus
+# runs beside it in shadow mode and writes to a separate event log.
 app.add_middleware(BackgroundWorkContextMiddleware)
+app.add_middleware(FocusShadowMiddleware)
 
 frontend_origin = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
 # For prototype LAN/tablet testing this stays permissive. Tighten this before
@@ -52,3 +55,4 @@ app.include_router(calendar.router)
 app.include_router(memory.router)
 app.include_router(memory_state.router)
 app.include_router(visual.router)
+app.include_router(focus.router)
