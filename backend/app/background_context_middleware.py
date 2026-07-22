@@ -31,7 +31,9 @@ _IMPLICIT_FOCUS_DURABLE_RE = re.compile(
     r"launch|release|deadline|milestone|roadmap|strategy|budget|trip|travel|"
     r"event|party|birthday|gift|flowers?|wedding|interview|meeting|workshop|"
     r"renovation|move|moving|job search|certification|purchase|shopping|buying|"
-    r"television|tv|laptop|computer|phone|tablet|appliance|furniture|vehicle"
+    r"television|tv|laptop|computer|phone|tablet|appliance|furniture|vehicle|"
+    r"car|motorcycle|truck|engine|battery|problem|issue|trouble|repair|"
+    r"troubleshooting|diagnosis|not working|won't start|will not start"
     r")\b",
     flags=re.IGNORECASE,
 )
@@ -39,7 +41,8 @@ _IMPLICIT_FOCUS_ACTION_RE = re.compile(
     r"\b(?:finish(?:ing)?|complet(?:e|ing)|build(?:ing)?|creat(?:e|ing)|"
     r"develop(?:ing)?|design(?:ing)?|redesign(?:ing)?|prepar(?:e|ing)|"
     r"stud(?:y|ying)|research(?:ing)?|writ(?:e|ing)|plan(?:ning)?|"
-    r"organiz(?:e|ing)|fix(?:ing)?|debug(?:ging)?|launch(?:ing)?|"
+    r"organiz(?:e|ing)|fix(?:ing)?|debug(?:ging)?|diagnos(?:e|ing)|"
+    r"troubleshoot(?:ing)?|repair(?:ing)?|launch(?:ing)?|"
     r"submit(?:ting)?|apply(?:ing)?|practic(?:e|ing)|learn(?:ing)?|"
     r"set(?:ting)? up|figur(?:e|ing) out|tackl(?:e|ing)|work(?:ing)? on|"
     r"giv(?:e|ing)|buy(?:ing)?|purchas(?:e|ing)|shop(?:ping)?(?:\s+for)?|"
@@ -76,7 +79,7 @@ _IMPLICIT_FOCUS_RESEARCH_RE = re.compile(
 _IMPLICIT_FOCUS_PLANNING_RE = re.compile(
     r"\b(?:plan|planning|organize|schedule|roadmap|strategy|budget|trip|travel|"
     r"event|party|presentation|proposal|launch|deadline|milestone|prepare|"
-    r"purchase|shopping|buying|compare)\b",
+    r"purchase|shopping|buying|compare|troubleshoot|diagnose|repair)\b",
     flags=re.IGNORECASE,
 )
 _IMPLICIT_FOCUS_EXCLUSION_RE = re.compile(
@@ -165,6 +168,12 @@ def _clean_focus_text(value: str, max_length: int = 180) -> str:
 def _normalize_goal(candidate: str) -> str:
     goal = _clean_focus_text(candidate)
     goal = re.sub(
+        r"^(?:i|we)\s+have\s+(?:with|when)\s+",
+        "",
+        goal,
+        flags=re.IGNORECASE,
+    )
+    goal = re.sub(
         r"^(?:help(?:\s+me)?)(?:\s+with)?\s+(?=(?:buy|buying|purchase|purchasing|shop|shopping|get|getting)\b)",
         "",
         goal,
@@ -181,6 +190,16 @@ def _normalize_goal(candidate: str) -> str:
     ).strip()
     if not goal:
         return ""
+
+    lowered_for_incident = goal.casefold()
+    if re.search(
+        r"\b(?:car|vehicle)\b.*\b(?:not starting|won't start|will not start|"
+        r"doesn't start|does not start|starting problem|trouble starting)\b|"
+        r"\b(?:problem|issue|trouble)\b.*\bstarting\b.*\b(?:car|vehicle)\b|"
+        r"^starting\s+(?:my|the|our)\s+(?:car|vehicle)$",
+        lowered_for_incident,
+    ):
+        return "Restore reliable starting and operation for the car"
 
     gerund_actions = {
         "finishing": "Finish",
@@ -248,6 +267,17 @@ def _normalize_goal(candidate: str) -> str:
 
 
 def _focus_title(goal: str) -> str:
+    if re.search(
+        r"\b(?:car|vehicle)\b.*\b(?:start|starting|running)\b",
+        goal,
+        flags=re.IGNORECASE,
+    ) and re.search(
+        r"\b(?:get|fix|resolve|problem|trouble|reliably)\b",
+        goal,
+        flags=re.IGNORECASE,
+    ):
+        return "Car starting problem"
+
     purchase_match = re.match(
         r"^(?:buy|purchase|shop\s+for|order|get)\s+(.+)$",
         goal,
@@ -287,6 +317,13 @@ def _focus_title(goal: str) -> str:
 
 
 def _infer_focus_mode(goal: str) -> str:
+    if re.search(
+        r"\b(?:problem|issue|trouble|troubleshoot|diagnose|repair|not working|"
+        r"won't start|will not start|doesn't start|does not start|starting problem)\b",
+        goal,
+        flags=re.IGNORECASE,
+    ):
+        return "planning"
     if _IMPLICIT_FOCUS_CODING_RE.search(goal):
         return "coding"
     if _IMPLICIT_FOCUS_MEETING_RE.search(goal):
@@ -334,6 +371,19 @@ def _implicit_focus_candidate(message: str) -> tuple[str, int] | None:
         return None
 
     patterns: list[tuple[str, int]] = [
+        (
+            r"^(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?help\s+(?:me|us)|"
+            r"(?:i|we)\s+need\s+help)\s+(?:(?:with|on)\s+)?"
+            r"(?:the\s+)?(?:problem|issue|trouble)\s+(.+)$",
+            7,
+        ),
+        (
+            r"^(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?help\s+(?:me|us)|"
+            r"(?:i|we)\s+need\s+help)\s+(?:(?:with|on)\s+)?"
+            r"(.+\b(?:won't|will not|doesn't|does not|isn't|is not)\s+"
+            r"(?:start|starting|work|working).*)$",
+            7,
+        ),
         (
             r"^(?:i(?:'d| would)?\s+like|i\s+like|i\s+want|i\s+need)\s+"
             r"(?:some\s+)?help\s+(?:(?:with|in|on)\s+)?"

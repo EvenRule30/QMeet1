@@ -6969,3 +6969,607 @@ def record_background_search_failure(
             "recorded": True,
             "activeContext": payload.get("activeContext"),
         }
+
+# ---------------------------------------------------------------------------
+# Phase 18: troubleshooting and incident continuity
+# ---------------------------------------------------------------------------
+# This layer teaches the background context to follow multi-step incidents such
+# as a car that will not start, a device that stopped working, or another urgent
+# problem. It preserves the public API while adding symptom, suspected-cause,
+# assistance, waiting, and verified-resolution milestones.
+
+FOCUS_TYPES.add("troubleshooting")
+
+_phase18_incident_base_infer_focus_type_from_text = _infer_focus_type_from_text
+_phase18_incident_base_sanitize_context = _sanitize_context
+_phase18_incident_base_refresh_derived_objective = _refresh_derived_objective
+_phase18_incident_base_specific_questions = _specific_questions
+_phase18_incident_base_derive_stage = _derive_stage
+_phase18_incident_base_refresh_questions_and_next_action = _refresh_questions_and_next_action
+_phase18_incident_base_apply_user_update = _apply_user_update
+_phase18_incident_base_apply_assistant_update = _apply_assistant_update
+_phase18_incident_base_prepare_background_chat_message = prepare_background_chat_message
+
+_INCIDENT_TEXT_RE = re.compile(
+    r"\b(?:troubleshoot(?:ing)?|diagnos(?:e|ing)|problem|issue|trouble|fault|"
+    r"malfunction|broken|not\s+working|stopped\s+working|won't\s+start|"
+    r"will\s+not\s+start|doesn't\s+start|does\s+not\s+start|isn't\s+starting|"
+    r"is\s+not\s+starting|warning\s+light|dead\s+battery|battery\s+drain|"
+    r"roadside\s+assistance|jump[- ]?start|repair)\b",
+    flags=re.IGNORECASE,
+)
+_VEHICLE_INCIDENT_RE = re.compile(
+    r"\b(?:car|vehicle|truck|motorcycle|bike|van|suv|engine|battery|ignition|"
+    r"starter|alternator|cabin\s+light|interior\s+light|dome\s+light|aaa|"
+    r"triple[- ]?a|roadside\s+assistance)\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _incident_context_text(context: dict[str, Any]) -> str:
+    parts = [
+        _clean_text(context.get(key), 500)
+        for key in (
+            "title",
+            "objective",
+            "subject",
+            "successCriteria",
+            "nextAction",
+        )
+    ]
+    parts.extend(_clean_list(context.get("knownFacts"), MAX_FACTS, 320))
+    parts.extend(_clean_list(context.get("constraints"), MAX_CONSTRAINTS, 320))
+    parts.extend(_clean_list(context.get("decisions"), MAX_DECISIONS, 320))
+    parts.extend(_clean_list(context.get("recentProgress"), MAX_RECENT_PROGRESS, 320))
+    return " ".join(part for part in parts if part)
+
+
+def _troubleshooting_context(context: dict[str, Any] | None) -> bool:
+    if not isinstance(context, dict):
+        return False
+    if _clean_text(context.get("focusType"), 40).casefold() == "troubleshooting":
+        return True
+    haystack = _incident_context_text(context)
+    return bool(_INCIDENT_TEXT_RE.search(haystack))
+
+
+def _vehicle_troubleshooting_context(context: dict[str, Any]) -> bool:
+    return _troubleshooting_context(context) and bool(
+        _VEHICLE_INCIDENT_RE.search(_incident_context_text(context))
+    )
+
+
+def _infer_focus_type_from_text(text: str, mode: str = "general") -> str:
+    lowered = text.casefold()
+    purchase_language = bool(
+        re.search(
+            r"\b(?:buy|buying|purchase|purchasing|shop|shopping|order|ordering|"
+            r"pick(?:ing)? out|compare|comparing)\b",
+            lowered,
+        )
+    )
+    if _INCIDENT_TEXT_RE.search(text) and not purchase_language:
+        return "troubleshooting"
+    return _phase18_incident_base_infer_focus_type_from_text(text, mode)
+
+
+def _incident_bucket_text(context: dict[str, Any], *keys: str) -> str:
+    values: list[str] = []
+    for key in keys:
+        raw = context.get(key)
+        if isinstance(raw, list):
+            values.extend(_clean_list(raw, 20, 320))
+        else:
+            clean = _clean_text(raw, 500)
+            if clean:
+                values.append(clean)
+    return " ".join(values).casefold()
+
+
+def _incident_bucket_has(
+    context: dict[str, Any],
+    keys: tuple[str, ...],
+    *needles: str,
+) -> bool:
+    haystack = _incident_bucket_text(context, *keys)
+    return any(needle.casefold() in haystack for needle in needles)
+
+
+def _incident_symptom_known(context: dict[str, Any]) -> bool:
+    return _incident_bucket_has(
+        context,
+        ("knownFacts", "recentProgress"),
+        "symptom:",
+        "does not start",
+        "will not start",
+        "won't start",
+        "not starting",
+        "stopped working",
+        "warning light",
+    )
+
+
+def _incident_cause_known(context: dict[str, Any]) -> bool:
+    return _incident_bucket_has(
+        context,
+        ("knownFacts",),
+        "possible cause:",
+        "suspected cause:",
+        "cabin light",
+        "interior light",
+        "dome light",
+        "dead battery",
+        "battery may have drained",
+    )
+
+
+def _incident_equipment_unavailable(context: dict[str, Any]) -> bool:
+    return _incident_bucket_has(
+        context,
+        ("constraints",),
+        "no jumper cables",
+        "no battery charger",
+        "jumper cables or battery charger are not available",
+    )
+
+
+def _incident_assistance_selected(context: dict[str, Any]) -> bool:
+    return _incident_bucket_has(
+        context,
+        ("decisions", "recentProgress"),
+        "aaa was chosen",
+        "roadside assistance was chosen",
+        "decided to contact aaa",
+    )
+
+
+def _incident_assistance_en_route(context: dict[str, Any]) -> bool:
+    return _incident_bucket_has(
+        context,
+        ("recentProgress", "knownFacts"),
+        "aaa is on the way",
+        "roadside assistance is on the way",
+        "roadside assistance was dispatched",
+    )
+
+
+def _incident_resolved(context: dict[str, Any]) -> bool:
+    return _incident_bucket_has(
+        context,
+        ("decisions", "recentProgress"),
+        "issue was resolved",
+        "car started successfully",
+        "vehicle started successfully",
+        "is running normally again",
+        "works correctly again",
+        "problem was fixed",
+    )
+
+
+def _normalize_incident_constraints(context: dict[str, Any]) -> None:
+    normalized: list[str] = []
+    for item in _clean_list(context.get("constraints"), MAX_CONSTRAINTS, 320):
+        lowered = item.casefold()
+        if re.fullmatch(
+            r"(?:requirement:\s*)?(?:done\s+)?urgently|"
+            r"(?:requirement:\s*)?(?:as soon as possible|asap)",
+            lowered,
+        ):
+            item = "Urgency: Resolve the issue as soon as possible."
+        if item.casefold() not in {entry.casefold() for entry in normalized}:
+            normalized.append(item)
+    context["constraints"] = normalized[:MAX_CONSTRAINTS]
+
+
+def _sanitize_context(raw: object) -> dict[str, Any] | None:
+    context = _phase18_incident_base_sanitize_context(raw)
+    if context is None:
+        return None
+    if not _troubleshooting_context(context):
+        return context
+
+    context["focusType"] = "troubleshooting"
+    if context.get("mode") == "general":
+        context["mode"] = "planning"
+
+    success = _clean_text(context.get("successCriteria"), 400)
+    if re.search(
+        r"^purchase\s+(?:a|the)\s+(?:car|vehicle|motorcycle|bike)\b",
+        success,
+        flags=re.IGNORECASE,
+    ):
+        context["successCriteria"] = ""
+
+    context["constraints"] = [
+        item
+        for item in _clean_list(context.get("constraints"), MAX_CONSTRAINTS, 320)
+        if not re.match(
+            r"^(?:screen size|brand|budget|operating system|retailer):",
+            item,
+            flags=re.IGNORECASE,
+        )
+    ]
+    context["decisions"] = [
+        item
+        for item in _clean_list(context.get("decisions"), MAX_DECISIONS, 320)
+        if not re.search(
+            r"\b(?:chosen as the brand|chosen as the retailer|selected listing)\b",
+            item,
+            flags=re.IGNORECASE,
+        )
+    ]
+    _normalize_incident_constraints(context)
+    _refresh_derived_objective(context)
+    _refresh_questions_and_next_action(context, "")
+    return context
+
+
+def _incident_subject(context: dict[str, Any]) -> str:
+    subject = _clean_text(context.get("subject"), 260)
+    if subject and subject.casefold() not in {
+        "problem", "issue", "trouble", "car", "vehicle"
+    }:
+        return subject
+    haystack = _incident_context_text(context).casefold()
+    if re.search(r"\b(?:car|vehicle|engine|battery|ignition|starter)\b", haystack):
+        return "Car starting problem"
+    if re.search(r"\b(?:motorcycle|bike)\b", haystack):
+        return "Motorcycle problem"
+    return _clean_text(context.get("title"), 180) or "Current problem"
+
+
+def _refresh_derived_objective(context: dict[str, Any]) -> None:
+    _phase18_incident_base_refresh_derived_objective(context)
+    if not _troubleshooting_context(context):
+        return
+
+    subject = _incident_subject(context)
+    success = _clean_text(context.get("successCriteria"), 300)
+    if _vehicle_troubleshooting_context(context):
+        objective = "Restore reliable starting and operation for the car"
+        if success and not re.search(
+            r"\b(?:turns?|starts?|runs?|working)\b",
+            success,
+            flags=re.IGNORECASE,
+        ):
+            objective = f"Resolve {subject.casefold()} so that {success.rstrip('.')}"
+    else:
+        objective = f"Diagnose and resolve {subject.casefold()}"
+        if success:
+            objective = f"Resolve {subject.casefold()} so that {success.rstrip('.')}"
+
+    if any(
+        "urgency:" in item.casefold()
+        for item in _clean_list(context.get("constraints"), MAX_CONSTRAINTS, 320)
+    ):
+        objective = f"{objective} as soon as possible"
+    context["objective"] = objective.rstrip(" .")
+    if not _clean_text(context.get("subject"), 260):
+        context["subject"] = subject
+
+
+def _record_incident_user_events(
+    context: dict[str, Any],
+    visible_message: str,
+    pending_before: dict[str, str] | None,
+) -> bool:
+    if not _troubleshooting_context(context):
+        return False
+
+    visible = _clean_text(visible_message, 1200)
+    lowered = visible.casefold()
+    if not visible:
+        return False
+    changed = False
+
+    if re.search(r"\b(?:urgent|urgently|asap|as soon as possible|right away)\b", lowered):
+        changed = _prepend_unique(
+            context,
+            "constraints",
+            "Urgency: Resolve the issue as soon as possible.",
+            MAX_CONSTRAINTS,
+        ) or changed
+
+    if re.search(
+        r"\b(?:car|vehicle|it)\s+(?:just\s+)?(?:isn't|is not|won't|will not|"
+        r"doesn't|does not)\s+(?:start|starting|turn over)\b",
+        lowered,
+    ):
+        changed = _prepend_unique(
+            context,
+            "knownFacts",
+            "Symptom: The car does not start.",
+            MAX_FACTS,
+        ) or changed
+        if not _clean_text(context.get("subject"), 260):
+            context["subject"] = "Car starting problem"
+            changed = True
+
+    if re.search(
+        r"\b(?:left|kept)\s+(?:(?:the|a)\s+)?(?:cabin|interior|dome)\s+light\s+on\b|"
+        r"\b(?:left|kept)\s+on\s+(?:(?:the|a)\s+)?(?:cabin|interior|dome)\s+light\b",
+        lowered,
+    ):
+        changed = _prepend_unique(
+            context,
+            "knownFacts",
+            "Possible cause: A cabin light may have drained the battery.",
+            MAX_FACTS,
+        ) or changed
+
+    if re.search(
+        r"\b(?:i|we)\s+(?:do not|don't|dont)\s+have\b.*\b(?:jumper\s+cables?|"
+        r"battery\s+charger|charger|any\s+of\s+those)\b",
+        lowered,
+    ) or re.fullmatch(r"i (?:do not|don't|dont) have any of those", lowered):
+        changed = _prepend_unique(
+            context,
+            "constraints",
+            "No jumper cables or battery charger are available.",
+            MAX_CONSTRAINTS,
+        ) or changed
+
+    if re.search(r"\b(?:i|we)\s+have\s+(?:aaa|triple[- ]?a)\b", lowered):
+        changed = _prepend_unique(
+            context,
+            "knownFacts",
+            "Roadside-assistance coverage: AAA is available.",
+            MAX_FACTS,
+        ) or changed
+
+    if re.search(
+        r"\b(?:i(?:'ll| will)|we(?:'ll| will)|i am going to|i'm going to)\s+"
+        r"call\s+(?:aaa|triple[- ]?a|roadside assistance|them)\b",
+        lowered,
+    ):
+        changed = _prepend_unique(
+            context,
+            "decisions",
+            "AAA was chosen for roadside assistance.",
+            MAX_DECISIONS,
+        ) or changed
+        changed = _prepend_unique(
+            context,
+            "recentProgress",
+            "The user decided to contact AAA.",
+            MAX_RECENT_PROGRESS,
+        ) or changed
+
+    eta_match = re.search(
+        r"\b(?:aaa|triple[- ]?a|roadside assistance)\s+(?:is|are|'s)\s+"
+        r"on\s+the\s+way(?:.*?\b(?:in|be)\s+)?\s*(\d+\s*(?:minutes?|mins?|hours?))?",
+        lowered,
+    )
+    if eta_match:
+        changed = _prepend_unique(
+            context,
+            "recentProgress",
+            "AAA is on the way.",
+            MAX_RECENT_PROGRESS,
+        ) or changed
+        eta = _clean_text(eta_match.group(1), 60) if eta_match.group(1) else ""
+        if eta:
+            changed = _prepend_unique(
+                context,
+                "knownFacts",
+                f"Roadside-assistance ETA: {eta}.",
+                MAX_FACTS,
+            ) or changed
+
+    pending_target = (
+        _clean_text(pending_before.get("target"), 80)
+        if isinstance(pending_before, dict)
+        else ""
+    )
+    resolution_message = bool(
+        re.search(
+            r"\b(?:aaa|triple[- ]?a|roadside assistance).*(?:just\s+)?(?:left|finished|"
+            r"came|arrived).*(?:car|vehicle|it).*(?:started|starts|running|runs)\b",
+            lowered,
+        )
+        or re.search(
+            r"\b(?:car|vehicle|it)\s+(?:just\s+)?(?:started|starts|is running|runs)\s+"
+            r"(?:again|fine|normally|great|now)\b",
+            lowered,
+        )
+        or re.search(r"\b(?:got|have)\s+(?:the\s+)?car\s+started\s+again\b", lowered)
+    )
+    if resolution_message and pending_target not in {"objective", "successCriteria"}:
+        changed = _prepend_unique(
+            context,
+            "recentProgress",
+            "AAA completed the roadside-assistance visit.",
+            MAX_RECENT_PROGRESS,
+        ) or changed
+        changed = _prepend_unique(
+            context,
+            "recentProgress",
+            "The car started successfully and is running normally again.",
+            MAX_RECENT_PROGRESS,
+        ) or changed
+        changed = _prepend_unique(
+            context,
+            "decisions",
+            "The immediate no-start incident was resolved with roadside assistance.",
+            MAX_DECISIONS,
+        ) or changed
+
+    context["knownFacts"] = [
+        item
+        for item in _clean_list(context.get("knownFacts"), MAX_FACTS, 320)
+        if not re.match(
+            r"^Working environment:\s*(?:I have|we have)?\s*(?:AAA|Triple-A)",
+            item,
+            flags=re.IGNORECASE,
+        )
+    ]
+
+    if _incident_assistance_selected(context) or _incident_assistance_en_route(context):
+        context["pendingQuestion"] = None
+        context["openQuestions"] = []
+        changed = True
+
+    if _incident_resolved(context):
+        context["pendingQuestion"] = None
+        context["openQuestions"] = []
+        changed = True
+
+    return changed
+
+
+def _specific_questions(context: dict[str, Any]) -> list[str]:
+    if not _troubleshooting_context(context):
+        return _phase18_incident_base_specific_questions(context)
+    if _incident_resolved(context):
+        return []
+    if not _clean_text(context.get("successCriteria"), 300):
+        return ["What result would tell you this problem is resolved?"]
+    if not _incident_symptom_known(context):
+        if _vehicle_troubleshooting_context(context):
+            return [
+                "What happens when you try to start the car—no lights, clicking, cranking, or something else?"
+            ]
+        return ["What exactly happens when you try to use it?"]
+    if _incident_assistance_selected(context) or _incident_assistance_en_route(context):
+        return []
+    if not _incident_cause_known(context) and _vehicle_troubleshooting_context(context):
+        return [
+            "Did anything happen before the no-start problem, such as a light being left on or a warning appearing?"
+        ]
+    if _incident_equipment_unavailable(context):
+        return ["Do you have roadside assistance or someone nearby who can help safely?"]
+    return []
+
+
+def _derive_stage(context: dict[str, Any]) -> str:
+    if not _troubleshooting_context(context):
+        return _phase18_incident_base_derive_stage(context)
+    if _incident_resolved(context):
+        return "complete"
+    if _incident_assistance_en_route(context) or _incident_assistance_selected(context):
+        return "in-progress"
+    if _incident_symptom_known(context):
+        return "planning"
+    return "discovery"
+
+
+def _refresh_questions_and_next_action(context: dict[str, Any], user_text: str) -> None:
+    if not _troubleshooting_context(context):
+        _phase18_incident_base_refresh_questions_and_next_action(context, user_text)
+        return
+
+    context["focusType"] = "troubleshooting"
+    if context.get("mode") == "general":
+        context["mode"] = "planning"
+    _normalize_incident_constraints(context)
+    _refresh_derived_objective(context)
+    context["stage"] = _derive_stage(context)
+
+    questions = _specific_questions(context)
+    context["openQuestions"] = questions[:MAX_OPEN_QUESTIONS]
+    if questions:
+        context["pendingQuestion"] = {
+            "target": _question_target(questions[0], context),
+            "question": questions[0],
+        }
+    else:
+        context["pendingQuestion"] = None
+
+    if context["stage"] == "complete":
+        context["nextAction"] = (
+            "The immediate problem is resolved. Follow the roadside-assistance guidance, "
+            "monitor for recurrence, and end the focus when satisfied."
+        )
+    elif _incident_assistance_en_route(context):
+        context["nextAction"] = (
+            "Wait safely for roadside assistance, keep unnecessary accessories off, "
+            "and have the vehicle location and basic details ready."
+        )
+    elif _incident_assistance_selected(context):
+        context["nextAction"] = "Contact AAA and confirm that roadside assistance is on the way."
+    elif _incident_equipment_unavailable(context):
+        context["nextAction"] = (
+            "Use roadside assistance or another safe source of jump-start help rather "
+            "than attempting an improvised electrical connection."
+        )
+    elif _incident_cause_known(context) and _vehicle_troubleshooting_context(context):
+        context["nextAction"] = (
+            "Try a safe jump-start or battery charge using proper equipment, or contact "
+            "roadside assistance if that equipment is not available."
+        )
+    elif _incident_symptom_known(context):
+        context["nextAction"] = "Identify the most likely cause from the observed symptoms."
+    else:
+        context["nextAction"] = "Describe exactly what happens when the problem occurs."
+
+
+def _apply_user_update(
+    context: dict[str, Any],
+    visible_message: str,
+) -> tuple[dict[str, Any], bool]:
+    pending_before = _sanitize_pending_question(context.get("pendingQuestion"))
+    next_context, changed = _phase18_incident_base_apply_user_update(
+        context,
+        visible_message,
+    )
+    if not _troubleshooting_context(next_context):
+        return next_context, changed
+
+    visible = _clean_text(_extract_visible_user_message(visible_message), 1200)
+    changed = _record_incident_user_events(
+        next_context,
+        visible,
+        pending_before,
+    ) or changed
+    _refresh_questions_and_next_action(next_context, visible)
+    _refresh_derived_objective(next_context)
+    next_context["updatedAt"] = _now_iso()
+    return next_context, changed
+
+
+def _apply_assistant_update(
+    context: dict[str, Any],
+    reply: str,
+) -> tuple[dict[str, Any], bool]:
+    next_context, changed = _phase18_incident_base_apply_assistant_update(context, reply)
+    if not _troubleshooting_context(next_context):
+        return next_context, changed
+
+    previous = (
+        next_context.get("stage"),
+        next_context.get("nextAction"),
+        next_context.get("pendingQuestion"),
+        tuple(next_context.get("openQuestions") or []),
+    )
+    _refresh_questions_and_next_action(next_context, "")
+    current = (
+        next_context.get("stage"),
+        next_context.get("nextAction"),
+        next_context.get("pendingQuestion"),
+        tuple(next_context.get("openQuestions") or []),
+    )
+    if current != previous:
+        changed = True
+    return next_context, changed
+
+
+def prepare_background_chat_message(message: str) -> tuple[str, str]:
+    prepared, visible = _phase18_incident_base_prepare_background_chat_message(message)
+    with _STORE_LOCK:
+        context = _sync_with_active_session_unlocked()
+    if not isinstance(context, dict) or not _troubleshooting_context(context):
+        return prepared, visible
+
+    rules = [
+        "- For troubleshooting, keep the user focused on the current unresolved symptom and the next safe diagnostic or assistance step.",
+        "- Treat a chosen helper, dispatched roadside assistance, and a verified successful restart as durable progress; do not return to already-completed questions.",
+        "- Do not present a suspected cause as certain without evidence.",
+        "- For vehicle or electrical problems, do not recommend improvised connections or unsafe roadside work. Prefer proper equipment, roadside assistance, or a qualified professional.",
+        "- Once the user verifies the problem is resolved, acknowledge completion and give only brief recurrence-monitoring guidance; do not continue interviewing them.",
+    ]
+    prepared = prepared.replace(
+        "Behavior rules:\n",
+        "Behavior rules:\n" + "\n".join(rules) + "\n",
+        1,
+    )
+    return prepared, visible
