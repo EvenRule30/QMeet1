@@ -29,7 +29,8 @@ _IMPLICIT_FOCUS_DURABLE_RE = re.compile(
     r"website|web site|dashboard|app|application|program|code|feature|bug|"
     r"launch|release|deadline|milestone|roadmap|strategy|budget|trip|travel|"
     r"event|party|birthday|gift|flowers?|wedding|interview|meeting|workshop|"
-    r"renovation|move|moving|job search|certification"
+    r"renovation|move|moving|job search|certification|purchase|shopping|buying|"
+    r"television|tv|laptop|computer|phone|tablet|appliance|furniture|vehicle"
     r")\b",
     flags=re.IGNORECASE,
 )
@@ -40,7 +41,8 @@ _IMPLICIT_FOCUS_ACTION_RE = re.compile(
     r"organiz(?:e|ing)|fix(?:ing)?|debug(?:ging)?|launch(?:ing)?|"
     r"submit(?:ting)?|apply(?:ing)?|practic(?:e|ing)|learn(?:ing)?|"
     r"set(?:ting)? up|figur(?:e|ing) out|tackl(?:e|ing)|work(?:ing)? on|"
-    r"giv(?:e|ing)|buy(?:ing)?|arrang(?:e|ing)|choos(?:e|ing)|get(?:ting)?|"
+    r"giv(?:e|ing)|buy(?:ing)?|purchas(?:e|ing)|shop(?:ping)?(?:\s+for)?|"
+    r"order(?:ing)?|compar(?:e|ing)|arrang(?:e|ing)|choos(?:e|ing)|get(?:ting)?|"
     r"get(?:ting)? ready for)\b",
     flags=re.IGNORECASE,
 )
@@ -72,7 +74,8 @@ _IMPLICIT_FOCUS_RESEARCH_RE = re.compile(
 )
 _IMPLICIT_FOCUS_PLANNING_RE = re.compile(
     r"\b(?:plan|planning|organize|schedule|roadmap|strategy|budget|trip|travel|"
-    r"event|party|presentation|proposal|launch|deadline|milestone|prepare)\b",
+    r"event|party|presentation|proposal|launch|deadline|milestone|prepare|"
+    r"purchase|shopping|buying|compare)\b",
     flags=re.IGNORECASE,
 )
 _IMPLICIT_FOCUS_EXCLUSION_RE = re.compile(
@@ -162,6 +165,13 @@ def _normalize_goal(candidate: str) -> str:
     goal = _clean_focus_text(candidate)
     goal = re.sub(r"^(?:with|on|about)\s+", "", goal, flags=re.IGNORECASE)
     goal = re.sub(r"^(?:a|an|the)\s+", lambda match: match.group(0), goal)
+    goal = re.sub(
+        r"\s+(?:but|and)\s+(?:i|we)\s+(?:do\s+not|don't|dont)\s+know\s+"
+        r"(?:where|how)\s+to\s+start.*$",
+        "",
+        goal,
+        flags=re.IGNORECASE,
+    ).strip()
     if not goal:
         return ""
 
@@ -191,6 +201,10 @@ def _normalize_goal(candidate: str) -> str:
         "working on": "Work on",
         "giving": "Give",
         "buying": "Buy",
+        "purchasing": "Purchase",
+        "shopping for": "Shop for",
+        "ordering": "Order",
+        "comparing": "Compare",
         "arranging": "Arrange",
         "choosing": "Choose",
         "getting": "Get",
@@ -203,6 +217,14 @@ def _normalize_goal(candidate: str) -> str:
             break
     if re.fullmatch(r"(?:this|that|it|something|stuff|things?)", goal, flags=re.IGNORECASE):
         return ""
+
+    if re.match(r"^Get\s+", goal) and re.search(
+        r"\b(?:television|tv|laptop|computer|phone|tablet|appliance|furniture|"
+        r"vehicle|motorcycle|car|camera|monitor|headphones?|speaker)\b",
+        goal,
+        flags=re.IGNORECASE,
+    ):
+        goal = re.sub(r"^Get\s+", "Buy ", goal)
 
     if _IMPLICIT_FOCUS_ACTION_RE.match(goal):
         return goal[0].upper() + goal[1:]
@@ -219,6 +241,20 @@ def _normalize_goal(candidate: str) -> str:
 
 
 def _focus_title(goal: str) -> str:
+    purchase_match = re.match(
+        r"^(?:buy|purchase|shop\s+for|order|get)\s+(.+)$",
+        goal,
+        flags=re.IGNORECASE,
+    )
+    if purchase_match and re.search(
+        r"\b(?:television|tv|laptop|computer|phone|tablet|appliance|furniture|"
+        r"vehicle|motorcycle|car|camera|monitor|headphones?|speaker)\b",
+        purchase_match.group(1),
+        flags=re.IGNORECASE,
+    ):
+        product = _clean_focus_text(purchase_match.group(1), 105)
+        return f"Buying {product}" if product else "Product purchase"
+
     birthday_flowers = re.match(
         r"^give\s+([A-Z][a-z]+)\s+(?:some\s+)?flowers?\s+for\s+"
         r"(?:his|her|their)\s+birthday$",
@@ -250,6 +286,21 @@ def _infer_focus_mode(goal: str) -> str:
         return "meeting"
     if _IMPLICIT_FOCUS_RESEARCH_RE.search(goal):
         return "research"
+    if re.search(
+        r"\b(?:buy|buying|purchase|purchasing|shop|shopping|order|ordering|"
+        r"compare|comparing)\b",
+        goal,
+        flags=re.IGNORECASE,
+    ) or (
+        re.search(r"\b(?:get|getting)\b", goal, flags=re.IGNORECASE)
+        and re.search(
+            r"\b(?:television|tv|laptop|computer|phone|tablet|appliance|"
+            r"furniture|vehicle|motorcycle|car|camera|monitor|headphones?|speaker)\b",
+            goal,
+            flags=re.IGNORECASE,
+        )
+    ):
+        return "planning"
     if _IMPLICIT_FOCUS_PERSONAL_RE.search(goal):
         return "personal"
     if _IMPLICIT_FOCUS_PLANNING_RE.search(goal) or _IMPLICIT_FOCUS_DEADLINE_RE.search(goal):
@@ -263,7 +314,13 @@ def _implicit_focus_candidate(message: str) -> tuple[str, int] | None:
         return None
     if _IMPLICIT_FOCUS_EXCLUSION_RE.search(text):
         return None
-    if re.search(r"\b(?:do not|don't|dont|not trying to|not working on)\b", text, flags=re.IGNORECASE):
+    if re.search(
+        r"\b(?:not\s+trying\s+to|not\s+working\s+on|do\s+not\s+want\s+to|"
+        r"don't\s+want\s+to|dont\s+want\s+to|do\s+not\s+need\s+to|"
+        r"don't\s+need\s+to|dont\s+need\s+to)\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
         return None
     if re.search(r"\b(?:focus|focus session|focusing)\b", text, flags=re.IGNORECASE):
         # The existing structured focus router handles explicit focus wording.
@@ -395,6 +452,116 @@ def _implicit_focus_start_response(
     )
 
 
+
+def _explicit_focus_payload(message: str) -> str:
+    text = _clean_focus_text(message, 420)
+    patterns = [
+        r"^(?:please\s+)?(?:can|could|would|will)\s+you\s+(?:please\s+)?"
+        r"(?:start|begin|create|open)\s+(?:me\s+)?(?:a\s+)?(?:new\s+)?"
+        r"focus(?:\s+session)?\s+(?:for|on|about)\s+(.+)$",
+        r"^(?:please\s+)?(?:start|begin|create|open)\s+(?:me\s+)?(?:a\s+)?"
+        r"(?:new\s+)?focus(?:\s+session)?\s+(?:for|on|about)\s+(.+)$",
+    ]
+    for pattern in patterns:
+        match = re.fullmatch(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return _clean_focus_text(match.group(1), 260)
+    return ""
+
+
+def _is_vague_focus_payload(value: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", " ", value.casefold()).strip()
+    if not normalized:
+        return True
+    tokens = normalized.split()
+    vague_tokens = {
+        "get", "getting", "do", "doing", "work", "working", "help",
+        "something", "stuff", "things", "thing", "it", "that", "this",
+        "project", "task", "goal", "focus", "session",
+    }
+    return len(tokens) <= 3 and all(token in vague_tokens for token in tokens)
+
+
+def _vague_explicit_focus_response(message: str) -> JSONResponse | None:
+    payload = _explicit_focus_payload(message)
+    if not payload or not _is_vague_focus_payload(payload):
+        return None
+    return JSONResponse(
+        {
+            "intent": "chat",
+            "action": "none",
+            "confidence": 0.99,
+            "frontendCommand": "",
+            "payload": {},
+            "reason": (
+                "The requested focus title was too vague to create a useful "
+                "background context. Keep the turn in chat so QMeet can resolve "
+                "the subject from the conversation or ask one clarifying question."
+            ),
+        }
+    )
+
+
+def _focus_correction_response(message: str) -> JSONResponse | None:
+    text = _clean_focus_text(message, 420)
+    patterns = [
+        r"^(?:no|actually|wait|sorry|correction)[, ]+(?:i|we)\s+"
+        r"(?:want|need|would\s+like)\s+(?:to\s+)?(?:do|start|begin|create|have|make)\s+"
+        r"(?:a\s+)?focus(?:\s+session)?\s+(?:on|for|about)\s+(.+)$",
+        r"^(?:no|actually|wait|sorry|correction)[, ]+(?:i|we)\s+"
+        r"(?:want|need|would\s+like)\s+to\s+focus\s+(?:on|about)\s+(.+)$",
+    ]
+    raw_candidate = ""
+    for pattern in patterns:
+        match = re.fullmatch(pattern, text, flags=re.IGNORECASE)
+        if match:
+            raw_candidate = _clean_focus_text(match.group(1), 260)
+            break
+    if not raw_candidate:
+        return None
+
+    raw_candidate = re.sub(
+        r"\s+(?:that\s+|which\s+)?(?:i|we)\s+(?:mentioned|talked\s+about|"
+        r"discussed|said)\s+(?:before|earlier|already).*$",
+        "",
+        raw_candidate,
+        flags=re.IGNORECASE,
+    ).strip()
+    raw_candidate = re.sub(
+        r"\s+(?:from|like)\s+(?:before|earlier)$",
+        "",
+        raw_candidate,
+        flags=re.IGNORECASE,
+    ).strip()
+    if not raw_candidate or _is_vague_focus_payload(raw_candidate):
+        return None
+
+    goal = _normalize_goal(raw_candidate)
+    if re.match(r"^Get\s+", goal) and re.search(
+        r"\b(?:television|tv|laptop|computer|phone|tablet|appliance|furniture|"
+        r"vehicle|motorcycle|car|camera|monitor|headphones?|speaker)\b",
+        goal,
+        flags=re.IGNORECASE,
+    ):
+        goal = re.sub(r"^Get\s+", "Buy ", goal)
+    title = _focus_title(goal)
+    mode = _infer_focus_mode(goal)
+    canonical_command = f"start a {mode} focus session for {title} with goal to {goal}"
+    return JSONResponse(
+        {
+            "intent": "command",
+            "action": "start_focus_session",
+            "confidence": 0.995,
+            "frontendCommand": canonical_command,
+            "payload": {"title": title, "mode": mode, "goal": goal},
+            "reason": (
+                "The user corrected or expanded an incomplete focus. Start a new "
+                "session with the complete subject instead of preserving the vague title."
+            ),
+        }
+    )
+
+
 def _focus_completion_response(context: dict[str, Any]) -> JSONResponse:
     title = str(context.get("title") or "the current focus").strip()
     return JSONResponse(
@@ -477,6 +644,16 @@ class BackgroundWorkContextMiddleware:
                 pass
 
         if path == "/api/command/interpret" and user_message:
+            correction = _focus_correction_response(user_message)
+            if correction is not None:
+                await correction(scope, replay_receive, send)
+                return
+
+            vague_focus = _vague_explicit_focus_response(user_message)
+            if vague_focus is not None:
+                await vague_focus(scope, replay_receive, send)
+                return
+
             implicit_start = _implicit_focus_start_response(
                 user_message,
                 request_payload,

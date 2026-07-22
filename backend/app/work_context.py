@@ -2768,3 +2768,2336 @@ def should_keep_focus_message_in_chat(message: str) -> bool:
     # While a focus is active, natural language belongs to the conversation by
     # default. Only the explicit command patterns above should bypass chat.
     return True
+
+# ---------------------------------------------------------------------------
+# Phase 18: domain-neutral workflow ledger and sale/listing continuity
+# ---------------------------------------------------------------------------
+# The earlier context learner was accurate for a few named domains but could
+# lose ordinary project state when a conversation moved from discovery into
+# execution. This layer keeps a small event ledger for any focus and adds a
+# first-class sale/listing workflow without changing the public API.
+
+FOCUS_TYPES.add("sale")
+QUESTION_TARGETS.update({"detail", "price", "assets", "platform"})
+
+_ledger_base_infer_focus_type_from_text = _infer_focus_type_from_text
+_ledger_base_is_information_question = _is_information_question
+_ledger_base_question_target = _question_target
+_ledger_base_question_answered = _question_answered
+_ledger_base_apply_answer_to_target = _apply_answer_to_target
+_ledger_base_extract_explicit_structured_fields = _extract_explicit_structured_fields
+_ledger_base_refresh_derived_objective = _refresh_derived_objective
+_ledger_base_specific_questions = _specific_questions
+_ledger_base_derive_stage = _derive_stage
+_ledger_base_refresh_questions_and_next_action = _refresh_questions_and_next_action
+_ledger_base_apply_user_update = _apply_user_update
+_ledger_base_apply_assistant_update = _apply_assistant_update
+_ledger_base_sanitize_context = _sanitize_context
+_ledger_base_prepare_background_chat_message = prepare_background_chat_message
+
+
+def _sale_context(context: dict[str, Any]) -> bool:
+    haystack = " ".join(
+        (
+            _clean_text(context.get("title"), 160),
+            _clean_text(context.get("objective"), 500),
+            _clean_text(context.get("subject"), 300),
+        )
+    ).casefold()
+    return _clean_text(context.get("focusType"), 40) == "sale" or bool(
+        re.search(
+            r"\b(?:sell|selling|sale|list(?:ing)?|marketplace|craigslist|cycle\s*trader|offerup)\b",
+            haystack,
+        )
+    )
+
+
+def _infer_focus_type_from_text(text: str, mode: str) -> str:
+    lowered = _clean_text(text, 1200).casefold()
+    if re.search(
+        r"\b(?:sell(?:ing)?|list(?:ing)?|put(?:ting)?\s+.+\s+up\s+for\s+sale|for\s+sale|"
+        r"craigslist|facebook\s+marketplace|cycle\s*trader|offerup)\b",
+        lowered,
+    ):
+        return "sale"
+    return _ledger_base_infer_focus_type_from_text(text, mode)
+
+
+def _is_action_offer_question(question: str) -> bool:
+    lowered = _clean_text(question, 320).casefold()
+    return bool(
+        re.search(
+            r"^(?:would\s+you\s+like|do\s+you\s+want|want\s+me\s+to|"
+            r"want\s+help|can\s+i|shall\s+i|should\s+i|ready\s+for)\b",
+            lowered,
+        )
+        or re.search(
+            r"\b(?:would\s+you\s+like|want\s+me\s+to|want\s+help|"
+            r"do\s+you\s+want\s+me\s+to|let\s+me\s+know\s+if)\b",
+            lowered,
+        )
+        or re.search(
+            r"^(?:does|did)\s+(?:this|that|the\s+(?:draft|arrangement|version|listing|title))\s+"
+            r"(?:work|look|sound|feel)\b",
+            lowered,
+        )
+        or bool(
+            re.search(
+                r"\b(?:prefer|tackle|work\s+on|focus\s+on|polish|expand|tweak|add)\b.*\bnext\b",
+                lowered,
+            )
+        )
+    )
+
+
+def _is_information_question(question: str) -> bool:
+    clean = _clean_text(question, 320)
+    if not clean.endswith("?") or _is_action_offer_question(clean):
+        return False
+    lowered = clean.casefold()
+    return bool(
+        re.match(
+            r"^(?:what|what's|who|which|how|when|where|why|"
+            r"is\s+(?:there|the|your|this|that)|are\s+(?:there|the|your)|"
+            r"do\s+you\s+already\s+have|have\s+you|could\s+you\s+tell\s+me|"
+            r"can\s+you\s+tell\s+me|tell\s+me)\b",
+            lowered,
+        )
+    )
+
+
+def _question_target(question: str, context: dict[str, Any]) -> str:
+    lowered = _clean_text(question, 320).casefold()
+    if _sale_context(context):
+        if any(
+            phrase in lowered
+            for phrase in (
+                "target price",
+                "minimum acceptable",
+                "minimum price",
+                "asking price",
+                "lowest price",
+                "how much",
+            )
+        ):
+            return "price"
+        if any(
+            phrase in lowered
+            for phrase in (
+                "model, year",
+                "year and model",
+                "make and model",
+                "model and year",
+                "mileage",
+                "odometer",
+            )
+        ):
+            return "detail"
+        if any(
+            phrase in lowered
+            for phrase in (
+                "overall state",
+                "overall condition",
+                "condition is it in",
+                "maintenance or issues",
+                "recent maintenance",
+                "known issues",
+            )
+        ):
+            return "detail"
+        if any(
+            phrase in lowered
+            for phrase in (
+                "photos ready",
+                "photos do you have",
+                "pictures ready",
+                "pictures do you have",
+            )
+        ):
+            return "assets"
+        if any(
+            phrase in lowered
+            for phrase in (
+                "where will you list",
+                "where do you want to list",
+                "which marketplace",
+                "which platform",
+                "which site",
+            )
+        ):
+            return "platform"
+        if any(token in lowered for token in ("timeline", "sold by", "sell it by", "within how long")):
+            return "deadline"
+    target = _ledger_base_question_target(question, context)
+    if target:
+        return target
+    return "detail" if _is_information_question(question) else ""
+
+
+def _normalize_money(value: str) -> str:
+    clean = _clean_text(value, 160)
+    match = re.search(r"(?:\$\s*)?(\d[\d,]*(?:\.\d{1,2})?)", clean)
+    if not match:
+        return _sentence_fragment(clean, 120)
+    number = match.group(1).replace(",", "")
+    try:
+        amount = float(number)
+    except ValueError:
+        return _sentence_fragment(clean, 120)
+    if amount.is_integer():
+        return f"${int(amount):,}"
+    return f"${amount:,.2f}"
+
+
+def _minimum_price(context: dict[str, Any]) -> str:
+    for item in _clean_list(context.get("constraints"), MAX_CONSTRAINTS, 300):
+        match = re.search(
+            r"minimum(?:\s+acceptable)?\s+price\s*:\s*(\$?[\d,]+(?:\.\d{1,2})?)",
+            item,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            return _normalize_money(match.group(1))
+    return ""
+
+
+def _deadline_value(context: dict[str, Any]) -> str:
+    for item in _clean_list(context.get("constraints"), MAX_CONSTRAINTS, 300):
+        lowered = item.casefold()
+        if any(token in lowered for token in ("deadline", "timing", "within", "by ", "month", "week", "day")):
+            value = item.split(":", 1)[1].strip() if ":" in item else item
+            return value.rstrip(".")
+    return ""
+
+
+def _fact_label_from_question(question: str) -> str:
+    lowered = _clean_text(question, 260).casefold()
+    if any(token in lowered for token in ("model", "year", "make", "mileage", "odometer")):
+        return "Item details"
+    if any(token in lowered for token in ("condition", "maintenance", "issues", "state")):
+        return "Condition"
+    if any(token in lowered for token in ("audience", "buyer", "customer")):
+        return "Intended buyer"
+    if any(token in lowered for token in ("requirement", "must", "constraint")):
+        return "Requirement"
+    return "Project detail"
+
+
+def _clean_sale_detail(answer: str) -> str:
+    clean = _sentence_fragment(answer, 360).strip().rstrip(".")
+    clean = re.sub(r"\bit\s+has\s+(\d+)k\s+miles\b", lambda m: f"with {int(m.group(1)) * 1000:,} miles", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"\b(\d+)k\s+miles\b", lambda m: f"{int(m.group(1)) * 1000:,} miles", clean, flags=re.IGNORECASE)
+    return _clean_text(clean, 360)
+
+
+def _apply_answer_to_target(
+    context: dict[str, Any],
+    target: str,
+    raw_answer: str,
+) -> bool:
+    if _sale_context(context):
+        if target == "price" and not _is_weak_acknowledgement(raw_answer):
+            price = _normalize_money(raw_answer)
+            if not price:
+                return False
+            context["constraints"] = [
+                item
+                for item in _clean_list(context.get("constraints"), MAX_CONSTRAINTS, 300)
+                if "minimum acceptable price" not in item.casefold()
+            ]
+            return _prepend_unique(
+                context,
+                "constraints",
+                f"Minimum acceptable price: {price}.",
+                MAX_CONSTRAINTS,
+            )
+        if target == "platform" and not _is_weak_acknowledgement(raw_answer):
+            platform = _clean_text(raw_answer, 180).strip().rstrip(".")
+            platform = re.sub(
+                r"^(?:let(?:'s|\s+us)\s+(?:go|use|start)\s+(?:with|to)?\s*|"
+                r"i\s+(?:want|would\s+like)\s+to\s+(?:use|list\s+it\s+on)\s+)",
+                "",
+                platform,
+                flags=re.IGNORECASE,
+            ).strip()
+            if not platform:
+                return False
+            context["decisions"] = [
+                item
+                for item in _clean_list(context.get("decisions"), MAX_DECISIONS, 300)
+                if "listing platform" not in item.casefold()
+            ]
+            return _prepend_unique(
+                context,
+                "decisions",
+                f"{platform} was chosen as the listing platform.",
+                MAX_DECISIONS,
+            )
+        if target == "assets" and not _is_weak_acknowledgement(raw_answer):
+            if re.search(r"\b(?:already\s+)?(?:have|got|took|prepared)\b.*\b(?:photos?|pictures?|images?)\b", raw_answer, flags=re.IGNORECASE):
+                return _prepend_unique(
+                    context,
+                    "recentProgress",
+                    "Listing photos are ready.",
+                    MAX_RECENT_PROGRESS,
+                )
+        if target == "detail" and not _is_weak_acknowledgement(raw_answer):
+            answer = _clean_sale_detail(raw_answer)
+            if not answer:
+                return False
+            pending = _sanitize_pending_question(context.get("pendingQuestion"))
+            question = pending["question"] if pending else ""
+            label = _fact_label_from_question(question)
+            if label == "Item details":
+                if context.get("subject") != answer:
+                    context["subject"] = answer
+                    return True
+                return False
+            return _prepend_unique(
+                context,
+                "knownFacts",
+                f"{label}: {answer}.",
+                MAX_FACTS,
+            )
+    return _ledger_base_apply_answer_to_target(context, target, raw_answer)
+
+
+def _extract_explicit_structured_fields(text: str, context: dict[str, Any]) -> dict[str, str]:
+    result = _ledger_base_extract_explicit_structured_fields(text, context)
+    if not _sale_context(context):
+        return result
+    item_match = re.search(
+        r"\b((?:19|20)\d{2}\s+[A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z0-9-]+){0,3})\b",
+        text,
+    )
+    if item_match:
+        item = _clean_text(item_match.group(1), 220)
+        mileage_match = re.search(r"\b(\d+)k\s+miles\b", text, flags=re.IGNORECASE)
+        if mileage_match:
+            item += f" with {int(mileage_match.group(1)) * 1000:,} miles"
+        result["subject"] = item
+    return result
+
+
+def _sale_photos_ready(context: dict[str, Any]) -> bool:
+    return _has_progress(context, "listing photos are ready", "photos are ready", "pictures are ready") or any(
+        "photos are ready" in item.casefold()
+        for item in _clean_list(context.get("knownFacts"), MAX_FACTS, 300)
+    )
+
+
+def _sale_platform(context: dict[str, Any]) -> str:
+    for item in _clean_list(context.get("decisions"), MAX_DECISIONS, 300):
+        match = re.match(r"(.+?)\s+was chosen as the listing platform\.", item, flags=re.IGNORECASE)
+        if match:
+            return _clean_text(match.group(1), 100)
+    return ""
+
+
+def _sale_artifact_approved(context: dict[str, Any], artifact: str) -> bool:
+    needle = artifact.casefold()
+    return any(
+        needle in item.casefold() and any(token in item.casefold() for token in ("approved", "finalized"))
+        for item in [
+            *_clean_list(context.get("decisions"), MAX_DECISIONS, 300),
+            *_clean_list(context.get("recentProgress"), MAX_RECENT_PROGRESS, 300),
+        ]
+    )
+
+
+def _sale_listing_published(context: dict[str, Any]) -> bool:
+    return _has_progress(context, "listing was published", "listing has been posted", "ad was posted")
+
+
+def _sale_item_sold(context: dict[str, Any]) -> bool:
+    return _has_progress(context, "item was sold", "motorcycle was sold", "vehicle was sold")
+
+
+def _sale_core_details_ready(context: dict[str, Any]) -> bool:
+    condition_known = "condition:" in _context_text(context, "knownFacts")
+    return bool(
+        _clean_text(context.get("successCriteria"), 500)
+        and _deadline_value(context)
+        and _minimum_price(context)
+        and _clean_text(context.get("subject"), 300)
+        and condition_known
+    )
+
+
+def _refresh_derived_objective(context: dict[str, Any]) -> None:
+    if not _sale_context(context):
+        _ledger_base_refresh_derived_objective(context)
+        return
+    subject = _clean_text(context.get("subject"), 300)
+    success = _clean_text(context.get("successCriteria"), 500)
+    deadline = _deadline_value(context)
+    price = _minimum_price(context)
+    item = subject or "the item"
+    objective = f"Sell {item}"
+    if deadline:
+        objective += f" {deadline}" if deadline.casefold().startswith(("within", "by", "before")) else f" within {deadline}"
+    if price:
+        objective += f" for at least {price}"
+    elif success and "sold" not in success.casefold():
+        objective += f" with success defined as {success}"
+    context["objective"] = objective.rstrip(".") + "."
+
+
+def _specific_questions(context: dict[str, Any]) -> list[str]:
+    if not _sale_context(context):
+        return _ledger_base_specific_questions(context)
+    if context.get("stage") == "complete":
+        return []
+    questions: list[str] = []
+    if not _clean_text(context.get("successCriteria"), 500):
+        questions.append("What result would make this sale successful for you?")
+    if not _deadline_value(context):
+        questions.append("Within what timeline do you want the item sold?")
+    if not _minimum_price(context):
+        questions.append("What is your minimum acceptable price?")
+    if not _clean_text(context.get("subject"), 300):
+        questions.append("What are the item's year, make, model, and mileage or equivalent details?")
+    if "condition:" not in _context_text(context, "knownFacts"):
+        questions.append("How would you describe the item's condition, maintenance, and known issues?")
+    if _sale_core_details_ready(context) and not _sale_platform(context):
+        questions.append("Which marketplace or platform will you use first?")
+    return questions
+
+
+def _derive_stage(context: dict[str, Any]) -> str:
+    if not _sale_context(context):
+        return _ledger_base_derive_stage(context)
+    if _sale_item_sold(context):
+        return "complete"
+    if _sale_listing_published(context):
+        return "in-progress"
+    description_ready = _sale_artifact_approved(context, "listing description")
+    title_ready = _sale_artifact_approved(context, "listing title and opening")
+    if _sale_photos_ready(context) and description_ready and _sale_platform(context) and title_ready:
+        return "ready"
+    if description_ready or _sale_photos_ready(context) or _sale_platform(context):
+        return "in-progress"
+    if _sale_core_details_ready(context):
+        return "planning"
+    return "discovery"
+
+
+def _refresh_questions_and_next_action(context: dict[str, Any], user_text: str) -> None:
+    _ledger_base_refresh_questions_and_next_action(context, user_text)
+    if not _sale_context(context):
+        return
+
+    context["focusType"] = "sale"
+    if context.get("mode") == "general":
+        context["mode"] = "planning"
+    _refresh_derived_objective(context)
+    context["stage"] = _derive_stage(context)
+
+    pending = _sanitize_pending_question(context.get("pendingQuestion"))
+    candidates = [
+        *([pending["question"]] if pending and not _question_answered(pending["question"], user_text, context) else []),
+        *_specific_questions(context),
+    ]
+    questions: list[str] = []
+    for question in candidates:
+        if question in questions or _question_answered(question, user_text, context):
+            continue
+        questions.append(question)
+        if len(questions) >= MAX_OPEN_QUESTIONS:
+            break
+    context["openQuestions"] = questions
+
+    if context["stage"] == "complete":
+        context["pendingQuestion"] = None
+        context["openQuestions"] = []
+        context["nextAction"] = "The item has been sold. End the focus and save a brief outcome summary if useful."
+        return
+    if _sale_listing_published(context):
+        context["nextAction"] = "Monitor buyer inquiries, screen serious offers, and arrange a safe public meeting for the sale."
+        return
+    if context["stage"] == "ready":
+        platform = _sale_platform(context) or "the chosen marketplace"
+        context["nextAction"] = f"Publish the approved listing on {platform} with the prepared photos, then verify the live post."
+        return
+    if not _clean_text(context.get("successCriteria"), 500):
+        context["nextAction"] = "Define what a successful sale looks like."
+    elif not _deadline_value(context):
+        context["nextAction"] = "Set the target timeline for selling the item."
+    elif not _minimum_price(context):
+        context["nextAction"] = "Set the minimum acceptable price."
+    elif not _clean_text(context.get("subject"), 300):
+        context["nextAction"] = "Record the item's year, make, model, mileage, and other identifying details."
+    elif "condition:" not in _context_text(context, "knownFacts"):
+        context["nextAction"] = "Record the item's honest condition, maintenance, and known issues."
+    elif not _sale_photos_ready(context):
+        context["nextAction"] = "Prepare clear listing photos of the item and its important details."
+    elif not _sale_artifact_approved(context, "listing description"):
+        context["nextAction"] = "Draft and approve the listing description using the known item details."
+    elif not _sale_platform(context):
+        context["nextAction"] = "Choose the first marketplace where the listing will be posted."
+    elif not _sale_artifact_approved(context, "listing title and opening"):
+        context["nextAction"] = "Finalize the listing title and opening lines for the chosen marketplace."
+    else:
+        context["nextAction"] = "Publish the listing with the approved copy and prepared photos."
+
+
+def _question_answered(question: str, text: str, context: dict[str, Any]) -> bool:
+    target = _question_target(question, context)
+    if _sale_context(context):
+        if target == "price":
+            return bool(_minimum_price(context))
+        if target == "platform":
+            return bool(_sale_platform(context))
+        if target == "assets":
+            return _sale_photos_ready(context)
+        if target == "detail":
+            label = _fact_label_from_question(question)
+            if label == "Item details":
+                return bool(_clean_text(context.get("subject"), 300))
+            if label == "Condition":
+                return "condition:" in _context_text(context, "knownFacts")
+            return False
+    return _ledger_base_question_answered(question, text, context)
+
+
+def _detect_workflow_artifact(reply: str, context: dict[str, Any]) -> str:
+    lowered = _clean_text(reply, 4000).casefold()
+    if _sale_context(context):
+        if "title:" in lowered and ("opening line:" in lowered or "opening:" in lowered):
+            return "listing title and opening"
+        if any(
+            marker in lowered
+            for marker in (
+                "starting draft for your listing description",
+                "draft for your listing description",
+                "listing description:",
+            )
+        ):
+            return "listing description"
+    return ""
+
+
+def _workflow_acceptance(text: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9']+", " ", text.casefold()).strip()
+    return _is_acceptance(text) or bool(
+        re.fullmatch(
+            r"(?:no\s+)?(?:this|that|it)\s+(?:is|looks|sounds)\s+(?:really\s+)?(?:good|great|perfect|fine)",
+            normalized,
+        )
+        or normalized in {"no this is good", "no that's good", "this is good", "that's good"}
+    )
+
+
+def _workflow_artifact_decision(artifact: str) -> str:
+    verb = "were" if artifact == "listing title and opening" else "was"
+    return f"The {artifact} {verb} approved."
+
+
+def _workflow_artifact_progress(artifact: str) -> str:
+    verb = "were" if artifact == "listing title and opening" else "was"
+    return f"The {artifact} {verb} finalized."
+
+
+def _apply_user_update(
+    context: dict[str, Any],
+    user_text: str,
+) -> tuple[dict[str, Any], bool]:
+    next_context, changed = _ledger_base_apply_user_update(context, user_text)
+    if not _sale_context(next_context):
+        return next_context, changed
+
+    next_context["focusType"] = "sale"
+    if next_context.get("mode") == "general":
+        next_context["mode"] = "planning"
+    text = _clean_text(user_text, 1400)
+    lowered = text.casefold()
+
+    # Remove the generic requirement produced by older versions when the value
+    # is actually a sale deadline, then add a normalized timing constraint.
+    sale_deadline = re.search(
+        r"\b(?:want|need|would\s+like)\s+(?:it|the\s+(?:item|motorcycle|bike|car|vehicle))\s+sold\s+(.+)$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if sale_deadline:
+        timing = _sentence_fragment(sale_deadline.group(1), 140).rstrip(".")
+        next_context["constraints"] = [
+            item
+            for item in _clean_list(next_context.get("constraints"), MAX_CONSTRAINTS, 300)
+            if not (
+                item.casefold().startswith("requirement:")
+                and "sold" in item.casefold()
+            )
+            and not item.casefold().startswith("deadline or timing:")
+        ]
+        changed = _prepend_unique(
+            next_context,
+            "constraints",
+            f"Deadline or timing: {timing}.",
+            MAX_CONSTRAINTS,
+        ) or changed
+
+    price_match = re.search(
+        r"\b(?:minimum(?:\s+acceptable)?|lowest|at\s+least|won't\s+take\s+less\s+than|"
+        r"would\s+accept(?:\s+a\s+minimum\s+of)?|would\s+except\s+minimum)\D{0,18}(\$?\s*\d[\d,]*(?:\.\d{1,2})?)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if price_match:
+        price = _normalize_money(price_match.group(1))
+        next_context["constraints"] = [
+            item
+            for item in _clean_list(next_context.get("constraints"), MAX_CONSTRAINTS, 300)
+            if "minimum acceptable price" not in item.casefold()
+        ]
+        changed = _prepend_unique(
+            next_context,
+            "constraints",
+            f"Minimum acceptable price: {price}.",
+            MAX_CONSTRAINTS,
+        ) or changed
+
+    item_match = re.search(
+        r"\b((?:19|20)\d{2}\s+[A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z0-9-]+){0,3})\b",
+        text,
+    )
+    if item_match:
+        subject = _clean_text(item_match.group(1), 220)
+        mileage_match = re.search(r"\b(\d+)k\s+miles\b", text, flags=re.IGNORECASE)
+        if mileage_match:
+            subject += f" with {int(mileage_match.group(1)) * 1000:,} miles"
+        if next_context.get("subject") != subject:
+            next_context["subject"] = subject
+            changed = True
+
+    if re.search(r"\b(?:works?|runs?|rides?)\s+(?:fine|well|great|good)\b", lowered):
+        condition = "Runs well"
+        if re.search(r"\b(?:high\s+mileage|getting\s+up\s+in\s+miles|a\s+lot\s+of\s+miles)\b", lowered):
+            condition += "; mileage is high"
+        next_context["knownFacts"] = [
+            item
+            for item in _clean_list(next_context.get("knownFacts"), MAX_FACTS, 300)
+            if not item.casefold().startswith("condition:")
+        ]
+        changed = _prepend_unique(
+            next_context,
+            "knownFacts",
+            f"Condition: {condition}.",
+            MAX_FACTS,
+        ) or changed
+
+    if re.search(
+        r"\b(?:already\s+)?(?:have|got|took|prepared)\b.*\b(?:photos?|pictures?|images?)\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        changed = _prepend_unique(
+            next_context,
+            "recentProgress",
+            "Listing photos are ready.",
+            MAX_RECENT_PROGRESS,
+        ) or changed
+
+    platform_match = re.search(
+        r"\b(?:let(?:'s|\s+us)\s+(?:go|use|start)\s+(?:with|to)?\s*|"
+        r"i\s+(?:want|would\s+like)\s+to\s+(?:use|list\s+it\s+on)\s+)"
+        r"(craigslist|facebook\s+marketplace|cycle\s*trader|offerup|ebay(?:\s+motors)?)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if platform_match:
+        platform = platform_match.group(1)
+        platform = "Craigslist" if platform.casefold() == "craigslist" else platform.title()
+        next_context["decisions"] = [
+            item
+            for item in _clean_list(next_context.get("decisions"), MAX_DECISIONS, 300)
+            if "listing platform" not in item.casefold()
+        ]
+        changed = _prepend_unique(
+            next_context,
+            "decisions",
+            f"{platform} was chosen as the listing platform.",
+            MAX_DECISIONS,
+        ) or changed
+
+    if re.search(r"\b(?:i|we)\s+(?:posted|published|listed)\b.*\b(?:listing|ad|motorcycle|bike|item|vehicle)\b", lowered):
+        changed = _prepend_unique(
+            next_context,
+            "recentProgress",
+            "The listing was published.",
+            MAX_RECENT_PROGRESS,
+        ) or changed
+    if re.search(r"\b(?:i|we)\s+(?:sold|have\s+sold)\b.*\b(?:motorcycle|bike|item|vehicle|it)\b", lowered):
+        changed = _prepend_unique(
+            next_context,
+            "recentProgress",
+            "The item was sold.",
+            MAX_RECENT_PROGRESS,
+        ) or changed
+
+    # Remove generic pending-question facts when a more specific sale event was
+    # captured from the same message.
+    next_context["knownFacts"] = [
+        item
+        for item in _clean_list(next_context.get("knownFacts"), MAX_FACTS, 300)
+        if not (
+            item.casefold().startswith("project detail:")
+            and any(
+                token in item.casefold()
+                for token in (
+                    "photo", "picture", "image", "craigslist", "marketplace",
+                    "cycle trader", "offerup", "let's go", "already have",
+                )
+            )
+        )
+    ]
+
+    artifact = _clean_text(next_context.get("lastAssistantArtifact"), 100)
+    if artifact and _workflow_acceptance(text):
+        decision = _workflow_artifact_decision(artifact)
+        progress = _workflow_artifact_progress(artifact)
+        changed = _prepend_unique(next_context, "decisions", decision, MAX_DECISIONS) or changed
+        changed = _prepend_unique(next_context, "recentProgress", progress, MAX_RECENT_PROGRESS) or changed
+        next_context["decisions"] = [
+            item
+            for item in _clean_list(next_context.get("decisions"), MAX_DECISIONS, 300)
+            if item.casefold() != "the most recent proposed plan or draft was accepted."
+        ]
+
+    before = (
+        next_context.get("objective", ""),
+        next_context.get("stage", ""),
+        next_context.get("nextAction", ""),
+        list(next_context.get("openQuestions", [])),
+    )
+    _refresh_derived_objective(next_context)
+    _refresh_questions_and_next_action(next_context, text)
+    after = (
+        next_context.get("objective", ""),
+        next_context.get("stage", ""),
+        next_context.get("nextAction", ""),
+        list(next_context.get("openQuestions", [])),
+    )
+    if before != after:
+        changed = True
+    if changed:
+        next_context["updatedAt"] = _now_iso()
+    return next_context, changed
+
+
+def _extract_assistant_pending_question(
+    reply: str,
+    context: dict[str, Any],
+) -> dict[str, str] | None:
+    normalized = reply.replace("\r\n", "\n").replace("\r", "\n")
+    candidates: list[str] = []
+    for match in re.finditer(
+        r"(?i)(?<![A-Za-z])(?:what|what's|who|which|how|when|where|why|"
+        r"is\s+(?:there|the|your|this|that)|are\s+(?:there|the|your)|"
+        r"do\s+you\s+already\s+have|have\s+you|could\s+you\s+tell\s+me|"
+        r"can\s+you\s+tell\s+me|tell\s+me)\b[^?\n]{2,260}\?",
+        normalized,
+    ):
+        question = _clean_text(match.group(0), 260)
+        if _is_information_question(question):
+            candidates.append(question)
+    for question in reversed(candidates):
+        target = _question_target(question, context)
+        if target and not _question_answered(question, "", context):
+            return {"target": target, "question": question}
+    return None
+
+
+def _apply_assistant_update(
+    context: dict[str, Any],
+    reply: str,
+) -> tuple[dict[str, Any], bool]:
+    next_context, changed = _ledger_base_apply_assistant_update(context, reply)
+    if not _sale_context(next_context):
+        return next_context, changed
+
+    next_context["focusType"] = "sale"
+    if next_context.get("mode") == "general":
+        next_context["mode"] = "planning"
+
+    artifact = _detect_workflow_artifact(reply, next_context)
+    if artifact:
+        if next_context.get("lastAssistantArtifact") != artifact:
+            next_context["lastAssistantArtifact"] = artifact
+            changed = True
+        progress_text = (
+            "QMeet drafted the listing description."
+            if artifact == "listing description"
+            else "QMeet drafted the listing title and opening."
+        )
+        changed = _prepend_unique(
+            next_context,
+            "recentProgress",
+            progress_text,
+            MAX_RECENT_PROGRESS,
+        ) or changed
+
+    pending = _extract_assistant_pending_question(reply, next_context)
+    if pending and next_context.get("pendingQuestion") != pending:
+        next_context["pendingQuestion"] = pending
+        changed = True
+
+    # An assistant suggestion cannot undo a completed user asset. Keep the
+    # durable next action derived from the ledger instead of a repeated offer.
+    before = (
+        next_context.get("objective", ""),
+        next_context.get("stage", ""),
+        next_context.get("nextAction", ""),
+        list(next_context.get("openQuestions", [])),
+    )
+    _refresh_derived_objective(next_context)
+    _refresh_questions_and_next_action(next_context, "")
+    after = (
+        next_context.get("objective", ""),
+        next_context.get("stage", ""),
+        next_context.get("nextAction", ""),
+        list(next_context.get("openQuestions", [])),
+    )
+    if before != after:
+        changed = True
+    if changed:
+        next_context["updatedAt"] = _now_iso()
+    return next_context, changed
+
+
+def _sanitize_context(raw: object) -> dict[str, Any] | None:
+    context = _ledger_base_sanitize_context(raw)
+    if context is None:
+        return None
+    _refresh_focus_type(context)
+    if not _sale_context(context):
+        return context
+
+    context["focusType"] = "sale"
+    if context.get("mode") == "general":
+        context["mode"] = "planning"
+
+    # Clean the generic values produced by the previous learner.
+    constraints: list[str] = []
+    for item in _clean_list(context.get("constraints"), MAX_CONSTRAINTS, 300):
+        if item.casefold().startswith("requirement:") and "sold" in item.casefold():
+            value = item.split(":", 1)[1].strip().rstrip(".")
+            match = re.search(r"\bsold\s+(.+)$", value, flags=re.IGNORECASE)
+            if match:
+                item = f"Deadline or timing: {match.group(1).strip()}."
+        constraints.append(item)
+    context["constraints"] = _clean_list(constraints, MAX_CONSTRAINTS, 300)
+
+    context["decisions"] = [
+        item
+        for item in _clean_list(context.get("decisions"), MAX_DECISIONS, 300)
+        if item.casefold() != "the most recent proposed plan or draft was accepted."
+        or not context.get("lastAssistantArtifact")
+    ]
+    _refresh_derived_objective(context)
+    _refresh_questions_and_next_action(context, "")
+    return context
+
+
+def prepare_background_chat_message(message: str) -> tuple[str, str]:
+    contextual_message, visible_user_message = _ledger_base_prepare_background_chat_message(message)
+    with _STORE_LOCK:
+        context = _sync_with_active_session_unlocked()
+    if not isinstance(context, dict) or not _sale_context(context):
+        return contextual_message, visible_user_message
+
+    continuity_rules = [
+        "Sale/listing continuity rules:",
+        "- Treat the objective, constraints, decisions, and completed progress as a durable sale checklist.",
+        "- Do not ask for photos when progress says the listing photos are ready.",
+        "- Do not redraft copy that decisions say was approved unless the user requests revisions.",
+        "- Advance in order: collect item facts, prepare photos, approve copy, choose a platform, publish, handle inquiries, complete the sale.",
+        "- When the context stage is ready, guide the user to publish the prepared listing rather than returning to discovery.",
+        "- If the user says they are good, done for now, or thanks while the stage is ready, acknowledge that the preparation is finished but do not imply the listing is published or the item is sold.",
+        "- Never claim an item is well-maintained, regularly serviced, issue-free, or ready to ride unless the user actually said so.",
+        "",
+    ]
+    marker = "Existing request and private context:"
+    if marker in contextual_message:
+        contextual_message = contextual_message.replace(
+            marker,
+            "\n".join(continuity_rules) + marker,
+            1,
+        )
+    return contextual_message, visible_user_message
+
+# ---------------------------------------------------------------------------
+# Phase 18: sale transaction milestones and completion continuity
+# ---------------------------------------------------------------------------
+# The workflow ledger above understands sale preparation, but ordinary short
+# updates such as "I posted it" and "got it sold in cash" can omit the noun that
+# the original regular expressions expected. This final layer records those
+# durable transaction events, keeps discovery questions closed after a listing
+# is live, and prevents the assistant from assuming assets the user never said
+# were ready.
+
+_sale_tx_base_apply_answer_to_target = _apply_answer_to_target
+_sale_tx_base_sale_listing_published = _sale_listing_published
+_sale_tx_base_sale_item_sold = _sale_item_sold
+_sale_tx_base_specific_questions = _specific_questions
+_sale_tx_base_derive_stage = _derive_stage
+_sale_tx_base_refresh_questions_and_next_action = _refresh_questions_and_next_action
+_sale_tx_base_apply_user_update = _apply_user_update
+_sale_tx_base_sanitize_context = _sanitize_context
+_sale_tx_base_prepare_background_chat_message = prepare_background_chat_message
+
+
+def _sale_subject_label(context: dict[str, Any]) -> str:
+    subject = _clean_text(context.get("subject"), 300)
+    lowered = subject.casefold()
+    if "motorcycle" in lowered or re.search(r"\b(?:sv\d+|bike)\b", lowered):
+        return "motorcycle"
+    if "car" in lowered or "vehicle" in lowered:
+        return "vehicle"
+    return "item"
+
+
+def _normalize_sale_platform(value: str) -> str:
+    clean = _clean_text(value, 180).strip().rstrip(".")
+    clean = re.sub(
+        r"^(?:probably|maybe|likely|i\s+think|i'd\s+say|"
+        r"let(?:'s|\s+us)\s+(?:go|use|start)\s+(?:with|to)?\s*|"
+        r"i\s+(?:want|would\s+like)\s+to\s+(?:use|list\s+it\s+on)\s+)",
+        "",
+        clean,
+        flags=re.IGNORECASE,
+    ).strip()
+    aliases = {
+        "caigslist": "Craigslist",
+        "craiglist": "Craigslist",
+        "craigslist": "Craigslist",
+        "facebook marketplace": "Facebook Marketplace",
+        "cycle trader": "Cycle Trader",
+        "offerup": "OfferUp",
+        "ebay motors": "eBay Motors",
+    }
+    return aliases.get(clean.casefold(), clean)
+
+
+def _normalize_sale_timing(value: str) -> str:
+    clean = _normalize_answer_text(value, "deadline")
+    clean = re.sub(
+        r"(?:,?\s+)?(?:i(?:'d|\s+would)\s+say|i\s+think|probably|maybe)$",
+        "",
+        clean,
+        flags=re.IGNORECASE,
+    ).strip().rstrip(".")
+    return _clean_text(clean, 180)
+
+
+def _extract_money_values(text: str) -> list[str]:
+    values: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"(?:\$\s*)?(\d[\d,]*(?:\.\d{1,2})?)", text):
+        raw = match.group(1)
+        try:
+            numeric = float(raw.replace(",", ""))
+        except ValueError:
+            continue
+        # Years, mileage fragments, and tiny incidental numbers are not offers.
+        if numeric < 100:
+            continue
+        normalized = _normalize_money(raw)
+        if normalized and normalized not in seen:
+            values.append(normalized)
+            seen.add(normalized)
+    return values
+
+
+def _sale_offer_amount(context: dict[str, Any]) -> str:
+    entries = [
+        *_clean_list(context.get("knownFacts"), MAX_FACTS, 300),
+        *_clean_list(context.get("decisions"), MAX_DECISIONS, 300),
+        *_clean_list(context.get("recentProgress"), MAX_RECENT_PROGRESS, 300),
+    ]
+    for item in entries:
+        if not any(token in item.casefold() for token in ("offer", "sold for", "sale price")):
+            continue
+        values = _extract_money_values(item)
+        if values:
+            return values[0]
+    return ""
+
+
+def _sale_offer_received(context: dict[str, Any]) -> bool:
+    return any(
+        "offer received" in item.casefold() or "buyer offered" in item.casefold()
+        for item in [
+            *_clean_list(context.get("knownFacts"), MAX_FACTS, 300),
+            *_clean_list(context.get("recentProgress"), MAX_RECENT_PROGRESS, 300),
+        ]
+    )
+
+
+def _sale_buyer_verified(context: dict[str, Any]) -> bool:
+    return _has_progress(
+        context,
+        "buyer and payment were verified",
+        "buyer was verified",
+        "safe handoff was completed",
+    )
+
+
+def _sale_listing_published(context: dict[str, Any]) -> bool:
+    if _sale_tx_base_sale_listing_published(context):
+        return True
+    return any(
+        any(
+            token in item.casefold()
+            for token in (
+                "listing is live",
+                "listing went live",
+                "listing was published",
+                "listing was posted",
+                "listing has been published",
+                "listing has been posted",
+                "ad is live",
+                "ad went live",
+                "ad was published",
+                "ad was posted",
+            )
+        )
+        for item in _clean_list(context.get("recentProgress"), MAX_RECENT_PROGRESS, 300)
+    )
+
+
+def _sale_item_sold(context: dict[str, Any]) -> bool:
+    if _sale_tx_base_sale_item_sold(context):
+        return True
+    return any(
+        any(
+            token in item.casefold()
+            for token in (
+                "sale was completed",
+                "sale is complete",
+                "transaction was completed",
+                "payment was received and the item was handed over",
+                "sold for $",
+                "sold in cash",
+            )
+        )
+        for item in _clean_list(context.get("recentProgress"), MAX_RECENT_PROGRESS, 300)
+    )
+
+
+def _apply_answer_to_target(
+    context: dict[str, Any],
+    target: str,
+    raw_answer: str,
+) -> bool:
+    if _sale_context(context):
+        if target == "successCriteria" and not _is_weak_acknowledgement(raw_answer):
+            values = _extract_money_values(raw_answer)
+            lowered = raw_answer.casefold()
+            changed = False
+            if values and any(
+                token in lowered
+                for token in ("minimum", "asking", "at least", "lowest", "accept", "except")
+            ):
+                price = values[0]
+                context["constraints"] = [
+                    item
+                    for item in _clean_list(context.get("constraints"), MAX_CONSTRAINTS, 300)
+                    if "minimum acceptable price" not in item.casefold()
+                ]
+                changed = _prepend_unique(
+                    context,
+                    "constraints",
+                    f"Minimum acceptable price: {price}.",
+                    MAX_CONSTRAINTS,
+                ) or changed
+                success = f"Sell the item for at least {price}."
+            else:
+                answer = _normalize_answer_text(raw_answer, target)
+                if not answer:
+                    return changed
+                answer = re.sub(r"^eventually\s+", "", answer, flags=re.IGNORECASE)
+                if "sold" in answer.casefold() or "sell" in answer.casefold():
+                    success = answer[0].upper() + answer[1:]
+                    success = success.rstrip(".") + "."
+                else:
+                    success = answer
+            if context.get("successCriteria") != success:
+                context["successCriteria"] = success
+                changed = True
+            return changed
+        if target == "platform" and not _is_weak_acknowledgement(raw_answer):
+            platform = _normalize_sale_platform(raw_answer)
+            if not platform:
+                return False
+            context["decisions"] = [
+                item
+                for item in _clean_list(context.get("decisions"), MAX_DECISIONS, 300)
+                if "listing platform" not in item.casefold()
+            ]
+            return _prepend_unique(
+                context,
+                "decisions",
+                f"{platform} was chosen as the listing platform.",
+                MAX_DECISIONS,
+            )
+        if target == "deadline" and not _is_weak_acknowledgement(raw_answer):
+            timing = _normalize_sale_timing(raw_answer)
+            if not timing:
+                return False
+            context["constraints"] = [
+                item
+                for item in _clean_list(context.get("constraints"), MAX_CONSTRAINTS, 300)
+                if not item.casefold().startswith("deadline or timing:")
+            ]
+            return _prepend_unique(
+                context,
+                "constraints",
+                f"Deadline or timing: {timing}.",
+                MAX_CONSTRAINTS,
+            )
+    return _sale_tx_base_apply_answer_to_target(context, target, raw_answer)
+
+
+def _record_sale_publication(context: dict[str, Any]) -> bool:
+    changed = _prepend_unique(
+        context,
+        "recentProgress",
+        "The listing was published and is live.",
+        MAX_RECENT_PROGRESS,
+    )
+    pending = _sanitize_pending_question(context.get("pendingQuestion"))
+    if pending and pending.get("target") in {"assets", "platform", "detail"}:
+        context["pendingQuestion"] = None
+        changed = True
+    return changed
+
+
+def _record_sale_offer(context: dict[str, Any], amount: str) -> bool:
+    changed = False
+    context["knownFacts"] = [
+        item
+        for item in _clean_list(context.get("knownFacts"), MAX_FACTS, 300)
+        if "offer received" not in item.casefold()
+        and "buyer offered" not in item.casefold()
+    ]
+    if amount:
+        changed = _prepend_unique(
+            context,
+            "knownFacts",
+            f"Offer received: {amount}.",
+            MAX_FACTS,
+        ) or changed
+        changed = _prepend_unique(
+            context,
+            "recentProgress",
+            f"A buyer offered {amount}.",
+            MAX_RECENT_PROGRESS,
+        ) or changed
+    else:
+        changed = _prepend_unique(
+            context,
+            "recentProgress",
+            "A buyer made an offer.",
+            MAX_RECENT_PROGRESS,
+        ) or changed
+    return changed
+
+
+def _record_sale_completion(
+    context: dict[str, Any],
+    text: str,
+    amount: str,
+) -> bool:
+    changed = False
+    item_label = _sale_subject_label(context)
+    payment = " in cash" if re.search(r"\b(?:cash|cash payment)\b", text, flags=re.IGNORECASE) else ""
+    amount_text = f" for {amount}" if amount else ""
+    changed = _prepend_unique(
+        context,
+        "recentProgress",
+        f"The {item_label} was sold{amount_text}{payment}.",
+        MAX_RECENT_PROGRESS,
+    ) or changed
+    changed = _prepend_unique(
+        context,
+        "recentProgress",
+        "The sale was completed.",
+        MAX_RECENT_PROGRESS,
+    ) or changed
+    if amount:
+        changed = _prepend_unique(
+            context,
+            "decisions",
+            f"The {amount} offer was accepted.",
+            MAX_DECISIONS,
+        ) or changed
+    if payment:
+        changed = _prepend_unique(
+            context,
+            "knownFacts",
+            "Payment was received in cash.",
+            MAX_FACTS,
+        ) or changed
+    context["pendingQuestion"] = None
+    context["openQuestions"] = []
+    return changed
+
+
+def _capture_sale_transaction_events(context: dict[str, Any], text: str) -> bool:
+    if not _sale_context(context):
+        return False
+    clean = _clean_text(text, 1600)
+    lowered = clean.casefold()
+    changed = False
+
+    published = bool(
+        re.search(
+            r"\b(?:i|we)\s+(?:(?:have|'ve)\s+)?(?:posted|published|listed|put\s+up)\s+"
+            r"(?:it|the\s+(?:listing|ad|motorcycle|bike|item|vehicle))\b",
+            lowered,
+        )
+        or re.search(
+            r"\b(?:the\s+)?(?:listing|ad)\s+(?:is|went|has\s+gone)\s+(?:live|up|online|posted|published)\b",
+            lowered,
+        )
+        or re.fullmatch(r"(?:i\s+)?(?:posted|published|listed)\s+it[.!]?", lowered)
+    )
+    if published:
+        changed = _record_sale_publication(context) or changed
+
+    offer_match = re.search(
+        r"\b(?:i|we)\s+(?:got|received|have|have\s+got)\s+"
+        r"(?:someone\s+)?(?:who\s+is\s+)?offer(?:ing|ed)?\s*(?:me\s+)?(?:of\s+|for\s+)?"
+        r"\$?\s*(\d[\d,]*(?:\.\d{1,2})?)\b",
+        lowered,
+    )
+    if not offer_match:
+        offer_match = re.search(
+            r"\b(?:someone|a\s+buyer|the\s+buyer)\s+(?:is\s+)?offer(?:ing|ed)\s+"
+            r"(?:me\s+)?\$?\s*(\d[\d,]*(?:\.\d{1,2})?)\b",
+            lowered,
+        )
+    if offer_match:
+        changed = _record_sale_offer(context, _normalize_money(offer_match.group(1))) or changed
+
+    if re.search(
+        r"\b(?:verified|checked)\b.*\b(?:buyer|identity|payment)\b|"
+        r"\b(?:buyer|payment)\b.*\b(?:verified|checked|secure)\b|"
+        r"\bmet\s+(?:with\s+)?(?:the\s+buyer|him|her|them)\b.*\b(?:safe|public|daylight)\b",
+        lowered,
+    ):
+        changed = _prepend_unique(
+            context,
+            "recentProgress",
+            "The buyer and payment were verified.",
+            MAX_RECENT_PROGRESS,
+        ) or changed
+
+    sold = bool(
+        re.search(
+            r"\b(?:i|we)\s+(?:(?:have|'ve)\s+)?(?:sold\s+(?:it|the\s+(?:motorcycle|bike|item|vehicle))|"
+            r"got\s+(?:it|the\s+(?:motorcycle|bike|item|vehicle))\s+sold)\b",
+            lowered,
+        )
+        or re.search(
+            r"\b(?:it|the\s+(?:motorcycle|bike|item|vehicle))\s+(?:is|was|has\s+been)\s+sold\b",
+            lowered,
+        )
+        or re.search(
+            r"\b(?:sale|transaction)\s+(?:is|was|has\s+been)\s+(?:complete|completed|done|finished)\b",
+            lowered,
+        )
+        or (
+            re.search(r"\bgot\s+(?:it|the\s+(?:motorcycle|bike|item|vehicle))\s+sold\b", lowered)
+            and re.search(r"\b(?:cash|paid|payment)\b", lowered)
+        )
+    )
+    if sold:
+        values = _extract_money_values(clean)
+        amount = values[-1] if values else _sale_offer_amount(context)
+        changed = _record_sale_completion(context, clean, amount) or changed
+
+    return changed
+
+
+def _specific_questions(context: dict[str, Any]) -> list[str]:
+    if _sale_context(context) and (_sale_listing_published(context) or _sale_item_sold(context)):
+        return []
+    return _sale_tx_base_specific_questions(context)
+
+
+def _derive_stage(context: dict[str, Any]) -> str:
+    if not _sale_context(context):
+        return _sale_tx_base_derive_stage(context)
+    if _sale_item_sold(context):
+        return "complete"
+    if _sale_listing_published(context) or _sale_offer_received(context):
+        return "in-progress"
+    return _sale_tx_base_derive_stage(context)
+
+
+def _refresh_questions_and_next_action(context: dict[str, Any], user_text: str) -> None:
+    _sale_tx_base_refresh_questions_and_next_action(context, user_text)
+    if not _sale_context(context):
+        return
+
+    context["focusType"] = "sale"
+    context["stage"] = _derive_stage(context)
+
+    if context["stage"] == "complete":
+        context["pendingQuestion"] = None
+        context["openQuestions"] = []
+        context["nextAction"] = (
+            "The sale is complete. End the focus and save a brief outcome summary; "
+            "only handle title transfer or listing removal if either is still outstanding."
+        )
+        return
+
+    if _sale_offer_received(context):
+        amount = _sale_offer_amount(context)
+        minimum = _minimum_price(context)
+        comparison = ""
+        if amount and minimum:
+            comparison = f" The {amount} offer is above the {minimum} minimum."
+        context["pendingQuestion"] = None
+        context["openQuestions"] = []
+        context["nextAction"] = (
+            f"Verify the buyer and payment method, decide whether to accept the offer, "
+            f"and arrange a safe handoff.{comparison}"
+        ).strip()
+        return
+
+    if _sale_listing_published(context):
+        context["pendingQuestion"] = None
+        context["openQuestions"] = []
+        context["nextAction"] = (
+            "Monitor inquiries, screen serious offers, verify payment, and arrange a safe handoff."
+        )
+
+
+def _apply_user_update(
+    context: dict[str, Any],
+    user_text: str,
+) -> tuple[dict[str, Any], bool]:
+    next_context, changed = _sale_tx_base_apply_user_update(context, user_text)
+    if not _sale_context(next_context):
+        return next_context, changed
+
+    next_context["focusType"] = "sale"
+    text = _clean_text(user_text, 1600)
+    changed = _capture_sale_transaction_events(next_context, text) or changed
+
+    # Correct generic success text that is really a minimum-price statement.
+    success = _clean_text(next_context.get("successCriteria"), 500)
+    success_values = _extract_money_values(success)
+    if success_values and any(
+        token in success.casefold()
+        for token in ("minimum", "asking", "at least", "lowest", "accept", "except")
+    ):
+        normalized_success = f"Sell the item for at least {success_values[0]}."
+        if next_context.get("successCriteria") != normalized_success:
+            next_context["successCriteria"] = normalized_success
+            changed = True
+
+    before = (
+        next_context.get("objective", ""),
+        next_context.get("stage", ""),
+        next_context.get("nextAction", ""),
+        list(next_context.get("openQuestions", [])),
+    )
+    _refresh_derived_objective(next_context)
+    _refresh_questions_and_next_action(next_context, text)
+    after = (
+        next_context.get("objective", ""),
+        next_context.get("stage", ""),
+        next_context.get("nextAction", ""),
+        list(next_context.get("openQuestions", [])),
+    )
+    if before != after:
+        changed = True
+    if changed:
+        next_context["updatedAt"] = _now_iso()
+    return next_context, changed
+
+
+def _sanitize_context(raw: object) -> dict[str, Any] | None:
+    context = _sale_tx_base_sanitize_context(raw)
+    if context is None or not _sale_context(context):
+        return context
+
+    context["focusType"] = "sale"
+
+    # Normalize platform decisions created from tentative wording or common
+    # speech-to-text spellings such as "probably caigslist".
+    normalized_decisions: list[str] = []
+    for item in _clean_list(context.get("decisions"), MAX_DECISIONS, 300):
+        match = re.match(r"(.+?)\s+was chosen as the listing platform\.", item, flags=re.IGNORECASE)
+        if match:
+            platform = _normalize_sale_platform(match.group(1))
+            item = f"{platform} was chosen as the listing platform."
+        normalized_decisions.append(item)
+    context["decisions"] = _clean_list(normalized_decisions, MAX_DECISIONS, 300)
+
+    normalized_constraints: list[str] = []
+    for item in _clean_list(context.get("constraints"), MAX_CONSTRAINTS, 300):
+        if item.casefold().startswith("deadline or timing:"):
+            value = item.split(":", 1)[1].strip()
+            timing = _normalize_sale_timing(value)
+            item = f"Deadline or timing: {timing}." if timing else item
+        normalized_constraints.append(item)
+    context["constraints"] = _clean_list(normalized_constraints, MAX_CONSTRAINTS, 300)
+
+    success = _clean_text(context.get("successCriteria"), 500)
+    values = _extract_money_values(success)
+    if values and any(
+        token in success.casefold()
+        for token in ("minimum", "asking", "at least", "lowest", "accept", "except")
+    ):
+        context["successCriteria"] = f"Sell the item for at least {values[0]}."
+
+    _refresh_derived_objective(context)
+    _refresh_questions_and_next_action(context, "")
+    return context
+
+
+def prepare_background_chat_message(message: str) -> tuple[str, str]:
+    contextual_message, visible_user_message = _sale_tx_base_prepare_background_chat_message(message)
+    with _STORE_LOCK:
+        context = _sync_with_active_session_unlocked()
+    if not isinstance(context, dict) or not _sale_context(context):
+        return contextual_message, visible_user_message
+
+    transaction_rules = [
+        "Sale transaction-state rules:",
+        "- Never assume photos, a clean title, service history, maintenance quality, ownership paperwork, or buyer verification unless the user explicitly provided it or progress records it.",
+        "- A live or published listing closes the preparation interview. Do not return to photo, copy, price, condition, or platform questions unless the user asks to revise the listing.",
+        "- When an offer exists, compare it with the recorded minimum price and focus on buyer verification, secure payment, safe handoff, and the accept-or-decline decision.",
+        "- When progress says the item was sold or the sale was completed, acknowledge completion. Do not ask another sales question or suggest more listing work.",
+        "- Do not claim the sale is complete merely because an offer was received; completion requires the user's confirmation that payment and handoff occurred.",
+        "",
+    ]
+    marker = "Existing request and private context:"
+    if marker in contextual_message:
+        contextual_message = contextual_message.replace(
+            marker,
+            "\n".join(transaction_rules) + marker,
+            1,
+        )
+    return contextual_message, visible_user_message
+
+# ---------------------------------------------------------------------------
+# Phase 18: purchase workflow continuity and current-product safety
+# ---------------------------------------------------------------------------
+# A purchase focus is the inverse of the sale workflow: discover requirements,
+# compare current options, choose a real listing, order, receive, and verify the
+# product. This layer keeps those milestones durable and prevents current prices,
+# availability, or retailer links from being invented in normal chat.
+
+WORK_CONTEXT_FILE_VERSION = 8
+FOCUS_TYPES.add("purchase")
+QUESTION_TARGETS.update({"budget", "size", "brand", "model", "retailer", "placement"})
+
+_purchase_base_infer_focus_type_from_text = _infer_focus_type_from_text
+_purchase_base_question_target = _question_target
+_purchase_base_question_answered = _question_answered
+_purchase_base_apply_answer_to_target = _apply_answer_to_target
+_purchase_base_refresh_derived_objective = _refresh_derived_objective
+_purchase_base_specific_questions = _specific_questions
+_purchase_base_derive_stage = _derive_stage
+_purchase_base_refresh_questions_and_next_action = _refresh_questions_and_next_action
+_purchase_base_apply_user_update = _apply_user_update
+_purchase_base_apply_assistant_update = _apply_assistant_update
+_purchase_base_sanitize_context = _sanitize_context
+_purchase_base_prepare_background_chat_message = prepare_background_chat_message
+_purchase_base_should_keep_focus_message_in_chat = should_keep_focus_message_in_chat
+
+_PURCHASE_PRODUCT_RE = re.compile(
+    r"\b(?:television|tv|laptop|computer|desktop|phone|smartphone|tablet|"
+    r"monitor|camera|headphones?|speaker|soundbar|appliance|refrigerator|"
+    r"washer|dryer|dishwasher|furniture|couch|sofa|desk|vehicle|car|"
+    r"motorcycle|bike|console|projector)\b",
+    flags=re.IGNORECASE,
+)
+_PURCHASE_INTENT_RE = re.compile(
+    r"\b(?:buy|buying|purchase|purchasing|shop|shopping|order|ordering|"
+    r"get|getting|pick(?:ing)?\s+out|choose|choosing|compare|comparing)\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _purchase_context(context: dict[str, Any]) -> bool:
+    if _sale_context(context):
+        return False
+    haystack = " ".join(
+        (
+            _clean_text(context.get("title"), 180),
+            _clean_text(context.get("objective"), 600),
+            _clean_text(context.get("subject"), 360),
+            " ".join(_clean_list(context.get("knownFacts"), MAX_FACTS, 300)),
+            " ".join(_clean_list(context.get("decisions"), MAX_DECISIONS, 300)),
+        )
+    )
+    return _clean_text(context.get("focusType"), 40) == "purchase" or bool(
+        _PURCHASE_PRODUCT_RE.search(haystack) and _PURCHASE_INTENT_RE.search(haystack)
+    )
+
+
+def _infer_focus_type_from_text(text: str, mode: str) -> str:
+    base_type = _purchase_base_infer_focus_type_from_text(text, mode)
+    if base_type == "sale":
+        return base_type
+    clean = _clean_text(text, 1600)
+    if _PURCHASE_PRODUCT_RE.search(clean) and _PURCHASE_INTENT_RE.search(clean):
+        return "purchase"
+    if re.search(
+        r"\b(?:product|item)\s+(?:purchase|shopping|comparison)\b|"
+        r"\b(?:best|current)\s+(?:model|deal|price)\b",
+        clean,
+        flags=re.IGNORECASE,
+    ):
+        return "purchase"
+    return base_type
+
+
+def _purchase_fact(context: dict[str, Any], prefix: str) -> str:
+    prefix_key = prefix.casefold().rstrip(":")
+    for item in _clean_list(context.get("knownFacts"), MAX_FACTS, 320):
+        if item.casefold().startswith(f"{prefix_key}:"):
+            return item.split(":", 1)[1].strip().rstrip(".")
+    return ""
+
+
+def _purchase_constraint(context: dict[str, Any], prefix: str) -> str:
+    prefix_key = prefix.casefold().rstrip(":")
+    for item in _clean_list(context.get("constraints"), MAX_CONSTRAINTS, 320):
+        if item.casefold().startswith(f"{prefix_key}:"):
+            return item.split(":", 1)[1].strip().rstrip(".")
+    return ""
+
+
+def _purchase_decision(context: dict[str, Any], suffix: str) -> str:
+    suffix_key = suffix.casefold()
+    for item in _clean_list(context.get("decisions"), MAX_DECISIONS, 360):
+        if suffix_key in item.casefold():
+            return item.rstrip(".")
+    return ""
+
+
+def _replace_prefixed_item(
+    context: dict[str, Any],
+    key: str,
+    prefix: str,
+    value: str,
+    max_items: int,
+) -> bool:
+    clean_value = _clean_text(value, 300).strip().rstrip(".")
+    if not clean_value:
+        return False
+    prefix_key = prefix.casefold().rstrip(":")
+    existing = _clean_list(context.get(key), max_items, 360)
+    replacement = f"{prefix}: {clean_value}."
+    filtered = [
+        item
+        for item in existing
+        if not item.casefold().startswith(f"{prefix_key}:")
+    ]
+    changed = filtered != existing or replacement.casefold() not in {
+        item.casefold() for item in existing
+    }
+    context[key] = [replacement, *filtered][:max_items]
+    return changed
+
+
+def _replace_purchase_decision(
+    context: dict[str, Any],
+    marker: str,
+    decision: str,
+) -> bool:
+    clean_decision = _clean_text(decision, 340).strip().rstrip(".")
+    if not clean_decision:
+        return False
+    marker_key = marker.casefold()
+    existing = _clean_list(context.get("decisions"), MAX_DECISIONS, 360)
+    replacement = f"{clean_decision}."
+    filtered = [item for item in existing if marker_key not in item.casefold()]
+    changed = filtered != existing or replacement.casefold() not in {
+        item.casefold() for item in existing
+    }
+    context["decisions"] = [replacement, *filtered][:MAX_DECISIONS]
+    return changed
+
+
+def _normalize_screen_size(value: str) -> str:
+    clean = _clean_text(value, 180)
+    match = re.search(
+        r"\b(\d{2,3})(?:\s*[- ]?\s*(?:inch(?:es)?|in\.?|\"))?\b",
+        clean,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        size = int(match.group(1))
+        if 20 <= size <= 150:
+            return f"{size}-inch"
+    if re.search(r"\b(?:very\s+)?large\b", clean, flags=re.IGNORECASE):
+        return "large"
+    return ""
+
+
+def _normalize_brand(value: str) -> str:
+    clean = _sentence_fragment(value, 160).strip().rstrip(".")
+    clean = re.sub(
+        r"^(?:i\s+(?:prefer|want|would\s+like)|let(?:'s|\s+us)\s+(?:use|go\s+with)|"
+        r"probably|maybe)\s+",
+        "",
+        clean,
+        flags=re.IGNORECASE,
+    ).strip()
+    brands = {
+        "sony": "Sony",
+        "samsung": "Samsung",
+        "lg": "LG",
+        "tcl": "TCL",
+        "hisense": "Hisense",
+        "panasonic": "Panasonic",
+        "vizio": "Vizio",
+        "apple": "Apple",
+        "dell": "Dell",
+        "lenovo": "Lenovo",
+        "hp": "HP",
+        "asus": "ASUS",
+        "acer": "Acer",
+    }
+    lowered = clean.casefold()
+    for token, label in brands.items():
+        if re.search(rf"\b{re.escape(token)}\b", lowered):
+            return label
+    if 1 <= len(clean.split()) <= 3 and re.fullmatch(r"[A-Za-z0-9&+\- ]+", clean):
+        return clean
+    return ""
+
+
+def _normalize_retailer(value: str) -> str:
+    clean = _sentence_fragment(value, 180).strip().rstrip(".")
+    lowered = clean.casefold()
+    retailers = {
+        "amazon": "Amazon",
+        "best buy": "Best Buy",
+        "walmart": "Walmart",
+        "costco": "Costco",
+        "target": "Target",
+        "sony": "Sony",
+        "ebay": "eBay",
+        "newegg": "Newegg",
+    }
+    for token, label in retailers.items():
+        if re.search(rf"\b{re.escape(token)}\b", lowered):
+            return label
+    return ""
+
+
+def _purchase_size(context: dict[str, Any]) -> str:
+    return _purchase_constraint(context, "Screen size") or _purchase_constraint(
+        context, "Screen size preference"
+    )
+
+
+def _purchase_budget(context: dict[str, Any]) -> str:
+    return _purchase_constraint(context, "Budget")
+
+
+def _purchase_brand(context: dict[str, Any]) -> str:
+    decision = _purchase_decision(context, "chosen as the brand")
+    if decision:
+        return decision.split(" was chosen", 1)[0].strip()
+    return _purchase_constraint(context, "Brand preference")
+
+
+def _purchase_model(context: dict[str, Any]) -> str:
+    decision = _purchase_decision(context, "chosen as the model")
+    if decision:
+        return decision.split(" was chosen", 1)[0].strip()
+    return ""
+
+
+def _purchase_retailer(context: dict[str, Any]) -> str:
+    decision = _purchase_decision(context, "chosen as the retailer")
+    if decision:
+        return decision.split(" was chosen", 1)[0].strip()
+    listing = _purchase_decision(context, "listing was selected")
+    if listing:
+        return listing.split(" listing", 1)[0].strip()
+    return ""
+
+
+def _purchase_listing_price(context: dict[str, Any]) -> str:
+    for item in _clean_list(context.get("decisions"), MAX_DECISIONS, 360):
+        match = re.search(
+            r"listing was selected(?:\s+for|\s+at)\s+(\$[\d,]+(?:\.\d{1,2})?)",
+            item,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            return _normalize_money(match.group(1))
+    return ""
+
+
+def _purchase_ordered(context: dict[str, Any]) -> bool:
+    return _has_progress(
+        context,
+        "order was placed",
+        "product was ordered",
+        "tv was ordered",
+        "purchase was placed",
+    )
+
+
+def _purchase_delivered(context: dict[str, Any]) -> bool:
+    return _has_progress(
+        context,
+        "product arrived",
+        "tv arrived",
+        "order arrived",
+        "product was delivered",
+    )
+
+
+def _purchase_verified(context: dict[str, Any]) -> bool:
+    return _has_progress(
+        context,
+        "works correctly",
+        "works great",
+        "was tested and works",
+        "purchase was completed successfully",
+    )
+
+
+def _purchase_subject_base(context: dict[str, Any]) -> str:
+    text = " ".join(
+        (
+            _clean_text(context.get("title"), 180),
+            _clean_text(context.get("objective"), 600),
+            _clean_text(context.get("subject"), 360),
+        )
+    )
+    if re.search(r"\b(?:television|tv)\b", text, flags=re.IGNORECASE):
+        return "TV"
+    match = _PURCHASE_PRODUCT_RE.search(text)
+    return match.group(0) if match else "product"
+
+
+def _refresh_purchase_subject(context: dict[str, Any]) -> None:
+    product = _purchase_subject_base(context)
+    size = _purchase_size(context)
+    brand = _purchase_brand(context)
+    model = _purchase_model(context)
+    placement = _purchase_fact(context, "Placement")
+
+    if model:
+        subject = model
+        if size and size.casefold() not in model.casefold():
+            subject = f"{size} {subject}"
+        if product.casefold() not in subject.casefold():
+            subject = f"{subject} {product}"
+    else:
+        parts = [part for part in (size, brand, product) if part]
+        subject = " ".join(parts)
+    if placement:
+        subject += f" for the {placement}"
+    context["subject"] = _clean_text(subject, 360)
+
+
+def _question_target(question: str, context: dict[str, Any]) -> str:
+    lowered = _clean_text(question, 360).casefold()
+    if _purchase_context(context):
+        if any(token in lowered for token in ("budget", "spend", "price range", "maximum price")):
+            return "budget"
+        if any(token in lowered for token in ("screen size", "what size", "how large", "inch", "viewing distance")):
+            return "size"
+        if "brand" in lowered:
+            return "brand"
+        if any(token in lowered for token in ("which model", "what model", "specific model")):
+            return "model"
+        if any(token in lowered for token in ("where to buy", "where will you buy", "retailer", "seller", "store")):
+            return "retailer"
+        if any(token in lowered for token in ("which room", "where will it go", "placement", "living room")):
+            return "placement"
+    return _purchase_base_question_target(question, context)
+
+
+def _apply_answer_to_target(
+    context: dict[str, Any],
+    target: str,
+    raw_answer: str,
+) -> bool:
+    if not _purchase_context(context):
+        return _purchase_base_apply_answer_to_target(context, target, raw_answer)
+    if _is_weak_acknowledgement(raw_answer):
+        return False
+
+    if target == "budget":
+        if re.search(r"\b(?:any|flexible|no|unlimited)\s+(?:budget|price)\b|\bany\s+budget\b", raw_answer, flags=re.IGNORECASE):
+            return _replace_prefixed_item(context, "constraints", "Budget", "flexible", MAX_CONSTRAINTS)
+        values = _extract_money_values(raw_answer)
+        value = values[-1] if values else _sentence_fragment(raw_answer, 160)
+        return _replace_prefixed_item(context, "constraints", "Budget", value, MAX_CONSTRAINTS)
+
+    if target == "size":
+        size = _normalize_screen_size(raw_answer)
+        if not size:
+            return False
+        return _replace_prefixed_item(context, "constraints", "Screen size", size, MAX_CONSTRAINTS)
+
+    if target == "brand":
+        brand = _normalize_brand(raw_answer)
+        if not brand:
+            return False
+        return _replace_purchase_decision(context, "chosen as the brand", f"{brand} was chosen as the brand")
+
+    if target == "model":
+        model = _sentence_fragment(raw_answer, 220).strip().rstrip(".")
+        model = re.sub(
+            r"^(?:let(?:'s|\s+us)\s+(?:go\s+with|choose)|i\s+(?:want|choose|pick)|"
+            r"go\s+with)\s+",
+            "",
+            model,
+            flags=re.IGNORECASE,
+        ).strip()
+        if not model:
+            return False
+        return _replace_purchase_decision(context, "chosen as the model", f"{model} was chosen as the model")
+
+    if target == "retailer":
+        retailer = _normalize_retailer(raw_answer)
+        if not retailer:
+            return False
+        return _replace_purchase_decision(context, "chosen as the retailer", f"{retailer} was chosen as the retailer")
+
+    if target == "placement":
+        placement = _sentence_fragment(raw_answer, 180).strip().rstrip(".")
+        placement = re.sub(r"^(?:in|for)\s+(?:the\s+)?", "", placement, flags=re.IGNORECASE)
+        return _replace_prefixed_item(context, "knownFacts", "Placement", placement, MAX_FACTS)
+
+    changed = _purchase_base_apply_answer_to_target(context, target, raw_answer)
+    return changed
+
+
+def _capture_purchase_requirements(context: dict[str, Any], text: str) -> bool:
+    if not _purchase_context(context):
+        return False
+    changed = False
+    lower = text.casefold()
+
+    if re.search(r"\b(?:living|family|bed|game|media)\s+room\b", text, flags=re.IGNORECASE):
+        room_match = re.search(r"\b((?:living|family|bed|game|media)\s+room)\b", text, flags=re.IGNORECASE)
+        if room_match:
+            changed = _replace_prefixed_item(
+                context,
+                "knownFacts",
+                "Placement",
+                room_match.group(1).lower(),
+                MAX_FACTS,
+            ) or changed
+
+    size = _normalize_screen_size(text)
+    if size:
+        changed = _replace_prefixed_item(
+            context, "constraints", "Screen size", size, MAX_CONSTRAINTS
+        ) or changed
+    elif re.search(r"\b(?:want|need|prefer).{0,30}\b(?:large|big)\s+(?:television|tv)\b", text, flags=re.IGNORECASE):
+        changed = _replace_prefixed_item(
+            context,
+            "constraints",
+            "Screen size preference",
+            "large",
+            MAX_CONSTRAINTS,
+        ) or changed
+
+    if re.search(r"\b(?:any\s+budget|budget\s+is\s+flexible|no\s+(?:real\s+)?budget|"
+                 r"can\s+do\s+any\s+budget|price\s+doesn'?t\s+matter)\b", lower):
+        changed = _replace_prefixed_item(
+            context, "constraints", "Budget", "flexible", MAX_CONSTRAINTS
+        ) or changed
+    elif re.search(r"\b(?:budget|max(?:imum)?|up\s+to|spend)\b", lower):
+        values = _extract_money_values(text)
+        if values:
+            changed = _replace_prefixed_item(
+                context, "constraints", "Budget", values[-1], MAX_CONSTRAINTS
+            ) or changed
+
+    if re.search(r"\b(?:good|reputable|reliable|top)\s+brand\b", lower):
+        changed = _replace_prefixed_item(
+            context,
+            "constraints",
+            "Brand quality",
+            "reputable brand",
+            MAX_CONSTRAINTS,
+        ) or changed
+
+    brand = _normalize_brand(text)
+    if brand and (
+        re.fullmatch(r"\s*[A-Za-z0-9&+\- ]{2,20}\s*", text)
+        or re.search(r"\b(?:prefer|choose|go\s+with|want|brand)\b", lower)
+    ):
+        changed = _replace_purchase_decision(
+            context, "chosen as the brand", f"{brand} was chosen as the brand"
+        ) or changed
+
+    if not _clean_text(context.get("successCriteria"), 500):
+        if re.search(r"\b(?:buy|purchase|get|shop\s+for)\b", lower) and _PURCHASE_PRODUCT_RE.search(text):
+            product = _PURCHASE_PRODUCT_RE.search(text).group(0)
+            context["successCriteria"] = (
+                f"Purchase a {product} that fits the user's requirements and arrives working correctly."
+            )
+            changed = True
+
+    return changed
+
+
+def _purchase_price_from_text(text: str) -> str:
+    clean_without_urls = re.sub(r"https?://\S+", " ", _clean_text(text, 1400))
+    explicit = re.search(
+        r"\$\s*(\d[\d,]*(?:\.\d{1,2})?)|"
+        r"\b(?:price(?:d)?\s*(?:is|at)?|costs?|for|it(?:'s|s|\s+is))\s+"
+        r"(?:about\s+|around\s+)?(\d[\d,]*(?:\.\d{1,2})?)\b",
+        clean_without_urls,
+        flags=re.IGNORECASE,
+    )
+    if not explicit:
+        return ""
+    return _normalize_money(explicit.group(1) or explicit.group(2))
+
+
+def _capture_purchase_decisions_and_milestones(context: dict[str, Any], text: str) -> bool:
+    if not _purchase_context(context):
+        return False
+    changed = False
+    lower = text.casefold()
+
+    model_match = re.search(
+        r"\b(?:let(?:'s|\s+us)\s+(?:go\s+with|choose)|i\s+(?:choose|pick)|"
+        r"go\s+with)\s+(?:the\s+)?([A-Za-z][A-Za-z0-9+\-]*(?:\s+[A-Za-z0-9+\-]+){1,5})",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if model_match:
+        model = _sentence_fragment(model_match.group(1), 200).rstrip(".")
+        model = re.sub(r"\s+(?:first|instead|please)$", "", model, flags=re.IGNORECASE)
+        if _PURCHASE_PRODUCT_RE.search(model) or re.search(r"\b[A-Z]\d{2,}[A-Z0-9-]*\b", model):
+            changed = _replace_purchase_decision(
+                context, "chosen as the model", f"{model} was chosen as the model"
+            ) or changed
+
+    retailer = _normalize_retailer(text)
+    if retailer and re.search(
+        r"\b(?:amazon|best\s+buy|walmart|costco|target|ebay|newegg|retailer|seller|store|listing|link)\b",
+        lower,
+    ):
+        if re.search(r"\b(?:(?:let(?:'s|\s+us)|lets)\s+(?:see|use|go\s+with)|choose|buy\s+from|order\s+from|found)\b", lower):
+            changed = _replace_purchase_decision(
+                context, "chosen as the retailer", f"{retailer} was chosen as the retailer"
+            ) or changed
+
+    url_match = re.search(r"https?://\S+", text)
+    price = _purchase_price_from_text(text)
+    if url_match:
+        retailer = _normalize_retailer(text) or _purchase_retailer(context) or "Retailer"
+        decision = f"{retailer} listing was selected"
+        if price:
+            decision += f" for {price}"
+        changed = _replace_purchase_decision(
+            context, "listing was selected", decision
+        ) or changed
+        clean_url = url_match.group(0).rstrip(".,;!?)\"]'")
+        changed = _replace_prefixed_item(
+            context, "knownFacts", "Selected listing", clean_url, MAX_FACTS
+        ) or changed
+
+    if re.search(
+        r"\b(?:i|we)\s+(?:just\s+)?(?:ordered|bought|purchased|placed\s+the\s+order)\b|"
+        r"\border\s+(?:is|was)\s+placed\b",
+        lower,
+    ):
+        changed = _prepend_unique(
+            context, "recentProgress", "The product was ordered.", MAX_RECENT_PROGRESS
+        ) or changed
+        if re.search(r"\b(?:ship|shipping|on\s+its\s+way|arrive)\b", lower):
+            changed = _prepend_unique(
+                context,
+                "recentProgress",
+                "The order is awaiting delivery.",
+                MAX_RECENT_PROGRESS,
+            ) or changed
+
+    arrived = bool(
+        re.search(
+            r"\b(?:it(?:'s|s|\s+has)?|the\s+(?:tv|television|product|order|item)(?:\s+has)?)\s+arrived\b|"
+            r"\b(?:it|the\s+(?:tv|television|product|order|item))\s+(?:was\s+)?delivered\b",
+            lower,
+        )
+    )
+    works = bool(
+        re.search(
+            r"\b(?:works?|working|runs?)\s+(?:great|well|fine|perfectly|correctly)\b|"
+            r"\bno\s+(?:problems?|issues?)\b",
+            lower,
+        )
+    )
+    if arrived:
+        changed = _prepend_unique(
+            context, "recentProgress", "The product arrived.", MAX_RECENT_PROGRESS
+        ) or changed
+    if arrived and works:
+        existing_progress = _clean_list(
+            context.get("recentProgress"), MAX_RECENT_PROGRESS, 340
+        )
+        filtered_progress = [
+            item
+            for item in existing_progress
+            if "awaiting delivery" not in item.casefold()
+        ]
+        if filtered_progress != existing_progress:
+            context["recentProgress"] = filtered_progress
+            changed = True
+        changed = _prepend_unique(
+            context,
+            "recentProgress",
+            "The product was tested and works correctly.",
+            MAX_RECENT_PROGRESS,
+        ) or changed
+        changed = _prepend_unique(
+            context,
+            "recentProgress",
+            "The purchase was completed successfully.",
+            MAX_RECENT_PROGRESS,
+        ) or changed
+        context["pendingQuestion"] = None
+        context["openQuestions"] = []
+
+    if re.search(r"\bpage\s+not\s+found\b|\blink\s+(?:isn'?t|is\s+not|wasn'?t|was\s+not)\s+working\b", lower):
+        changed = _prepend_unique(
+            context,
+            "recentProgress",
+            "A proposed retailer link was invalid and should not be reused.",
+            MAX_RECENT_PROGRESS,
+        ) or changed
+
+    return changed
+
+
+def _refresh_derived_objective(context: dict[str, Any]) -> None:
+    if not _purchase_context(context):
+        _purchase_base_refresh_derived_objective(context)
+        return
+    _refresh_purchase_subject(context)
+    subject = _clean_text(context.get("subject"), 360) or "the product"
+    price = _purchase_listing_price(context)
+    retailer = _purchase_retailer(context)
+    objective = f"Buy {subject}"
+    if retailer:
+        objective += f" from {retailer}"
+    if price:
+        objective += f" for {price}"
+    objective += " and confirm it arrives working correctly"
+    context["objective"] = objective.rstrip(".") + "."
+
+
+def _specific_questions(context: dict[str, Any]) -> list[str]:
+    if not _purchase_context(context):
+        return _purchase_base_specific_questions(context)
+    if _purchase_verified(context):
+        return []
+    product = _purchase_subject_base(context)
+    questions: list[str] = []
+    if not _purchase_budget(context):
+        questions.append("What budget or price range should guide this purchase?")
+    if product.casefold() in {"tv", "television", "monitor", "projector"} and not _purchase_size(context):
+        questions.append("What screen size do you want, or what is the viewing distance?")
+    if not _purchase_brand(context):
+        questions.append("Do you have a preferred brand, or should QMeet compare reputable brands?")
+    return questions
+
+
+def _derive_stage(context: dict[str, Any]) -> str:
+    if not _purchase_context(context):
+        return _purchase_base_derive_stage(context)
+    if _purchase_delivered(context) and _purchase_verified(context):
+        return "complete"
+    if _purchase_ordered(context):
+        return "in-progress"
+    if _purchase_model(context) and _purchase_retailer(context) and (
+        _purchase_listing_price(context) or _purchase_fact(context, "Selected listing")
+    ):
+        return "ready"
+    if _purchase_model(context) or _purchase_retailer(context):
+        return "in-progress"
+    if _purchase_size(context) or _purchase_brand(context) or _purchase_budget(context):
+        return "planning"
+    return "discovery"
+
+
+def _refresh_questions_and_next_action(context: dict[str, Any], user_text: str) -> None:
+    _purchase_base_refresh_questions_and_next_action(context, user_text)
+    if not _purchase_context(context):
+        return
+
+    context["focusType"] = "purchase"
+    if context.get("mode") == "general":
+        context["mode"] = "planning"
+    _refresh_derived_objective(context)
+    context["stage"] = _derive_stage(context)
+
+    pending = _sanitize_pending_question(context.get("pendingQuestion"))
+    candidates = [
+        *([pending["question"]] if pending and not _question_answered(pending["question"], user_text, context) else []),
+        *_specific_questions(context),
+    ]
+    questions: list[str] = []
+    for question in candidates:
+        if question in questions or _question_answered(question, user_text, context):
+            continue
+        questions.append(question)
+        if len(questions) >= MAX_OPEN_QUESTIONS:
+            break
+    context["openQuestions"] = questions
+
+    stage = context["stage"]
+    if stage == "complete":
+        context["pendingQuestion"] = None
+        context["openQuestions"] = []
+        context["nextAction"] = (
+            "The purchase is complete and the product is working. End the focus or save "
+            "the result only if useful."
+        )
+        return
+    if _purchase_ordered(context):
+        context["pendingQuestion"] = None
+        context["openQuestions"] = []
+        context["nextAction"] = (
+            "Track the shipment. When it arrives, inspect the product, test it, and keep "
+            "the packaging until you know it works correctly."
+        )
+        return
+    if stage == "ready":
+        context["pendingQuestion"] = None
+        context["openQuestions"] = []
+        context["nextAction"] = (
+            "Verify the selected listing, seller, return policy, delivery terms, and "
+            "warranty using current retailer information, then place the order."
+        )
+        return
+    if _purchase_model(context) and not _purchase_retailer(context):
+        context["nextAction"] = (
+            "Run a current web search for reputable retailers, live availability, and "
+            "real prices for the chosen model."
+        )
+        return
+    if _purchase_size(context) and _purchase_brand(context) and not _purchase_model(context):
+        context["nextAction"] = (
+            "Run a current model comparison using the recorded size, brand, placement, "
+            "and budget requirements."
+        )
+        return
+    if not _purchase_budget(context):
+        context["nextAction"] = "Set the budget or confirm that the budget is flexible."
+    elif _purchase_subject_base(context).casefold() in {"tv", "television", "monitor", "projector"} and not _purchase_size(context):
+        context["nextAction"] = "Choose the screen size using the room and viewing distance."
+    elif not _purchase_brand(context):
+        context["nextAction"] = "Choose a preferred brand or compare reputable brands."
+    else:
+        context["nextAction"] = "Compare current models that match the recorded requirements."
+
+
+def _question_answered(question: str, text: str, context: dict[str, Any]) -> bool:
+    if not _purchase_context(context):
+        return _purchase_base_question_answered(question, text, context)
+    target = _question_target(question, context)
+    if target == "budget":
+        return bool(_purchase_budget(context))
+    if target == "size":
+        return bool(_purchase_size(context))
+    if target == "brand":
+        return bool(_purchase_brand(context))
+    if target == "model":
+        return bool(_purchase_model(context))
+    if target == "retailer":
+        return bool(_purchase_retailer(context))
+    if target == "placement":
+        return bool(_purchase_fact(context, "Placement"))
+    return _purchase_base_question_answered(question, text, context)
+
+
+def _apply_user_update(context: dict[str, Any], user_text: str) -> tuple[dict[str, Any], bool]:
+    next_context, changed = _purchase_base_apply_user_update(context, user_text)
+    text = _clean_text(user_text, 1400)
+    if not text:
+        return next_context, changed
+
+    inferred_type = _infer_focus_type_from_text(
+        " ".join(
+            (
+                _clean_text(next_context.get("title"), 180),
+                _clean_text(next_context.get("objective"), 600),
+                _clean_text(next_context.get("subject"), 360),
+                text,
+            )
+        ),
+        _clean_text(next_context.get("mode"), 30) or "general",
+    )
+    if inferred_type == "purchase" and not _sale_context(next_context):
+        if next_context.get("focusType") != "purchase":
+            next_context["focusType"] = "purchase"
+            changed = True
+
+    if not _purchase_context(next_context):
+        return next_context, changed
+
+    changed = _capture_purchase_requirements(next_context, text) or changed
+    changed = _capture_purchase_decisions_and_milestones(next_context, text) or changed
+
+    before = (
+        next_context.get("objective", ""),
+        next_context.get("subject", ""),
+        next_context.get("stage", ""),
+        next_context.get("nextAction", ""),
+        list(next_context.get("openQuestions", [])),
+    )
+    _refresh_derived_objective(next_context)
+    _refresh_questions_and_next_action(next_context, text)
+    after = (
+        next_context.get("objective", ""),
+        next_context.get("subject", ""),
+        next_context.get("stage", ""),
+        next_context.get("nextAction", ""),
+        list(next_context.get("openQuestions", [])),
+    )
+    if before != after:
+        changed = True
+    if changed:
+        next_context["confidence"] = min(
+            0.99, float(next_context.get("confidence", 0.35)) + 0.04
+        )
+        next_context["updatedAt"] = _now_iso()
+    return next_context, changed
+
+
+def _apply_assistant_update(
+    context: dict[str, Any],
+    assistant_text: str,
+) -> tuple[dict[str, Any], bool]:
+    next_context, changed = _purchase_base_apply_assistant_update(context, assistant_text)
+    if not _purchase_context(next_context):
+        return next_context, changed
+
+    before = (
+        next_context.get("stage", ""),
+        next_context.get("nextAction", ""),
+        list(next_context.get("openQuestions", [])),
+    )
+    _refresh_questions_and_next_action(next_context, "")
+    after = (
+        next_context.get("stage", ""),
+        next_context.get("nextAction", ""),
+        list(next_context.get("openQuestions", [])),
+    )
+    if before != after:
+        changed = True
+    if changed:
+        next_context["updatedAt"] = _now_iso()
+    return next_context, changed
+
+
+def _sanitize_context(raw: object) -> dict[str, Any] | None:
+    context = _purchase_base_sanitize_context(raw)
+    if context is None:
+        return None
+
+    inferred = _infer_focus_type_from_text(
+        " ".join(
+            (
+                _clean_text(context.get("title"), 180),
+                _clean_text(context.get("objective"), 600),
+                _clean_text(context.get("subject"), 360),
+            )
+        ),
+        _clean_text(context.get("mode"), 30) or "general",
+    )
+    if inferred == "purchase" and not _sale_context(context):
+        context["focusType"] = "purchase"
+    if not _purchase_context(context):
+        return context
+
+    context["focusType"] = "purchase"
+    if context.get("mode") == "general":
+        context["mode"] = "planning"
+
+    # Remove generic or malformed entries produced before purchase continuity
+    # existed. The durable purchase fields below replace them.
+    context["knownFacts"] = [
+        item
+        for item in _clean_list(context.get("knownFacts"), MAX_FACTS, 340)
+        if not item.casefold().startswith(("working environment:", "project detail:"))
+    ]
+    context["constraints"] = [
+        item
+        for item in _clean_list(context.get("constraints"), MAX_CONSTRAINTS, 340)
+        if not item.casefold().startswith("requirement:")
+    ]
+
+    _refresh_derived_objective(context)
+    _refresh_questions_and_next_action(context, "")
+    return context
+
+
+def should_keep_focus_message_in_chat(message: str) -> bool:
+    base = _purchase_base_should_keep_focus_message_in_chat(message)
+    visible = _clean_text(_extract_visible_user_message(message), 900)
+    if not visible:
+        return base
+    with _STORE_LOCK:
+        context = _sync_with_active_session_unlocked()
+    if not isinstance(context, dict) or not _purchase_context(context):
+        return base
+
+    # Current prices, availability, links, and deal comparisons should be given
+    # to the command/search route rather than answered from model memory.
+    if re.search(
+        r"\b(?:find|search|look\s+for|check|compare|show|give\s+me)\b.*"
+        r"\b(?:current|deal|deals|price|prices|promotion|discount|availability|"
+        r"available|retailer|seller|store|amazon|best\s+buy|walmart|costco|link|listing)\b",
+        visible,
+        flags=re.IGNORECASE,
+    ):
+        return False
+    if re.search(r"\b(?:amazon|retailer|product)\s+link\b", visible, flags=re.IGNORECASE):
+        return False
+    return base
+
+
+def prepare_background_chat_message(message: str) -> tuple[str, str]:
+    contextual_message, visible_user_message = _purchase_base_prepare_background_chat_message(message)
+    with _STORE_LOCK:
+        context = _sync_with_active_session_unlocked()
+    if not isinstance(context, dict) or not _purchase_context(context):
+        return contextual_message, visible_user_message
+
+    purchase_rules = [
+        "Purchase-workflow rules:",
+        "- Treat product prices, stock, promotions, model availability, retailer pages, and URLs as time-sensitive facts.",
+        "- Never invent a current price, deal, seller, stock status, product identifier, or retailer URL.",
+        "- Do not claim that you searched, are searching, or will return with results unless the actual Search action is running and supplied evidence.",
+        "- For current models, live deals, or purchase links, use real Search results. If none are present, say that a current search is required instead of guessing.",
+        "- A user-provided retailer URL may be remembered as the selected listing, but only repeat price or availability details that the user explicitly supplied or a current search verified.",
+        "- Treat size, brand, model, retailer, selected listing, order placement, delivery, and successful testing as durable milestones. Do not return to an earlier decision unless the user changes it.",
+        "- Once the order is placed, stop recommending more model comparisons. Focus on delivery, inspection, setup, returns, and warranty only as relevant.",
+        "- Once the product arrived and the user confirmed it works, mark the focus complete and stop adding purchase steps.",
+        "",
+    ]
+    marker = "Existing request and private context:"
+    if marker in contextual_message:
+        contextual_message = contextual_message.replace(
+            marker,
+            "\n".join(purchase_rules) + marker,
+            1,
+        )
+    return contextual_message, visible_user_message
