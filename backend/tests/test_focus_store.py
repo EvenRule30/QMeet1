@@ -925,5 +925,109 @@ class FocusStoreTests(unittest.TestCase):
 
 
 
+    def test_pending_question_becomes_canonical_next_action(self) -> None:
+        state = apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.FOCUS_ACTION,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.START_FOCUS,
+                        title="Diagnose car trouble",
+                        objective="Restore reliable starting and operation.",
+                    ),
+                    FocusOperation(
+                        kind=FocusOperationKind.SET_PENDING_QUESTION,
+                        target="light_dimming",
+                        question=(
+                            "Do the dashboard lights dim when you try to "
+                            "start the car?"
+                        ),
+                    ),
+                ],
+            ),
+            message="Help diagnose my car.",
+            turn_id="turn-question-next-action",
+            source="unit-test",
+        )
+
+        self.assertIsNotNone(state.pendingQuestion)
+        self.assertEqual(
+            state.nextAction,
+            "Do the dashboard lights dim when you try to start the car?",
+        )
+        self.assertEqual(state.status, FocusStatus.CLARIFYING)
+
+    def test_answered_question_is_replaced_as_next_action(self) -> None:
+        initial = apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.FOCUS_ACTION,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.START_FOCUS,
+                        title="Diagnose car trouble",
+                        objective="Restore reliable starting and operation.",
+                    ),
+                    FocusOperation(
+                        kind=FocusOperationKind.SET_PENDING_QUESTION,
+                        target="starting_symptom",
+                        question="What happens when you try to start the car?",
+                    ),
+                ],
+            ),
+            message="Help diagnose my car.",
+            turn_id="turn-initial-diagnostic-question",
+            source="unit-test",
+        )
+        self.assertEqual(
+            initial.nextAction,
+            "What happens when you try to start the car?",
+        )
+
+        updated = apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.RESPOND,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.ADD_LIST_ITEM,
+                        field=FocusField.KNOWN_FACTS,
+                        value=(
+                            "The car clicks once and the dashboard lights "
+                            "stay on."
+                        ),
+                    ),
+                    FocusOperation(
+                        kind=FocusOperationKind.CLEAR_PENDING_QUESTION,
+                        target="starting_symptom",
+                    ),
+                ],
+                responseIntent=ResponseIntent(
+                    answerDirectly=True,
+                    askQuestion=(
+                        "Do the dashboard lights dim when you try to "
+                        "start the car?"
+                    ),
+                ),
+            ),
+            message="It clicks once, but the dashboard lights stay on.",
+            turn_id="turn-answer-and-next-question",
+            source="unit-test",
+        )
+
+        self.assertIsNotNone(updated.pendingQuestion)
+        self.assertEqual(
+            updated.pendingQuestion.question,
+            "Do the dashboard lights dim when you try to start the car?",
+        )
+        self.assertEqual(
+            updated.nextAction,
+            "Do the dashboard lights dim when you try to start the car?",
+        )
+        self.assertNotEqual(
+            updated.nextAction,
+            "What happens when you try to start the car?",
+        )
+
+
+
 if __name__ == "__main__":
     unittest.main()

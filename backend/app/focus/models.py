@@ -182,6 +182,7 @@ class FocusState(BaseModel):
 class FocusEventType(str, Enum):
     LEGACY_IMPORTED = "legacy_imported"
     TURN_PLANNED = "turn_planned"
+    ASSISTANT_REPLIED = "assistant_replied"
     FOCUS_STARTED = "focus_started"
     FOCUS_RESCOPED = "focus_rescoped"
     FIELD_SET = "field_set"

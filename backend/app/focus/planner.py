@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any
 from uuid import uuid4
 
@@ -13,6 +14,7 @@ except Exception:  # pragma: no cover - startup remains available in mock mode.
 
 from app.focus.legacy import load_legacy_focus_seed
 from app.focus.models import (
+    FocusOperationKind,
     FocusState,
     ObserveTurnRequest,
     ResponseIntent,
@@ -120,8 +122,16 @@ Core rules:
    - add_list_item constraints: "Visible legacy behavior must remain unchanged."
    - clear the pending question that this answer resolves.
 
-6. Ask at most one useful follow-up. Do not ask a question when enough context
-   exists to help directly.
+6. Ask at most one useful follow-up. The follow-up must be atomic: it should
+   request one fact, decision, observation, or action that the user can answer
+   unambiguously. Do not combine independent questions with "or", "and", a
+   slash, or multiple clauses. When several unknowns matter, ask only the
+   highest-information question first and leave the others for later turns.
+   Do not ask a question when enough context exists to help directly.
+
+   Example:
+   - Avoid: "Have you tested or replaced the battery, or do the lights dim?"
+   - Prefer: "Do the dashboard lights dim when you try to start the car?"
 
 7. Current prices, availability, links, schedules, news, and source research
    require a Search tool call. Never fabricate tool results or claim a tool has
@@ -191,6 +201,167 @@ Tool names available in this first slice:
 The system is currently in shadow mode. Your plan is logged and reduced into a
 separate Focus state, but the legacy QMeet path still controls the visible UI.
 """.strip()
+
+
+_QUESTION_COORDINATOR_PATTERN = re.compile(r"\b(?:and|or)\b|[/;]", re.IGNORECASE)
+
+
+def _normalize_question(question: str) -> str:
+    return " ".join(question.split()).strip()
+
+
+def _question_is_atomic(question: str) -> bool:
+    """Return whether a follow-up asks for one unambiguous item.
+
+    The planner prompt remains the semantic guide. This validator is a narrow
+    deterministic guardrail that rejects common multi-part forms before they
+    reach the event log.
+    """
+
+    normalized = _normalize_question(question)
+    if not normalized:
+        return True
+
+    if not normalized.endswith("?") or normalized.count("?") != 1:
+        return False
+
+    body = normalized[:-1].strip()
+    if not body:
+        return False
+
+    return _QUESTION_COORDINATOR_PATTERN.search(body) is None
+
+
+def _plan_question_errors(plan: TurnPlan) -> list[str]:
+    questions: list[str] = []
+
+    response_question = _normalize_question(plan.responseIntent.askQuestion)
+    if response_question:
+        questions.append(response_question)
+
+    for operation in plan.focusOperations:
+        if operation.kind != FocusOperationKind.SET_PENDING_QUESTION:
+            continue
+
+        operation_question = _normalize_question(operation.question)
+        if operation_question:
+            questions.append(operation_question)
+        else:
+            questions.append("<empty pending question>")
+
+    unique_questions: list[str] = []
+    seen: set[str] = set()
+
+    for question in questions:
+        key = question.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_questions.append(question)
+
+    errors: list[str] = []
+
+    if len(unique_questions) > 1:
+        errors.append(
+            "The plan contains more than one distinct follow-up question."
+        )
+
+    for question in unique_questions:
+        if question == "<empty pending question>":
+            errors.append("A set_pending_question operation has no question.")
+        elif not _question_is_atomic(question):
+            errors.append(
+                f"The follow-up is not atomic: {question}"
+            )
+
+    return errors
+
+
+def _strip_invalid_follow_up(
+    plan: TurnPlan,
+    errors: list[str],
+) -> TurnPlan:
+    """Preserve valid state changes while omitting an unsafe follow-up."""
+
+    repaired = plan.model_copy(deep=True)
+    repaired.focusOperations = [
+        operation
+        for operation in repaired.focusOperations
+        if operation.kind != FocusOperationKind.SET_PENDING_QUESTION
+    ]
+    repaired.responseIntent.askQuestion = ""
+
+    suffix = " Follow-up omitted after atomic-question validation."
+    if suffix.strip() not in repaired.reason:
+        repaired.reason = f"{repaired.reason.rstrip()}{suffix}".strip()
+
+    LOGGER.warning(
+        "Focus planner follow-up omitted after validation: %s",
+        "; ".join(errors),
+    )
+    return repaired
+
+
+async def _parse_plan(
+    client: Any,
+    messages: list[dict[str, str]],
+) -> TurnPlan:
+    completion = await client.chat.completions.parse(
+        model=DEFAULT_MODEL,
+        messages=messages,
+        response_format=TurnPlan,
+    )
+    parsed = completion.choices[0].message.parsed
+
+    if isinstance(parsed, TurnPlan):
+        return parsed
+
+    refusal = completion.choices[0].message.refusal or ""
+    raise ValueError(
+        "Structured planner response did not include a TurnPlan. "
+        f"Refusal: {refusal[:200]}"
+    )
+
+
+async def _repair_non_atomic_plan(
+    client: Any,
+    *,
+    planner_input: str,
+    original_plan: TurnPlan,
+    errors: list[str],
+) -> TurnPlan:
+    repair_instruction = {
+        "task": "Repair the TurnPlan without changing its correct meaning.",
+        "validationErrors": errors,
+        "requirements": [
+            "Preserve all correct focus operations and tool calls.",
+            "Keep at most one follow-up question.",
+            "The follow-up must request exactly one fact, decision, observation, or action.",
+            "Do not use 'and', 'or', a slash, a semicolon, or multiple clauses in the follow-up.",
+            "Make responseIntent.askQuestion and set_pending_question identical when both are present.",
+            "If no useful atomic follow-up is needed, remove it from both locations.",
+        ],
+    }
+
+    return await _parse_plan(
+        client,
+        [
+            {"role": "system", "content": _PLANNER_SYSTEM_PROMPT},
+            {"role": "user", "content": planner_input},
+            {
+                "role": "assistant",
+                "content": original_plan.model_dump_json(indent=2),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    repair_instruction,
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            },
+        ],
+    )
 
 
 def focus_mode() -> str:
@@ -270,25 +441,15 @@ async def preview_turn_plan(
         )
 
     client = AsyncOpenAI()
+    planner_input = _planner_input(message, state, source)
 
     try:
-        completion = await client.chat.completions.parse(
-            model=DEFAULT_MODEL,
-            messages=[
+        parsed = await _parse_plan(
+            client,
+            [
                 {"role": "system", "content": _PLANNER_SYSTEM_PROMPT},
-                {"role": "user", "content": _planner_input(message, state, source)},
+                {"role": "user", "content": planner_input},
             ],
-            response_format=TurnPlan,
-        )
-        parsed = completion.choices[0].message.parsed
-
-        if isinstance(parsed, TurnPlan):
-            return parsed
-
-        refusal = completion.choices[0].message.refusal or ""
-        raise ValueError(
-            "Structured planner response did not include a TurnPlan. "
-            f"Refusal: {refusal[:200]}"
         )
     except Exception as exc:
         LOGGER.exception("Focus planner failed")
@@ -297,6 +458,32 @@ async def preview_turn_plan(
             state,
             f"Focus planner failed safely: {type(exc).__name__}.",
         )
+
+    question_errors = _plan_question_errors(parsed)
+    if not question_errors:
+        return parsed
+
+    LOGGER.warning(
+        "Focus planner produced a non-atomic follow-up; requesting repair: %s",
+        "; ".join(question_errors),
+    )
+
+    try:
+        repaired = await _repair_non_atomic_plan(
+            client,
+            planner_input=planner_input,
+            original_plan=parsed,
+            errors=question_errors,
+        )
+    except Exception:
+        LOGGER.exception("Focus planner question repair failed")
+        return _strip_invalid_follow_up(parsed, question_errors)
+
+    repaired_errors = _plan_question_errors(repaired)
+    if repaired_errors:
+        return _strip_invalid_follow_up(repaired, repaired_errors)
+
+    return repaired
 
 
 async def observe_turn(

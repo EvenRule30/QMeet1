@@ -9,6 +9,7 @@ from threading import RLock
 from typing import Iterable
 from uuid import uuid4
 
+from app.focus.audit import build_response_audit
 from app.focus.models import (
     FocusEvent,
     FocusEventLog,
@@ -309,6 +310,11 @@ def reduce_events(events: Iterable[FocusEvent]) -> FocusState:
             )
             continue
 
+        if event.type == FocusEventType.ASSISTANT_REPLIED:
+            # The visible reply and its audit are observational evidence.
+            # They must never alter the canonical Focus projection.
+            continue
+
         if event.type == FocusEventType.TURN_PLANNED:
             # A transient turn may be logged with no Focus ID. It should remain
             # traceable without becoming the active Focus's last semantic turn.
@@ -365,16 +371,33 @@ def reduce_events(events: Iterable[FocusEvent]) -> FocusState:
                 _remove_casefold(getattr(state, field), value)
 
         elif event.type == FocusEventType.QUESTION_SET:
+            question = str(payload.get("question", "")).strip()
             state.pendingQuestion = PendingQuestion(
                 target=str(payload.get("target", "")).strip(),
-                question=str(payload.get("question", "")).strip(),
+                question=question,
                 askedAt=event_time,
             )
+            # While QMeet is waiting for one answer, that question is the
+            # canonical next action. This prevents a previously answered
+            # nextAction from remaining visible beside a newer question.
+            if question:
+                state.nextAction = question
             if state.status != FocusStatus.COMPLETE:
                 state.status = FocusStatus.CLARIFYING
 
         elif event.type == FocusEventType.QUESTION_CLEARED:
+            cleared_question = (
+                state.pendingQuestion.question.strip()
+                if state.pendingQuestion is not None
+                else ""
+            )
             state.pendingQuestion = None
+            if (
+                cleared_question
+                and state.nextAction.strip().casefold()
+                == cleared_question.casefold()
+            ):
+                state.nextAction = ""
             if state.status == FocusStatus.CLARIFYING:
                 state.status = FocusStatus.ACTIVE
 
@@ -994,3 +1017,71 @@ def record_tool_result(
         document.events.append(event)
         _atomic_write_unlocked(document)
         return reduce_events(document.events)
+
+def _focus_id_for_turn(
+    events: list[FocusEvent],
+    source_turn_id: str,
+) -> str:
+    if not source_turn_id:
+        return ""
+
+    preferred_types = {
+        FocusEventType.QUESTION_SET,
+        FocusEventType.TOOL_REQUESTED,
+        FocusEventType.FOCUS_STARTED,
+        FocusEventType.TURN_PLANNED,
+    }
+
+    for event in reversed(events):
+        if event.sourceTurnId != source_turn_id:
+            continue
+        if event.type in preferred_types:
+            return event.focusId.strip()
+
+    for event in reversed(events):
+        if event.sourceTurnId == source_turn_id:
+            return event.focusId.strip()
+
+    return ""
+
+
+def record_assistant_reply(
+    *,
+    text: str,
+    source_turn_id: str,
+    source: str = "assistant-response",
+    transport: str = "",
+    response_status: int = 200,
+) -> FocusState:
+    reply_text = text.strip()
+    if not reply_text:
+        return get_state()
+
+    with _STORE_LOCK:
+        document = _read_log_unlocked()
+        focus_id = _focus_id_for_turn(
+            document.events,
+            source_turn_id,
+        )
+        audit = build_response_audit(
+            reply_text,
+            document.events,
+            source_turn_id=source_turn_id,
+        )
+
+        event = _new_event(
+            FocusEventType.ASSISTANT_REPLIED,
+            focus_id=focus_id,
+            payload={
+                "text": reply_text[:12000],
+                "transport": transport[:40],
+                "responseStatus": response_status,
+                "audit": audit,
+            },
+            source_turn_id=source_turn_id,
+            source=source,
+        )
+        document.events.append(event)
+        _atomic_write_unlocked(document)
+        return reduce_events(document.events)
+

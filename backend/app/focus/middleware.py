@@ -10,7 +10,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.focus.models import ObserveTurnRequest, ToolName
 from app.focus.planner import focus_mode, observe_turn
-from app.focus.store import record_tool_result
+from app.focus.store import record_assistant_reply, record_tool_result
 
 LOGGER = logging.getLogger("qmeet.focus.middleware")
 
@@ -148,6 +148,90 @@ async def _wait_for_observation(turn_id: str) -> None:
         )
 
 
+def _extract_json_reply(payload: dict[str, Any]) -> str:
+    for key in ("reply", "response", "message", "text", "content"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    nested = payload.get("data")
+    if isinstance(nested, dict):
+        return _extract_json_reply(nested)
+
+    return ""
+
+
+def _extract_sse_reply(body: bytes) -> str:
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError:
+        return ""
+
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    chunks: list[str] = []
+
+    for raw_event in normalized.split("\n\n"):
+        event_name = "message"
+        data_lines: list[str] = []
+
+        for raw_line in raw_event.split("\n"):
+            line = raw_line.rstrip()
+            if not line or line.startswith(":"):
+                continue
+
+            field, separator, value = line.partition(":")
+            if separator and value.startswith(" "):
+                value = value[1:]
+
+            if field == "event":
+                event_name = value.strip() or "message"
+            elif field == "data":
+                data_lines.append(value)
+
+        if event_name != "chunk" or not data_lines:
+            continue
+
+        try:
+            payload = json.loads("\n".join(data_lines))
+        except json.JSONDecodeError:
+            continue
+
+        if not isinstance(payload, dict):
+            continue
+
+        chunk = payload.get("text")
+        if isinstance(chunk, str):
+            chunks.append(chunk)
+
+    return "".join(chunks).strip()
+
+
+async def _record_assistant_reply_safely(
+    *,
+    turn_id: str,
+    text: str,
+    transport: str,
+    response_status: int,
+) -> None:
+    if not text.strip():
+        return
+
+    try:
+        await _wait_for_observation(turn_id)
+        record_assistant_reply(
+            text=text,
+            source_turn_id=turn_id,
+            source="chat-visible-response",
+            transport=transport,
+            response_status=response_status,
+        )
+    except Exception:
+        LOGGER.exception(
+            "Focus could not record assistant reply for turn %s",
+            turn_id,
+        )
+
+
 def _search_summary(
     payload: dict[str, Any],
     query: str,
@@ -243,7 +327,12 @@ class FocusShadowMiddleware:
             return
 
         path = scope.get("path", "")
-        if path not in {"/api/command/interpret", "/api/search"}:
+        if path not in {
+            "/api/command/interpret",
+            "/api/search",
+            "/api/chat",
+            "/api/chat/stream",
+        }:
             await self.app(scope, receive, send)
             return
 
@@ -268,6 +357,72 @@ class FocusShadowMiddleware:
                 )
 
             await self.app(scope, replay_receive, send)
+            return
+
+        if path in {"/api/chat", "/api/chat/stream"}:
+            user_message = str(
+                request_payload.get("message") or ""
+            ).strip()
+
+            if user_message:
+                _start_observation(
+                    user_message,
+                    source="chat-request-shadow",
+                    turn_id=turn_id,
+                )
+
+            response_status = 500
+            response_content_type = ""
+            response_chunks: list[bytes] = []
+            response_size = 0
+
+            async def capture_chat_send(message: Message) -> None:
+                nonlocal response_status
+                nonlocal response_content_type
+                nonlocal response_size
+
+                if message["type"] == "http.response.start":
+                    response_status = int(message.get("status", 500))
+                    for raw_name, raw_value in message.get("headers", []):
+                        if raw_name.lower() == b"content-type":
+                            response_content_type = raw_value.decode(
+                                "latin-1",
+                                errors="ignore",
+                            )
+
+                elif message["type"] == "http.response.body":
+                    chunk = message.get("body", b"")
+                    if (
+                        chunk
+                        and response_size + len(chunk) <= _MAX_BODY_BYTES
+                    ):
+                        response_chunks.append(chunk)
+                        response_size += len(chunk)
+
+                await send(message)
+
+            await self.app(scope, replay_receive, capture_chat_send)
+
+            response_body = b"".join(response_chunks)
+            if path == "/api/chat/stream":
+                reply_text = _extract_sse_reply(response_body)
+                transport = "sse"
+            else:
+                reply_text = _extract_json_reply(
+                    _json_payload(response_body, response_content_type)
+                )
+                transport = "json"
+
+            if 200 <= response_status < 300 and reply_text:
+                asyncio.create_task(
+                    _record_assistant_reply_safely(
+                        turn_id=turn_id,
+                        text=reply_text,
+                        transport=transport,
+                        response_status=response_status,
+                    ),
+                    name=f"qmeet-focus-assistant-reply-{turn_id}",
+                )
             return
 
         query = str(request_payload.get("query") or "").strip()
