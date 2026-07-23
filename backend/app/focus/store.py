@@ -800,6 +800,30 @@ def apply_turn_plan(
     return get_state()
 
 
+def _focus_id_for_tool_result(
+    events: list[FocusEvent],
+    source_turn_id: str,
+) -> str:
+    """Resolve a tool result to the Focus that requested it.
+
+    One-off tools may legitimately have no durable Focus, in which case the
+    returned ID is blank but the event is still preserved for turn tracing.
+    """
+
+    if source_turn_id:
+        for event in reversed(events):
+            if event.sourceTurnId != source_turn_id:
+                continue
+            if event.type == FocusEventType.TOOL_REQUESTED:
+                return event.focusId.strip()
+
+        for event in reversed(events):
+            if event.sourceTurnId == source_turn_id and event.focusId.strip():
+                return event.focusId.strip()
+
+    return reduce_events(events).focusId.strip()
+
+
 def record_tool_result(
     *,
     tool: ToolName,
@@ -809,20 +833,26 @@ def record_tool_result(
     source_turn_id: str = "",
     source: str = "tool-result",
 ) -> FocusState:
-    state = get_state()
-    if state.status == FocusStatus.INACTIVE:
-        return state
+    with _STORE_LOCK:
+        document = _read_log_unlocked()
+        focus_id = _focus_id_for_tool_result(
+            document.events,
+            source_turn_id,
+        )
 
-    event = _new_event(
-        FocusEventType.TOOL_COMPLETED if success else FocusEventType.TOOL_FAILED,
-        focus_id=state.focusId,
-        payload={
-            "tool": tool.value,
-            "summary": summary,
-            "resultIds": result_ids or [],
-        },
-        source_turn_id=source_turn_id,
-        source=source,
-    )
-    append_events([event])
-    return get_state()
+        event = _new_event(
+            FocusEventType.TOOL_COMPLETED
+            if success
+            else FocusEventType.TOOL_FAILED,
+            focus_id=focus_id,
+            payload={
+                "tool": tool.value,
+                "summary": summary,
+                "resultIds": result_ids or [],
+            },
+            source_turn_id=source_turn_id,
+            source=source,
+        )
+        document.events.append(event)
+        _atomic_write_unlocked(document)
+        return reduce_events(document.events)

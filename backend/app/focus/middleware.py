@@ -270,6 +270,18 @@ class FocusShadowMiddleware:
             await self.app(scope, replay_receive, send)
             return
 
+        query = str(request_payload.get("query") or "").strip()
+
+        if query:
+            # Exact frontend search commands bypass /api/command/interpret.
+            # Observe the Search request itself so the turn still receives a
+            # structured plan and shares its ID with the eventual tool result.
+            _start_observation(
+                query,
+                source="search-request-shadow",
+                turn_id=turn_id,
+            )
+
         response_status = 500
         response_content_type = ""
         response_chunks: list[bytes] = []
@@ -300,7 +312,6 @@ class FocusShadowMiddleware:
 
         await self.app(scope, replay_receive, capture_send)
 
-        query = str(request_payload.get("query") or "").strip()
         response_payload = _json_payload(
             b"".join(response_chunks),
             response_content_type,

@@ -413,5 +413,50 @@ class FocusStoreTests(unittest.TestCase):
         self.assertEqual(question_events[0].payload["target"], "priority")
 
 
+    def test_one_off_tool_result_is_logged_without_active_focus(self) -> None:
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.TOOL,
+                toolCalls=[
+                    PlannedToolCall(
+                        tool=ToolName.SEARCH,
+                        reason="Look up current information.",
+                    )
+                ],
+                confidence=0.94,
+            ),
+            message="Raspberry Pi 5 touchscreen performance",
+            turn_id="turn-one-off-search",
+            source="unit-test",
+        )
+
+        state = record_tool_result(
+            tool=ToolName.SEARCH,
+            success=True,
+            summary="Search completed.",
+            result_ids=["https://example.com/result"],
+            source_turn_id="turn-one-off-search",
+            source="unit-test",
+        )
+
+        turn_events = [
+            event
+            for event in list_events()
+            if event.sourceTurnId == "turn-one-off-search"
+        ]
+
+        self.assertEqual(
+            [event.type for event in turn_events],
+            [
+                FocusEventType.TURN_PLANNED,
+                FocusEventType.TOOL_REQUESTED,
+                FocusEventType.TOOL_COMPLETED,
+            ],
+        )
+        self.assertEqual(turn_events[-1].focusId, "")
+        self.assertEqual(state.status, FocusStatus.INACTIVE)
+
+
+
 if __name__ == "__main__":
     unittest.main()
