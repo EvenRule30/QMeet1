@@ -94,6 +94,7 @@ class FocusOperation(BaseModel):
     def clean_string_lists(cls, values: list[str]) -> list[str]:
         result: list[str] = []
         seen: set[str] = set()
+
         for raw in values:
             item = " ".join(str(raw).split()).strip()
             key = item.casefold()
@@ -101,6 +102,7 @@ class FocusOperation(BaseModel):
                 continue
             seen.add(key)
             result.append(item)
+
         return result
 
 
@@ -111,6 +113,7 @@ class PlannedToolCall(BaseModel):
     arguments: list[ToolArgument] = Field(default_factory=list, max_length=20)
     reason: str = Field(default="", max_length=500)
     requiresConfirmation: bool = False
+    attachToFocus: bool = False
 
 
 class ResponseIntent(BaseModel):
@@ -235,6 +238,7 @@ class LegacyFocusSeed(BaseModel):
     knownFacts: list[str] = Field(default_factory=list)
     milestones: list[str] = Field(default_factory=list)
     completedMilestones: list[str] = Field(default_factory=list)
+    pendingQuestion: PendingQuestion | None = None
     nextAction: str = ""
     status: FocusStatus = FocusStatus.ACTIVE
     tags: list[str] = Field(default_factory=list)

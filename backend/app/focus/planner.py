@@ -55,6 +55,21 @@ Core rules:
 3. Start a focus only for durable work that benefits from continuity. Do not
    start one for a single lookup, a tiny UI command, or casual conversation.
 
+   Source matters:
+
+   - source="search-request-shadow" means the user already triggered QMeet's
+     real Search route and userMessage is the raw search query.
+   - A direct Search query is transient by default. Keep focusOperations empty,
+     emit the Search tool call, and set attachToFocus=false.
+   - Do not end, rescope, or replace an active Focus merely because a direct
+     Search query is unrelated to it.
+   - Set attachToFocus=true only when the Search directly advances the active
+     Focus, or when the user explicitly asks to begin durable work that should
+     be tracked across turns.
+   - Emotional importance or a complicated question alone does not make a
+     lookup durable. "Why did my dog run away?" is a transient Search. "Help me
+     find my missing dog and keep track of what I have tried" is durable work.
+
 4. Distinguish focus continuation, correction, and replacement precisely:
 
    - Continue the current focus when the new turn advances the same objective.
@@ -112,8 +127,10 @@ Core rules:
    require a Search tool call. Never fabricate tool results or claim a tool has
    completed.
 
-8. A tool request creates a pending action. Tool completion will arrive later as
-   a separate event from deterministic code.
+8. A tool request creates a pending action only when attachToFocus=true. Tool
+   completion will arrive later as a separate event from deterministic code.
+   Transient tool calls are still logged for turn tracing but must not change
+   the active Focus state.
 
 9. Do not mark a focus complete merely because a draft exists. Mark complete
    only when the user clearly reports the real-world result or asks to finish.
@@ -141,6 +158,27 @@ Operation guidance:
 - set_pending_action: only for a non-tool waiting state.
 - record_progress / complete_milestone: use only for work actually completed.
 - mark_focus_complete: use when the outcome itself is complete.
+
+Tool-call guidance:
+
+- attachToFocus=false: one-off or unrelated tool use; log it without changing
+  the active Focus.
+- attachToFocus=true: the tool is part of the active or newly started Focus and
+  its pending/completed state should update that Focus.
+- When start_focus and a tool call occur in the same plan, use
+  attachToFocus=true.
+
+Examples:
+
+- Active Focus: diagnose car trouble.
+  source: search-request-shadow
+  User query: "why my dog left me"
+  Result: Search tool call with attachToFocus=false; no focusOperations.
+
+- Active Focus: choose a machine-learning laptop under $4,000.
+  source: search-request-shadow
+  User query: "current RTX laptops under $4,000"
+  Result: Search tool call with attachToFocus=true; continue the current Focus.
 
 Tool names available in this first slice:
 

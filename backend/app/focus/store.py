@@ -229,6 +229,24 @@ def _state_from_seed(
     focus_id = seed.focusId.strip() or fallback_focus_id
     created_at = seed.createdAt or fallback_timestamp
     updated_at = seed.updatedAt or fallback_timestamp
+    milestones = list(seed.milestones)
+    pending_question = seed.pendingQuestion
+
+    # Older Phase 18R legacy-import events stored the first open question in
+    # milestones because LegacyFocusSeed did not yet expose pendingQuestion.
+    # Repair that shape deterministically during replay so existing event logs
+    # project correctly without requiring a reset.
+    if pending_question is None and seed.status == FocusStatus.CLARIFYING:
+        for index, item in enumerate(milestones):
+            question = " ".join(item.split()).strip()
+            if question.endswith("?"):
+                pending_question = PendingQuestion(
+                    target="legacy_open_question",
+                    question=question,
+                    askedAt=updated_at,
+                )
+                del milestones[index]
+                break
 
     return FocusState(
         focusId=focus_id,
@@ -242,8 +260,9 @@ def _state_from_seed(
         preferences=seed.preferences,
         decisions=seed.decisions,
         knownFacts=seed.knownFacts,
-        milestones=seed.milestones,
+        milestones=milestones,
         completedMilestones=seed.completedMilestones,
+        pendingQuestion=pending_question,
         nextAction=seed.nextAction,
         status=seed.status,
         tags=seed.tags,
@@ -260,6 +279,8 @@ def reduce_events(events: Iterable[FocusEvent]) -> FocusState:
     """
 
     state = FocusState()
+    tool_resume_status_by_turn: dict[str, FocusStatus] = {}
+    pending_tool_count_by_turn: dict[str, int] = {}
 
     for event in events:
         payload = event.payload
@@ -288,10 +309,22 @@ def reduce_events(events: Iterable[FocusEvent]) -> FocusState:
             )
             continue
 
-        if (
-            state.status == FocusStatus.INACTIVE
-            and event.type != FocusEventType.TURN_PLANNED
-        ):
+        if event.type == FocusEventType.TURN_PLANNED:
+            # A transient turn may be logged with no Focus ID. It should remain
+            # traceable without becoming the active Focus's last semantic turn.
+            if event.focusId and event.focusId == state.focusId:
+                state.updatedAt = event_time
+                if event.sourceTurnId:
+                    state.lastTurnId = event.sourceTurnId
+            continue
+
+        # Every non-lifecycle state mutation is scoped to one Focus. Blank IDs
+        # represent transient activity; mismatched IDs represent older Focuses.
+        # Neither may alter the current projection.
+        if not event.focusId or event.focusId != state.focusId:
+            continue
+
+        if state.status == FocusStatus.INACTIVE:
             continue
 
         if event.type == FocusEventType.FOCUS_RESCOPED:
@@ -379,6 +412,30 @@ def reduce_events(events: Iterable[FocusEvent]) -> FocusState:
 
         elif event.type == FocusEventType.TOOL_REQUESTED:
             tool = str(payload.get("tool", "")).strip()
+            turn_key = event.sourceTurnId or event.id
+            pending_count = pending_tool_count_by_turn.get(turn_key, 0)
+
+            if pending_count == 0:
+                resume_value = str(payload.get("resumeStatus", "")).strip()
+                try:
+                    resume_status = FocusStatus(resume_value)
+                except ValueError:
+                    resume_status = state.status
+
+                if resume_status in {
+                    FocusStatus.INACTIVE,
+                    FocusStatus.WAITING,
+                    FocusStatus.COMPLETE,
+                }:
+                    resume_status = (
+                        FocusStatus.CLARIFYING
+                        if state.pendingQuestion is not None
+                        else FocusStatus.ACTIVE
+                    )
+
+                tool_resume_status_by_turn[turn_key] = resume_status
+
+            pending_tool_count_by_turn[turn_key] = pending_count + 1
             state.pendingAction = PendingAction(
                 kind=tool,
                 description=str(payload.get("reason", "")).strip(),
@@ -386,24 +443,38 @@ def reduce_events(events: Iterable[FocusEvent]) -> FocusState:
             )
             state.status = FocusStatus.WAITING
 
-        elif event.type == FocusEventType.TOOL_COMPLETED:
-            tool = str(payload.get("tool", "")).strip()
-            summary = str(payload.get("summary", "")).strip()
-            state.pendingAction = None
-            _append_unique(
-                state.completedMilestones,
-                summary or f"{tool.replace('_', ' ').title()} completed.",
-            )
-            if state.status != FocusStatus.COMPLETE:
-                state.status = FocusStatus.ACTIVE
-
-        elif event.type == FocusEventType.TOOL_FAILED:
-            state.pendingAction = None
+        elif event.type in {
+            FocusEventType.TOOL_COMPLETED,
+            FocusEventType.TOOL_FAILED,
+        }:
             summary = str(payload.get("summary", "")).strip()
             if summary:
+                # Tool output is evidence about the Focus. It is not proof that
+                # a milestone was completed. Milestones move only through an
+                # explicit progress or completion operation.
                 _append_unique(state.knownFacts, summary)
-            if state.status != FocusStatus.COMPLETE:
-                state.status = FocusStatus.ACTIVE
+
+            turn_key = event.sourceTurnId or event.id
+            remaining = max(
+                0,
+                pending_tool_count_by_turn.get(turn_key, 1) - 1,
+            )
+
+            if remaining:
+                pending_tool_count_by_turn[turn_key] = remaining
+                state.status = FocusStatus.WAITING
+            else:
+                pending_tool_count_by_turn.pop(turn_key, None)
+                state.pendingAction = None
+
+                if state.status != FocusStatus.COMPLETE:
+                    resume_status = tool_resume_status_by_turn.pop(
+                        turn_key,
+                        FocusStatus.CLARIFYING
+                        if state.pendingQuestion is not None
+                        else FocusStatus.ACTIVE,
+                    )
+                    state.status = resume_status
 
         elif event.type == FocusEventType.FOCUS_COMPLETED:
             state.status = FocusStatus.COMPLETE
@@ -635,6 +706,7 @@ def _tool_request_event(
     turn_id: str,
     source: str,
     confidence: float,
+    resume_status: FocusStatus,
 ) -> FocusEvent:
     return _new_event(
         FocusEventType.TOOL_REQUESTED,
@@ -647,6 +719,8 @@ def _tool_request_event(
                 for argument in tool_call.arguments
             ],
             "requiresConfirmation": tool_call.requiresConfirmation,
+            "attachToFocus": bool(focus_id),
+            "resumeStatus": resume_status.value,
         },
         source_turn_id=turn_id,
         source=source,
@@ -689,26 +763,82 @@ def apply_turn_plan(
     turn_id: str,
     source: str,
 ) -> FocusState:
-    if turn_id and has_turn(turn_id):
-        return get_state()
+    with _STORE_LOCK:
+        existing_events = list(_read_log_unlocked().events)
 
-    current = get_state()
+    if turn_id and any(
+        event.sourceTurnId == turn_id
+        and event.type == FocusEventType.TURN_PLANNED
+        for event in existing_events
+    ):
+        return reduce_events(existing_events)
+
+    current = reduce_events(existing_events)
     current_focus_id = current.focusId.strip()
 
+    real_tool_calls = [
+        tool_call
+        for tool_call in plan.toolCalls
+        if tool_call.tool != ToolName.NONE
+    ]
+    has_attached_tool = any(
+        tool_call.attachToFocus
+        for tool_call in real_tool_calls
+    )
+    shadow_tool_source = source in {
+        "command-interpret-shadow",
+        "search-request-shadow",
+    }
+    transient_tool_turn = (
+        bool(real_tool_calls)
+        and not has_attached_tool
+        and (shadow_tool_source or not plan.focusOperations)
+    )
+    transient_search = transient_tool_turn and any(
+        tool_call.tool == ToolName.SEARCH
+        for tool_call in real_tool_calls
+    )
+
+    # attachToFocus=False is a deterministic boundary, not a suggestion. A
+    # transient tool turn may be logged and completed, but it cannot mutate,
+    # replace, or ask follow-ups on the current durable Focus even if the model
+    # accidentally emitted Focus operations beside the tool call.
+    effective_focus_operations = (
+        [] if transient_tool_turn else plan.focusOperations
+    )
     start_focus_ids = {
         index: _new_focus_id()
-        for index, operation in enumerate(plan.focusOperations)
+        for index, operation in enumerate(effective_focus_operations)
         if operation.kind == FocusOperationKind.START_FOCUS
     }
     first_started_focus_id = next(iter(start_focus_ids.values()), "")
+    has_focus_operations = bool(effective_focus_operations)
 
-    turn_focus_id = current_focus_id or first_started_focus_id
+    if first_started_focus_id:
+        # A replacement plan is interpreted in the context of the old Focus,
+        # while a first-ever Focus uses the new ID immediately.
+        turn_focus_id = current_focus_id or first_started_focus_id
+    elif has_focus_operations or has_attached_tool:
+        turn_focus_id = current_focus_id
+    else:
+        # A transient tool turn remains traceable but is not assigned to the
+        # unrelated active Focus.
+        turn_focus_id = ""
+
     active_focus_id = current_focus_id
     active_focus_is_open = bool(active_focus_id) and current.status not in {
         FocusStatus.INACTIVE,
         FocusStatus.COMPLETE,
     }
-    focus_accepts_question = active_focus_is_open
+    focus_accepts_question = active_focus_is_open and not transient_tool_turn
+
+    execution_policy = {
+        "transientTool": transient_tool_turn,
+        "transientSearch": transient_search,
+        "suppressedFocusOperationCount": (
+            len(plan.focusOperations) if transient_tool_turn else 0
+        ),
+    }
 
     events: list[FocusEvent] = [
         _new_event(
@@ -719,6 +849,7 @@ def apply_turn_plan(
                 "route": plan.route.value,
                 "reason": plan.reason,
                 "plan": plan.model_dump(mode="json"),
+                "executionPolicy": execution_policy,
             },
             source_turn_id=turn_id,
             source=source,
@@ -726,7 +857,7 @@ def apply_turn_plan(
         )
     ]
 
-    for index, operation in enumerate(plan.focusOperations):
+    for index, operation in enumerate(effective_focus_operations):
         if operation.kind == FocusOperationKind.START_FOCUS:
             operation_focus_id = start_focus_ids[index]
 
@@ -782,10 +913,16 @@ def apply_turn_plan(
         if question_event is not None:
             events.append(question_event)
 
-    tool_focus_id = active_focus_id or turn_focus_id
+    projected_before_tools = reduce_events([*existing_events, *events])
+    tool_resume_status = projected_before_tools.status
+
+    started_focus_this_turn = bool(first_started_focus_id)
     for tool_call in plan.toolCalls:
         if tool_call.tool == ToolName.NONE:
             continue
+
+        attach_to_focus = tool_call.attachToFocus or started_focus_this_turn
+        tool_focus_id = active_focus_id if attach_to_focus else ""
         events.append(
             _tool_request_event(
                 tool_call,
@@ -793,6 +930,7 @@ def apply_turn_plan(
                 turn_id=turn_id,
                 source=source,
                 confidence=plan.confidence,
+                resume_status=tool_resume_status,
             )
         )
 
