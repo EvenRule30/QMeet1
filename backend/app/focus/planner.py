@@ -154,6 +154,24 @@ Core rules:
 12. Do not store greetings, acknowledgements, assistant prose, or malformed
     transcription fragments as facts.
 
+13. Preserve accepted intent across prerequisite turns. If the user already
+    requested or accepted instructions, an explanation, a draft, or another
+    deliverable, and later turns only answer prerequisite questions, do not ask
+    permission for the same deliverable again. Deliver it once the prerequisite
+    is satisfied. If one prerequisite is still missing, ask only that atomic
+    prerequisite and keep answerDirectly=false.
+
+14. answerDirectly=true means responseIntent.guidance must contain the requested
+    answer or deliverable now. Do not merely promise that it will be provided,
+    and do not replace delivery with "Would you like..." or "Do you want..."
+    after the user has already requested it.
+
+15. The recent event context distinguishes canonical planning evidence from the
+    legacy visible response. Treat turn_planned, response_candidate, focus state
+    mutations, and tool results as planning evidence. An assistant_replied audit
+    may report legacy mismatches, but legacy visible wording is not authoritative
+    and must not override the canonical pending question or prior user intent.
+
 Operation guidance:
 
 - start_focus: use for a new durable objective; include title, objective, and
@@ -377,22 +395,92 @@ def planner_enabled() -> bool:
     return provider in {"openai", "openai-compatible", "openai_compatible"}
 
 
+def _compact_recent_event_payload(
+    event_type: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Keep canonical continuity without replaying untrusted legacy prose."""
+
+    if event_type == "turn_planned":
+        plan = payload.get("plan", {})
+        response_intent = plan.get("responseIntent", {})
+        return {
+            "message": payload.get("message", ""),
+            "route": payload.get("route", plan.get("route", "")),
+            "reason": payload.get("reason", plan.get("reason", "")),
+            "responseIntent": {
+                "acknowledge": response_intent.get("acknowledge", ""),
+                "answerDirectly": response_intent.get(
+                    "answerDirectly",
+                    False,
+                ),
+                "guidance": response_intent.get("guidance", ""),
+                "askQuestion": response_intent.get("askQuestion", ""),
+            },
+        }
+
+    if event_type == "response_candidate":
+        return {
+            "text": payload.get("text", ""),
+            "eligibility": payload.get("eligibility", {}),
+        }
+
+    if event_type == "assistant_replied":
+        audit = payload.get("audit", {})
+        return {
+            "audit": {
+                "expectedQuestion": audit.get("expectedQuestion", ""),
+                "questionMatch": audit.get("questionMatch"),
+                "candidateEligible": audit.get("candidateEligible"),
+                "findings": [
+                    finding.get("code", "")
+                    for finding in audit.get("findings", [])
+                    if isinstance(finding, dict)
+                ],
+            }
+        }
+
+    if event_type in {
+        "list_item_added",
+        "field_set",
+        "question_set",
+        "question_cleared",
+        "tool_requested",
+        "tool_completed",
+        "focus_started",
+        "focus_rescoped",
+        "focus_ended",
+        "focus_completed",
+    }:
+        return payload
+
+    return {}
+
+
 def _recent_event_summary() -> list[dict[str, Any]]:
     summary: list[dict[str, Any]] = []
 
-    for event in list_events(limit=18):
-        if event.type.value == "turn_planned":
+    for event in list_events(limit=24):
+        event_type = event.type.value
+        compact_payload = _compact_recent_event_payload(
+            event_type,
+            event.payload,
+        )
+
+        if not compact_payload and event_type not in {
+            "question_cleared",
+        }:
             continue
 
         summary.append(
             {
-                "type": event.type.value,
-                "payload": event.payload,
+                "type": event_type,
+                "payload": compact_payload,
                 "createdAt": event.createdAt,
             }
         )
 
-    return summary[-12:]
+    return summary[-16:]
 
 
 def _planner_input(message: str, state: FocusState, source: str) -> str:

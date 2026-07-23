@@ -47,25 +47,29 @@ async def _read_body(receive: Receive) -> bytes:
     return b"".join(chunks)
 
 
-def _replay_receive(body: bytes) -> Receive:
+def _replay_receive(body: bytes, original_receive: Receive) -> Receive:
+    """Replay the consumed request body, then restore real disconnect handling.
+
+    StreamingResponse listens for ``http.disconnect`` while it streams. Returning
+    synthetic empty request messages forever prevents that listener from waiting
+    on the real ASGI connection and can leave the client stuck in its working
+    state.
+    """
+
     sent = False
 
     async def receive() -> Message:
         nonlocal sent
 
-        if sent:
+        if not sent:
+            sent = True
             return {
                 "type": "http.request",
-                "body": b"",
+                "body": body,
                 "more_body": False,
             }
 
-        sent = True
-        return {
-            "type": "http.request",
-            "body": body,
-            "more_body": False,
-        }
+        return await original_receive()
 
     return receive
 
@@ -339,7 +343,7 @@ class FocusShadowMiddleware:
         request_body = await _read_body(receive)
         content_type = _header_value(scope, b"content-type")
         request_payload = _json_payload(request_body, content_type)
-        replay_receive = _replay_receive(request_body)
+        replay_receive = _replay_receive(request_body, receive)
         turn_id = _turn_id(scope)
 
         if path == "/api/command/interpret":

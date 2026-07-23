@@ -79,6 +79,34 @@ def _expected_question(
     return ""
 
 
+
+def _response_candidate(
+    events: Iterable[FocusEvent],
+    source_turn_id: str,
+) -> dict[str, Any]:
+    for event in reversed(list(events)):
+        if event.sourceTurnId != source_turn_id:
+            continue
+        if event.type != FocusEventType.RESPONSE_CANDIDATE:
+            continue
+
+        text = _clean_text(str(event.payload.get("text", "")))
+        eligibility = event.payload.get("eligibility")
+        if not isinstance(eligibility, dict):
+            eligibility = {}
+
+        return {
+            "text": text,
+            "eligible": bool(eligibility.get("eligible", False)),
+            "reasons": [
+                str(reason)
+                for reason in eligibility.get("reasons", [])
+                if str(reason).strip()
+            ],
+        }
+
+    return {"text": "", "eligible": False, "reasons": ["missing_candidate"]}
+
 def _tool_evidence(
     events: Iterable[FocusEvent],
     source_turn_id: str,
@@ -128,6 +156,8 @@ def build_response_audit(
         source_turn_id,
     )
     visible_questions = extract_visible_questions(reply_text)
+    candidate = _response_candidate(event_list, source_turn_id)
+    candidate_text = str(candidate.get("text", ""))
     tool_evidence = _tool_evidence(event_list, source_turn_id)
 
     normalized_expected = _normalize_question(expected_question)
@@ -179,6 +209,9 @@ def build_response_audit(
         )
 
     return {
+        "candidateText": candidate_text,
+        "candidateEligible": bool(candidate.get("eligible", False)),
+        "candidateIneligibilityReasons": list(candidate.get("reasons", [])),
         "expectedQuestion": expected_question,
         "visibleQuestions": visible_questions,
         "questionMatch": question_match,

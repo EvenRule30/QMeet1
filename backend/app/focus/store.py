@@ -10,6 +10,7 @@ from typing import Iterable
 from uuid import uuid4
 
 from app.focus.audit import build_response_audit
+from app.focus.response import build_response_candidate
 from app.focus.models import (
     FocusEvent,
     FocusEventLog,
@@ -310,8 +311,11 @@ def reduce_events(events: Iterable[FocusEvent]) -> FocusState:
             )
             continue
 
-        if event.type == FocusEventType.ASSISTANT_REPLIED:
-            # The visible reply and its audit are observational evidence.
+        if event.type in {
+            FocusEventType.RESPONSE_CANDIDATE,
+            FocusEventType.ASSISTANT_REPLIED,
+        }:
+            # Candidate and visible replies are observational evidence.
             # They must never alter the canonical Focus projection.
             continue
 
@@ -954,6 +958,26 @@ def apply_turn_plan(
                 source=source,
                 confidence=plan.confidence,
                 resume_status=tool_resume_status,
+            )
+        )
+
+    response_candidate = build_response_candidate(plan)
+    response_candidate_text = str(response_candidate.get("text", "")).strip()
+    if response_candidate_text:
+        candidate_focus_id = (
+            active_focus_id
+            if active_focus_id and not transient_tool_turn
+            else turn_focus_id
+        )
+        response_candidate["text"] = response_candidate_text[:12000]
+        events.append(
+            _new_event(
+                FocusEventType.RESPONSE_CANDIDATE,
+                focus_id=candidate_focus_id,
+                payload=response_candidate,
+                source_turn_id=turn_id,
+                source="focus-response-candidate",
+                confidence=plan.confidence,
             )
         )
 
