@@ -26,8 +26,10 @@ from app.focus.models import (
     TurnPlan,
 )
 
+
 _STORE_LOCK = RLock()
 _MAX_EVENTS = 4000
+
 _STRING_FIELDS = {
     FocusField.TITLE.value,
     FocusField.OBJECTIVE.value,
@@ -35,6 +37,7 @@ _STRING_FIELDS = {
     FocusField.SUBJECT.value,
     FocusField.NEXT_ACTION.value,
 }
+
 _LIST_FIELDS = {
     FocusField.STAKEHOLDERS.value,
     FocusField.REQUIREMENTS.value,
@@ -56,6 +59,30 @@ def _now_iso() -> str:
     return datetime.now().astimezone().isoformat()
 
 
+def _new_focus_id() -> str:
+    return f"focus-{uuid4().hex}"
+
+
+def _stable_focus_id_from_event(event: FocusEvent) -> str:
+    """Return a deterministic fallback ID for older malformed event logs.
+
+    New events always persist a real Focus ID. This fallback only exists so an
+    already-written legacy_imported or focus_started event with a blank ID can
+    still be replayed without generating a different UUID on every reduction.
+    """
+
+    payload_focus_id = str(event.payload.get("focusId", "")).strip()
+    if event.focusId.strip():
+        return event.focusId.strip()
+    if payload_focus_id:
+        return payload_focus_id
+
+    event_suffix = event.id.removeprefix("focus-event-").strip()
+    if event_suffix:
+        return f"focus-{event_suffix}"
+    return "focus-unknown-event"
+
+
 def event_file() -> Path:
     configured = os.getenv("QMEET_FOCUS_FILE", "").strip()
     if configured:
@@ -71,6 +98,7 @@ def _read_log_unlocked() -> FocusEventLog:
     path = event_file()
     if not path.exists():
         return _empty_log()
+
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
         return FocusEventLog.model_validate(payload)
@@ -84,11 +112,13 @@ def _atomic_write_unlocked(document: FocusEventLog) -> None:
     path = event_file()
     path.parent.mkdir(parents=True, exist_ok=True)
     document.updatedAt = _now_iso()
+
     if len(document.events) > _MAX_EVENTS:
         document.events = document.events[-_MAX_EVENTS:]
 
     handle = None
     temporary_path: Path | None = None
+
     try:
         handle = tempfile.NamedTemporaryFile(
             mode="w",
@@ -140,14 +170,19 @@ def append_events(events: Iterable[FocusEvent]) -> list[FocusEvent]:
     items = list(events)
     if not items:
         return []
+
     with _STORE_LOCK:
         document = _read_log_unlocked()
         existing_ids = {event.id for event in document.events}
+
         for event in items:
-            if event.id not in existing_ids:
-                document.events.append(event)
-                existing_ids.add(event.id)
+            if event.id in existing_ids:
+                continue
+            document.events.append(event)
+            existing_ids.add(event.id)
+
         _atomic_write_unlocked(document)
+
     return items
 
 
@@ -167,9 +202,11 @@ def _append_unique(values: list[str], candidate: str, limit: int = 80) -> None:
     item = " ".join(candidate.split()).strip()
     if not item:
         return
+
     key = item.casefold()
     if any(existing.casefold() == key for existing in values):
         return
+
     values.append(item)
     if len(values) > limit:
         del values[:-limit]
@@ -182,11 +219,19 @@ def _remove_casefold(values: list[str], candidate: str) -> None:
     values[:] = [value for value in values if value.casefold() != key]
 
 
-def _state_from_seed(seed_payload: dict) -> FocusState:
+def _state_from_seed(
+    seed_payload: dict,
+    *,
+    fallback_focus_id: str,
+    fallback_timestamp: str,
+) -> FocusState:
     seed = LegacyFocusSeed.model_validate(seed_payload)
-    now = _now_iso()
+    focus_id = seed.focusId.strip() or fallback_focus_id
+    created_at = seed.createdAt or fallback_timestamp
+    updated_at = seed.updatedAt or fallback_timestamp
+
     return FocusState(
-        focusId=seed.focusId or f"focus-{uuid4().hex}",
+        focusId=focus_id,
         title=seed.title,
         objective=seed.objective,
         deliverable=seed.deliverable,
@@ -202,25 +247,37 @@ def _state_from_seed(seed_payload: dict) -> FocusState:
         nextAction=seed.nextAction,
         status=seed.status,
         tags=seed.tags,
-        createdAt=seed.createdAt or now,
-        updatedAt=seed.updatedAt or now,
+        createdAt=created_at,
+        updatedAt=updated_at,
     )
 
 
 def reduce_events(events: Iterable[FocusEvent]) -> FocusState:
+    """Project the append-only event log into the current Focus state.
+
+    Reduction must be deterministic. No UUID or current timestamp is generated
+    here; every replay of the same events returns the same state.
+    """
+
     state = FocusState()
 
     for event in events:
         payload = event.payload
-        event_time = event.createdAt or _now_iso()
+        event_time = event.createdAt
 
         if event.type == FocusEventType.LEGACY_IMPORTED:
-            state = _state_from_seed(payload)
+            state = _state_from_seed(
+                payload,
+                fallback_focus_id=_stable_focus_id_from_event(event),
+                fallback_timestamp=event_time,
+            )
+            if event.sourceTurnId:
+                state.lastTurnId = event.sourceTurnId
             continue
 
         if event.type == FocusEventType.FOCUS_STARTED:
             state = FocusState(
-                focusId=event.focusId or f"focus-{uuid4().hex}",
+                focusId=_stable_focus_id_from_event(event),
                 title=str(payload.get("title", "")).strip(),
                 objective=str(payload.get("objective", "")).strip(),
                 tags=list(payload.get("tags", [])),
@@ -231,25 +288,29 @@ def reduce_events(events: Iterable[FocusEvent]) -> FocusState:
             )
             continue
 
-        if state.status == FocusStatus.INACTIVE and event.type not in {
-            FocusEventType.TURN_PLANNED,
-        }:
+        if (
+            state.status == FocusStatus.INACTIVE
+            and event.type != FocusEventType.TURN_PLANNED
+        ):
             continue
 
         if event.type == FocusEventType.FOCUS_RESCOPED:
             title = str(payload.get("title", "")).strip()
             objective = str(payload.get("objective", "")).strip()
+
             if title:
                 state.title = title
             if objective:
                 state.objective = objective
             for tag in payload.get("tags", []):
                 _append_unique(state.tags, str(tag), 24)
+
             state.status = FocusStatus.CLARIFYING
 
         elif event.type == FocusEventType.FIELD_SET:
             field = str(payload.get("field", ""))
             value = " ".join(str(payload.get("value", "")).split()).strip()
+
             if field in _STRING_FIELDS:
                 setattr(state, field, value)
             elif field == FocusField.STATUS.value:
@@ -378,6 +439,7 @@ def reset_store() -> FocusState:
 def has_turn(turn_id: str) -> bool:
     if not turn_id:
         return False
+
     with _STORE_LOCK:
         return any(
             event.sourceTurnId == turn_id
@@ -389,15 +451,22 @@ def has_turn(turn_id: str) -> bool:
 def seed_from_legacy(seed: LegacyFocusSeed | None) -> FocusState:
     if seed is None:
         return get_state()
+
     with _STORE_LOCK:
         document = _read_log_unlocked()
         current = reduce_events(document.events)
+
         if current.status != FocusStatus.INACTIVE:
             return current
+
+        focus_id = seed.focusId.strip() or _new_focus_id()
+        seed_payload = seed.model_dump(mode="json")
+        seed_payload["focusId"] = focus_id
+
         event = _new_event(
             FocusEventType.LEGACY_IMPORTED,
-            focus_id=seed.focusId,
-            payload=seed.model_dump(mode="json"),
+            focus_id=focus_id,
+            payload=seed_payload,
             source="legacy-bootstrap",
         )
         document.events.append(event)
@@ -418,6 +487,7 @@ def _events_from_operation(
         "source": source,
         "confidence": operation.confidence,
     }
+
     kind = operation.kind
 
     if kind == FocusOperationKind.START_FOCUS:
@@ -432,6 +502,7 @@ def _events_from_operation(
                 **common,
             )
         ]
+
     if kind == FocusOperationKind.RESCOPE_FOCUS:
         return [
             _new_event(
@@ -444,6 +515,7 @@ def _events_from_operation(
                 **common,
             )
         ]
+
     if kind == FocusOperationKind.SET_FIELD and operation.field:
         event_type = (
             FocusEventType.NEXT_ACTION_SET
@@ -453,10 +525,14 @@ def _events_from_operation(
         return [
             _new_event(
                 event_type,
-                payload={"field": operation.field.value, "value": operation.value},
+                payload={
+                    "field": operation.field.value,
+                    "value": operation.value,
+                },
                 **common,
             )
         ]
+
     if kind in {
         FocusOperationKind.ADD_LIST_ITEM,
         FocusOperationKind.REMOVE_LIST_ITEM,
@@ -475,26 +551,37 @@ def _events_from_operation(
             )
             for value in values
         ]
+
     if kind == FocusOperationKind.SET_PENDING_QUESTION:
         return [
             _new_event(
                 FocusEventType.QUESTION_SET,
-                payload={"target": operation.target, "question": operation.question},
+                payload={
+                    "target": operation.target,
+                    "question": operation.question,
+                },
                 **common,
             )
         ]
+
     if kind == FocusOperationKind.CLEAR_PENDING_QUESTION:
         return [_new_event(FocusEventType.QUESTION_CLEARED, **common)]
+
     if kind == FocusOperationKind.SET_PENDING_ACTION:
         return [
             _new_event(
                 FocusEventType.ACTION_SET,
-                payload={"kind": operation.target, "description": operation.value},
+                payload={
+                    "kind": operation.target,
+                    "description": operation.value,
+                },
                 **common,
             )
         ]
+
     if kind == FocusOperationKind.CLEAR_PENDING_ACTION:
         return [_new_event(FocusEventType.ACTION_CLEARED, **common)]
+
     if kind == FocusOperationKind.SET_NEXT_ACTION:
         return [
             _new_event(
@@ -503,6 +590,7 @@ def _events_from_operation(
                 **common,
             )
         ]
+
     if kind == FocusOperationKind.RECORD_PROGRESS:
         values = operation.values or ([operation.value] if operation.value else [])
         return [
@@ -513,6 +601,7 @@ def _events_from_operation(
             )
             for value in values
         ]
+
     if kind == FocusOperationKind.COMPLETE_MILESTONE:
         values = operation.values or ([operation.value] if operation.value else [])
         return [
@@ -523,6 +612,7 @@ def _events_from_operation(
             )
             for value in values
         ]
+
     if kind == FocusOperationKind.MARK_FOCUS_COMPLETE:
         return [
             _new_event(
@@ -531,8 +621,10 @@ def _events_from_operation(
                 **common,
             )
         ]
+
     if kind == FocusOperationKind.END_FOCUS:
         return [_new_event(FocusEventType.FOCUS_ENDED, **common)]
+
     return []
 
 
@@ -550,12 +642,43 @@ def _tool_request_event(
         payload={
             "tool": tool_call.tool.value,
             "reason": tool_call.reason,
-            "arguments": [argument.model_dump() for argument in tool_call.arguments],
+            "arguments": [
+                argument.model_dump(mode="json")
+                for argument in tool_call.arguments
+            ],
             "requiresConfirmation": tool_call.requiresConfirmation,
         },
         source_turn_id=turn_id,
         source=source,
         confidence=confidence,
+    )
+
+
+def _automatic_question_event(
+    plan: TurnPlan,
+    *,
+    focus_id: str,
+    turn_id: str,
+    source: str,
+) -> FocusEvent | None:
+    question = " ".join(plan.responseIntent.askQuestion.split()).strip()
+    if not question or not focus_id:
+        return None
+
+    explicitly_set = any(
+        operation.kind == FocusOperationKind.SET_PENDING_QUESTION
+        for operation in plan.focusOperations
+    )
+    if explicitly_set:
+        return None
+
+    return _new_event(
+        FocusEventType.QUESTION_SET,
+        focus_id=focus_id,
+        payload={"target": "follow_up", "question": question},
+        source_turn_id=turn_id,
+        source=source,
+        confidence=plan.confidence,
     )
 
 
@@ -570,11 +693,27 @@ def apply_turn_plan(
         return get_state()
 
     current = get_state()
-    focus_id = current.focusId or f"focus-{uuid4().hex}"
+    current_focus_id = current.focusId.strip()
+
+    start_focus_ids = {
+        index: _new_focus_id()
+        for index, operation in enumerate(plan.focusOperations)
+        if operation.kind == FocusOperationKind.START_FOCUS
+    }
+    first_started_focus_id = next(iter(start_focus_ids.values()), "")
+
+    turn_focus_id = current_focus_id or first_started_focus_id
+    active_focus_id = current_focus_id
+    active_focus_is_open = bool(active_focus_id) and current.status not in {
+        FocusStatus.INACTIVE,
+        FocusStatus.COMPLETE,
+    }
+    focus_accepts_question = active_focus_is_open
+
     events: list[FocusEvent] = [
         _new_event(
             FocusEventType.TURN_PLANNED,
-            focus_id=focus_id,
+            focus_id=turn_focus_id,
             payload={
                 "message": message,
                 "route": plan.route.value,
@@ -587,25 +726,70 @@ def apply_turn_plan(
         )
     ]
 
-    for operation in plan.focusOperations:
+    for index, operation in enumerate(plan.focusOperations):
+        if operation.kind == FocusOperationKind.START_FOCUS:
+            operation_focus_id = start_focus_ids[index]
+
+            # A FocusState represents one current durable objective. Starting a
+            # different focus therefore closes the currently open one even when
+            # the model omitted an explicit end_focus operation. This keeps the
+            # event history truthful without relying on planner consistency.
+            if active_focus_id and active_focus_is_open:
+                events.append(
+                    _new_event(
+                        FocusEventType.FOCUS_ENDED,
+                        focus_id=active_focus_id,
+                        payload={
+                            "reason": "superseded_by_new_focus",
+                            "newFocusId": operation_focus_id,
+                        },
+                        source_turn_id=turn_id,
+                        source=source,
+                        confidence=operation.confidence,
+                    )
+                )
+                active_focus_is_open = False
+                focus_accepts_question = False
+        else:
+            operation_focus_id = active_focus_id or turn_focus_id
+
         operation_events = _events_from_operation(
             operation,
-            focus_id=focus_id,
+            focus_id=operation_focus_id,
             turn_id=turn_id,
             source=source,
         )
         events.extend(operation_events)
-        for event in operation_events:
-            if event.type == FocusEventType.FOCUS_STARTED:
-                focus_id = event.focusId or focus_id
 
+        if operation.kind == FocusOperationKind.START_FOCUS:
+            active_focus_id = operation_focus_id
+            active_focus_is_open = True
+            focus_accepts_question = True
+        elif operation.kind in {
+            FocusOperationKind.END_FOCUS,
+            FocusOperationKind.MARK_FOCUS_COMPLETE,
+        }:
+            active_focus_is_open = False
+            focus_accepts_question = False
+
+    if focus_accepts_question:
+        question_event = _automatic_question_event(
+            plan,
+            focus_id=active_focus_id,
+            turn_id=turn_id,
+            source=source,
+        )
+        if question_event is not None:
+            events.append(question_event)
+
+    tool_focus_id = active_focus_id or turn_focus_id
     for tool_call in plan.toolCalls:
         if tool_call.tool == ToolName.NONE:
             continue
         events.append(
             _tool_request_event(
                 tool_call,
-                focus_id=focus_id,
+                focus_id=tool_focus_id,
                 turn_id=turn_id,
                 source=source,
                 confidence=plan.confidence,
@@ -628,6 +812,7 @@ def record_tool_result(
     state = get_state()
     if state.status == FocusStatus.INACTIVE:
         return state
+
     event = _new_event(
         FocusEventType.TOOL_COMPLETED if success else FocusEventType.TOOL_FAILED,
         focus_id=state.focusId,
