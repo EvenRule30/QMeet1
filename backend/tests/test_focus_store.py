@@ -1923,5 +1923,116 @@ class FocusStoreTests(unittest.TestCase):
         self.assertEqual(after, before)
 
 
+class FocusStoreFocusRecallRoutingTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temporary_directory = tempfile.TemporaryDirectory()
+        self._event_file = Path(self._temporary_directory.name) / "qmeet_focus_test.json"
+        self._environment_patch = patch.dict(
+            os.environ,
+            {"QMEET_FOCUS_FILE": str(self._event_file)},
+            clear=False,
+        )
+        self._environment_patch.start()
+        reset_store()
+
+    def tearDown(self) -> None:
+        self._environment_patch.stop()
+        self._temporary_directory.cleanup()
+
+    def test_focus_recall_is_route_only_and_guarded(self) -> None:
+        turn_id = "turn-focus-recall-route"
+        plan = TurnPlan(
+            route=TurnRoute.TOOL,
+            toolCalls=[
+                PlannedToolCall(
+                    tool=ToolName.FOCUS_READ,
+                    arguments=[],
+                    requiresConfirmation=False,
+                    attachToFocus=False,
+                )
+            ],
+            responseIntent=ResponseIntent(
+                answerDirectly=False,
+                attachToFocus=False,
+            ),
+            confidence=0.99,
+        )
+
+        before = get_state()
+        after = apply_turn_plan(
+            plan,
+            message="Could you show me my last focus session?",
+            turn_id=turn_id,
+            source="command-interpret-shadow",
+        )
+        self.assertEqual(after, before)
+
+        turn_events = [
+            event for event in list_events()
+            if event.sourceTurnId == turn_id
+        ]
+        self.assertEqual(
+            [event.type for event in turn_events],
+            [FocusEventType.TURN_PLANNED],
+        )
+        execution_policy = turn_events[0].payload["executionPolicy"]
+        self.assertTrue(execution_policy["transientTool"])
+        self.assertTrue(execution_policy["routeOnlyTool"])
+
+        decision = guarded_route_decision_for_turn(
+            turn_id,
+            {
+                "intent": "command",
+                "action": "read_last_focus_session",
+                "confidence": 0.99,
+                "frontendCommand": "what was my last focus",
+                "payload": {"mode": "last"},
+                "reason": "Focus recall command.",
+            },
+        )
+        self.assertTrue(decision.eligible)
+        self.assertEqual(decision.routeClass, "focus_read")
+        self.assertEqual(decision.focusRouteClass, "focus_read")
+        self.assertEqual(decision.legacyRouteClass, "focus_read")
+
+    def test_focus_recall_legacy_actions_share_one_route_class(self) -> None:
+        actions = [
+            "read_focus_session",
+            "read_last_focus_session",
+            "read_focus_history",
+            "recap_focus_activity",
+        ]
+        for index, action in enumerate(actions):
+            turn_id = f"turn-focus-recall-{index}"
+            apply_turn_plan(
+                TurnPlan(
+                    route=TurnRoute.TOOL,
+                    toolCalls=[
+                        PlannedToolCall(
+                            tool=ToolName.FOCUS_READ,
+                            requiresConfirmation=False,
+                            attachToFocus=False,
+                        )
+                    ],
+                    confidence=0.99,
+                ),
+                message="Read Focus memory.",
+                turn_id=turn_id,
+                source="command-interpret-shadow",
+            )
+            decision = guarded_route_decision_for_turn(
+                turn_id,
+                {
+                    "intent": "command",
+                    "action": action,
+                    "confidence": 0.99,
+                    "frontendCommand": "focus read",
+                    "payload": {},
+                    "reason": "Focus read.",
+                },
+            )
+            self.assertTrue(decision.eligible, action)
+            self.assertEqual(decision.routeClass, "focus_read")
+
 if __name__ == "__main__":
     unittest.main()

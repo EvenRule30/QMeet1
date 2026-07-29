@@ -9,6 +9,10 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from app.focus.audit import build_response_audit, extract_visible_questions
+from app.focus.route_bridge import (
+    focus_read_intent,
+    repair_legacy_command_payload,
+)
 from app.focus.response import (
     build_response_candidate,
     compose_response_candidate,
@@ -2852,6 +2856,141 @@ class FocusGuardedRouteMiddlewareTests(unittest.IsolatedAsyncioTestCase):
             b"confirmation_gated_legacy_route",
         )
 
+
+    async def test_route_bridge_restores_focus_history_read(self) -> None:
+        turn_id = "turn-route-bridge-focus-history"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.TOOL,
+                toolCalls=[
+                    PlannedToolCall(
+                        tool=ToolName.FOCUS_READ,
+                        requiresConfirmation=False,
+                        attachToFocus=False,
+                    )
+                ],
+                confidence=1.0,
+            ),
+            message="Could you list my recent focus sessions?",
+            turn_id=turn_id,
+            source="command-interpret-shadow",
+        )
+
+        sent = await self._run(
+            turn_id=turn_id,
+            message="Could you list my recent focus sessions?",
+            legacy_payload={
+                "intent": "chat",
+                "action": "none",
+                "confidence": 0.8,
+                "frontendCommand": "",
+                "payload": {},
+                "reason": "Legacy model mislabeled Focus history as chat.",
+            },
+        )
+
+        headers = dict(next(
+            item for item in sent if item["type"] == "http.response.start"
+        )["headers"])
+        self.assertEqual(headers[b"x-qmeet-route-source"], b"focus-guarded")
+        body = b"".join(
+            item.get("body", b"")
+            for item in sent
+            if item["type"] == "http.response.body"
+        )
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(payload["intent"], "command")
+        self.assertEqual(payload["action"], "read_focus_history")
+        self.assertEqual(
+            payload["frontendCommand"],
+            "show recent focus sessions",
+        )
+        self.assertEqual(payload["payload"], {"mode": "history"})
+
+        event = next(
+            event for event in reversed(list_events())
+            if event.type == FocusEventType.ROUTE_SELECTION
+            and event.sourceTurnId == turn_id
+        )
+        self.assertEqual(event.payload["outcome"], "takeover")
+        self.assertEqual(event.payload["routeClass"], "focus_read")
+
+
+class FocusRecallCommandBridgeTests(unittest.TestCase):
+    def test_focus_recall_modes_are_recognized(self) -> None:
+        cases = [
+            (
+                "Could you tell me what my current focus is?",
+                "current",
+                "read_focus_session",
+                "what am I focused on",
+            ),
+            (
+                "Could you show me my last focus session?",
+                "last",
+                "read_last_focus_session",
+                "what was my last focus",
+            ),
+            (
+                "Could you list my recent focus sessions?",
+                "history",
+                "read_focus_history",
+                "show recent focus sessions",
+            ),
+            (
+                "Could you recap what I worked on today?",
+                "recap",
+                "recap_focus_activity",
+                "summarize what I worked on today",
+            ),
+        ]
+        for message, mode, action, frontend_command in cases:
+            intent = focus_read_intent(message)
+            self.assertIsNotNone(intent, message)
+            assert intent is not None
+            self.assertEqual(intent.mode, mode)
+            self.assertEqual(intent.action, action)
+            self.assertEqual(intent.frontend_command, frontend_command)
+
+    def test_focus_recall_repairs_legacy_chat(self) -> None:
+        repaired, changed = repair_legacy_command_payload(
+            "Could you recap what I worked on today?",
+            {
+                "intent": "chat",
+                "action": "none",
+                "confidence": 0.7,
+                "frontendCommand": "",
+                "payload": {},
+                "reason": "General model treated it as chat.",
+            },
+        )
+        self.assertTrue(changed)
+        self.assertEqual(repaired["intent"], "command")
+        self.assertEqual(repaired["action"], "recap_focus_activity")
+        self.assertEqual(
+            repaired["frontendCommand"],
+            "summarize what I worked on today",
+        )
+        self.assertEqual(
+            repaired["payload"],
+            {"mode": "recap", "timeframe": "today"},
+        )
+
+    def test_focus_mutation_is_not_repaired_as_read(self) -> None:
+        payload = {
+            "intent": "chat",
+            "action": "none",
+            "confidence": 0.7,
+            "frontendCommand": "",
+            "payload": {},
+            "reason": "General model treated it as chat.",
+        }
+        repaired, changed = repair_legacy_command_payload(
+            "Could you resume my last focus session?",
+            payload,
+        )
+        self.assertFalse(changed)
+        self.assertEqual(repaired, payload)
 
 if __name__ == "__main__":
     unittest.main()

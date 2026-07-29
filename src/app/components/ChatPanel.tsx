@@ -1,4 +1,5 @@
 import { Fragment, ReactNode, useEffect, useRef } from 'react';
+
 import { AssistantActivity, Message, OrbState } from '../types';
 
 interface ChatPanelProps {
@@ -32,11 +33,62 @@ function formatMessageTime(timestamp: Message['timestamp']): string {
   });
 }
 
+const STRUCTURED_SECTION_LABELS = [
+  'Ended focus sessions',
+  'Completed tasks',
+  'New open tasks',
+  'Current open tasks',
+  'Notes saved',
+  'Recent actions',
+  'Tasks',
+  'Still open',
+  'Visual context',
+  'Recent focus actions',
+];
+
+const STRUCTURED_SECTION_PATTERN = new RegExp(
+  `\\s+((?:${STRUCTURED_SECTION_LABELS.join('|')}):)`,
+  'gi',
+);
+
+function compactRecentActionPreview(value: string): string {
+  return value
+    .replace(/\s*\n+\s*(?:\d+[.)]|[-*])\s+/g, ' ')
+    .replace(/\s+\d+[.)]\s+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function expandRecentActionsList(content: string): string {
+  return content.replace(
+    /(^|\s)(Recent actions:)\s+([\s\S]+?)(?=(?:\s+(?:Ended focus sessions|Completed tasks|New open tasks|Current open tasks|Notes saved|Tasks|Still open|Visual context|Recent focus actions):)|$)/gi,
+    (_match, prefix: string, label: string, rawBody: string) => {
+      const body = rawBody.trim().replace(/[.]$/, '');
+      const items = body
+        .split(/\s*;\s*/)
+        .map(compactRecentActionPreview)
+        .filter(Boolean);
+
+      if (items.length < 2) {
+        return `${prefix}${label} ${compactRecentActionPreview(rawBody)}`;
+      }
+
+      return `${prefix}${label}\n${items
+        .map((item, index) => `${index + 1}. ${item}`)
+        .join('\n')}`;
+    },
+  );
+}
+
 function normalizeAssistantText(content: string): string {
-  return content
+  return expandRecentActionsList(content)
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
-    .replace(/\s+(\*\*(?:Next step|Next steps|Try|Try saying|Options|Why|Tip|Goal|Focus|What I know|What I need|Open question):\*\*)/gi, '\n\n$1')
+    .replace(
+      /\s+(\*\*(?:Next step|Next steps|Try|Try saying|Options|Why|Tip|Goal|Focus|What I know|What I need|Open question):\*\*)/gi,
+      '\n\n$1',
+    )
+    .replace(STRUCTURED_SECTION_PATTERN, '\n\n$1')
     .replace(/\s+(-\s+)/g, '\n$1')
     .replace(/\s+(\d+[.)]\s+)/g, '\n$1')
     .replace(/\n{3,}/g, '\n\n')
@@ -78,10 +130,10 @@ function parseFormattedBlocks(content: string): TextBlock[] {
   const lines = normalized.split('\n');
   const blocks: TextBlock[] = [];
   const paragraphLines: string[] = [];
-
   let codeLines: string[] | null = null;
   let bulletItems: string[] = [];
   let numberedItems: string[] = [];
+  let lastNumberedValue: number | null = null;
 
   const flushBullets = () => {
     if (bulletItems.length > 0) {
@@ -95,6 +147,7 @@ function parseFormattedBlocks(content: string): TextBlock[] {
       blocks.push({ type: 'numbered', items: numberedItems });
       numberedItems = [];
     }
+    lastNumberedValue = null;
   };
 
   const flushLists = () => {
@@ -138,7 +191,9 @@ function parseFormattedBlocks(content: string): TextBlock[] {
       continue;
     }
 
-    const calloutMatch = trimmed.match(/^\*\*(Next step|Next steps|Try|Try saying|Options|Why|Tip|Goal|Focus|What I know|What I need|Open question):\*\*\s*(.*)$/i);
+    const calloutMatch = trimmed.match(
+      /^\*\*(Next step|Next steps|Try|Try saying|Options|Why|Tip|Goal|Focus|What I know|What I need|Open question):\*\*\s*(.*)$/i,
+    );
     if (calloutMatch) {
       flushParagraph(blocks, paragraphLines);
       flushLists();
@@ -158,11 +213,22 @@ function parseFormattedBlocks(content: string): TextBlock[] {
       continue;
     }
 
-    const numberedMatch = trimmed.match(/^\d+[.)]\s+(.+)$/);
+    const numberedMatch = trimmed.match(/^(\d+)[.)]\s+(.+)$/);
     if (numberedMatch) {
       flushParagraph(blocks, paragraphLines);
       flushBullets();
-      numberedItems.push(numberedMatch[1].trim());
+
+      const numberedValue = Number.parseInt(numberedMatch[1], 10);
+      if (
+        numberedItems.length > 0 &&
+        lastNumberedValue !== null &&
+        numberedValue <= lastNumberedValue
+      ) {
+        flushNumbered();
+      }
+
+      numberedItems.push(numberedMatch[2].trim());
+      lastNumberedValue = numberedValue;
       continue;
     }
 
@@ -176,7 +242,6 @@ function parseFormattedBlocks(content: string): TextBlock[] {
 
   flushParagraph(blocks, paragraphLines);
   flushLists();
-
   return blocks;
 }
 
@@ -400,9 +465,7 @@ export function ChatPanel({ messages, orbState, activity }: ChatPanelProps) {
                 {isToolMessage && (
                   <p className="message-tool-label">{getToolLabel(msg)}</p>
                 )}
-
                 <FormattedMessageContent content={msg.content} />
-
                 {timeText && <span className="message-time">{timeText}</span>}
               </div>
             </div>

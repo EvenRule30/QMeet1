@@ -15,6 +15,7 @@ except Exception:  # pragma: no cover - startup remains available in mock mode.
 from app.focus.legacy import load_legacy_focus_seed
 from app.focus.route_bridge import (
     calendar_write_intent,
+    focus_read_intent,
     memory_mutation_intent,
     memory_read_intent,
     visual_mutation_intent,
@@ -106,6 +107,11 @@ Core rules:
    - Creating, completing, clearing, or deleting notes or tasks uses
      memory_write only as a protected route marker. Focus must not execute or
      narrate the mutation; the existing frontend memory handler owns it.
+   - Reading the current Focus, last Focus, Focus history, or a local activity
+     recap uses focus_read. It is route-only: requiresConfirmation=false,
+     attachToFocus=false, and no durable Focus operations. Starting, resuming,
+     updating, task-generating, summary-saving, or ending a Focus is not
+     focus_read.
 
 4. Distinguish focus continuation, correction, and replacement precisely:
 
@@ -279,6 +285,7 @@ Tool names available in this first slice:
 - visual_write
 - notes_read
 - tasks_read
+- focus_read
 - memory_write
 - open_search
 - start_focus
@@ -606,6 +613,58 @@ def _calendar_focus_is_relevant(state: FocusState) -> bool:
 
 
 
+def _normalize_focus_read_plan(
+    plan: TurnPlan,
+    *,
+    source: str,
+    message: str,
+) -> TurnPlan:
+    """Normalize read-only Focus recall as a route-only tool."""
+
+    if source != "command-interpret-shadow":
+        return plan
+
+    read_intent = focus_read_intent(message)
+    if read_intent is None:
+        return plan
+
+    arguments = [
+        ToolArgument(key="mode", value=read_intent.mode),
+    ]
+    if read_intent.timeframe:
+        arguments.append(
+            ToolArgument(key="timeframe", value=read_intent.timeframe)
+        )
+
+    return plan.model_copy(
+        update={
+            "route": TurnRoute.TOOL,
+            "focusOperations": [],
+            "toolCalls": [
+                PlannedToolCall(
+                    tool=ToolName.FOCUS_READ,
+                    arguments=arguments,
+                    reason=(
+                        "Read synchronized Focus recall through the existing "
+                        "deterministic frontend command."
+                    ),
+                    requiresConfirmation=False,
+                    attachToFocus=False,
+                )
+            ],
+            "responseIntent": ResponseIntent(
+                answerDirectly=False,
+                attachToFocus=False,
+            ),
+            "confidence": max(plan.confidence, 0.99),
+            "reason": (
+                "Focus recall normalized as a safe route-only tool with no "
+                "Focus mutation."
+            ),
+        }
+    )
+
+
 def _normalize_memory_mutation_plan(
     plan: TurnPlan,
     *,
@@ -879,6 +938,11 @@ def _normalize_calendar_read_plan(
     because the model omitted attachToFocus.
     """
 
+    plan = _normalize_focus_read_plan(
+        plan,
+        source=source,
+        message=message,
+    )
     plan = _normalize_memory_mutation_plan(
         plan,
         source=source,

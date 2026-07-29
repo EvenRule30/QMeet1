@@ -20,6 +20,7 @@ from app.focus.planner import (
     _compact_recent_event_payload,
     _normalize_calendar_read_plan,
     _normalize_calendar_write_plan,
+    _normalize_focus_read_plan,
     _normalize_memory_mutation_plan,
     _normalize_memory_read_plan,
     _normalize_visual_mutation_plan,
@@ -583,6 +584,74 @@ class FocusPlannerContextTests(unittest.TestCase):
             ["question_mismatch"],
         )
 
+
+class FocusPlannerFocusRecallNormalizationTests(unittest.TestCase):
+    def test_focus_read_tool_is_available_and_prompted(self) -> None:
+        self.assertEqual(ToolName.FOCUS_READ.value, "focus_read")
+        self.assertIn("focus_read", _PLANNER_SYSTEM_PROMPT)
+
+    def test_current_focus_read_is_route_only(self) -> None:
+        plan = TurnPlan(
+            route=TurnRoute.FOCUS_ACTION,
+            focusOperations=[
+                FocusOperation(
+                    kind=FocusOperationKind.ADD_LIST_ITEM,
+                    field=FocusField.KNOWN_FACTS,
+                    value="This read must not mutate Focus state.",
+                )
+            ],
+            responseIntent=ResponseIntent(
+                answerDirectly=True,
+                attachToFocus=True,
+                guidance="Do not expose this planner text.",
+            ),
+            confidence=0.51,
+        )
+
+        normalized = _normalize_focus_read_plan(
+            plan,
+            source="command-interpret-shadow",
+            message="Could you tell me what my current focus is?",
+        )
+
+        self.assertEqual(normalized.route, TurnRoute.TOOL)
+        self.assertEqual(normalized.focusOperations, [])
+        self.assertEqual(len(normalized.toolCalls), 1)
+        self.assertEqual(normalized.toolCalls[0].tool, ToolName.FOCUS_READ)
+        self.assertEqual(
+            normalized.toolCalls[0].arguments[0].model_dump(),
+            {"key": "mode", "value": "current"},
+        )
+        self.assertFalse(normalized.toolCalls[0].requiresConfirmation)
+        self.assertFalse(normalized.toolCalls[0].attachToFocus)
+        self.assertFalse(normalized.responseIntent.answerDirectly)
+        self.assertFalse(normalized.responseIntent.attachToFocus)
+        self.assertEqual(normalized.confidence, 0.99)
+
+    def test_focus_activity_recap_preserves_timeframe(self) -> None:
+        normalized = _normalize_focus_read_plan(
+            TurnPlan(route=TurnRoute.RESPOND, confidence=0.4),
+            source="command-interpret-shadow",
+            message="Could you recap what I worked on today?",
+        )
+
+        self.assertEqual(normalized.toolCalls[0].tool, ToolName.FOCUS_READ)
+        self.assertEqual(
+            [argument.model_dump() for argument in normalized.toolCalls[0].arguments],
+            [
+                {"key": "mode", "value": "recap"},
+                {"key": "timeframe", "value": "today"},
+            ],
+        )
+
+    def test_focus_resume_is_not_misclassified_as_read(self) -> None:
+        plan = TurnPlan(route=TurnRoute.RESPOND, confidence=0.8)
+        normalized = _normalize_focus_read_plan(
+            plan,
+            source="command-interpret-shadow",
+            message="Could you resume my last focus session?",
+        )
+        self.assertEqual(normalized, plan)
 
 if __name__ == "__main__":
     unittest.main()

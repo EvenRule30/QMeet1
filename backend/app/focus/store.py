@@ -587,6 +587,10 @@ _SAFE_LEGACY_ROUTE_ACTIONS = {
     "read_focus_visuals": "visual_read",
     "read_notes": "notes_read",
     "read_memory": "tasks_read",
+    "read_focus_session": "focus_read",
+    "read_last_focus_session": "focus_read",
+    "read_focus_history": "focus_read",
+    "recap_focus_activity": "focus_read",
 }
 
 
@@ -657,6 +661,7 @@ def _focus_route_class(
             ToolName.VISUAL_READ.value,
             ToolName.NOTES_READ.value,
             ToolName.TASKS_READ.value,
+            ToolName.FOCUS_READ.value,
         }:
             return "", "unsupported_tool", (tool_name or "unknown",)
         if route != TurnRoute.TOOL.value:
@@ -1981,6 +1986,7 @@ def apply_turn_plan(
                 ToolName.VISUAL_WRITE,
                 ToolName.NOTES_READ,
                 ToolName.TASKS_READ,
+                ToolName.FOCUS_READ,
                 ToolName.MEMORY_WRITE,
             }
             and not tool_call.requiresConfirmation
@@ -2112,8 +2118,8 @@ def apply_turn_plan(
         if tool_call.tool == ToolName.NONE:
             continue
         if route_only_tool_turn:
-            # The existing frontend owns synchronized visual, Notes, and Tasks reads
-            # protected local mutations. These planner tool calls are only
+            # The existing frontend owns synchronized visual, Notes, Tasks, and
+            # Focus recall reads plus protected local mutations. These planner tool calls are only
             # independent routing classifications, so do not create orphan
             # pending TOOL_REQUESTED events.
             continue

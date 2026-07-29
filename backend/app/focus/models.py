@@ -66,6 +66,7 @@ class ToolName(str, Enum):
     VISUAL_WRITE = "visual_write"
     NOTES_READ = "notes_read"
     TASKS_READ = "tasks_read"
+    FOCUS_READ = "focus_read"
     MEMORY_WRITE = "memory_write"
     OPEN_SEARCH = "open_search"
     START_FOCUS = "start_focus"

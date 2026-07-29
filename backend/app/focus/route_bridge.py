@@ -33,6 +33,14 @@ class MemoryReadIntent:
 
 
 @dataclass(frozen=True)
+class FocusReadIntent:
+    mode: str
+    action: str
+    frontend_command: str
+    timeframe: str = ""
+
+
+@dataclass(frozen=True)
 class MemoryMutationIntent:
     action: str
     frontend_command: str
@@ -141,6 +149,213 @@ def calendar_write_intent(message: str) -> CalendarWriteIntent | None:
 
     return None
 
+
+
+
+def focus_read_intent(message: str) -> FocusReadIntent | None:
+    """Recognize read-only Focus recall and local activity recap commands.
+
+    These routes read synchronized Focus memory through existing frontend
+    handlers. They never start, resume, update, summarize-save, or end a Focus.
+    """
+
+    text = _normalize_message(message)
+    if not text:
+        return None
+
+    current_patterns = [
+        re.compile(
+            rf"^{_POLITE_PREFIX}(?:what(?:'s|\s+is)\s+"
+            r"(?:the\s+|my\s+|our\s+)?(?:current\s+|active\s+)?"
+            r"(?:focus|focus\s+session|active\s+session)|"
+            r"what\s+(?:am\s+i|are\s+we)\s+focused\s+on"
+            r"(?:\s+right\s+now)?|"
+            r"(?:read|show|display|summarize)(?:\s+me)?\s+"
+            r"(?:the\s+|my\s+|our\s+)?(?:current\s+|active\s+)?"
+            r"(?:focus|focus\s+session|active\s+session)|"
+            r"tell\s+me\s+what\s+(?:the\s+|my\s+|our\s+)?"
+            r"(?:current\s+|active\s+)?(?:focus|focus\s+session)\s+is)$",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            rf"^{_POLITE_PREFIX}(?:focus\s+status|current\s+focus|"
+            r"active\s+focus|my\s+focus|our\s+focus|active\s+session|"
+            r"session\s+status)$",
+            re.IGNORECASE,
+        ),
+    ]
+    if any(pattern.fullmatch(text) for pattern in current_patterns):
+        return FocusReadIntent(
+            mode="current",
+            action="read_focus_session",
+            frontend_command="what am I focused on",
+        )
+
+    last_patterns = [
+        re.compile(
+            rf"^{_POLITE_PREFIX}(?:what\s+was|what\s+were|"
+            r"(?:show|read|display)(?:\s+me)?|tell\s+me\s+about)\s+"
+            r"(?:my\s+|our\s+)?"
+            r"(?:last|latest|previous|most\s+recent)\s+"
+            r"(?:focus|focus\s+session|session)$",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            rf"^{_POLITE_PREFIX}(?:what\s+did\s+(?:i|we)\s+focus\s+on\s+last|"
+            r"what\s+was\s+(?:i|we)\s+focused\s+on\s+last|"
+            r"what\s+was\s+(?:i|we)\s+working\s+on\s+"
+            r"(?:earlier|before|previously|last))$",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            rf"^{_POLITE_PREFIX}(?:last|latest|previous|most\s+recent)\s+"
+            r"(?:focus|focus\s+session|session)$",
+            re.IGNORECASE,
+        ),
+    ]
+    if any(pattern.fullmatch(text) for pattern in last_patterns):
+        return FocusReadIntent(
+            mode="last",
+            action="read_last_focus_session",
+            frontend_command="what was my last focus",
+        )
+
+    history_patterns = [
+        re.compile(
+            rf"^{_POLITE_PREFIX}(?:show|list|read|display|open)\s+"
+            r"(?:my\s+|our\s+)?(?:recent\s+)?(?:focus\s+)?"
+            r"(?:history|sessions|focus\s+sessions)$",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            rf"^{_POLITE_PREFIX}(?:show|list|read|display|open)\s+"
+            r"(?:my\s+|our\s+)?recent\s+"
+            r"(?:focuses|focus\s+sessions|sessions)$",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            rf"^{_POLITE_PREFIX}(?:what\s+(?:are|were)\s+)?"
+            r"(?:my\s+|our\s+)?recent\s+"
+            r"(?:focuses|focus\s+sessions|sessions)(?:\s+again)?$",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            rf"^{_POLITE_PREFIX}(?:focus|session)\s+history$",
+            re.IGNORECASE,
+        ),
+    ]
+    if any(pattern.fullmatch(text) for pattern in history_patterns):
+        return FocusReadIntent(
+            mode="history",
+            action="read_focus_history",
+            frontend_command="show recent focus sessions",
+        )
+
+    recap_patterns: list[tuple[re.Pattern[str], str, str]] = [
+        (
+            re.compile(
+                rf"^{_POLITE_PREFIX}(?:summarize|recap|review)\s+"
+                r"(?:what\s+)?(?:i|we)\s+"
+                r"(?:worked\s+on|focused\s+on|did|accomplished)\s+today$",
+                re.IGNORECASE,
+            ),
+            "today",
+            "summarize what I worked on today",
+        ),
+        (
+            re.compile(
+                rf"^{_POLITE_PREFIX}(?:what\s+did|what\s+have)\s+"
+                r"(?:i|we)\s+(?:work\s+on|focus\s+on|do|accomplish)\s+today$",
+                re.IGNORECASE,
+            ),
+            "today",
+            "summarize what I worked on today",
+        ),
+        (
+            re.compile(
+                rf"^{_POLITE_PREFIX}(?:today(?:'s)?\s+)?"
+                r"(?:focus|work|activity)\s+(?:recap|summary|review)$",
+                re.IGNORECASE,
+            ),
+            "today",
+            "today focus recap",
+        ),
+        (
+            re.compile(
+                rf"^{_POLITE_PREFIX}(?:summarize|recap|review)\s+"
+                r"(?:what\s+)?(?:i|we)\s+"
+                r"(?:worked\s+on|focused\s+on|did|accomplished)\s+yesterday$",
+                re.IGNORECASE,
+            ),
+            "yesterday",
+            "summarize what I worked on yesterday",
+        ),
+        (
+            re.compile(
+                rf"^{_POLITE_PREFIX}(?:what\s+did|what\s+have)\s+"
+                r"(?:i|we)\s+(?:work\s+on|focus\s+on|do|accomplish)\s+yesterday$",
+                re.IGNORECASE,
+            ),
+            "yesterday",
+            "summarize what I worked on yesterday",
+        ),
+        (
+            re.compile(
+                rf"^{_POLITE_PREFIX}(?:yesterday(?:'s)?\s+)?"
+                r"(?:focus|work|activity)\s+(?:recap|summary|review)$",
+                re.IGNORECASE,
+            ),
+            "yesterday",
+            "yesterday focus recap",
+        ),
+        (
+            re.compile(
+                rf"^{_POLITE_PREFIX}what\s+changed\s+since\s+yesterday$",
+                re.IGNORECASE,
+            ),
+            "since-yesterday",
+            "what changed since yesterday",
+        ),
+        (
+            re.compile(
+                rf"^{_POLITE_PREFIX}(?:summarize|recap|review)\s+"
+                r"(?:my|our)?\s*(?:recent\s+)?"
+                r"(?:focus|focuses|focus\s+sessions|work|activity)$",
+                re.IGNORECASE,
+            ),
+            "recent",
+            "recap recent focus activity",
+        ),
+        (
+            re.compile(
+                rf"^{_POLITE_PREFIX}(?:what\s+did\s+(?:i|we)\s+"
+                r"focus\s+on\s+recently|(?:what\s+have|what\s+did)\s+"
+                r"(?:i|we)\s+been\s+(?:working|focusing)\s+on\s+recently)$",
+                re.IGNORECASE,
+            ),
+            "recent",
+            "recap recent focus activity",
+        ),
+        (
+            re.compile(
+                rf"^{_POLITE_PREFIX}(?:daily|weekly|recent)\s+"
+                r"(?:focus|work|activity)\s+(?:recap|summary|review)$",
+                re.IGNORECASE,
+            ),
+            "recent",
+            "recap recent focus activity",
+        ),
+    ]
+    for pattern, timeframe, frontend_command in recap_patterns:
+        if pattern.fullmatch(text):
+            return FocusReadIntent(
+                mode="recap",
+                action="recap_focus_activity",
+                frontend_command=frontend_command,
+                timeframe=timeframe,
+            )
+
+    return None
 
 
 def memory_read_intent(message: str) -> MemoryReadIntent | None:
@@ -534,6 +749,27 @@ def _memory_mutation_command(message: str) -> dict[str, Any] | None:
     }
 
 
+def _focus_read_command(message: str) -> dict[str, Any] | None:
+    intent = focus_read_intent(message)
+    if intent is None:
+        return None
+
+    payload = {"mode": intent.mode}
+    if intent.timeframe:
+        payload["timeframe"] = intent.timeframe
+    return {
+        "intent": "command",
+        "action": intent.action,
+        "confidence": 0.99,
+        "frontendCommand": intent.frontend_command,
+        "payload": payload,
+        "reason": (
+            "Deterministic guarded-route bridge recognized a safe read of "
+            "synchronized Focus memory."
+        ),
+    }
+
+
 def _memory_read_command(message: str) -> dict[str, Any] | None:
     intent = memory_read_intent(message)
     if intent is None:
@@ -803,6 +1039,10 @@ def repair_legacy_command_payload(
     visual_read = _visual_read_command(message)
     if visual_read is not None:
         return visual_read, True
+
+    focus_read = _focus_read_command(message)
+    if focus_read is not None:
+        return focus_read, True
 
     memory_read = _memory_read_command(message)
     if memory_read is not None:
