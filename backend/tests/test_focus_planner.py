@@ -19,6 +19,9 @@ from app.focus.planner import (
     _PLANNER_SYSTEM_PROMPT,
     _compact_recent_event_payload,
     _normalize_calendar_read_plan,
+    _normalize_calendar_write_plan,
+    _normalize_visual_mutation_plan,
+    _normalize_visual_read_plan,
     _plan_question_errors,
     _recent_event_summary,
     _question_is_atomic,
@@ -29,13 +32,177 @@ from app.focus.planner import (
 class FocusPlannerCalendarToolContractTests(unittest.TestCase):
     def test_calendar_read_tool_is_available_and_prompted(self) -> None:
         self.assertEqual(ToolName.CALENDAR_READ.value, "calendar_read")
+        self.assertEqual(ToolName.CALENDAR_WRITE.value, "calendar_write")
+        self.assertEqual(ToolName.VISUAL_READ.value, "visual_read")
+        self.assertEqual(ToolName.VISUAL_WRITE.value, "visual_write")
         self.assertIn("calendar_read", _PLANNER_SYSTEM_PROMPT)
+        self.assertIn("calendar_write", _PLANNER_SYSTEM_PROMPT)
+        self.assertIn("visual_read", _PLANNER_SYSTEM_PROMPT)
+        self.assertIn("visual_write", _PLANNER_SYSTEM_PROMPT)
         self.assertIn("calendar-read-shadow", _PLANNER_SYSTEM_PROMPT)
         self.assertIn("Never fabricate tool", _PLANNER_SYSTEM_PROMPT)
         self.assertIn(
             "results, calendar contents, free time",
             _PLANNER_SYSTEM_PROMPT,
         )
+
+
+class FocusPlannerVisualReadNormalizationTests(unittest.TestCase):
+    def test_visual_history_is_normalized_as_route_only_read(self) -> None:
+        plan = TurnPlan(
+            route=TurnRoute.RESPOND,
+            focusOperations=[
+                FocusOperation(
+                    kind=FocusOperationKind.ADD_LIST_ITEM,
+                    field=FocusField.KNOWN_FACTS,
+                    value="The user asked about visual history.",
+                )
+            ],
+            responseIntent=ResponseIntent(
+                answerDirectly=True,
+                attachToFocus=True,
+                guidance="I will inspect visual history.",
+            ),
+            confidence=0.8,
+        )
+
+        normalized = _normalize_visual_read_plan(
+            plan,
+            source="command-interpret-shadow",
+            message="Could you show my recent visual observations?",
+        )
+
+        self.assertEqual(normalized.route, TurnRoute.TOOL)
+        self.assertEqual(normalized.focusOperations, [])
+        self.assertEqual(len(normalized.toolCalls), 1)
+        tool_call = normalized.toolCalls[0]
+        self.assertEqual(tool_call.tool, ToolName.VISUAL_READ)
+        self.assertFalse(tool_call.requiresConfirmation)
+        self.assertFalse(tool_call.attachToFocus)
+        self.assertEqual(
+            {argument.key: argument.value for argument in tool_call.arguments},
+            {"mode": "history"},
+        )
+        self.assertFalse(normalized.responseIntent.answerDirectly)
+        self.assertFalse(normalized.responseIntent.attachToFocus)
+        self.assertGreaterEqual(normalized.confidence, 0.99)
+
+    def test_visual_mutation_is_not_normalized_as_read(self) -> None:
+        plan = TurnPlan(route=TurnRoute.RESPOND, confidence=0.95)
+
+        normalized = _normalize_visual_read_plan(
+            plan,
+            source="command-interpret-shadow",
+            message="Delete my last visual observation.",
+        )
+
+        self.assertEqual(normalized, plan)
+
+    def test_visual_delete_is_normalized_as_protected_route_only_write(
+        self,
+    ) -> None:
+        plan = TurnPlan(
+            route=TurnRoute.RESPOND,
+            focusOperations=[
+                FocusOperation(
+                    kind=FocusOperationKind.ADD_LIST_ITEM,
+                    field=FocusField.KNOWN_FACTS,
+                    value="The user wants a deletion.",
+                )
+            ],
+            responseIntent=ResponseIntent(
+                answerDirectly=True,
+                attachToFocus=True,
+                guidance="I cannot delete that.",
+            ),
+            confidence=0.8,
+        )
+
+        normalized = _normalize_visual_mutation_plan(
+            plan,
+            source="command-interpret-shadow",
+            message="Could you delete my last visual observation?",
+        )
+
+        self.assertEqual(normalized.route, TurnRoute.TOOL)
+        self.assertEqual(normalized.focusOperations, [])
+        self.assertEqual(len(normalized.toolCalls), 1)
+        tool_call = normalized.toolCalls[0]
+        self.assertEqual(tool_call.tool, ToolName.VISUAL_WRITE)
+        self.assertFalse(tool_call.requiresConfirmation)
+        self.assertFalse(tool_call.attachToFocus)
+        self.assertEqual(
+            {argument.key: argument.value for argument in tool_call.arguments},
+            {"operation": "delete_last"},
+        )
+        self.assertFalse(normalized.responseIntent.answerDirectly)
+        self.assertFalse(normalized.responseIntent.attachToFocus)
+        self.assertGreaterEqual(normalized.confidence, 0.99)
+
+
+class FocusPlannerCalendarWriteNormalizationTests(unittest.TestCase):
+    def test_calendar_write_cannot_be_recorded_as_attached_read(self) -> None:
+        plan = TurnPlan(
+            route=TurnRoute.TOOL,
+            focusOperations=[
+                FocusOperation(
+                    kind=FocusOperationKind.ADD_LIST_ITEM,
+                    field=FocusField.MILESTONES,
+                    value="Read the calendar.",
+                )
+            ],
+            toolCalls=[
+                PlannedToolCall(
+                    tool=ToolName.CALENDAR_READ,
+                    requiresConfirmation=False,
+                    attachToFocus=True,
+                )
+            ],
+            responseIntent=ResponseIntent(
+                answerDirectly=True,
+                attachToFocus=True,
+                guidance="Reading the calendar.",
+            ),
+            confidence=1.0,
+        )
+
+        normalized = _normalize_calendar_write_plan(
+            plan,
+            source="command-interpret-shadow",
+            message=(
+                "Could you schedule a work meeting tomorrow at "
+                "3:00 p.m.?"
+            ),
+        )
+
+        self.assertEqual(normalized.route, TurnRoute.TOOL)
+        self.assertEqual(normalized.focusOperations, [])
+        self.assertEqual(len(normalized.toolCalls), 1)
+        tool_call = normalized.toolCalls[0]
+        self.assertEqual(tool_call.tool, ToolName.CALENDAR_WRITE)
+        self.assertTrue(tool_call.requiresConfirmation)
+        self.assertFalse(tool_call.attachToFocus)
+        self.assertEqual(
+            {argument.key: argument.value for argument in tool_call.arguments},
+            {
+                "day": "tomorrow",
+                "time": "3:00 PM",
+                "title": "work meeting",
+            },
+        )
+        self.assertFalse(normalized.responseIntent.answerDirectly)
+        self.assertFalse(normalized.responseIntent.attachToFocus)
+
+    def test_non_write_command_plan_is_unchanged(self) -> None:
+        plan = TurnPlan(route=TurnRoute.RESPOND, confidence=0.97)
+
+        normalized = _normalize_calendar_write_plan(
+            plan,
+            source="command-interpret-shadow",
+            message="Explain the next step in my focus.",
+        )
+
+        self.assertEqual(normalized, plan)
 
 
 class FocusPlannerCalendarAttachmentTests(unittest.TestCase):

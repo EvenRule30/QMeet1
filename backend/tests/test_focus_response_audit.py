@@ -168,6 +168,40 @@ class FocusResponseAuditTests(unittest.TestCase):
             ),
         )
 
+    def test_direct_candidate_removes_unsupported_calendar_availability(
+        self,
+    ) -> None:
+        candidate = build_response_candidate(
+            TurnPlan(
+                route=TurnRoute.RESPOND,
+                responseIntent=ResponseIntent(
+                    answerDirectly=True,
+                    guidance=(
+                        "The next step is to define the meeting outcome. "
+                        "Since your calendar has one meeting and no other "
+                        "events, you have time to do that now. "
+                        "Then gather the materials needed for the decision."
+                    ),
+                ),
+                confidence=1.0,
+            )
+        )
+
+        self.assertTrue(candidate["eligibility"]["eligible"])
+        self.assertIn(
+            "The next step is to define the meeting outcome.",
+            candidate["text"],
+        )
+        self.assertIn(
+            "Then gather the materials needed for the decision.",
+            candidate["text"],
+        )
+        self.assertNotIn("no other events", candidate["text"])
+        self.assertEqual(
+            candidate["repairs"],
+            ["removed_unsupported_calendar_availability"],
+        )
+
     def test_tool_turn_does_not_create_direct_response_candidate(self) -> None:
         from app.focus.models import PlannedToolCall, ToolName
 
@@ -1539,6 +1573,62 @@ class FocusGuardedResponseMiddlewareTests(
         self.assertEqual(reply_event.payload["audit"]["findings"], [])
 
 
+    async def test_background_calendar_refresh_bypasses_focus_pipeline(
+        self,
+    ) -> None:
+        turn_id = "turn-background-calendar-refresh"
+
+        async def calendar_app(scope, receive, send):
+            body = json.dumps(
+                {
+                    "ok": True,
+                    "connected": True,
+                    "view": "today",
+                    "events": [],
+                    "message": "Calendar synchronized.",
+                }
+            ).encode("utf-8")
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [(b"content-type", b"application/json")],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": body,
+                    "more_body": False,
+                }
+            )
+
+        sent_messages = []
+
+        async def send(message):
+            sent_messages.append(message)
+
+        middleware = FocusShadowMiddleware(calendar_app)
+        await middleware(
+            self._scope(
+                "/api/calendar/events",
+                turn_id,
+                method="GET",
+                query_string=b"view=today",
+            ),
+            self._receive_payload({}),
+            send,
+        )
+
+        response_body = b"".join(
+            message.get("body", b"")
+            for message in sent_messages
+            if message["type"] == "http.response.body"
+        )
+        payload = json.loads(response_body.decode("utf-8"))
+        self.assertNotIn("focusResponse", payload)
+        self.assertEqual(list_events(), [])
+
     async def test_guarded_calendar_injects_verified_response_and_keeps_events(
         self,
     ) -> None:
@@ -1618,12 +1708,26 @@ class FocusGuardedResponseMiddlewareTests(
             new=AsyncMock(return_value=True),
         ):
             await middleware(
-                self._scope(
-                    "/api/calendar/events",
-                    turn_id,
-                    method="GET",
-                    query_string=b"view=today",
-                ),
+                {
+                    **self._scope(
+                        "/api/calendar/events",
+                        turn_id,
+                        method="GET",
+                        query_string=b"view=today",
+                    ),
+                    "headers": [
+                        *self._scope(
+                            "/api/calendar/events",
+                            turn_id,
+                            method="GET",
+                            query_string=b"view=today",
+                        )["headers"],
+                        (
+                            b"x-qmeet-calendar-read-intent",
+                            b"explicit",
+                        ),
+                    ],
+                },
                 self._receive_payload({}),
                 send,
             )
@@ -1716,12 +1820,26 @@ class FocusGuardedResponseMiddlewareTests(
             new=AsyncMock(return_value=True),
         ):
             await middleware(
-                self._scope(
-                    "/api/calendar/events",
-                    turn_id,
-                    method="GET",
-                    query_string=b"view=today",
-                ),
+                {
+                    **self._scope(
+                        "/api/calendar/events",
+                        turn_id,
+                        method="GET",
+                        query_string=b"view=today",
+                    ),
+                    "headers": [
+                        *self._scope(
+                            "/api/calendar/events",
+                            turn_id,
+                            method="GET",
+                            query_string=b"view=today",
+                        )["headers"],
+                        (
+                            b"x-qmeet-calendar-read-intent",
+                            b"explicit",
+                        ),
+                    ],
+                },
                 self._receive_payload({}),
                 send,
             )
@@ -1901,6 +2019,612 @@ class FocusGuardedResponseMiddlewareTests(
             "work_context_sync_failed",
         )
 
+
+
+class FocusGuardedRouteMiddlewareTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self._temporary_directory = tempfile.TemporaryDirectory()
+        self._event_file = (
+            Path(self._temporary_directory.name)
+            / "qmeet_focus_route_test.json"
+        )
+        self._environment_patch = patch.dict(
+            os.environ,
+            {
+                "QMEET_FOCUS_FILE": str(self._event_file),
+                "QMEET_FOCUS_MODE": "shadow",
+                "QMEET_FOCUS_RESPONSE_MODE": "shadow",
+                "QMEET_FOCUS_ROUTE_MODE": "guarded",
+                "QMEET_FOCUS_ROUTE_MIN_CONFIDENCE": "0.9",
+            },
+            clear=False,
+        )
+        self._environment_patch.start()
+        reset_store()
+
+    def tearDown(self) -> None:
+        self._environment_patch.stop()
+        self._temporary_directory.cleanup()
+
+    @staticmethod
+    def _scope(turn_id: str) -> dict:
+        return {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/api/command/interpret",
+            "raw_path": b"/api/command/interpret",
+            "query_string": b"",
+            "root_path": "",
+            "server": ("testserver", 80),
+            "client": ("testclient", 50000),
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"x-qmeet-turn-id", turn_id.encode("ascii")),
+            ],
+        }
+
+    @staticmethod
+    def _receive(message: str):
+        sent = False
+
+        async def receive():
+            nonlocal sent
+            if not sent:
+                sent = True
+                return {
+                    "type": "http.request",
+                    "body": json.dumps({"message": message}).encode("utf-8"),
+                    "more_body": False,
+                }
+            return {"type": "http.disconnect"}
+
+        return receive
+
+    @staticmethod
+    def _legacy_app(payload: dict, status: int = 200):
+        async def app(scope, receive, send):
+            body = json.dumps(payload).encode("utf-8")
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": status,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"content-length", str(len(body)).encode("ascii")),
+                    ],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": body,
+                    "more_body": False,
+                }
+            )
+
+        return app
+
+    async def _run(self, *, turn_id: str, message: str, legacy_payload: dict):
+        sent_messages = []
+
+        async def send(message):
+            sent_messages.append(message)
+
+        middleware = FocusShadowMiddleware(self._legacy_app(legacy_payload))
+        with (
+            patch("app.focus.middleware._start_observation"),
+            patch(
+                "app.focus.middleware._wait_for_guarded_observation",
+                new=AsyncMock(return_value=True),
+            ),
+        ):
+            await middleware(
+                self._scope(turn_id),
+                self._receive(message),
+                send,
+            )
+        return sent_messages
+
+    async def test_guarded_route_takes_over_chat_agreement(self) -> None:
+        turn_id = "turn-route-middleware-chat"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.RESPOND,
+                responseIntent=ResponseIntent(
+                    answerDirectly=True,
+                    guidance="Explain the next step.",
+                ),
+                confidence=0.97,
+            ),
+            message="Explain the next step in my current focus.",
+            turn_id=turn_id,
+            source="unit-test",
+        )
+        legacy_payload = {
+            "intent": "chat",
+            "action": "none",
+            "confidence": 0.92,
+            "frontendCommand": "",
+            "payload": {},
+            "reason": "Legacy router selected normal chat.",
+        }
+
+        sent = await self._run(
+            turn_id=turn_id,
+            message="Explain the next step in my current focus.",
+            legacy_payload=legacy_payload,
+        )
+
+        headers = dict(next(
+            item for item in sent if item["type"] == "http.response.start"
+        )["headers"])
+        self.assertEqual(headers[b"x-qmeet-route-source"], b"focus-guarded")
+        event = next(
+            event
+            for event in reversed(list_events())
+            if event.type == FocusEventType.ROUTE_SELECTION
+            and event.sourceTurnId == turn_id
+        )
+        self.assertEqual(event.payload["routeClass"], "chat")
+        self.assertEqual(event.payload["outcome"], "takeover")
+
+    async def test_route_bridge_repairs_fuzzy_search_chat_response(self) -> None:
+        turn_id = "turn-route-bridge-search"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.TOOL,
+                toolCalls=[
+                    PlannedToolCall(
+                        tool=ToolName.SEARCH,
+                        requiresConfirmation=False,
+                    )
+                ],
+                confidence=1.0,
+            ),
+            message=(
+                "Could you look up the current electric vehicle tax "
+                "credits for me?"
+            ),
+            turn_id=turn_id,
+            source="unit-test",
+        )
+
+        sent = await self._run(
+            turn_id=turn_id,
+            message=(
+                "Could you look up the current electric vehicle tax "
+                "credits for me?"
+            ),
+            legacy_payload={
+                "intent": "chat",
+                "action": "none",
+                "confidence": 0.8,
+                "frontendCommand": "",
+                "payload": {},
+                "reason": "Legacy model mislabeled Search as chat.",
+            },
+        )
+
+        response_start = next(
+            item for item in sent if item["type"] == "http.response.start"
+        )
+        headers = dict(response_start["headers"])
+        self.assertEqual(headers[b"x-qmeet-route-source"], b"focus-guarded")
+        body = b"".join(
+            item.get("body", b"")
+            for item in sent
+            if item["type"] == "http.response.body"
+        )
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(payload["intent"], "command")
+        self.assertEqual(payload["action"], "prepare_search")
+        self.assertEqual(
+            payload["frontendCommand"],
+            "search for current electric vehicle tax credits",
+        )
+
+    async def test_route_bridge_repairs_fuzzy_calendar_read_chat_response(
+        self,
+    ) -> None:
+        turn_id = "turn-route-bridge-calendar-read"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.TOOL,
+                toolCalls=[
+                    PlannedToolCall(
+                        tool=ToolName.CALENDAR_READ,
+                        requiresConfirmation=False,
+                    )
+                ],
+                confidence=1.0,
+            ),
+            message="Could you check what is on my calendar today?",
+            turn_id=turn_id,
+            source="unit-test",
+        )
+
+        sent = await self._run(
+            turn_id=turn_id,
+            message="Could you check what is on my calendar today?",
+            legacy_payload={
+                "intent": "chat",
+                "action": "none",
+                "confidence": 0.8,
+                "frontendCommand": "",
+                "payload": {},
+                "reason": "Legacy model mislabeled Calendar read as chat.",
+            },
+        )
+
+        headers = dict(next(
+            item for item in sent if item["type"] == "http.response.start"
+        )["headers"])
+        self.assertEqual(headers[b"x-qmeet-route-source"], b"focus-guarded")
+        body = b"".join(
+            item.get("body", b"")
+            for item in sent
+            if item["type"] == "http.response.body"
+        )
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(payload["action"], "read_calendar")
+        self.assertEqual(
+            payload["frontendCommand"],
+            "what's on my calendar today",
+        )
+
+    async def test_route_bridge_repairs_visual_history_chat_response(self) -> None:
+        turn_id = "turn-route-bridge-visual-history"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.TOOL,
+                toolCalls=[
+                    PlannedToolCall(
+                        tool=ToolName.VISUAL_READ,
+                        requiresConfirmation=False,
+                        attachToFocus=False,
+                    )
+                ],
+                confidence=1.0,
+            ),
+            message="Could you show my recent visual observations?",
+            turn_id=turn_id,
+            source="command-interpret-shadow",
+        )
+
+        sent = await self._run(
+            turn_id=turn_id,
+            message="Could you show my recent visual observations?",
+            legacy_payload={
+                "intent": "chat",
+                "action": "none",
+                "confidence": 0.8,
+                "frontendCommand": "",
+                "payload": {},
+                "reason": "Legacy model mislabeled visual history as chat.",
+            },
+        )
+
+        headers = dict(next(
+            item for item in sent if item["type"] == "http.response.start"
+        )["headers"])
+        self.assertEqual(headers[b"x-qmeet-route-source"], b"focus-guarded")
+        body = b"".join(
+            item.get("body", b"")
+            for item in sent
+            if item["type"] == "http.response.body"
+        )
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(payload["intent"], "command")
+        self.assertEqual(payload["action"], "read_visual_history")
+        self.assertEqual(
+            payload["frontendCommand"],
+            "show visual observations",
+        )
+        self.assertEqual(payload["payload"], {"mode": "history"})
+
+        event = next(
+            event
+            for event in reversed(list_events())
+            if event.type == FocusEventType.ROUTE_SELECTION
+            and event.sourceTurnId == turn_id
+        )
+        self.assertEqual(event.payload["outcome"], "takeover")
+        self.assertEqual(event.payload["routeClass"], "visual_read")
+
+    async def test_route_bridge_restores_protected_visual_delete(self) -> None:
+        turn_id = "turn-route-bridge-visual-delete"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.TOOL,
+                toolCalls=[
+                    PlannedToolCall(
+                        tool=ToolName.VISUAL_WRITE,
+                        requiresConfirmation=False,
+                        attachToFocus=False,
+                    )
+                ],
+                confidence=1.0,
+            ),
+            message="Could you delete my last visual observation?",
+            turn_id=turn_id,
+            source="command-interpret-shadow",
+        )
+
+        sent = await self._run(
+            turn_id=turn_id,
+            message="Could you delete my last visual observation?",
+            legacy_payload={
+                "intent": "chat",
+                "action": "none",
+                "confidence": 0.8,
+                "frontendCommand": "",
+                "payload": {},
+                "reason": "Legacy model mislabeled visual deletion as chat.",
+            },
+        )
+
+        headers = dict(next(
+            item for item in sent if item["type"] == "http.response.start"
+        )["headers"])
+        self.assertEqual(
+            headers[b"x-qmeet-route-fallback"],
+            b"protected_legacy_route",
+        )
+        self.assertNotIn(b"x-qmeet-route-source", headers)
+
+        body = b"".join(
+            item.get("body", b"")
+            for item in sent
+            if item["type"] == "http.response.body"
+        )
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(payload["intent"], "command")
+        self.assertEqual(
+            payload["action"],
+            "delete_last_visual_observation",
+        )
+        self.assertEqual(
+            payload["frontendCommand"],
+            "delete last visual observation",
+        )
+        self.assertEqual(payload["payload"], {"operation": "delete_last"})
+
+        event = next(
+            event
+            for event in reversed(list_events())
+            if event.type == FocusEventType.ROUTE_SELECTION
+            and event.sourceTurnId == turn_id
+        )
+        self.assertEqual(event.payload["outcome"], "fallback")
+        self.assertEqual(event.payload["reason"], "protected_legacy_route")
+        self.assertEqual(
+            event.payload["legacyAction"],
+            "delete_last_visual_observation",
+        )
+
+    async def test_route_bridge_restores_calendar_write_confirmation(self) -> None:
+        turn_id = "turn-route-bridge-calendar-write"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.TOOL,
+                toolCalls=[
+                    PlannedToolCall(
+                        tool=ToolName.CALENDAR_WRITE,
+                        requiresConfirmation=True,
+                        attachToFocus=False,
+                    )
+                ],
+                confidence=1.0,
+            ),
+            message=(
+                "Could you schedule a work meeting tomorrow at "
+                "3:00 p.m.?"
+            ),
+            turn_id=turn_id,
+            source="unit-test",
+        )
+
+        sent = await self._run(
+            turn_id=turn_id,
+            message=(
+                "Could you schedule a work meeting tomorrow at "
+                "3:00 p.m.?"
+            ),
+            legacy_payload={
+                "intent": "chat",
+                "action": "none",
+                "confidence": 0.8,
+                "frontendCommand": "",
+                "payload": {},
+                "reason": "Legacy model mislabeled Calendar write as chat.",
+            },
+        )
+
+        headers = dict(next(
+            item for item in sent if item["type"] == "http.response.start"
+        )["headers"])
+        self.assertEqual(
+            headers[b"x-qmeet-route-fallback"],
+            b"confirmation_gated_legacy_route",
+        )
+        body = b"".join(
+            item.get("body", b"")
+            for item in sent
+            if item["type"] == "http.response.body"
+        )
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(payload["intent"], "command")
+        self.assertEqual(payload["action"], "add_calendar_event")
+        self.assertEqual(
+            payload["frontendCommand"],
+            "schedule a meeting tomorrow at 3:00 PM called work meeting",
+        )
+        event = next(
+            event
+            for event in reversed(list_events())
+            if event.type == FocusEventType.ROUTE_SELECTION
+            and event.sourceTurnId == turn_id
+        )
+        self.assertEqual(
+            event.payload["reason"],
+            "confirmation_gated_legacy_route",
+        )
+        self.assertEqual(event.payload["legacyAction"], "add_calendar_event")
+
+    async def test_guarded_route_takes_over_safe_search_agreement(self) -> None:
+        turn_id = "turn-route-middleware-search"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.TOOL,
+                toolCalls=[
+                    PlannedToolCall(
+                        tool=ToolName.SEARCH,
+                        requiresConfirmation=False,
+                    )
+                ],
+                confidence=1.0,
+            ),
+            message="Search for current electric vehicle tax credits.",
+            turn_id=turn_id,
+            source="unit-test",
+        )
+        legacy_payload = {
+            "intent": "command",
+            "action": "prepare_search",
+            "confidence": 0.95,
+            "frontendCommand": "search for current electric vehicle tax credits",
+            "payload": {"query": "current electric vehicle tax credits"},
+            "reason": "Legacy router selected Search.",
+        }
+
+        sent = await self._run(
+            turn_id=turn_id,
+            message="Search for current electric vehicle tax credits.",
+            legacy_payload=legacy_payload,
+        )
+
+        response_start = next(
+            item for item in sent if item["type"] == "http.response.start"
+        )
+        headers = dict(response_start["headers"])
+        self.assertEqual(headers[b"x-qmeet-route-source"], b"focus-guarded")
+        body = b"".join(
+            item.get("body", b"")
+            for item in sent
+            if item["type"] == "http.response.body"
+        )
+        self.assertEqual(json.loads(body.decode("utf-8")), legacy_payload)
+
+        event = next(
+            event
+            for event in reversed(list_events())
+            if event.type == FocusEventType.ROUTE_SELECTION
+            and event.sourceTurnId == turn_id
+        )
+        self.assertEqual(event.payload["outcome"], "takeover")
+        self.assertEqual(event.payload["routeClass"], "search")
+        self.assertEqual(event.payload["responseSource"], "focus-route-guarded")
+
+    async def test_guarded_route_takes_over_calendar_read_agreement(self) -> None:
+        turn_id = "turn-route-middleware-calendar"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.TOOL,
+                toolCalls=[
+                    PlannedToolCall(
+                        tool=ToolName.CALENDAR_READ,
+                        requiresConfirmation=False,
+                    )
+                ],
+                confidence=0.99,
+            ),
+            message="Read my calendar for today.",
+            turn_id=turn_id,
+            source="unit-test",
+        )
+        sent = await self._run(
+            turn_id=turn_id,
+            message="Read my calendar for today.",
+            legacy_payload={
+                "intent": "command",
+                "action": "read_calendar",
+                "confidence": 0.97,
+                "frontendCommand": "show today's calendar",
+                "payload": {"view": "today"},
+                "reason": "Legacy router selected Calendar read.",
+            },
+        )
+        headers = dict(next(
+            item for item in sent if item["type"] == "http.response.start"
+        )["headers"])
+        self.assertEqual(headers[b"x-qmeet-route-source"], b"focus-guarded")
+
+    async def test_guarded_route_falls_back_on_disagreement(self) -> None:
+        turn_id = "turn-route-middleware-disagreement"
+        apply_turn_plan(
+            TurnPlan(route=TurnRoute.RESPOND, confidence=1.0),
+            message="Explain the next step.",
+            turn_id=turn_id,
+            source="unit-test",
+        )
+        sent = await self._run(
+            turn_id=turn_id,
+            message="Explain the next step.",
+            legacy_payload={
+                "intent": "command",
+                "action": "prepare_search",
+                "confidence": 0.95,
+                "frontendCommand": "search for the next step",
+                "payload": {},
+                "reason": "Legacy selected Search.",
+            },
+        )
+        headers = dict(next(
+            item for item in sent if item["type"] == "http.response.start"
+        )["headers"])
+        self.assertEqual(
+            headers[b"x-qmeet-route-fallback"],
+            b"route_disagreement",
+        )
+        event = next(
+            event
+            for event in reversed(list_events())
+            if event.type == FocusEventType.ROUTE_SELECTION
+            and event.sourceTurnId == turn_id
+        )
+        self.assertEqual(event.payload["outcome"], "fallback")
+        self.assertEqual(event.payload["reason"], "route_disagreement")
+
+    async def test_guarded_route_preserves_confirmation_gated_write(self) -> None:
+        turn_id = "turn-route-middleware-write"
+        apply_turn_plan(
+            TurnPlan(route=TurnRoute.RESPOND, confidence=1.0),
+            message="Schedule a meeting tomorrow at 3 PM.",
+            turn_id=turn_id,
+            source="unit-test",
+        )
+        sent = await self._run(
+            turn_id=turn_id,
+            message="Schedule a meeting tomorrow at 3 PM.",
+            legacy_payload={
+                "intent": "command",
+                "action": "add_calendar_event",
+                "confidence": 0.98,
+                "frontendCommand": "add event tomorrow at 3:00 PM called meeting",
+                "payload": {},
+                "reason": "Calendar write requires frontend confirmation.",
+            },
+        )
+        headers = dict(next(
+            item for item in sent if item["type"] == "http.response.start"
+        )["headers"])
+        self.assertEqual(
+            headers[b"x-qmeet-route-fallback"],
+            b"confirmation_gated_legacy_route",
+        )
 
 
 if __name__ == "__main__":

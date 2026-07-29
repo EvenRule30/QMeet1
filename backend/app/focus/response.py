@@ -7,6 +7,16 @@ from urllib.parse import urlparse
 from app.focus.models import TurnPlan, TurnRoute
 
 _MIN_ACTIVE_CONFIDENCE = 0.90
+_UNSUPPORTED_CALENDAR_AVAILABILITY_SENTENCE_PATTERN = re.compile(
+    r"\bcalendar\b[^\n.!?]{0,240}\b(?:"
+    r"open|clear|free|available|no other events|no other appointments|"
+    r"nothing else|you have time|there is time"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_SENTENCE_BOUNDARY_PATTERN = re.compile(r"(?<=[.!?])\s+")
+
 _TOOL_BACKED_CLAIM_PATTERNS = (
     (
         "calendar_availability_without_tool",
@@ -95,6 +105,66 @@ def _clean(value: str) -> str:
     return "\n".join(output_lines).strip()
 
 
+def _remove_unsupported_calendar_availability(value: str) -> tuple[str, bool]:
+    """Remove direct-response sentences that infer availability without a read.
+
+    Verified Calendar tool-result candidates are built separately and are not
+    passed through this function. This repair therefore applies only to direct
+    model-authored replies that have no same-turn Calendar evidence.
+    """
+
+    cleaned = _clean(value)
+    if not cleaned:
+        return "", False
+
+    repaired_lines: list[str] = []
+    removed = False
+
+    for line in cleaned.split("\n"):
+        if not line:
+            repaired_lines.append("")
+            continue
+
+        sentences = _SENTENCE_BOUNDARY_PATTERN.split(line)
+        kept_sentences: list[str] = []
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+            if _UNSUPPORTED_CALENDAR_AVAILABILITY_SENTENCE_PATTERN.search(
+                sentence
+            ):
+                removed = True
+                continue
+            kept_sentences.append(sentence)
+
+        if kept_sentences:
+            repaired_lines.append(" ".join(kept_sentences))
+
+    repaired = "\n".join(repaired_lines).strip()
+    return repaired, removed
+
+
+def _direct_response_components(
+    plan: TurnPlan,
+) -> tuple[str, str, str, list[str]]:
+    repairs: list[str] = []
+    components: list[str] = []
+
+    for raw in (
+        plan.responseIntent.acknowledge,
+        plan.responseIntent.guidance,
+        plan.responseIntent.askQuestion,
+    ):
+        repaired, removed = _remove_unsupported_calendar_availability(raw)
+        components.append(repaired)
+        if removed:
+            repairs.append("removed_unsupported_calendar_availability")
+
+    acknowledge, guidance, question = components
+    return acknowledge, guidance, question, list(dict.fromkeys(repairs))
+
+
 def _real_tool_calls(plan: TurnPlan) -> list:
     return [
         tool_call
@@ -172,37 +242,43 @@ def _procedure_integrity_reasons(guidance: str) -> list[str]:
     return list(dict.fromkeys(reasons))
 
 
-def compose_response_candidate(plan: TurnPlan) -> str:
-    """Compose a grounded direct reply from the structured TurnPlan.
-
-    Tool-backed turns are intentionally excluded because their final wording
-    must wait for the actual tool result.
-    """
-
-    if _real_tool_calls(plan):
-        return ""
-
+def _compose_component_text(
+    acknowledge: str,
+    guidance: str,
+    question: str,
+) -> str:
     parts: list[str] = []
 
-    for raw in (
-        plan.responseIntent.acknowledge,
-        plan.responseIntent.guidance,
-        plan.responseIntent.askQuestion,
-    ):
-        value = _clean(raw)
-        if not value:
+    for value in (acknowledge, guidance, question):
+        cleaned = _clean(value)
+        if not cleaned:
             continue
 
-        normalized = value.casefold()
+        normalized = cleaned.casefold()
         if any(existing.casefold() == normalized for existing in parts):
             continue
 
         if any(normalized in existing.casefold() for existing in parts):
             continue
 
-        parts.append(value)
+        parts.append(cleaned)
 
     return "\n\n".join(parts).strip()
+
+
+def compose_response_candidate(plan: TurnPlan) -> str:
+    """Compose the safe visible direct reply from the structured TurnPlan.
+
+    Tool-backed turns are intentionally excluded because their final wording
+    must wait for the actual tool result. Unsupported Calendar-availability
+    sentences are removed here only when useful grounded content remains.
+    """
+
+    if _real_tool_calls(plan):
+        return ""
+
+    acknowledge, guidance, question, _ = _direct_response_components(plan)
+    return _compose_component_text(acknowledge, guidance, question)
 
 
 def build_response_candidate(plan: TurnPlan) -> dict[str, Any]:
@@ -213,7 +289,28 @@ def build_response_candidate(plan: TurnPlan) -> dict[str, Any]:
     future guarded cutover.
     """
 
-    text = compose_response_candidate(plan)
+    raw_acknowledge = _clean(plan.responseIntent.acknowledge)
+    raw_guidance = _clean(plan.responseIntent.guidance)
+    raw_question = _clean(plan.responseIntent.askQuestion)
+    raw_text = _compose_component_text(
+        raw_acknowledge,
+        raw_guidance,
+        raw_question,
+    )
+
+    acknowledge, guidance, question, repairs = _direct_response_components(
+        plan
+    )
+    repaired_text = _compose_component_text(
+        acknowledge,
+        guidance,
+        question,
+    )
+
+    # Keep a non-empty diagnostic candidate when repair removes the entire
+    # response. The eligibility verdict blocks it from ever becoming visible,
+    # while the event remains available for deterministic fallback telemetry.
+    text = repaired_text or raw_text
     reasons: list[str] = []
     real_tool_calls = _real_tool_calls(plan)
 
@@ -222,6 +319,12 @@ def build_response_candidate(plan: TurnPlan) -> dict[str, Any]:
 
     if not text:
         reasons.append("empty_candidate")
+
+    calendar_claim_removed = (
+        "removed_unsupported_calendar_availability" in repairs
+    )
+    if calendar_claim_removed and not repaired_text and raw_text:
+        reasons.append("calendar_availability_without_tool")
 
     if plan.route not in {
         TurnRoute.RESPOND,
@@ -232,10 +335,6 @@ def build_response_candidate(plan: TurnPlan) -> dict[str, Any]:
 
     if plan.confidence < _MIN_ACTIVE_CONFIDENCE:
         reasons.append("confidence_below_threshold")
-
-    acknowledge = _clean(plan.responseIntent.acknowledge)
-    guidance = _clean(plan.responseIntent.guidance)
-    question = _clean(plan.responseIntent.askQuestion)
 
     if (
         plan.responseIntent.answerDirectly
@@ -268,7 +367,14 @@ def build_response_candidate(plan: TurnPlan) -> dict[str, Any]:
         reasons.append("candidate_missing_canonical_question")
 
     for code, pattern in _TOOL_BACKED_CLAIM_PATTERNS:
-        if text and pattern.search(text):
+        claim_text = raw_text if code == "calendar_availability_without_tool" else text
+        if claim_text and pattern.search(claim_text):
+            if (
+                code == "calendar_availability_without_tool"
+                and calendar_claim_removed
+                and repaired_text
+            ):
+                continue
             reasons.append(code)
 
     if len(text) > 4000:
@@ -284,6 +390,7 @@ def build_response_candidate(plan: TurnPlan) -> dict[str, Any]:
             "guidance": guidance,
             "question": question,
         },
+        "repairs": repairs,
         "eligibility": {
             "eligible": not deduplicated_reasons,
             "reasons": deduplicated_reasons,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
 
-from app.focus.middleware import focus_response_mode
+from app.focus.middleware import focus_response_mode, focus_route_mode
 from app.focus.models import (
     ObserveTurnRequest,
     PlanPreviewRequest,
@@ -24,6 +24,7 @@ from app.focus.store import (
     record_tool_result,
     reset_store,
     response_selection_summary,
+    route_selection_summary,
 )
 
 
@@ -36,11 +37,13 @@ async def focus_status():
         "ok": True,
         "mode": focus_mode(),
         "responseMode": focus_response_mode(),
+        "routeMode": focus_route_mode(),
         "plannerEnabled": planner_enabled(),
         "model": DEFAULT_MODEL,
         "eventCount": event_count(),
         "path": str(event_file()),
         "responseSelection": response_selection_summary(),
+        "routeSelection": route_selection_summary(),
         "message": "Focus is running beside the legacy focus system.",
     }
 

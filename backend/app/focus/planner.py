@@ -13,6 +13,11 @@ except Exception:  # pragma: no cover - startup remains available in mock mode.
     AsyncOpenAI = None  # type: ignore[assignment]
 
 from app.focus.legacy import load_legacy_focus_seed
+from app.focus.route_bridge import (
+    calendar_write_intent,
+    visual_mutation_intent,
+    visual_read_intent,
+)
 from app.focus.models import (
     FocusOperationKind,
     FocusState,
@@ -79,6 +84,20 @@ Core rules:
      Google Calendar for the requested view. Plan one calendar_read tool call.
      Attach it only when the calendar evidence directly advances the active
      durable Focus; otherwise keep it transient.
+   - A Calendar create, edit, or delete request is not calendar_read. Record a
+     calendar_write tool call with requiresConfirmation=true and
+     attachToFocus=false. Do not claim that the write has happened.
+
+   - A request to read saved visual context, the latest visual observation,
+     visual history, a visual summary, or visuals linked to the current Focus
+     uses visual_read. It is a route-only read of existing memory: use
+     requiresConfirmation=false and attachToFocus=false. Never treat camera
+     capture, snapshot analysis, saving, linking, clearing, or deleting visual
+     observations as visual_read.
+   - A clear or delete request for saved visual context uses visual_write only
+     as a protected route marker. Set requiresConfirmation=false and
+     attachToFocus=false. Focus must not execute the mutation or answer as chat;
+     the existing frontend visual-memory handler remains authoritative.
 
 4. Distinguish focus continuation, correction, and replacement precisely:
 
@@ -247,6 +266,8 @@ Tool names available in this first slice:
 
 - search
 - calendar_read
+- calendar_write
+- visual_read
 - open_search
 - start_focus
 - end_focus
@@ -572,6 +593,163 @@ def _calendar_focus_is_relevant(state: FocusState) -> bool:
     return bool(_CALENDAR_FOCUS_RELEVANCE_PATTERN.search(durable_context))
 
 
+
+def _normalize_visual_mutation_plan(
+    plan: TurnPlan,
+    *,
+    source: str,
+    message: str,
+) -> TurnPlan:
+    """Normalize protected visual-memory mutations as route-only markers.
+
+    The existing frontend handler owns the actual delete or clear operation.
+    This marker prevents the planner from producing a chat answer or a durable
+    Focus mutation, while avoiding an orphan backend tool request.
+    """
+
+    if source != "command-interpret-shadow":
+        return plan
+
+    mutation = visual_mutation_intent(message)
+    if mutation is None:
+        return plan
+
+    return plan.model_copy(
+        update={
+            "route": TurnRoute.TOOL,
+            "focusOperations": [],
+            "toolCalls": [
+                PlannedToolCall(
+                    tool=ToolName.VISUAL_WRITE,
+                    arguments=[
+                        ToolArgument(key="operation", value=mutation.operation),
+                    ],
+                    reason=(
+                        "Mark a protected visual-memory mutation for the "
+                        "existing deterministic frontend handler."
+                    ),
+                    requiresConfirmation=False,
+                    attachToFocus=False,
+                )
+            ],
+            "responseIntent": ResponseIntent(
+                answerDirectly=False,
+                attachToFocus=False,
+            ),
+            "confidence": max(plan.confidence, 0.99),
+            "reason": (
+                "Visual-memory mutation normalized as a protected route-only "
+                "tool; Focus does not execute or narrate the mutation."
+            ),
+        }
+    )
+
+
+def _normalize_visual_read_plan(
+    plan: TurnPlan,
+    *,
+    source: str,
+    message: str,
+) -> TurnPlan:
+    """Normalize saved visual-context reads as safe route-only tools.
+
+    The frontend already owns the deterministic readout from synchronized local
+    visual memory. This plan exists only so guarded routing can independently
+    agree with the legacy command class. It must not capture an image, mutate
+    visual memory, attach to the durable Focus, or create a pending tool action.
+    """
+
+    if source != "command-interpret-shadow":
+        return plan
+
+    read_intent = visual_read_intent(message)
+    if read_intent is None:
+        return plan
+
+    return plan.model_copy(
+        update={
+            "route": TurnRoute.TOOL,
+            "focusOperations": [],
+            "toolCalls": [
+                PlannedToolCall(
+                    tool=ToolName.VISUAL_READ,
+                    arguments=[
+                        ToolArgument(key="mode", value=read_intent.mode),
+                    ],
+                    reason=(
+                        "Read already-saved visual context through the "
+                        "existing deterministic frontend command."
+                    ),
+                    requiresConfirmation=False,
+                    attachToFocus=False,
+                )
+            ],
+            "responseIntent": ResponseIntent(
+                answerDirectly=False,
+                attachToFocus=False,
+            ),
+            "confidence": max(plan.confidence, 0.99),
+            "reason": (
+                "Saved visual-context read normalized as a safe route-only "
+                "tool with no visual-memory mutation."
+            ),
+        }
+    )
+
+def _normalize_calendar_write_plan(
+    plan: TurnPlan,
+    *,
+    source: str,
+    message: str,
+) -> TurnPlan:
+    """Keep Calendar writes transient and confirmation-gated.
+
+    Natural Calendar-create wording can otherwise be mistaken for
+    calendar_read and attached to a meeting Focus, leaving that Focus waiting
+    for a read result that will never arrive. The frontend remains authoritative
+    for confirmation and execution of the real write.
+    """
+
+    if source != "command-interpret-shadow":
+        return plan
+
+    write_intent = calendar_write_intent(message)
+    if write_intent is None:
+        return plan
+
+    return plan.model_copy(
+        update={
+            "route": TurnRoute.TOOL,
+            "focusOperations": [],
+            "toolCalls": [
+                PlannedToolCall(
+                    tool=ToolName.CALENDAR_WRITE,
+                    arguments=[
+                        ToolArgument(key="day", value=write_intent.day),
+                        ToolArgument(key="time", value=write_intent.time),
+                        ToolArgument(key="title", value=write_intent.title),
+                    ],
+                    reason=(
+                        "Record the Calendar write request while preserving "
+                        "the frontend confirmation gate."
+                    ),
+                    requiresConfirmation=True,
+                    attachToFocus=False,
+                )
+            ],
+            "responseIntent": ResponseIntent(
+                answerDirectly=False,
+                attachToFocus=False,
+            ),
+            "confidence": max(plan.confidence, 0.99),
+            "reason": (
+                "Calendar write intent normalized as confirmation-gated and "
+                "transient; no Calendar read was requested."
+            ),
+        }
+    )
+
+
 def _normalize_calendar_read_plan(
     plan: TurnPlan,
     *,
@@ -588,6 +766,21 @@ def _normalize_calendar_read_plan(
     because the model omitted attachToFocus.
     """
 
+    plan = _normalize_visual_mutation_plan(
+        plan,
+        source=source,
+        message=message,
+    )
+    plan = _normalize_visual_read_plan(
+        plan,
+        source=source,
+        message=message,
+    )
+    plan = _normalize_calendar_write_plan(
+        plan,
+        source=source,
+        message=message,
+    )
     if source != "calendar-read-shadow":
         return plan
 

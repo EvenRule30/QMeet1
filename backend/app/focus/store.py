@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from threading import RLock
-from typing import Iterable
+from typing import Any, Iterable
 from uuid import uuid4
 
 from app.focus.audit import build_response_audit
@@ -74,6 +74,23 @@ class GuardedResponseDecision:
     @property
     def eligible(self) -> bool:
         return self.candidate is not None and not self.fallbackReason
+
+
+@dataclass(frozen=True)
+class GuardedRouteDecision:
+    """Explain whether Focus may own the command-routing decision."""
+
+    routeClass: str = ""
+    focusRouteClass: str = ""
+    legacyRouteClass: str = ""
+    focusConfidence: float = 0.0
+    minimumConfidence: float = 0.9
+    fallbackReason: str = ""
+    fallbackDetails: tuple[str, ...] = ()
+
+    @property
+    def eligible(self) -> bool:
+        return bool(self.routeClass) and not self.fallbackReason
 
 
 def _now_iso() -> str:
@@ -474,6 +491,432 @@ def response_selection_summary() -> dict[str, object]:
         "latestDecision": decisions[-1] if decisions else None,
     }
 
+
+
+_ROUTE_EXPECTED_FALLBACK_REASONS = frozenset({
+    "legacy_route_out_of_scope",
+    "confirmation_gated_legacy_route",
+    "protected_legacy_route",
+    "focus_route_noop",
+})
+
+_ROUTE_SAFETY_FALLBACK_REASONS = frozenset({
+    "planner_below_confidence_threshold",
+    "route_disagreement",
+    "focus_route_out_of_scope",
+    "multiple_tool_calls",
+    "unsupported_tool",
+    "confirmation_required",
+    "invalid_focus_route_shape",
+})
+
+_ROUTE_SYSTEM_FAILURE_REASONS = frozenset({
+    "observation_timeout",
+    "missing_turn_plan",
+    "invalid_turn_plan",
+    "invalid_legacy_response",
+    "legacy_command_error",
+    "route_decision_failed",
+})
+
+_CONFIRMATION_GATED_LEGACY_ACTIONS = frozenset({
+    "add_calendar_event",
+    "edit_calendar_event",
+    "delete_last_calendar_event",
+    "clear_calendar",
+    "save_note",
+    "delete_last_note",
+    "clear_notes",
+    "save_task",
+    "mark_task_done",
+})
+
+_PROTECTED_LEGACY_ACTIONS = frozenset({
+    "create_visual_observation",
+    "link_visual_to_focus",
+    "clear_visual_context",
+    "delete_last_visual_observation",
+})
+
+
+_SAFE_LEGACY_ROUTE_ACTIONS = {
+    "prepare_search": "search",
+    "read_calendar": "calendar_read",
+    "read_visual_context": "visual_read",
+    "read_last_visual_observation": "visual_read",
+    "read_visual_history": "visual_read",
+    "summarize_visual_context": "visual_read",
+    "read_focus_visuals": "visual_read",
+}
+
+
+def _route_fallback_category(reason: str) -> str:
+    normalized = reason.strip()
+    if normalized in _ROUTE_EXPECTED_FALLBACK_REASONS:
+        return "expected"
+    if normalized in _ROUTE_SAFETY_FALLBACK_REASONS:
+        return "safety"
+    if normalized in _ROUTE_SYSTEM_FAILURE_REASONS:
+        return "system_failure"
+    return "unknown"
+
+
+def _legacy_route_class(
+    payload: dict[str, Any],
+) -> tuple[str, str, tuple[str, ...]]:
+    intent = str(payload.get("intent", "")).strip().casefold()
+    action = str(payload.get("action", "")).strip().casefold()
+
+    if intent == "chat":
+        return "chat", "", ()
+
+    if intent != "command":
+        return "", "invalid_legacy_response", (intent or "missing_intent",)
+
+    if action in _SAFE_LEGACY_ROUTE_ACTIONS:
+        return _SAFE_LEGACY_ROUTE_ACTIONS[action], "", ()
+
+    if action in _CONFIRMATION_GATED_LEGACY_ACTIONS:
+        return "", "confirmation_gated_legacy_route", (action,)
+
+    if action in _PROTECTED_LEGACY_ACTIONS:
+        return "", "protected_legacy_route", (action,)
+
+    return "", "legacy_route_out_of_scope", (action or "missing_action",)
+
+
+def _focus_route_class(
+    plan_payload: dict[str, Any],
+) -> tuple[str, str, tuple[str, ...]]:
+    route = str(plan_payload.get("route", "")).strip().casefold()
+    raw_tool_calls = plan_payload.get("toolCalls", [])
+    if not isinstance(raw_tool_calls, list):
+        return "", "invalid_focus_route_shape", ("toolCalls",)
+
+    tool_calls = [
+        call
+        for call in raw_tool_calls
+        if isinstance(call, dict)
+        and str(call.get("tool", "")).strip().casefold() not in {"", "none"}
+    ]
+
+    if len(tool_calls) > 1:
+        return "", "multiple_tool_calls", tuple(
+            str(call.get("tool", "")).strip() or "unknown"
+            for call in tool_calls
+        )
+
+    if tool_calls:
+        tool_call = tool_calls[0]
+        tool_name = str(tool_call.get("tool", "")).strip().casefold()
+        if tool_call.get("requiresConfirmation") is True:
+            return "", "confirmation_required", (tool_name or "unknown",)
+        if tool_name not in {
+            ToolName.SEARCH.value,
+            ToolName.CALENDAR_READ.value,
+            ToolName.VISUAL_READ.value,
+        }:
+            return "", "unsupported_tool", (tool_name or "unknown",)
+        if route != TurnRoute.TOOL.value:
+            return "", "invalid_focus_route_shape", (route or "missing_route", tool_name)
+        return tool_name, "", ()
+
+    if route in {
+        TurnRoute.RESPOND.value,
+        TurnRoute.FOCUS_ACTION.value,
+        TurnRoute.CLARIFY.value,
+    }:
+        return "chat", "", ()
+    if route == TurnRoute.NOOP.value:
+        return "", "focus_route_noop", ()
+    return "", "focus_route_out_of_scope", (route or "missing_route",)
+
+
+def guarded_route_decision_for_turn(
+    source_turn_id: str,
+    legacy_payload: dict[str, Any],
+    *,
+    minimum_confidence: float = 0.9,
+) -> GuardedRouteDecision:
+    """Select Focus routing only when it agrees with a safe legacy class."""
+
+    turn_id = source_turn_id.strip()
+    threshold = max(0.0, min(float(minimum_confidence), 1.0))
+    if not turn_id:
+        return GuardedRouteDecision(
+            minimumConfidence=threshold,
+            fallbackReason="missing_turn_plan",
+            fallbackDetails=("missing_turn_id",),
+        )
+
+    if not isinstance(legacy_payload, dict) or not legacy_payload:
+        return GuardedRouteDecision(
+            minimumConfidence=threshold,
+            fallbackReason="invalid_legacy_response",
+        )
+
+    with _STORE_LOCK:
+        events = list(_read_log_unlocked().events)
+
+    plan_event = next(
+        (
+            event
+            for event in reversed(events)
+            if event.sourceTurnId == turn_id
+            and event.type == FocusEventType.TURN_PLANNED
+        ),
+        None,
+    )
+    if plan_event is None:
+        return GuardedRouteDecision(
+            minimumConfidence=threshold,
+            fallbackReason="missing_turn_plan",
+        )
+
+    plan_payload = plan_event.payload.get("plan")
+    if not isinstance(plan_payload, dict):
+        return GuardedRouteDecision(
+            minimumConfidence=threshold,
+            fallbackReason="invalid_turn_plan",
+        )
+
+    try:
+        focus_confidence = float(
+            plan_payload.get("confidence", plan_event.confidence)
+        )
+    except (TypeError, ValueError):
+        return GuardedRouteDecision(
+            minimumConfidence=threshold,
+            fallbackReason="invalid_turn_plan",
+            fallbackDetails=("confidence",),
+        )
+
+    legacy_class, legacy_reason, legacy_details = _legacy_route_class(
+        legacy_payload
+    )
+    focus_class, focus_reason, focus_details = _focus_route_class(plan_payload)
+    base = {
+        "focusRouteClass": focus_class,
+        "legacyRouteClass": legacy_class,
+        "focusConfidence": focus_confidence,
+        "minimumConfidence": threshold,
+    }
+
+    if legacy_reason:
+        return GuardedRouteDecision(
+            **base,
+            fallbackReason=legacy_reason,
+            fallbackDetails=legacy_details,
+        )
+    if focus_confidence < threshold:
+        return GuardedRouteDecision(
+            **base,
+            fallbackReason="planner_below_confidence_threshold",
+            fallbackDetails=(
+                f"confidence={focus_confidence:.4f}",
+                f"minimum={threshold:.4f}",
+            ),
+        )
+    if focus_reason:
+        return GuardedRouteDecision(
+            **base,
+            fallbackReason=focus_reason,
+            fallbackDetails=focus_details,
+        )
+    if focus_class != legacy_class:
+        return GuardedRouteDecision(
+            **base,
+            fallbackReason="route_disagreement",
+            fallbackDetails=(
+                f"focus={focus_class or 'none'}",
+                f"legacy={legacy_class or 'none'}",
+            ),
+        )
+
+    return GuardedRouteDecision(
+        routeClass=focus_class,
+        **base,
+    )
+
+
+def record_route_selection(
+    *,
+    source_turn_id: str,
+    outcome: str,
+    route_class: str = "",
+    focus_route_class: str = "",
+    legacy_route_class: str = "",
+    reason: str = "",
+    details: Iterable[str] = (),
+    focus_confidence: float = 0.0,
+    minimum_confidence: float = 0.9,
+    legacy_intent: str = "",
+    legacy_action: str = "",
+    response_source: str = "legacy-command-router",
+) -> FocusState:
+    normalized_outcome = outcome.strip().casefold()
+    if normalized_outcome not in {"takeover", "fallback"}:
+        return get_state()
+
+    with _STORE_LOCK:
+        document = _read_log_unlocked()
+        focus_id = _focus_id_for_turn(document.events, source_turn_id)
+        payload: dict[str, object] = {
+            "outcome": normalized_outcome,
+            "routeClass": route_class.strip()[:40],
+            "focusRouteClass": focus_route_class.strip()[:40],
+            "legacyRouteClass": legacy_route_class.strip()[:40],
+            "reason": reason.strip()[:120],
+            "details": [
+                str(detail).strip()[:500]
+                for detail in details
+                if str(detail).strip()
+            ][:20],
+            "focusConfidence": max(0.0, min(float(focus_confidence), 1.0)),
+            "minimumConfidence": max(
+                0.0,
+                min(float(minimum_confidence), 1.0),
+            ),
+            "legacyIntent": legacy_intent.strip()[:40],
+            "legacyAction": legacy_action.strip()[:80],
+            "responseSource": response_source.strip()[:80],
+        }
+        event = _new_event(
+            FocusEventType.ROUTE_SELECTION,
+            focus_id=focus_id,
+            payload=payload,
+            source_turn_id=source_turn_id,
+            source="focus-route-selection",
+        )
+        document.events.append(event)
+        _atomic_write_unlocked(document)
+        return reduce_events(document.events)
+
+
+def route_selection_summary() -> dict[str, object]:
+    """Summarize explicit guarded command-routing decisions."""
+
+    with _STORE_LOCK:
+        events = list(_read_log_unlocked().events)
+
+    decisions_by_turn: dict[str, dict[str, object]] = {}
+    order: list[str] = []
+    for event in events:
+        if event.type != FocusEventType.ROUTE_SELECTION:
+            continue
+        payload = event.payload
+        outcome = str(payload.get("outcome", "")).strip()
+        if outcome not in {"takeover", "fallback"}:
+            continue
+        reason = str(payload.get("reason", "")).strip()
+        category = (
+            "takeover"
+            if outcome == "takeover"
+            else _route_fallback_category(reason)
+        )
+        details = payload.get("details", [])
+        decision = {
+            "sourceTurnId": event.sourceTurnId,
+            "focusId": event.focusId,
+            "outcome": outcome,
+            "routeClass": str(payload.get("routeClass", "")).strip(),
+            "focusRouteClass": str(
+                payload.get("focusRouteClass", "")
+            ).strip(),
+            "legacyRouteClass": str(
+                payload.get("legacyRouteClass", "")
+            ).strip(),
+            "reason": reason,
+            "category": category,
+            "healthy": outcome == "takeover" or category in {"expected", "safety"},
+            "details": [
+                str(detail).strip()
+                for detail in details
+                if str(detail).strip()
+            ] if isinstance(details, list) else [],
+            "focusConfidence": payload.get("focusConfidence", 0.0),
+            "minimumConfidence": payload.get("minimumConfidence", 0.9),
+            "legacyIntent": str(payload.get("legacyIntent", "")).strip(),
+            "legacyAction": str(payload.get("legacyAction", "")).strip(),
+            "responseSource": str(
+                payload.get("responseSource", event.source)
+            ).strip(),
+            "createdAt": event.createdAt,
+        }
+        turn_key = event.sourceTurnId.strip() or event.id
+        if turn_key in decisions_by_turn:
+            order.remove(turn_key)
+        order.append(turn_key)
+        decisions_by_turn[turn_key] = decision
+
+    decisions = [decisions_by_turn[key] for key in order]
+    takeover_count = sum(d["outcome"] == "takeover" for d in decisions)
+    fallback_count = sum(d["outcome"] == "fallback" for d in decisions)
+    category_counts = {
+        "expected": 0,
+        "safety": 0,
+        "systemFailure": 0,
+        "unknown": 0,
+    }
+    reasons: dict[str, int] = {}
+    reasons_by_category: dict[str, dict[str, int]] = {
+        key: {} for key in category_counts
+    }
+    category_key = {
+        "expected": "expected",
+        "safety": "safety",
+        "system_failure": "systemFailure",
+        "unknown": "unknown",
+    }
+    for decision in decisions:
+        if decision["outcome"] != "fallback":
+            continue
+        reason = str(decision["reason"] or "unknown")
+        reasons[reason] = reasons.get(reason, 0) + 1
+        key = category_key.get(str(decision["category"]), "unknown")
+        category_counts[key] += 1
+        grouped = reasons_by_category[key]
+        grouped[reason] = grouped.get(reason, 0) + 1
+
+    decision_count = takeover_count + fallback_count
+    expected_count = category_counts["expected"]
+    safety_count = category_counts["safety"]
+    system_count = category_counts["systemFailure"]
+    unknown_count = category_counts["unknown"]
+    guarded_attempt_count = takeover_count + safety_count + system_count + unknown_count
+    healthy_count = takeover_count + expected_count + safety_count
+
+    raw_rate = round(takeover_count / decision_count, 4) if decision_count else 0.0
+    guarded_rate = (
+        round(takeover_count / guarded_attempt_count, 4)
+        if guarded_attempt_count
+        else 0.0
+    )
+    healthy_rate = (
+        round(healthy_count / decision_count, 4)
+        if decision_count
+        else 0.0
+    )
+
+    return {
+        "decisionCount": decision_count,
+        "takeoverCount": takeover_count,
+        "fallbackCount": fallback_count,
+        "successRate": raw_rate,
+        "takeoverRate": raw_rate,
+        "guardedAttemptCount": guarded_attempt_count,
+        "guardedTakeoverRate": guarded_rate,
+        "healthyDecisionCount": healthy_count,
+        "healthyDecisionRate": healthy_rate,
+        "expectedFallbackCount": expected_count,
+        "safetyFallbackCount": safety_count,
+        "systemFailureCount": system_count,
+        "unknownFallbackCount": unknown_count,
+        "fallbackReasons": reasons,
+        "fallbackCategoryCounts": category_counts,
+        "fallbackReasonsByCategory": reasons_by_category,
+        "latestDecision": decisions[-1] if decisions else None,
+    }
 
 
 def guarded_tool_response_decision_for_turn(
@@ -968,9 +1411,12 @@ def reduce_events(events: Iterable[FocusEvent]) -> FocusState:
         if event.type in {
             FocusEventType.RESPONSE_CANDIDATE,
             FocusEventType.ASSISTANT_REPLIED,
+            FocusEventType.RESPONSE_SELECTION,
+            FocusEventType.ROUTE_SELECTION,
         }:
-            # Candidate and visible replies are observational evidence.
-            # They must never alter the canonical Focus projection.
+            # Candidates, visible replies, and selector telemetry are
+            # observational evidence. They must never alter the canonical
+            # Focus projection.
             continue
 
         if event.type == FocusEventType.TURN_PLANNED:
@@ -1479,6 +1925,19 @@ def apply_turn_plan(
         tool_call.tool == ToolName.SEARCH
         for tool_call in real_tool_calls
     )
+    route_only_tool_turn = (
+        source == "command-interpret-shadow"
+        and bool(real_tool_calls)
+        and all(
+            tool_call.tool in {
+                ToolName.VISUAL_READ,
+                ToolName.VISUAL_WRITE,
+            }
+            and not tool_call.requiresConfirmation
+            and not tool_call.attachToFocus
+            for tool_call in real_tool_calls
+        )
+    )
 
     # attachToFocus=False is a deterministic boundary, not a suggestion. A
     # transient tool turn may be logged and completed, but it cannot mutate,
@@ -1516,6 +1975,7 @@ def apply_turn_plan(
     execution_policy = {
         "transientTool": transient_tool_turn,
         "transientSearch": transient_search,
+        "routeOnlyTool": route_only_tool_turn,
         "suppressedFocusOperationCount": (
             len(plan.focusOperations) if transient_tool_turn else 0
         ),
@@ -1601,6 +2061,12 @@ def apply_turn_plan(
     for tool_call in plan.toolCalls:
         if tool_call.tool == ToolName.NONE:
             continue
+        if route_only_tool_turn:
+            # The existing frontend owns synchronized visual-memory reads and
+            # protected local mutations. These planner tool calls are only
+            # independent routing classifications, so do not create orphan
+            # pending TOOL_REQUESTED events.
+            continue
 
         attach_to_focus = tool_call.attachToFocus or started_focus_this_turn
         tool_focus_id = active_focus_id if attach_to_focus else ""
@@ -1615,35 +2081,47 @@ def apply_turn_plan(
             )
         )
 
-    response_candidate = build_response_candidate(plan)
-    response_candidate_text = str(response_candidate.get("text", "")).strip()
-    if response_candidate_text:
-        response_attaches_to_focus = bool(
-            active_focus_id
-            and not transient_tool_turn
-            and (
-                has_focus_operations
-                or plan.route == TurnRoute.FOCUS_ACTION
-                or plan.responseIntent.attachToFocus
+    has_real_tool_call = any(
+        tool_call.tool != ToolName.NONE
+        for tool_call in plan.toolCalls
+    )
+
+    # Direct response candidates are created only for non-tool turns. Tool
+    # turns must wait for the verified tool result, which is recorded later by
+    # record_tool_response_candidate. This also prevents diagnostic text from
+    # an ineligible tool plan from leaking into the event sequence.
+    if not has_real_tool_call:
+        response_candidate = build_response_candidate(plan)
+        response_candidate_text = str(
+            response_candidate.get("text", "")
+        ).strip()
+        if response_candidate_text:
+            response_attaches_to_focus = bool(
+                active_focus_id
+                and not transient_tool_turn
+                and (
+                    has_focus_operations
+                    or plan.route == TurnRoute.FOCUS_ACTION
+                    or plan.responseIntent.attachToFocus
+                )
             )
-        )
-        candidate_focus_id = (
-            active_focus_id
-            if response_attaches_to_focus
-            else ""
-        )
-        response_candidate["text"] = response_candidate_text[:12000]
-        response_candidate["attachToFocus"] = response_attaches_to_focus
-        events.append(
-            _new_event(
-                FocusEventType.RESPONSE_CANDIDATE,
-                focus_id=candidate_focus_id,
-                payload=response_candidate,
-                source_turn_id=turn_id,
-                source="focus-response-candidate",
-                confidence=plan.confidence,
+            candidate_focus_id = (
+                active_focus_id
+                if response_attaches_to_focus
+                else ""
             )
-        )
+            response_candidate["text"] = response_candidate_text[:12000]
+            response_candidate["attachToFocus"] = response_attaches_to_focus
+            events.append(
+                _new_event(
+                    FocusEventType.RESPONSE_CANDIDATE,
+                    focus_id=candidate_focus_id,
+                    payload=response_candidate,
+                    source_turn_id=turn_id,
+                    source="focus-response-candidate",
+                    confidence=plan.confidence,
+                )
+            )
 
     append_events(events)
     return get_state()

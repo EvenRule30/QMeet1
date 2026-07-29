@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 import { QMEET_API_BASE_URL } from '../api';
 
-type FocusResponseDecision = {
+type GuardDecision = {
   sourceTurnId: string;
   focusId: string;
   outcome: 'takeover' | 'fallback' | string;
@@ -10,12 +10,25 @@ type FocusResponseDecision = {
   category: 'takeover' | 'expected' | 'safety' | 'system_failure' | 'unknown' | string;
   healthy: boolean;
   details: string[];
-  candidateEligible: boolean | null;
   responseSource: string;
   createdAt: string;
 };
 
-type FocusResponseSelection = {
+type FocusResponseDecision = GuardDecision & {
+  candidateEligible: boolean | null;
+};
+
+type FocusRouteDecision = GuardDecision & {
+  routeClass: string;
+  focusRouteClass: string;
+  legacyRouteClass: string;
+  focusConfidence: number;
+  minimumConfidence: number;
+  legacyIntent: string;
+  legacyAction: string;
+};
+
+type GuardSelection<TDecision extends GuardDecision> = {
   decisionCount: number;
   takeoverCount: number;
   fallbackCount: number;
@@ -42,17 +55,19 @@ type FocusResponseSelection = {
     systemFailure: Record<string, number>;
     unknown: Record<string, number>;
   };
-  latestDecision: FocusResponseDecision | null;
+  latestDecision: TDecision | null;
 };
 
 type FocusStatusResponse = {
   ok: boolean;
   mode: string;
   responseMode: string;
+  routeMode?: string;
   plannerEnabled: boolean;
   model: string;
   eventCount: number;
-  responseSelection: FocusResponseSelection;
+  responseSelection: GuardSelection<FocusResponseDecision>;
+  routeSelection?: GuardSelection<FocusRouteDecision>;
 };
 
 const REFRESH_INTERVAL_MS = 10_000;
@@ -69,9 +84,9 @@ function formatLabel(value: string): string {
   return normalized.charAt(0).toUpperCase() + normalized.slice(1);
 }
 
-function formatDecision(decision: FocusResponseDecision | null): string {
+function formatDecision(decision: GuardDecision | null): string {
   if (!decision) return 'No guarded decisions yet';
-  if (decision.outcome === 'takeover') return 'Canonical takeover';
+  if (decision.outcome === 'takeover') return 'Guarded takeover';
   return `${formatLabel(decision.category)} fallback · ${formatLabel(decision.reason)}`;
 }
 
@@ -83,6 +98,60 @@ function formatDecisionTime(value: string): string {
     minute: '2-digit',
     second: '2-digit',
   });
+}
+
+function healthCardClass(
+  systemFailureCount: number,
+  unknownFallbackCount: number,
+): string {
+  return systemFailureCount === 0 && unknownFallbackCount === 0
+    ? 'status-card status-card-good'
+    : 'status-card status-card-warn';
+}
+
+function responseDecisionDetail(decision: FocusResponseDecision | null): string {
+  if (!decision) return '—';
+  if (decision.outcome === 'takeover') {
+    return formatLabel(decision.responseSource);
+  }
+  if (decision.details.length > 0) {
+    return decision.details.map(formatLabel).join(', ');
+  }
+  if (decision.reason === 'missing_tool_request') {
+    return 'No matching tool request was recorded for that turn';
+  }
+  if (decision.reason === 'tool_not_attached_to_focus') {
+    return 'Tool result remained outside the active focus';
+  }
+  return 'No additional details';
+}
+
+function routeAgreementDetail(decision: FocusRouteDecision | null): string {
+  if (!decision) return '—';
+
+  if (
+    decision.reason === 'confirmation_gated_legacy_route' &&
+    decision.details.length > 0
+  ) {
+    return `Protected action: ${formatLabel(decision.details[0])}`;
+  }
+
+  const focusRoute = formatLabel(decision.focusRouteClass || 'none');
+  const legacyRoute = formatLabel(decision.legacyRouteClass || 'none');
+  if (decision.outcome === 'takeover') {
+    return decision.routeClass
+      ? `${formatLabel(decision.routeClass)} agreed`
+      : `${focusRoute} agreed`;
+  }
+  if (decision.reason === 'route_disagreement') {
+    return `Focus: ${focusRoute} · Legacy: ${legacyRoute}`;
+  }
+  if (decision.legacyAction) {
+    return `Legacy action: ${formatLabel(decision.legacyAction)}`;
+  }
+  return decision.details.length > 0
+    ? decision.details.map(formatLabel).join(', ')
+    : 'No route details recorded';
 }
 
 export function FocusResponseHealth() {
@@ -117,7 +186,7 @@ export function FocusResponseHealth() {
         setError(
           caughtError instanceof Error
             ? caughtError.message
-            : 'Focus response health is unavailable.',
+            : 'Focus guard health is unavailable.',
         );
       } finally {
         if (mounted) setLoading(false);
@@ -136,111 +205,212 @@ export function FocusResponseHealth() {
     };
   }, []);
 
-  const selection = status?.responseSelection ?? null;
-  const latestDecision = selection?.latestDecision ?? null;
-  const healthCardClass = useMemo(() => {
-    if (!selection) return 'status-card';
-    return selection.systemFailureCount === 0 && selection.unknownFallbackCount === 0
-      ? 'status-card status-card-good'
-      : 'status-card status-card-warn';
-  }, [selection]);
+  const responseSelection = status?.responseSelection ?? null;
+  const routeSelection = status?.routeSelection ?? null;
+  const responseLatest = responseSelection?.latestDecision ?? null;
+  const routeLatest = routeSelection?.latestDecision ?? null;
 
-  if (loading && !selection) {
+  const responseHealthClass = useMemo(() => {
+    if (!responseSelection) return 'status-card';
+    return healthCardClass(
+      responseSelection.systemFailureCount,
+      responseSelection.unknownFallbackCount,
+    );
+  }, [responseSelection]);
+
+  const routeHealthClass = useMemo(() => {
+    if (!routeSelection) return 'status-card';
+    return healthCardClass(
+      routeSelection.systemFailureCount,
+      routeSelection.unknownFallbackCount,
+    );
+  }, [routeSelection]);
+
+  if (loading && !responseSelection) {
     return (
       <div className="panel-section status-detail-section" aria-live="polite">
-        <div className="panel-section-title">Focus Response Health</div>
-        <p className="panel-section-text">Loading guarded-response metrics…</p>
+        <div className="panel-section-title">Focus Guard Health</div>
+        <p className="panel-section-text">Loading guarded-response and routing metrics…</p>
       </div>
     );
   }
 
-  if (!selection) {
+  if (!responseSelection) {
     return (
       <div className="panel-section status-detail-section" aria-live="polite">
-        <div className="panel-section-title">Focus Response Health</div>
+        <div className="panel-section-title">Focus Guard Health</div>
         <p className="panel-section-text">
-          {error || 'No guarded-response metrics are available yet.'}
+          {error || 'No Focus guard metrics are available yet.'}
         </p>
       </div>
     );
   }
 
   return (
-    <div className="panel-section status-detail-section" aria-live="polite">
-      <div className="panel-section-title">Focus Response Health</div>
-      <div className="status-grid">
-        <div className={healthCardClass}>
-          <div className="status-card-title">Healthy Decisions</div>
-          <div className="status-card-value">
-            {formatPercent(selection.healthyDecisionRate)}
+    <>
+      <div className="panel-section status-detail-section" aria-live="polite">
+        <div className="panel-section-title">Focus Response Health</div>
+        <div className="status-grid">
+          <div className={responseHealthClass}>
+            <div className="status-card-title">Healthy Decisions</div>
+            <div className="status-card-value">
+              {formatPercent(responseSelection.healthyDecisionRate)}
+            </div>
+            <div className="status-card-meta">
+              {responseSelection.healthyDecisionCount} of{' '}
+              {responseSelection.decisionCount} decisions
+            </div>
           </div>
-          <div className="status-card-meta">
-            {selection.healthyDecisionCount} of {selection.decisionCount} decisions
+          <div className="status-card status-card-good">
+            <div className="status-card-title">Guarded Takeover</div>
+            <div className="status-card-value">
+              {formatPercent(responseSelection.guardedTakeoverRate)}
+            </div>
+            <div className="status-card-meta">
+              {responseSelection.takeoverCount} of{' '}
+              {responseSelection.guardedAttemptCount} attempts
+            </div>
+          </div>
+          <div className="status-card">
+            <div className="status-card-title">Expected Fallbacks</div>
+            <div className="status-card-value">
+              {responseSelection.expectedFallbackCount}
+            </div>
+            <div className="status-card-meta">Correct off-focus or tool routing</div>
+          </div>
+          <div
+            className={`status-card ${
+              responseSelection.systemFailureCount === 0
+                ? 'status-card-good'
+                : 'status-card-warn'
+            }`}
+          >
+            <div className="status-card-title">Recorded System Failures</div>
+            <div className="status-card-value">
+              {responseSelection.systemFailureCount}
+            </div>
+            <div className="status-card-meta">
+              Append-only history · {responseSelection.unknownFallbackCount} unknown
+            </div>
           </div>
         </div>
-        <div className="status-card status-card-good">
-          <div className="status-card-title">Guarded Takeover</div>
-          <div className="status-card-value">
-            {formatPercent(selection.guardedTakeoverRate)}
+        <div className="status-detail-list">
+          <div className="status-detail-row">
+            <span>Planner mode</span>
+            <strong>{formatLabel(status?.mode || 'unknown')}</strong>
           </div>
-          <div className="status-card-meta">
-            {selection.takeoverCount} of {selection.guardedAttemptCount} attempts
+          <div className="status-detail-row">
+            <span>Visible response mode</span>
+            <strong>{formatLabel(status?.responseMode || 'unknown')}</strong>
           </div>
-        </div>
-        <div className="status-card">
-          <div className="status-card-title">Expected Fallbacks</div>
-          <div className="status-card-value">{selection.expectedFallbackCount}</div>
-          <div className="status-card-meta">Correct off-focus or tool routing</div>
-        </div>
-        <div
-          className={`status-card ${
-            selection.systemFailureCount === 0
-              ? 'status-card-good'
-              : 'status-card-warn'
-          }`}
-        >
-          <div className="status-card-title">System Failures</div>
-          <div className="status-card-value">{selection.systemFailureCount}</div>
-          <div className="status-card-meta">
-            {selection.unknownFallbackCount} unknown fallback
-            {selection.unknownFallbackCount === 1 ? '' : 's'}
+          <div className="status-detail-row">
+            <span>Safety fallbacks</span>
+            <strong>{responseSelection.safetyFallbackCount}</strong>
+          </div>
+          <div className="status-detail-row">
+            <span>Latest recorded decision</span>
+            <strong>{formatDecision(responseLatest)}</strong>
+          </div>
+          <div className="status-detail-row">
+            <span>Recorded decision detail</span>
+            <strong>{responseDecisionDetail(responseLatest)}</strong>
+          </div>
+          <div className="status-detail-row">
+            <span>Recorded decision time</span>
+            <strong>
+              {responseLatest ? formatDecisionTime(responseLatest.createdAt) : '—'}
+            </strong>
           </div>
         </div>
       </div>
-      <div className="status-detail-list">
-        <div className="status-detail-row">
-          <span>Planner mode</span>
-          <strong>{formatLabel(status?.mode || 'unknown')}</strong>
-        </div>
-        <div className="status-detail-row">
-          <span>Visible response mode</span>
-          <strong>{formatLabel(status?.responseMode || 'unknown')}</strong>
-        </div>
-        <div className="status-detail-row">
-          <span>Safety fallbacks</span>
-          <strong>{selection.safetyFallbackCount}</strong>
-        </div>
-        <div className="status-detail-row">
-          <span>Latest decision</span>
-          <strong>{formatDecision(latestDecision)}</strong>
-        </div>
-        <div className="status-detail-row">
-          <span>Latest decision time</span>
-          <strong>
-            {latestDecision ? formatDecisionTime(latestDecision.createdAt) : '—'}
-          </strong>
-        </div>
-        <div className="status-detail-row">
-          <span>Focus events</span>
-          <strong>{status?.eventCount ?? '—'}</strong>
-        </div>
-        {error && (
-          <div className="status-detail-row">
-            <span>Refresh</span>
-            <strong>Showing last data · {error}</strong>
-          </div>
+
+      <div className="panel-section status-detail-section" aria-live="polite">
+        <div className="panel-section-title">Planner Routing Health</div>
+        {routeSelection ? (
+          <>
+            <div className="status-grid">
+              <div className={routeHealthClass}>
+                <div className="status-card-title">Healthy Routing</div>
+                <div className="status-card-value">
+                  {formatPercent(routeSelection.healthyDecisionRate)}
+                </div>
+                <div className="status-card-meta">
+                  {routeSelection.healthyDecisionCount} of{' '}
+                  {routeSelection.decisionCount} decisions
+                </div>
+              </div>
+              <div className="status-card status-card-good">
+                <div className="status-card-title">Guarded Takeover</div>
+                <div className="status-card-value">
+                  {formatPercent(routeSelection.guardedTakeoverRate)}
+                </div>
+                <div className="status-card-meta">
+                  {routeSelection.takeoverCount} of{' '}
+                  {routeSelection.guardedAttemptCount} attempts
+                </div>
+              </div>
+              <div className="status-card">
+                <div className="status-card-title">Expected Fallbacks</div>
+                <div className="status-card-value">
+                  {routeSelection.expectedFallbackCount}
+                </div>
+                <div className="status-card-meta">Confirmation-gated legacy routes</div>
+              </div>
+              <div
+                className={`status-card ${
+                  routeSelection.safetyFallbackCount === 0
+                    ? 'status-card-good'
+                    : 'status-card-warn'
+                }`}
+              >
+                <div className="status-card-title">Safety Blocks</div>
+                <div className="status-card-value">
+                  {routeSelection.safetyFallbackCount}
+                </div>
+                <div className="status-card-meta">
+                  {routeSelection.systemFailureCount} system ·{' '}
+                  {routeSelection.unknownFallbackCount} unknown
+                </div>
+              </div>
+            </div>
+            <div className="status-detail-list">
+              <div className="status-detail-row">
+                <span>Route mode</span>
+                <strong>{formatLabel(status?.routeMode || 'shadow')}</strong>
+              </div>
+              <div className="status-detail-row">
+                <span>Latest route decision</span>
+                <strong>{formatDecision(routeLatest)}</strong>
+              </div>
+              <div className="status-detail-row">
+                <span>Route detail</span>
+                <strong>{routeAgreementDetail(routeLatest)}</strong>
+              </div>
+              <div className="status-detail-row">
+                <span>Latest route time</span>
+                <strong>
+                  {routeLatest ? formatDecisionTime(routeLatest.createdAt) : '—'}
+                </strong>
+              </div>
+              <div className="status-detail-row">
+                <span>Focus events</span>
+                <strong>{status?.eventCount ?? '—'}</strong>
+              </div>
+              {error && (
+                <div className="status-detail-row">
+                  <span>Refresh</span>
+                  <strong>Showing last data · {error}</strong>
+                </div>
+              )}
+            </div>
+          </>
+        ) : (
+          <p className="panel-section-text">
+            Route-selection metrics are unavailable. Restart the backend after enabling
+            Phase 19 guarded routing.
+          </p>
         )}
       </div>
-    </div>
+    </>
   );
 }

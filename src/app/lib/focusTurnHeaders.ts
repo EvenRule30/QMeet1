@@ -1,6 +1,7 @@
 import type { FocusToolResponse } from '../types';
 
 const QMEET_TURN_HEADER = 'X-QMeet-Turn-Id';
+const QMEET_CALENDAR_READ_INTENT_HEADER = 'X-QMeet-Calendar-Read-Intent';
 const TURN_LINK_WINDOW_MS = 60_000;
 
 const TURN_START_PATHS = new Set([
@@ -22,6 +23,7 @@ type ActiveTurn = {
 
 let activeTurn: ActiveTurn | null = null;
 let interceptorInstalled = false;
+let explicitCalendarReadPending = false;
 let latestCalendarFocusResponse: {
   turnId: string;
   response: FocusToolResponse;
@@ -122,6 +124,14 @@ function isFocusToolResponse(value: unknown): value is FocusToolResponse {
   );
 }
 
+export function beginExplicitCalendarRead(): void {
+  explicitCalendarReadPending = true;
+}
+
+export function clearExplicitCalendarRead(): void {
+  explicitCalendarReadPending = false;
+}
+
 export function installQMeetFocusTurnHeaders(): void {
   if (interceptorInstalled || typeof window === 'undefined') {
     return;
@@ -145,8 +155,15 @@ export function installQMeetFocusTurnHeaders(): void {
     const headers = new Headers(request.headers);
     headers.set(QMEET_TURN_HEADER, turnId);
 
+    const isExplicitCalendarRead =
+      path === '/api/calendar/events' && explicitCalendarReadPending;
+
     if (path === '/api/calendar/events') {
-      latestCalendarFocusResponse = null;
+      explicitCalendarReadPending = false;
+      if (isExplicitCalendarRead) {
+        headers.set(QMEET_CALENDAR_READ_INTENT_HEADER, 'explicit');
+        latestCalendarFocusResponse = null;
+      }
     }
 
     const response = await originalFetch(
@@ -155,7 +172,7 @@ export function installQMeetFocusTurnHeaders(): void {
       }),
     );
 
-    if (path === '/api/calendar/events' && response.ok) {
+    if (isExplicitCalendarRead && response.ok) {
       try {
         const payload = (await response.clone().json()) as {
           focusResponse?: unknown;

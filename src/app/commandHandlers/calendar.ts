@@ -14,7 +14,11 @@ import {
   describeCalendarDeletePayload,
   type CalendarDeleteCriteria,
 } from '../lib/calendarUtils';
-import { consumeLatestCalendarFocusResponse } from '../lib/focusTurnHeaders';
+import {
+  beginExplicitCalendarRead,
+  clearExplicitCalendarRead,
+  consumeLatestCalendarFocusResponse,
+} from '../lib/focusTurnHeaders';
 
 export type CalendarCommandResult = {
   handled: boolean;
@@ -91,9 +95,17 @@ export async function handleCalendarCommand(
       const requestedCalendarView = commandMatch.calendarView ?? 'all';
       const remoteCalendarView: CalendarBackendView =
         requestedCalendarView === 'all' ? 'week' : requestedCalendarView;
-      const remoteEvents = deps.googleCalendarStatus?.connected
-        ? await deps.refreshGoogleCalendar(remoteCalendarView)
-        : deps.googleCalendarEvents;
+      let remoteEvents = deps.googleCalendarEvents;
+      if (deps.googleCalendarStatus?.connected) {
+        beginExplicitCalendarRead();
+        try {
+          remoteEvents = await deps.refreshGoogleCalendar(remoteCalendarView);
+        } finally {
+          // The interceptor normally consumes the one-shot marker on the GET.
+          // Clearing here also covers a disconnect or failure before that GET.
+          clearExplicitCalendarRead();
+        }
+      }
       const guardedFocusResponse = consumeLatestCalendarFocusResponse();
       const sourceEvents = deps.googleCalendarStatus?.connected ? remoteEvents : deps.calendarEvents;
       const hasTodayEvents = sourceEvents.some((event) => isEventForCalendarView(event, 'today'));

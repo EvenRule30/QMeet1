@@ -61,6 +61,9 @@ class FocusField(str, Enum):
 class ToolName(str, Enum):
     SEARCH = "search"
     CALENDAR_READ = "calendar_read"
+    CALENDAR_WRITE = "calendar_write"
+    VISUAL_READ = "visual_read"
+    VISUAL_WRITE = "visual_write"
     OPEN_SEARCH = "open_search"
     START_FOCUS = "start_focus"
     END_FOCUS = "end_focus"
@@ -192,6 +195,7 @@ class FocusEventType(str, Enum):
     RESPONSE_CANDIDATE = "response_candidate"
     ASSISTANT_REPLIED = "assistant_replied"
     RESPONSE_SELECTION = "response_selection"
+    ROUTE_SELECTION = "route_selection"
     FOCUS_STARTED = "focus_started"
     FOCUS_RESCOPED = "focus_rescoped"
     FIELD_SET = "field_set"

@@ -29,12 +29,15 @@ from app.focus.store import (
     event_count,
     get_state,
     list_events,
+    guarded_route_decision_for_turn,
     guarded_tool_response_decision_for_turn,
     record_assistant_reply,
     record_response_selection,
+    record_route_selection,
     record_tool_response_candidate,
     record_tool_result,
     response_selection_summary,
+    route_selection_summary,
     reduce_events,
     reset_store,
     seed_from_legacy,
@@ -1434,6 +1437,302 @@ class FocusStoreTests(unittest.TestCase):
             "takeover",
         )
 
+
+
+    def test_guarded_route_selector_accepts_safe_search_agreement(self) -> None:
+        turn_id = "turn-route-search"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.TOOL,
+                toolCalls=[
+                    PlannedToolCall(
+                        tool=ToolName.SEARCH,
+                        arguments=[],
+                        requiresConfirmation=False,
+                        attachToFocus=False,
+                    )
+                ],
+                confidence=0.98,
+            ),
+            message="Search for electric vehicle tax credits.",
+            turn_id=turn_id,
+            source="unit-test",
+        )
+
+        decision = guarded_route_decision_for_turn(
+            turn_id,
+            {
+                "intent": "command",
+                "action": "prepare_search",
+                "confidence": 0.95,
+                "frontendCommand": "search for electric vehicle tax credits",
+                "payload": {},
+            },
+            minimum_confidence=0.9,
+        )
+
+        self.assertTrue(decision.eligible)
+        self.assertEqual(decision.routeClass, "search")
+        self.assertEqual(decision.focusRouteClass, "search")
+        self.assertEqual(decision.legacyRouteClass, "search")
+
+    def test_guarded_route_selector_accepts_visual_read_agreement(self) -> None:
+        turn_id = "turn-route-visual-history"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.TOOL,
+                toolCalls=[
+                    PlannedToolCall(
+                        tool=ToolName.VISUAL_READ,
+                        arguments=[],
+                        requiresConfirmation=False,
+                        attachToFocus=False,
+                    )
+                ],
+                confidence=0.99,
+            ),
+            message="Show my recent visual observations.",
+            turn_id=turn_id,
+            source="command-interpret-shadow",
+        )
+
+        decision = guarded_route_decision_for_turn(
+            turn_id,
+            {
+                "intent": "command",
+                "action": "read_visual_history",
+                "confidence": 0.98,
+                "frontendCommand": "show visual observations",
+                "payload": {"mode": "history"},
+            },
+            minimum_confidence=0.9,
+        )
+
+        self.assertTrue(decision.eligible)
+        self.assertEqual(decision.routeClass, "visual_read")
+        self.assertEqual(decision.focusRouteClass, "visual_read")
+        self.assertEqual(decision.legacyRouteClass, "visual_read")
+
+        turn_events = [
+            event
+            for event in list_events()
+            if event.sourceTurnId == turn_id
+        ]
+        self.assertEqual(
+            [event.type for event in turn_events],
+            [FocusEventType.TURN_PLANNED],
+        )
+        self.assertTrue(
+            turn_events[0].payload["executionPolicy"]["routeOnlyTool"]
+        )
+
+    def test_visual_write_marker_is_route_only_and_non_mutating(self) -> None:
+        turn_id = "turn-route-visual-delete"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.TOOL,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.ADD_LIST_ITEM,
+                        field=FocusField.KNOWN_FACTS,
+                        value="This must be suppressed.",
+                    )
+                ],
+                toolCalls=[
+                    PlannedToolCall(
+                        tool=ToolName.VISUAL_WRITE,
+                        arguments=[],
+                        requiresConfirmation=False,
+                        attachToFocus=False,
+                    )
+                ],
+                responseIntent=ResponseIntent(
+                    answerDirectly=True,
+                    attachToFocus=True,
+                    guidance="I cannot delete it.",
+                ),
+                confidence=0.99,
+            ),
+            message="Could you delete my last visual observation?",
+            turn_id=turn_id,
+            source="command-interpret-shadow",
+        )
+
+        turn_events = [
+            event
+            for event in list_events()
+            if event.sourceTurnId == turn_id
+        ]
+        self.assertEqual(
+            [event.type for event in turn_events],
+            [FocusEventType.TURN_PLANNED],
+        )
+        policy = turn_events[0].payload["executionPolicy"]
+        self.assertTrue(policy["transientTool"])
+        self.assertTrue(policy["routeOnlyTool"])
+        self.assertEqual(policy["suppressedFocusOperationCount"], 1)
+
+    def test_guarded_route_selector_rejects_disagreement_and_writes(self) -> None:
+        turn_id = "turn-route-disagreement"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.RESPOND,
+                confidence=1.0,
+            ),
+            message="Explain the next step.",
+            turn_id=turn_id,
+            source="unit-test",
+        )
+
+        disagreement = guarded_route_decision_for_turn(
+            turn_id,
+            {
+                "intent": "command",
+                "action": "prepare_search",
+                "frontendCommand": "search for the next step",
+            },
+        )
+        self.assertFalse(disagreement.eligible)
+        self.assertEqual(disagreement.fallbackReason, "route_disagreement")
+
+        write_block = guarded_route_decision_for_turn(
+            turn_id,
+            {
+                "intent": "command",
+                "action": "add_calendar_event",
+                "frontendCommand": "add event today at 6 PM called work meeting",
+            },
+        )
+        self.assertFalse(write_block.eligible)
+        self.assertEqual(
+            write_block.fallbackReason,
+            "confirmation_gated_legacy_route",
+        )
+
+        protected_visual_mutation = guarded_route_decision_for_turn(
+            turn_id,
+            {
+                "intent": "command",
+                "action": "delete_last_visual_observation",
+                "frontendCommand": "delete last visual observation",
+            },
+        )
+        self.assertFalse(protected_visual_mutation.eligible)
+        self.assertEqual(
+            protected_visual_mutation.fallbackReason,
+            "protected_legacy_route",
+        )
+
+    def test_guarded_route_selector_enforces_confidence(self) -> None:
+        turn_id = "turn-route-low-confidence"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.RESPOND,
+                confidence=0.72,
+            ),
+            message="Explain this.",
+            turn_id=turn_id,
+            source="unit-test",
+        )
+
+        decision = guarded_route_decision_for_turn(
+            turn_id,
+            {
+                "intent": "chat",
+                "action": "none",
+                "frontendCommand": "",
+            },
+            minimum_confidence=0.9,
+        )
+
+        self.assertFalse(decision.eligible)
+        self.assertEqual(
+            decision.fallbackReason,
+            "planner_below_confidence_threshold",
+        )
+
+    def test_route_selection_summary_separates_expected_and_safety(self) -> None:
+        record_route_selection(
+            source_turn_id="turn-route-takeover",
+            outcome="takeover",
+            route_class="chat",
+            focus_route_class="chat",
+            legacy_route_class="chat",
+            focus_confidence=1.0,
+            minimum_confidence=0.9,
+            legacy_intent="chat",
+            legacy_action="none",
+            response_source="focus-route-guarded",
+        )
+        record_route_selection(
+            source_turn_id="turn-route-expected",
+            outcome="fallback",
+            reason="legacy_route_out_of_scope",
+            details=["open_panel"],
+            focus_route_class="chat",
+            focus_confidence=1.0,
+            minimum_confidence=0.9,
+            legacy_intent="command",
+            legacy_action="open_panel",
+        )
+        record_route_selection(
+            source_turn_id="turn-route-safety",
+            outcome="fallback",
+            reason="route_disagreement",
+            details=["focus=chat", "legacy=search"],
+            focus_route_class="chat",
+            legacy_route_class="search",
+            focus_confidence=1.0,
+            minimum_confidence=0.9,
+            legacy_intent="command",
+            legacy_action="prepare_search",
+        )
+
+        summary = route_selection_summary()
+
+        self.assertEqual(summary["decisionCount"], 3)
+        self.assertEqual(summary["takeoverCount"], 1)
+        self.assertEqual(summary["fallbackCount"], 2)
+        self.assertEqual(summary["expectedFallbackCount"], 1)
+        self.assertEqual(summary["safetyFallbackCount"], 1)
+        self.assertEqual(summary["systemFailureCount"], 0)
+        self.assertEqual(summary["healthyDecisionRate"], 1.0)
+        self.assertEqual(summary["guardedAttemptCount"], 2)
+        self.assertEqual(summary["guardedTakeoverRate"], 0.5)
+        self.assertEqual(
+            summary["latestDecision"]["reason"],
+            "route_disagreement",
+        )
+
+    def test_route_selection_telemetry_does_not_mutate_focus(self) -> None:
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.FOCUS_ACTION,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.START_FOCUS,
+                        title="Route telemetry test",
+                        objective="Keep routing metrics observational.",
+                    )
+                ],
+                confidence=1.0,
+            ),
+            message="Start a routing test.",
+            turn_id="turn-route-state",
+            source="unit-test",
+        )
+        before = get_state()
+
+        after = record_route_selection(
+            source_turn_id="turn-route-state",
+            outcome="fallback",
+            reason="route_disagreement",
+            focus_route_class="chat",
+            legacy_route_class="search",
+            focus_confidence=1.0,
+        )
+
+        self.assertEqual(after, before)
 
 
 if __name__ == "__main__":

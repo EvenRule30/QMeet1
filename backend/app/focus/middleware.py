@@ -13,11 +13,14 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from app.agent import sse_event
 from app.focus.models import ObserveTurnRequest, ToolName
 from app.focus.planner import focus_mode, observe_turn
+from app.focus.route_bridge import repair_legacy_command_payload
 from app.focus.store import (
     guarded_response_decision_for_turn,
+    guarded_route_decision_for_turn,
     guarded_tool_response_decision_for_turn,
     record_assistant_reply,
     record_response_selection,
+    record_route_selection,
     record_tool_response_candidate,
     record_tool_result,
 )
@@ -39,6 +42,26 @@ def focus_response_mode() -> str:
         "shadow",
     ).strip().casefold()
     return "guarded" if value in {"guarded", "active"} else "shadow"
+
+
+def focus_route_mode() -> str:
+    value = os.getenv(
+        "QMEET_FOCUS_ROUTE_MODE",
+        "shadow",
+    ).strip().casefold()
+    return "guarded" if value in {"guarded", "active"} else "shadow"
+
+
+def _guarded_route_minimum_confidence() -> float:
+    raw_value = os.getenv(
+        "QMEET_FOCUS_ROUTE_MIN_CONFIDENCE",
+        "0.9",
+    ).strip()
+    try:
+        value = float(raw_value)
+    except ValueError:
+        value = 0.9
+    return max(0.0, min(value, 1.0))
 
 
 def _guarded_wait_timeout_seconds() -> float:
@@ -544,6 +567,8 @@ async def _send_buffered_json_response(
     payload: dict[str, Any],
     send: Send,
     response_source: str = "",
+    route_source: str = "",
+    route_fallback: str = "",
 ) -> None:
     body = json.dumps(payload).encode("utf-8")
     filtered_headers = [
@@ -564,7 +589,68 @@ async def _send_buffered_json_response(
                 response_source.encode("ascii", errors="ignore"),
             )
         )
+    if route_source:
+        filtered_headers.append(
+            (
+                b"x-qmeet-route-source",
+                route_source.encode("ascii", errors="ignore"),
+            )
+        )
+    if route_fallback:
+        filtered_headers.append(
+            (
+                b"x-qmeet-route-fallback",
+                route_fallback.encode("ascii", errors="ignore"),
+            )
+        )
 
+    await send(
+        {
+            "type": "http.response.start",
+            "status": status,
+            "headers": filtered_headers,
+        }
+    )
+    await send(
+        {
+            "type": "http.response.body",
+            "body": body,
+            "more_body": False,
+        }
+    )
+
+
+async def _send_buffered_raw_response(
+    *,
+    status: int,
+    headers: list[tuple[bytes, bytes]],
+    body: bytes,
+    send: Send,
+    route_source: str = "",
+    route_fallback: str = "",
+) -> None:
+    filtered_headers = [
+        (name, value)
+        for name, value in headers
+        if name.lower() != b"content-length"
+    ]
+    filtered_headers.append(
+        (b"content-length", str(len(body)).encode("ascii"))
+    )
+    if route_source:
+        filtered_headers.append(
+            (
+                b"x-qmeet-route-source",
+                route_source.encode("ascii", errors="ignore"),
+            )
+        )
+    if route_fallback:
+        filtered_headers.append(
+            (
+                b"x-qmeet-route-fallback",
+                route_fallback.encode("ascii", errors="ignore"),
+            )
+        )
     await send(
         {
             "type": "http.response.start",
@@ -663,7 +749,123 @@ class FocusShadowMiddleware:
                     turn_id=turn_id,
                 )
 
-            await self.app(scope, replay_receive, send)
+            if focus_route_mode() != "guarded":
+                await self.app(scope, replay_receive, send)
+                return
+
+            response_status = 500
+            response_content_type = ""
+            response_headers: list[tuple[bytes, bytes]] = []
+            response_chunks: list[bytes] = []
+            response_size = 0
+
+            async def capture_command_send(message: Message) -> None:
+                nonlocal response_status
+                nonlocal response_content_type
+                nonlocal response_headers
+                nonlocal response_size
+
+                if message["type"] == "http.response.start":
+                    response_status = int(message.get("status", 500))
+                    response_headers = list(message.get("headers", []))
+                    for raw_name, raw_value in response_headers:
+                        if raw_name.lower() == b"content-type":
+                            response_content_type = raw_value.decode(
+                                "latin-1",
+                                errors="ignore",
+                            )
+                elif message["type"] == "http.response.body":
+                    chunk = message.get("body", b"")
+                    if chunk and response_size + len(chunk) <= _MAX_BODY_BYTES:
+                        response_chunks.append(chunk)
+                        response_size += len(chunk)
+
+            await self.app(scope, replay_receive, capture_command_send)
+            response_body = b"".join(response_chunks)
+            response_payload = _json_payload(
+                response_body,
+                response_content_type,
+            )
+            response_payload, route_bridge_applied = (
+                repair_legacy_command_payload(
+                    user_message,
+                    response_payload,
+                )
+            )
+            if route_bridge_applied:
+                response_body = json.dumps(response_payload).encode("utf-8")
+            legacy_intent = str(response_payload.get("intent", "")).strip()
+            legacy_action = str(response_payload.get("action", "")).strip()
+            minimum_confidence = _guarded_route_minimum_confidence()
+
+            route_source = ""
+            fallback_reason = ""
+            fallback_details: tuple[str, ...] = ()
+            route_class = ""
+            focus_route_class = ""
+            legacy_route_class = ""
+            focus_confidence = 0.0
+
+            if not 200 <= response_status < 300:
+                fallback_reason = "legacy_command_error"
+                fallback_details = (f"status={response_status}",)
+            elif not response_payload:
+                fallback_reason = "invalid_legacy_response"
+            else:
+                observation_completed = await _wait_for_guarded_observation(
+                    turn_id
+                )
+                if not observation_completed:
+                    fallback_reason = "observation_timeout"
+                else:
+                    try:
+                        decision = guarded_route_decision_for_turn(
+                            turn_id,
+                            response_payload,
+                            minimum_confidence=minimum_confidence,
+                        )
+                        route_class = decision.routeClass
+                        focus_route_class = decision.focusRouteClass
+                        legacy_route_class = decision.legacyRouteClass
+                        focus_confidence = decision.focusConfidence
+                        fallback_reason = decision.fallbackReason
+                        fallback_details = decision.fallbackDetails
+                        if decision.eligible:
+                            route_source = "focus-guarded"
+                    except Exception:
+                        fallback_reason = "route_decision_failed"
+                        LOGGER.exception(
+                            "Focus guarded routing failed for turn %s",
+                            turn_id,
+                        )
+
+            record_route_selection(
+                source_turn_id=turn_id,
+                outcome="takeover" if route_source else "fallback",
+                route_class=route_class,
+                focus_route_class=focus_route_class,
+                legacy_route_class=legacy_route_class,
+                reason=fallback_reason,
+                details=fallback_details,
+                focus_confidence=focus_confidence,
+                minimum_confidence=minimum_confidence,
+                legacy_intent=legacy_intent,
+                legacy_action=legacy_action,
+                response_source=(
+                    "focus-route-guarded"
+                    if route_source
+                    else "legacy-command-router"
+                ),
+            )
+
+            await _send_buffered_raw_response(
+                status=response_status,
+                headers=response_headers,
+                body=response_body,
+                send=send,
+                route_source=route_source,
+                route_fallback=fallback_reason if not route_source else "",
+            )
             return
 
         if path in {"/api/chat", "/api/chat/stream"}:
@@ -815,6 +1017,21 @@ class FocusShadowMiddleware:
             return
 
         if path == "/api/calendar/events":
+            explicit_calendar_read = (
+                _header_value(
+                    scope,
+                    b"x-qmeet-calendar-read-intent",
+                ).strip().casefold()
+                == "explicit"
+            )
+            if not explicit_calendar_read:
+                # Calendar refreshes also occur after writes, when the Calendar
+                # panel opens, and while resolving edit/delete targets. Those
+                # are data synchronization requests, not user calendar-read
+                # turns, and must not generate guarded-response failures.
+                await self.app(scope, replay_receive, send)
+                return
+
             view = _calendar_view(scope)
             _start_observation(
                 _calendar_observation_message(view),
