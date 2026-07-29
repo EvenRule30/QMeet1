@@ -1,3 +1,4 @@
+import { QMEET_API_BASE_URL } from '../api';
 import type { FocusToolResponse } from '../types';
 
 const QMEET_TURN_HEADER = 'X-QMeet-Turn-Id';
@@ -261,6 +262,40 @@ async function repairCommandResponse(
     return response;
   }
 }
+
+export type ExactLocalRouteObservationInput = {
+  command: string;
+  requiresConfirmation?: boolean;
+};
+
+export function observeExactLocalRoute(
+  input: ExactLocalRouteObservationInput,
+): string | null {
+  if (typeof window === 'undefined') return null;
+
+  const command = input.command.trim();
+  if (!command) return null;
+
+  const sourceTurnId = startTurn();
+  void window
+    .fetch(`${QMEET_API_BASE_URL}/api/focus/route-observation`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({
+        command,
+        sourceTurnId,
+        requiresConfirmation: Boolean(input.requiresConfirmation),
+      }),
+      keepalive: true,
+    })
+    .catch(() => undefined);
+
+  return sourceTurnId;
+}
+
 
 export function beginExplicitCalendarRead(): void {
   explicitCalendarReadPending = true;

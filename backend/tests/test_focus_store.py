@@ -27,11 +27,13 @@ from app.focus.store import (
     _read_log_unlocked,
     apply_turn_plan,
     event_count,
+    exact_route_observation_summary,
     get_state,
     list_events,
     guarded_route_decision_for_turn,
     guarded_tool_response_decision_for_turn,
     record_assistant_reply,
+    record_exact_route_observation,
     record_response_selection,
     record_route_selection,
     record_tool_response_candidate,
@@ -1921,6 +1923,142 @@ class FocusStoreTests(unittest.TestCase):
         )
 
         self.assertEqual(after, before)
+
+
+class FocusStoreExactRouteObservationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temporary_directory = tempfile.TemporaryDirectory()
+        self._event_file = Path(self._temporary_directory.name) / "qmeet_focus_test.json"
+        self._environment_patch = patch.dict(
+            os.environ,
+            {"QMEET_FOCUS_FILE": str(self._event_file)},
+            clear=False,
+        )
+        self._environment_patch.start()
+        reset_store()
+
+    def tearDown(self) -> None:
+        self._environment_patch.stop()
+        self._temporary_directory.cleanup()
+
+    def test_exact_route_observation_is_idempotent_and_does_not_mutate_focus(self) -> None:
+        active_state = apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.FOCUS_ACTION,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.START_FOCUS,
+                        title="Observe exact routes",
+                        objective="Keep exact routing telemetry observational.",
+                    )
+                ],
+                confidence=1.0,
+            ),
+            message="Start exact-route telemetry testing.",
+            turn_id="turn-exact-state",
+            source="unit-test",
+        )
+        before = active_state.model_dump()
+
+        first = record_exact_route_observation(
+            command="read-notes",
+            source_turn_id="turn-exact-read-notes",
+            requires_confirmation=False,
+        )
+        count_after_first = event_count()
+        second = record_exact_route_observation(
+            command="read-notes",
+            source_turn_id="turn-exact-read-notes",
+            requires_confirmation=False,
+        )
+
+        self.assertEqual(first.model_dump(), before)
+        self.assertEqual(second.model_dump(), before)
+        self.assertEqual(event_count(), count_after_first)
+
+        exact_event = next(
+            event
+            for event in list_events()
+            if event.type == FocusEventType.EXACT_ROUTE_OBSERVED
+        )
+        self.assertEqual(exact_event.focusId, "")
+        self.assertEqual(exact_event.payload["command"], "read-notes")
+        self.assertEqual(exact_event.payload["routeClass"], "notes_read")
+        self.assertEqual(exact_event.payload["category"], "read")
+        self.assertFalse(exact_event.payload["requiresConfirmation"])
+
+    def test_exact_route_summary_keeps_local_routes_out_of_guarded_metrics(self) -> None:
+        observations = [
+            ("read-notes", False),
+            ("mark-task-done", True),
+            ("start-focus-session", False),
+            ("show-status", False),
+            ("voice-faster", False),
+            ("help", False),
+            ("clear-chat", True),
+        ]
+        for index, (command, requires_confirmation) in enumerate(observations):
+            record_exact_route_observation(
+                command=command,
+                source_turn_id=f"turn-exact-{index}",
+                requires_confirmation=requires_confirmation,
+            )
+
+        summary = exact_route_observation_summary()
+
+        self.assertEqual(summary["observationCount"], 7)
+        self.assertEqual(summary["readCount"], 1)
+        self.assertEqual(summary["mutationCount"], 1)
+        self.assertEqual(summary["focusActionCount"], 1)
+        self.assertEqual(summary["uiCount"], 1)
+        self.assertEqual(summary["voiceCount"], 1)
+        self.assertEqual(summary["guideCount"], 1)
+        self.assertEqual(summary["conversationCount"], 1)
+        self.assertEqual(summary["unknownCount"], 0)
+        self.assertEqual(summary["confirmationRequiredCount"], 2)
+        self.assertEqual(summary["routeClasses"]["notes_read"], 1)
+        self.assertEqual(summary["routeClasses"]["local_mutation"], 1)
+        self.assertEqual(summary["commands"]["mark-task-done"], 1)
+        self.assertEqual(
+            summary["latestObservation"]["command"],
+            "clear-chat",
+        )
+
+        self.assertEqual(route_selection_summary()["decisionCount"], 0)
+        self.assertEqual(response_selection_summary()["decisionCount"], 0)
+
+    def test_exact_route_summary_supports_session_cutoff(self) -> None:
+        record_exact_route_observation(
+            command="show-status",
+            source_turn_id="turn-exact-before-window",
+        )
+        record_exact_route_observation(
+            command="read-calendar",
+            source_turn_id="turn-exact-in-window",
+        )
+
+        document = _read_log_unlocked()
+        exact_events = [
+            event
+            for event in document.events
+            if event.type == FocusEventType.EXACT_ROUTE_OBSERVED
+        ]
+        exact_events[0].createdAt = "2000-01-01T00:00:00+00:00"
+        exact_events[1].createdAt = "2099-01-01T00:00:00+00:00"
+        _atomic_write_unlocked(document)
+        cutoff = "2050-01-01T00:00:00+00:00"
+
+        session_summary = exact_route_observation_summary(
+            since_created_at=cutoff,
+        )
+
+        self.assertEqual(session_summary["observationCount"], 1)
+        self.assertEqual(session_summary["readCount"], 1)
+        self.assertEqual(
+            session_summary["latestObservation"]["command"],
+            "read-calendar",
+        )
+        self.assertEqual(session_summary["windowStart"], cutoff)
 
 
 class FocusStoreFocusRecallRoutingTests(unittest.TestCase):

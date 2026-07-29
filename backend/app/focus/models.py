@@ -200,6 +200,7 @@ class FocusEventType(str, Enum):
     ASSISTANT_REPLIED = "assistant_replied"
     RESPONSE_SELECTION = "response_selection"
     ROUTE_SELECTION = "route_selection"
+    EXACT_ROUTE_OBSERVED = "exact_route_observed"
     FOCUS_STARTED = "focus_started"
     FOCUS_RESCOPED = "focus_rescoped"
     FIELD_SET = "field_set"
@@ -273,6 +274,12 @@ class ObserveTurnRequest(BaseModel):
     message: str = Field(min_length=1, max_length=6000)
     source: str = Field(default="manual", max_length=80)
     apply: bool = True
+
+
+class ExactRouteObservationRequest(BaseModel):
+    command: str = Field(min_length=1, max_length=120)
+    sourceTurnId: str = Field(min_length=1, max_length=120)
+    requiresConfirmation: bool = False
 
 
 class ToolResultRequest(BaseModel):

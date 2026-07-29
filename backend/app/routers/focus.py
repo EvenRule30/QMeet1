@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.focus.middleware import focus_response_mode, focus_route_mode
 from app.focus.models import (
+    ExactRouteObservationRequest,
     ObserveTurnRequest,
     PlanPreviewRequest,
     ToolResultRequest,
@@ -20,9 +21,11 @@ from app.focus.planner import (
 from app.focus.store import (
     FocusStoreError,
     event_count,
+    exact_route_observation_summary,
     event_file,
     get_state,
     list_events,
+    record_exact_route_observation,
     record_tool_result,
     reset_store,
     response_selection_summary,
@@ -38,10 +41,14 @@ _SESSION_STARTED_AT = datetime.now().astimezone().isoformat()
 async def focus_status():
     response_selection = response_selection_summary()
     route_selection = route_selection_summary()
+    exact_route_observation = exact_route_observation_summary()
     session_response_selection = response_selection_summary(
         since_created_at=_SESSION_STARTED_AT,
     )
     session_route_selection = route_selection_summary(
+        since_created_at=_SESSION_STARTED_AT,
+    )
+    session_exact_route_observation = exact_route_observation_summary(
         since_created_at=_SESSION_STARTED_AT,
     )
 
@@ -56,10 +63,12 @@ async def focus_status():
         "path": str(event_file()),
         "responseSelection": response_selection,
         "routeSelection": route_selection,
+        "exactRouteObservation": exact_route_observation,
         "currentSession": {
             "startedAt": _SESSION_STARTED_AT,
             "responseSelection": session_response_selection,
             "routeSelection": session_route_selection,
+            "exactRouteObservation": session_exact_route_observation,
         },
         "message": "Focus is running beside the legacy focus system.",
     }
@@ -109,6 +118,23 @@ async def focus_observe(req: ObserveTurnRequest):
         "plan": plan.model_dump(mode="json"),
         "state": state.model_dump(mode="json"),
     }
+
+
+@router.post("/route-observation")
+async def focus_route_observation(req: ExactRouteObservationRequest):
+    try:
+        state = record_exact_route_observation(
+            command=req.command,
+            source_turn_id=req.sourceTurnId,
+            requires_confirmation=req.requiresConfirmation,
+        )
+        return {
+            "ok": True,
+            "state": state.model_dump(mode="json"),
+            "eventCount": event_count(),
+        }
+    except FocusStoreError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.post("/tool-result")

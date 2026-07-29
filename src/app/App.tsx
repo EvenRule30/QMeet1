@@ -13,6 +13,7 @@ import { SearchOverlay } from './panels/SearchOverlay';
 import { OrbState, ActivePanel } from './types';
 import { resetConversation, interpretCommandIntent } from "./api";
 import { parseCommand } from './commands';
+import { observeExactLocalRoute } from './lib/focusTurnHeaders';
 import { getAssistantActivity, getPanelLabel } from './lib/activityUtils';
 import { getDateKeyForCalendarView } from './lib/dateUtils';
 import {
@@ -306,6 +307,21 @@ export default function App() {
     const commandMatch = parseCommand(trimmed);
     
     if (commandMatch) {
+      if (commandRoute === 'exact') {
+        const requiresExactConfirmation =
+          isDestructiveLocalCommand(commandMatch.command) ||
+          (
+            commandMatch.command === 'add-calendar-event' &&
+            Boolean(googleCalendarStatus?.connected) &&
+            Boolean(googleCalendarStatus?.writeEnabled)
+          );
+
+        observeExactLocalRoute({
+          command: commandMatch.command,
+          requiresConfirmation: requiresExactConfirmation,
+        });
+      }
+
       finishListening();
       setShowThinkingBubble(false);
 

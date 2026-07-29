@@ -59,6 +59,34 @@ type GuardSelection<TDecision extends GuardDecision> = {
   windowStart?: string;
 };
 
+type ExactRouteObservation = {
+  sourceTurnId: string;
+  command: string;
+  routeClass: string;
+  category: string;
+  requiresConfirmation: boolean;
+  source: string;
+  createdAt: string;
+};
+
+type ExactRouteObservationSummary = {
+  observationCount: number;
+  readCount: number;
+  mutationCount: number;
+  focusActionCount: number;
+  uiCount: number;
+  voiceCount: number;
+  guideCount: number;
+  conversationCount: number;
+  unknownCount: number;
+  confirmationRequiredCount: number;
+  categoryCounts: Record<string, number>;
+  routeClasses: Record<string, number>;
+  commands: Record<string, number>;
+  latestObservation: ExactRouteObservation | null;
+  windowStart?: string;
+};
+
 type FocusStatusResponse = {
   ok: boolean;
   mode: string;
@@ -69,10 +97,12 @@ type FocusStatusResponse = {
   eventCount: number;
   responseSelection: GuardSelection<FocusResponseDecision>;
   routeSelection?: GuardSelection<FocusRouteDecision>;
+  exactRouteObservation?: ExactRouteObservationSummary;
   currentSession?: {
     startedAt: string;
     responseSelection: GuardSelection<FocusResponseDecision>;
     routeSelection?: GuardSelection<FocusRouteDecision>;
+    exactRouteObservation?: ExactRouteObservationSummary;
   };
 };
 
@@ -89,7 +119,7 @@ function formatPercentForCount(value: number, count: number): string {
 }
 
 function formatLabel(value: string): string {
-  const normalized = value.trim().replace(/_/g, ' ');
+  const normalized = value.trim().replace(/[_-]+/g, ' ');
   if (!normalized) return 'None';
   return normalized.charAt(0).toUpperCase() + normalized.slice(1);
 }
@@ -222,8 +252,19 @@ export function FocusResponseHealth() {
   const sessionRouteSelection =
     status?.currentSession?.routeSelection ?? recordedRouteSelection;
   const sessionStartedAt = status?.currentSession?.startedAt ?? '';
+  const recordedExactRouteObservation = status?.exactRouteObservation ?? null;
+  const sessionExactRouteObservation =
+    status?.currentSession?.exactRouteObservation ?? recordedExactRouteObservation;
   const responseLatest = sessionResponseSelection?.latestDecision ?? null;
   const routeLatest = sessionRouteSelection?.latestDecision ?? null;
+  const exactRouteLatest = sessionExactRouteObservation?.latestObservation ?? null;
+  const exactLocalActionCount = sessionExactRouteObservation
+    ? Math.max(
+        0,
+        sessionExactRouteObservation.observationCount -
+          sessionExactRouteObservation.readCount,
+      )
+    : 0;
 
   const responseHealthClass = useMemo(() => {
     if (!sessionResponseSelection) return 'status-card';
@@ -464,6 +505,105 @@ export function FocusResponseHealth() {
           <p className="panel-section-text">
             Route-selection metrics are unavailable. Restart the backend after enabling
             Phase 19 guarded routing.
+          </p>
+        )}
+      </div>
+
+      <div className="panel-section status-detail-section" aria-live="polite">
+        <div className="panel-section-title">Exact Local Routing</div>
+        {sessionExactRouteObservation ? (
+          <>
+            <div className="status-grid">
+              <div className="status-card">
+                <div className="status-card-title">Observed This Session</div>
+                <div className="status-card-value">
+                  {sessionExactRouteObservation.observationCount}
+                </div>
+                <div className="status-card-meta">Frontend exact-command routes</div>
+              </div>
+              <div className="status-card status-card-good">
+                <div className="status-card-title">Read Routes</div>
+                <div className="status-card-value">
+                  {sessionExactRouteObservation.readCount}
+                </div>
+                <div className="status-card-meta">Deterministic local readouts</div>
+              </div>
+              <div className="status-card">
+                <div className="status-card-title">Local Actions</div>
+                <div className="status-card-value">{exactLocalActionCount}</div>
+                <div className="status-card-meta">UI, voice, writes, and Focus actions</div>
+              </div>
+              <div
+                className={`status-card ${
+                  sessionExactRouteObservation.unknownCount === 0
+                    ? 'status-card-good'
+                    : 'status-card-warn'
+                }`}
+              >
+                <div className="status-card-title">Unclassified</div>
+                <div className="status-card-value">
+                  {sessionExactRouteObservation.unknownCount}
+                </div>
+                <div className="status-card-meta">
+                  {sessionExactRouteObservation.confirmationRequiredCount} confirmation gates
+                </div>
+              </div>
+            </div>
+            <div className="status-detail-list">
+              <div className="status-detail-row">
+                <span>Latest exact command</span>
+                <strong>
+                  {exactRouteLatest ? formatLabel(exactRouteLatest.command) : 'No exact routes yet'}
+                </strong>
+              </div>
+              <div className="status-detail-row">
+                <span>Exact route class</span>
+                <strong>
+                  {exactRouteLatest ? formatLabel(exactRouteLatest.routeClass) : '—'}
+                </strong>
+              </div>
+              <div className="status-detail-row">
+                <span>Exact route category</span>
+                <strong>
+                  {exactRouteLatest ? formatLabel(exactRouteLatest.category) : '—'}
+                </strong>
+              </div>
+              <div className="status-detail-row">
+                <span>Confirmation gate</span>
+                <strong>
+                  {exactRouteLatest
+                    ? exactRouteLatest.requiresConfirmation
+                      ? 'Required'
+                      : 'Not required'
+                    : '—'}
+                </strong>
+              </div>
+              <div className="status-detail-row">
+                <span>Session exact-route time</span>
+                <strong>
+                  {exactRouteLatest ? formatDecisionTime(exactRouteLatest.createdAt) : '—'}
+                </strong>
+              </div>
+              <div className="status-detail-row">
+                <span>Session route mix</span>
+                <strong>
+                  {sessionExactRouteObservation.mutationCount} mutations ·{' '}
+                  {sessionExactRouteObservation.focusActionCount} Focus actions ·{' '}
+                  {sessionExactRouteObservation.uiCount} UI
+                </strong>
+              </div>
+              <div className="status-detail-row">
+                <span>Recorded exact-route history</span>
+                <strong>
+                  {recordedExactRouteObservation?.observationCount ?? 0} observations
+                </strong>
+              </div>
+            </div>
+          </>
+        ) : (
+          <p className="panel-section-text">
+            Exact local-route metrics are unavailable. Restart the backend after
+            installing the route-observation endpoint.
           </p>
         )}
       </div>

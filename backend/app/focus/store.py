@@ -58,6 +58,103 @@ _LIST_FIELDS = {
     FocusField.TAGS.value,
 }
 
+_EXACT_READ_ROUTE_CLASSES = {
+    "read-notes": "notes_read",
+    "read-memory": "tasks_read",
+    "read-focus-session": "focus_read",
+    "read-last-focus-session": "focus_read",
+    "read-focus-history": "focus_read",
+    "recap-focus-activity": "focus_read",
+    "enhanced-focus-recap": "focus_read",
+    "summarize-focus-session": "focus_read",
+    "read-visual-context": "visual_read",
+    "read-last-visual-observation": "visual_read",
+    "read-visual-history": "visual_read",
+    "summarize-visual-context": "visual_read",
+    "read-focus-visuals": "visual_read",
+    "read-calendar": "calendar_read",
+    "refresh-calendar": "calendar_read",
+    "show-today": "calendar_read",
+    "show-tomorrow": "calendar_read",
+    "run-search": "search",
+}
+
+_EXACT_GUIDE_COMMANDS = frozenset({
+    "help",
+    "identity",
+})
+
+_EXACT_VOICE_COMMANDS = frozenset({
+    "voice-output-on",
+    "voice-output-off",
+    "voice-output-toggle",
+    "voice-slower",
+    "voice-faster",
+    "voice-normal",
+    "stop-speaking",
+    "what-did-you-hear",
+})
+
+_EXACT_UI_COMMANDS = frozenset({
+    "open-menu",
+    "close-menu",
+    "open-settings",
+    "close-settings",
+    "go-home",
+    "show-status",
+    "close-status",
+    "hide-status",
+    "open-notes",
+    "new-note",
+    "close-notes",
+    "open-memory",
+    "close-memory",
+    "open-calendar",
+    "close-calendar",
+    "open-search",
+    "clear-search",
+    "close-search",
+    "cancel-action",
+    "close-generic",
+})
+
+_EXACT_MUTATION_COMMANDS = frozenset({
+    "save-note",
+    "delete-last-note",
+    "clear-notes",
+    "remember-task",
+    "mark-task-done",
+    "delete-last-task",
+    "clear-done-tasks",
+    "create-visual-observation",
+    "link-visual-to-focus",
+    "clear-visual-context",
+    "delete-last-visual-observation",
+    "add-calendar-event",
+    "edit-last-event",
+    "delete-calendar-event",
+    "delete-last-event",
+    "clear-calendar",
+})
+
+_EXACT_FOCUS_ACTION_COMMANDS = frozenset({
+    "start-focus-session",
+    "update-focus-session",
+    "end-focus-session",
+    "focus-to-tasks",
+    "save-focus-summary",
+    "end-focus-with-summary",
+    "resume-last-focus-session",
+    "prepare-calendar-focus",
+    "create-meeting-follow-up-tasks",
+    "wrap-up-meeting-focus",
+})
+
+_EXACT_CONVERSATION_COMMANDS = frozenset({
+    "clear-chat",
+    "end-chat",
+})
+
 
 class FocusStoreError(Exception):
     """Safe error raised by the Focus event store."""
@@ -784,6 +881,168 @@ def guarded_route_decision_for_turn(
         routeClass=focus_class,
         **base,
     )
+
+
+def _exact_route_metadata(command: str) -> tuple[str, str]:
+    normalized = command.strip().casefold().replace("_", "-")
+
+    read_route = _EXACT_READ_ROUTE_CLASSES.get(normalized)
+    if read_route:
+        return read_route, "read"
+    if normalized in _EXACT_GUIDE_COMMANDS:
+        return "guide_read", "guide"
+    if normalized in _EXACT_VOICE_COMMANDS:
+        return "local_voice", "voice"
+    if normalized in _EXACT_UI_COMMANDS:
+        return "local_ui", "ui"
+    if normalized in _EXACT_MUTATION_COMMANDS:
+        return "local_mutation", "mutation"
+    if normalized in _EXACT_FOCUS_ACTION_COMMANDS:
+        return "focus_action", "focus_action"
+    if normalized in _EXACT_CONVERSATION_COMMANDS:
+        return "local_conversation", "conversation"
+    return "local_command", "unknown"
+
+
+def record_exact_route_observation(
+    *,
+    command: str,
+    source_turn_id: str,
+    requires_confirmation: bool = False,
+) -> FocusState:
+    """Record a frontend exact-command route without changing execution."""
+
+    normalized_command = command.strip().casefold().replace("_", "-")[:120]
+    normalized_turn_id = source_turn_id.strip()[:120]
+    if not normalized_command or not normalized_turn_id:
+        return get_state()
+
+    route_class, category = _exact_route_metadata(normalized_command)
+
+    with _STORE_LOCK:
+        document = _read_log_unlocked()
+        duplicate = any(
+            event.type == FocusEventType.EXACT_ROUTE_OBSERVED
+            and event.sourceTurnId == normalized_turn_id
+            for event in document.events
+        )
+        if duplicate:
+            return reduce_events(document.events)
+
+        event = _new_event(
+            FocusEventType.EXACT_ROUTE_OBSERVED,
+            focus_id="",
+            payload={
+                "command": normalized_command,
+                "routeClass": route_class,
+                "category": category,
+                "requiresConfirmation": bool(requires_confirmation),
+            },
+            source_turn_id=normalized_turn_id,
+            source="exact-local-router",
+        )
+        document.events.append(event)
+        _atomic_write_unlocked(document)
+        return reduce_events(document.events)
+
+
+def exact_route_observation_summary(
+    *,
+    since_created_at: str = "",
+) -> dict[str, object]:
+    """Summarize exact frontend routes separately from guarded routing."""
+
+    with _STORE_LOCK:
+        events = list(_read_log_unlocked().events)
+    events = _events_since(events, since_created_at)
+
+    observations_by_turn: dict[str, dict[str, object]] = {}
+    order: list[str] = []
+    for event in events:
+        if event.type != FocusEventType.EXACT_ROUTE_OBSERVED:
+            continue
+
+        payload = event.payload
+        command = str(payload.get("command", "")).strip()
+        if not command:
+            continue
+        route_class = str(payload.get("routeClass", "local_command")).strip()
+        category = str(payload.get("category", "unknown")).strip()
+        observation = {
+            "sourceTurnId": event.sourceTurnId,
+            "command": command,
+            "routeClass": route_class or "local_command",
+            "category": category or "unknown",
+            "requiresConfirmation": bool(
+                payload.get("requiresConfirmation", False)
+            ),
+            "source": event.source,
+            "createdAt": event.createdAt,
+        }
+        turn_key = event.sourceTurnId.strip() or event.id
+        if turn_key in observations_by_turn:
+            order.remove(turn_key)
+        order.append(turn_key)
+        observations_by_turn[turn_key] = observation
+
+    observations = [observations_by_turn[key] for key in order]
+    category_counts = {
+        "read": 0,
+        "mutation": 0,
+        "focusAction": 0,
+        "ui": 0,
+        "voice": 0,
+        "guide": 0,
+        "conversation": 0,
+        "unknown": 0,
+    }
+    category_key = {
+        "read": "read",
+        "mutation": "mutation",
+        "focus_action": "focusAction",
+        "ui": "ui",
+        "voice": "voice",
+        "guide": "guide",
+        "conversation": "conversation",
+        "unknown": "unknown",
+    }
+    route_classes: dict[str, int] = {}
+    commands: dict[str, int] = {}
+    confirmation_count = 0
+
+    for observation in observations:
+        category = category_key.get(
+            str(observation.get("category", "unknown")),
+            "unknown",
+        )
+        category_counts[category] += 1
+
+        route_class = str(observation.get("routeClass", "local_command"))
+        route_classes[route_class] = route_classes.get(route_class, 0) + 1
+
+        command = str(observation.get("command", "unknown"))
+        commands[command] = commands.get(command, 0) + 1
+
+        if observation.get("requiresConfirmation") is True:
+            confirmation_count += 1
+
+    return {
+        "observationCount": len(observations),
+        "readCount": category_counts["read"],
+        "mutationCount": category_counts["mutation"],
+        "focusActionCount": category_counts["focusAction"],
+        "uiCount": category_counts["ui"],
+        "voiceCount": category_counts["voice"],
+        "guideCount": category_counts["guide"],
+        "conversationCount": category_counts["conversation"],
+        "unknownCount": category_counts["unknown"],
+        "confirmationRequiredCount": confirmation_count,
+        "categoryCounts": category_counts,
+        "routeClasses": route_classes,
+        "commands": commands,
+        "latestObservation": observations[-1] if observations else None,
+        "windowStart": since_created_at.strip(),
+    }
 
 
 def record_route_selection(
