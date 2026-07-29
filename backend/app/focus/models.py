@@ -121,7 +121,13 @@ class ResponseIntent(BaseModel):
 
     acknowledge: str = Field(default="", max_length=400)
     answerDirectly: bool = True
-    guidance: str = Field(default="", max_length=1200)
+    # Guarded visible-response takeover is allowed only when the planner
+    # explicitly attaches this response to the durable current Focus.
+    attachToFocus: bool = False
+    # Direct guidance may contain a complete procedure or document-like answer.
+    # The previous 1,200-character schema cap caused structured output to end
+    # mid-sentence at exactly the limit.
+    guidance: str = Field(default="", max_length=4000)
     askQuestion: str = Field(default="", max_length=320)
 
 

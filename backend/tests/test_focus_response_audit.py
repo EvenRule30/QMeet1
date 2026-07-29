@@ -1,31 +1,43 @@
 from __future__ import annotations
 
 import os
+import json
 import asyncio
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from app.focus.audit import build_response_audit, extract_visible_questions
 from app.focus.response import (
     build_response_candidate,
     compose_response_candidate,
 )
-from app.focus.middleware import _replay_receive
+from app.focus.middleware import (
+    FocusShadowMiddleware,
+    _extract_sse_reply,
+    _replay_receive,
+)
 from app.focus.models import (
     FocusEventType,
     FocusOperation,
     FocusOperationKind,
+    PlannedToolCall,
     ResponseIntent,
+    ToolName,
     TurnPlan,
     TurnRoute,
 )
 from app.focus.store import (
     apply_turn_plan,
+    eligible_response_candidate_for_turn,
+    guarded_response_decision_for_turn,
+    guarded_tool_response_decision_for_turn,
     get_state,
     list_events,
     record_assistant_reply,
+    record_tool_response_candidate,
+    record_tool_result,
     reset_store,
 )
 
@@ -375,6 +387,144 @@ class FocusResponseAuditTests(unittest.TestCase):
             candidate["eligibility"]["reasons"],
         )
 
+    def test_response_intent_preserves_guidance_beyond_legacy_limit(
+        self,
+    ) -> None:
+        long_guidance = (
+            "Follow these complete instructions. "
+            + ("Keep the procedure grounded and complete. " * 45)
+            + "Finish the final step safely."
+        )
+
+        self.assertGreater(len(long_guidance), 1200)
+        self.assertLess(len(long_guidance), 4000)
+
+        intent = ResponseIntent(
+            answerDirectly=True,
+            guidance=long_guidance,
+        )
+        candidate = build_response_candidate(
+            TurnPlan(
+                route=TurnRoute.RESPOND,
+                responseIntent=intent,
+                confidence=1.0,
+            )
+        )
+
+        self.assertEqual(intent.guidance, long_guidance)
+        self.assertIn(long_guidance, candidate["text"])
+        self.assertTrue(candidate["text"].endswith(
+            "Finish the final step safely."
+        ))
+
+    def test_candidate_preserves_numbered_list_formatting(self) -> None:
+        candidate = compose_response_candidate(
+            TurnPlan(
+                route=TurnRoute.RESPOND,
+                responseIntent=ResponseIntent(
+                    answerDirectly=True,
+                    guidance=(
+                        "Follow these steps:\n\n"
+                        "1. Turn both vehicles off.\n"
+                        "2. Connect the positive clamps."
+                    ),
+                ),
+                confidence=1.0,
+            )
+        )
+
+        self.assertIn(
+            "Follow these steps:\n\n1. Turn both vehicles off.\n"
+            "2. Connect the positive clamps.",
+            candidate,
+        )
+
+    def test_candidate_rejects_malformed_truncated_procedure(self) -> None:
+        candidate = build_response_candidate(
+            TurnPlan(
+                route=TurnRoute.RESPOND,
+                responseIntent=ResponseIntent(
+                    answerDirectly=True,
+                    guidance=(
+                        "Here are the steps:\n\n"
+                        "1. Turn both vehicles off.\n"
+                        "2. Connect the red clamps.\n"
+                        "3. Let the car run for 15-30 minutes before turning,2"
+                    ),
+                ),
+                confidence=1.0,
+            )
+        )
+
+        reasons = candidate["eligibility"]["reasons"]
+        self.assertFalse(candidate["eligibility"]["eligible"])
+        self.assertIn("unterminated_procedure", reasons)
+        self.assertIn("malformed_trailing_fragment", reasons)
+
+    def test_candidate_rejects_nonsequential_numbered_steps(self) -> None:
+        candidate = build_response_candidate(
+            TurnPlan(
+                route=TurnRoute.RESPOND,
+                responseIntent=ResponseIntent(
+                    answerDirectly=True,
+                    guidance=(
+                        "Follow these steps:\n\n"
+                        "1. Turn both vehicles off.\n"
+                        "3. Connect the positive clamps."
+                    ),
+                ),
+                confidence=1.0,
+            )
+        )
+
+        self.assertFalse(candidate["eligibility"]["eligible"])
+        self.assertIn(
+            "nonsequential_numbered_steps",
+            candidate["eligibility"]["reasons"],
+        )
+
+    def test_candidate_accepts_complete_numbered_procedure(self) -> None:
+        candidate = build_response_candidate(
+            TurnPlan(
+                route=TurnRoute.RESPOND,
+                responseIntent=ResponseIntent(
+                    answerDirectly=True,
+                    guidance=(
+                        "Follow these steps:\n\n"
+                        "1. Turn both vehicles off.\n"
+                        "2. Connect the positive clamps.\n"
+                        "3. Connect the final negative clamp to bare metal."
+                    ),
+                ),
+                confidence=1.0,
+            )
+        )
+
+        self.assertTrue(candidate["eligibility"]["eligible"])
+        self.assertEqual(candidate["eligibility"]["reasons"], [])
+
+    def test_candidate_rejects_unbalanced_delimiters(self) -> None:
+        candidate = build_response_candidate(
+            TurnPlan(
+                route=TurnRoute.RESPOND,
+                responseIntent=ResponseIntent(
+                    answerDirectly=True,
+                    guidance=(
+                        "Follow these steps:\n\n"
+                        "1. Turn both vehicles off.\n"
+                        "2. Connect the positive clamp (red."
+                    ),
+                ),
+                confidence=1.0,
+            )
+        )
+
+        self.assertFalse(candidate["eligibility"]["eligible"])
+        self.assertIn(
+            "unbalanced_delimiters",
+            candidate["eligibility"]["reasons"],
+        )
+
     def test_candidate_eligibility_rejects_tool_backed_claim(self) -> None:
         candidate = build_response_candidate(
             TurnPlan(
@@ -392,6 +542,307 @@ class FocusResponseAuditTests(unittest.TestCase):
             candidate["eligibility"]["reasons"],
         )
 
+    def test_guarded_selector_returns_current_eligible_candidate(
+        self,
+    ) -> None:
+        turn_id = "turn-guarded-selector"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.FOCUS_ACTION,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.START_FOCUS,
+                        title="Diagnose starting problem",
+                        objective="Restore reliable starting.",
+                    ),
+                ],
+                responseIntent=ResponseIntent(
+                    answerDirectly=True,
+                    attachToFocus=True,
+                    guidance="Check the battery terminals first.",
+                ),
+                confidence=1.0,
+            ),
+            message="Help me diagnose the car.",
+            turn_id=turn_id,
+            source="unit-test",
+        )
+
+        candidate = eligible_response_candidate_for_turn(turn_id)
+
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertEqual(candidate.sourceTurnId, turn_id)
+        self.assertEqual(
+            candidate.payload["text"],
+            "Check the battery terminals first.",
+        )
+
+    def test_guarded_selector_rejects_ineligible_candidate(self) -> None:
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.FOCUS_ACTION,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.START_FOCUS,
+                        title="Diagnose starting problem",
+                        objective="Restore reliable starting.",
+                    ),
+                ],
+                responseIntent=ResponseIntent(
+                    guidance="Begin diagnosis.",
+                ),
+                confidence=1.0,
+            ),
+            message="Help me diagnose the car.",
+            turn_id="turn-selector-focus",
+            source="unit-test",
+        )
+
+        turn_id = "turn-selector-ineligible"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.RESPOND,
+                responseIntent=ResponseIntent(
+                    attachToFocus=True,
+                    guidance="Your calendar is clear.",
+                ),
+                confidence=1.0,
+            ),
+            message="What next?",
+            turn_id=turn_id,
+            source="unit-test",
+        )
+
+        self.assertIsNone(
+            eligible_response_candidate_for_turn(turn_id)
+        )
+
+    def test_guarded_selector_rejects_unattached_off_topic_candidate(
+        self,
+    ) -> None:
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.FOCUS_ACTION,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.START_FOCUS,
+                        title="Diagnose starting problem",
+                        objective="Restore reliable starting.",
+                    ),
+                ],
+                responseIntent=ResponseIntent(
+                    attachToFocus=True,
+                    guidance="Begin diagnosis.",
+                ),
+                confidence=1.0,
+            ),
+            message="Help me diagnose the car.",
+            turn_id="turn-off-topic-focus",
+            source="unit-test",
+        )
+
+        turn_id = "turn-off-topic-chat"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.RESPOND,
+                responseIntent=ResponseIntent(
+                    answerDirectly=True,
+                    attachToFocus=False,
+                    guidance="I do not have a dog.",
+                ),
+                confidence=1.0,
+            ),
+            message="What is your dog's last name?",
+            turn_id=turn_id,
+            source="unit-test",
+        )
+
+        candidates = [
+            event
+            for event in list_events()
+            if event.type == FocusEventType.RESPONSE_CANDIDATE
+            and event.sourceTurnId == turn_id
+        ]
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].focusId, "")
+        self.assertFalse(candidates[0].payload["attachToFocus"])
+        self.assertIsNone(
+            eligible_response_candidate_for_turn(turn_id)
+        )
+
+    def test_guarded_selector_accepts_explicit_related_direct_reply(
+        self,
+    ) -> None:
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.FOCUS_ACTION,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.START_FOCUS,
+                        title="Diagnose starting problem",
+                        objective="Restore reliable starting.",
+                    ),
+                ],
+                responseIntent=ResponseIntent(
+                    attachToFocus=True,
+                    guidance="Begin diagnosis.",
+                ),
+                confidence=1.0,
+            ),
+            message="Help me diagnose the car.",
+            turn_id="turn-related-focus",
+            source="unit-test",
+        )
+
+        turn_id = "turn-related-direct"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.RESPOND,
+                responseIntent=ResponseIntent(
+                    answerDirectly=True,
+                    attachToFocus=True,
+                    guidance="Repeat the complete diagnostic instructions.",
+                ),
+                confidence=1.0,
+            ),
+            message="Repeat the instructions.",
+            turn_id=turn_id,
+            source="unit-test",
+        )
+
+        candidate = eligible_response_candidate_for_turn(turn_id)
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertTrue(candidate.payload["attachToFocus"])
+
+    def test_guarded_decision_explains_unattached_candidate(self) -> None:
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.FOCUS_ACTION,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.START_FOCUS,
+                        title="Diagnose starting problem",
+                        objective="Restore reliable starting.",
+                    ),
+                ],
+                responseIntent=ResponseIntent(
+                    attachToFocus=True,
+                    guidance="Begin diagnosis.",
+                ),
+                confidence=1.0,
+            ),
+            message="Help me diagnose the car.",
+            turn_id="turn-decision-focus",
+            source="unit-test",
+        )
+
+        turn_id = "turn-decision-off-topic"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.RESPOND,
+                responseIntent=ResponseIntent(
+                    answerDirectly=True,
+                    attachToFocus=False,
+                    guidance="I do not have a dog.",
+                ),
+                confidence=1.0,
+            ),
+            message="What is your dog's last name?",
+            turn_id=turn_id,
+            source="unit-test",
+        )
+
+        decision = guarded_response_decision_for_turn(turn_id)
+        self.assertIsNone(decision.candidate)
+        self.assertEqual(
+            decision.fallbackReason,
+            "not_attached_to_focus",
+        )
+        self.assertEqual(decision.fallbackDetails, ())
+
+    def test_guarded_decision_exposes_candidate_ineligibility(self) -> None:
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.FOCUS_ACTION,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.START_FOCUS,
+                        title="Diagnose starting problem",
+                        objective="Restore reliable starting.",
+                    ),
+                ],
+                responseIntent=ResponseIntent(
+                    attachToFocus=True,
+                    guidance="Begin diagnosis.",
+                ),
+                confidence=1.0,
+            ),
+            message="Help me diagnose the car.",
+            turn_id="turn-ineligible-focus",
+            source="unit-test",
+        )
+
+        turn_id = "turn-ineligible-details"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.RESPOND,
+                responseIntent=ResponseIntent(
+                    answerDirectly=True,
+                    attachToFocus=True,
+                    guidance="Your calendar is clear.",
+                ),
+                confidence=1.0,
+            ),
+            message="What next?",
+            turn_id=turn_id,
+            source="unit-test",
+        )
+
+        decision = guarded_response_decision_for_turn(turn_id)
+        self.assertIsNone(decision.candidate)
+        self.assertEqual(
+            decision.fallbackReason,
+            "candidate_ineligible",
+        )
+        self.assertIn(
+            "calendar_availability_without_tool",
+            decision.fallbackDetails,
+        )
+
+    def test_assistant_reply_persists_guarded_fallback_telemetry(
+        self,
+    ) -> None:
+        turn_id = self._create_turn()
+
+        record_assistant_reply(
+            text="Legacy fallback response.",
+            source_turn_id=turn_id,
+            source="chat-visible-response",
+            transport="json",
+            fallback_reason="candidate_ineligible",
+            fallback_details=("unterminated_procedure",),
+        )
+
+        reply_event = next(
+            event
+            for event in reversed(list_events())
+            if event.type == FocusEventType.ASSISTANT_REPLIED
+        )
+        self.assertEqual(
+            reply_event.payload["guardedFallback"],
+            {
+                "used": True,
+                "reason": "candidate_ineligible",
+                "details": ["unterminated_procedure"],
+            },
+        )
+        self.assertEqual(
+            reply_event.payload["audit"]["guardedFallbackReason"],
+            "candidate_ineligible",
+        )
+
     def test_audit_exposes_candidate_eligibility(self) -> None:
         turn_id = self._create_turn()
 
@@ -404,6 +855,126 @@ class FocusResponseAuditTests(unittest.TestCase):
         self.assertTrue(audit["candidateEligible"])
         self.assertEqual(audit["candidateIneligibilityReasons"], [])
 
+
+
+    def test_tool_result_candidate_preserves_citations(self) -> None:
+        turn_id = "turn-tool-result-candidate"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.TOOL,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.START_FOCUS,
+                        title="Research starter symptoms",
+                        objective="Find evidence for the diagnosis.",
+                    )
+                ],
+                toolCalls=[
+                    PlannedToolCall(
+                        tool=ToolName.SEARCH,
+                        attachToFocus=True,
+                        reason="Find relevant automotive sources.",
+                    )
+                ],
+                responseIntent=ResponseIntent(
+                    answerDirectly=False,
+                    attachToFocus=True,
+                    acknowledge="Searching now.",
+                ),
+                confidence=1.0,
+            ),
+            message="Search for current starter symptoms.",
+            turn_id=turn_id,
+            source="unit-test",
+        )
+        record_tool_result(
+            tool=ToolName.SEARCH,
+            success=True,
+            summary="A single click often points to the starter circuit.",
+            result_ids=["https://example.com/starter"],
+            source_turn_id=turn_id,
+        )
+        candidate = record_tool_response_candidate(
+            tool=ToolName.SEARCH,
+            success=True,
+            query="single click no start",
+            summary="A single click often points to the starter circuit.",
+            recommendation="Inspect the battery connections first.",
+            steps=["Check terminal tightness."],
+            sources=[
+                {
+                    "title": "Starter diagnosis",
+                    "url": "https://example.com/starter",
+                    "domain": "example.com",
+                }
+            ],
+            source_turn_id=turn_id,
+        )
+
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertEqual(candidate.payload["stage"], "tool_result")
+        self.assertTrue(candidate.payload["eligibility"]["eligible"])
+        self.assertEqual(
+            candidate.payload["citations"][0]["url"],
+            "https://example.com/starter",
+        )
+        self.assertIn(
+            "[Starter diagnosis](https://example.com/starter)",
+            candidate.payload["text"],
+        )
+
+        decision = guarded_tool_response_decision_for_turn(
+            turn_id,
+            tool=ToolName.SEARCH,
+        )
+        self.assertTrue(decision.eligible)
+        self.assertEqual(decision.candidate, candidate)
+
+    def test_tool_result_candidate_requires_citations(self) -> None:
+        turn_id = "turn-tool-result-no-citations"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.TOOL,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.START_FOCUS,
+                        title="Research starter symptoms",
+                        objective="Find evidence for the diagnosis.",
+                    )
+                ],
+                toolCalls=[
+                    PlannedToolCall(
+                        tool=ToolName.SEARCH,
+                        attachToFocus=True,
+                    )
+                ],
+                confidence=1.0,
+            ),
+            message="Search for starter symptoms.",
+            turn_id=turn_id,
+            source="unit-test",
+        )
+        record_tool_result(
+            tool=ToolName.SEARCH,
+            success=True,
+            summary="A result without citations.",
+            result_ids=[],
+            source_turn_id=turn_id,
+        )
+        record_tool_response_candidate(
+            tool=ToolName.SEARCH,
+            success=True,
+            query="starter symptoms",
+            summary="A result without citations.",
+            sources=[],
+            source_turn_id=turn_id,
+        )
+
+        decision = guarded_tool_response_decision_for_turn(turn_id)
+        self.assertFalse(decision.eligible)
+        self.assertEqual(decision.fallbackReason, "candidate_ineligible")
+        self.assertIn("missing_tool_citations", decision.fallbackDetails)
 
 
 class FocusMiddlewareReceiveTests(unittest.IsolatedAsyncioTestCase):
@@ -448,6 +1019,506 @@ class FocusMiddlewareReceiveTests(unittest.IsolatedAsyncioTestCase):
             await pending_receive,
             {"type": "http.disconnect"},
         )
+
+
+class FocusGuardedResponseMiddlewareTests(
+    unittest.IsolatedAsyncioTestCase
+):
+    def setUp(self) -> None:
+        self._temporary_directory = tempfile.TemporaryDirectory()
+        self._event_file = (
+            Path(self._temporary_directory.name)
+            / "qmeet_focus_guarded_test.json"
+        )
+        self._environment_patch = patch.dict(
+            os.environ,
+            {
+                "QMEET_FOCUS_FILE": str(self._event_file),
+                "QMEET_FOCUS_MODE": "shadow",
+                "QMEET_FOCUS_RESPONSE_MODE": "guarded",
+            },
+            clear=False,
+        )
+        self._environment_patch.start()
+        reset_store()
+
+    def tearDown(self) -> None:
+        self._environment_patch.stop()
+        self._temporary_directory.cleanup()
+
+    @staticmethod
+    def _scope(path: str, turn_id: str) -> dict:
+        return {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode("ascii"),
+            "query_string": b"",
+            "root_path": "",
+            "server": ("testserver", 80),
+            "client": ("testclient", 50000),
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"x-qmeet-turn-id", turn_id.encode("ascii")),
+            ],
+        }
+
+    @staticmethod
+    def _receive_for(message: str):
+        sent = False
+
+        async def receive():
+            nonlocal sent
+            if not sent:
+                sent = True
+                return {
+                    "type": "http.request",
+                    "body": json.dumps(
+                        {"message": message}
+                    ).encode("utf-8"),
+                    "more_body": False,
+                }
+            return {"type": "http.disconnect"}
+
+        return receive
+
+    @staticmethod
+    def _receive_payload(payload: dict):
+        sent = False
+
+        async def receive():
+            nonlocal sent
+            if not sent:
+                sent = True
+                return {
+                    "type": "http.request",
+                    "body": json.dumps(payload).encode("utf-8"),
+                    "more_body": False,
+                }
+            return {"type": "http.disconnect"}
+
+        return receive
+
+    def _create_candidate(self, turn_id: str, text: str) -> None:
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.FOCUS_ACTION,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.START_FOCUS,
+                        title="Guarded response test",
+                        objective="Verify guarded response delivery.",
+                    ),
+                ],
+                responseIntent=ResponseIntent(
+                    answerDirectly=True,
+                    attachToFocus=True,
+                    guidance=text,
+                ),
+                confidence=1.0,
+            ),
+            message="Start the guarded response test.",
+            turn_id=turn_id,
+            source="unit-test",
+        )
+
+    async def test_guarded_json_candidate_bypasses_legacy_app(self) -> None:
+        turn_id = "turn-guarded-json"
+        candidate_text = "Use the canonical guarded response."
+        self._create_candidate(turn_id, candidate_text)
+        legacy_called = False
+
+        async def legacy_app(scope, receive, send):
+            nonlocal legacy_called
+            legacy_called = True
+            raise AssertionError("Legacy app should not run.")
+
+        sent_messages = []
+
+        async def send(message):
+            sent_messages.append(message)
+
+        middleware = FocusShadowMiddleware(legacy_app)
+
+        with (
+            patch(
+                "app.focus.middleware.prepare_background_chat_message",
+                return_value=("context", "visible"),
+            ),
+            patch(
+                "app.focus.middleware.record_background_assistant_reply"
+            ) as record_background,
+        ):
+            await middleware(
+                self._scope("/api/chat", turn_id),
+                self._receive_for("Show the answer."),
+                send,
+            )
+
+        self.assertFalse(legacy_called)
+        response_body = b"".join(
+            message.get("body", b"")
+            for message in sent_messages
+            if message["type"] == "http.response.body"
+        )
+        payload = json.loads(response_body.decode("utf-8"))
+        self.assertEqual(payload["reply"], candidate_text)
+        record_background.assert_called_once_with(candidate_text)
+
+        reply_events = [
+            event
+            for event in list_events()
+            if event.type == FocusEventType.ASSISTANT_REPLIED
+            and event.sourceTurnId == turn_id
+        ]
+        self.assertEqual(len(reply_events), 1)
+        self.assertEqual(
+            reply_events[0].source,
+            "focus-visible-response",
+        )
+        self.assertEqual(
+            reply_events[0].payload["audit"]["findings"],
+            [],
+        )
+
+    async def test_guarded_sse_candidate_uses_existing_stream_shape(
+        self,
+    ) -> None:
+        turn_id = "turn-guarded-sse"
+        candidate_text = "Canonical streamed response."
+        self._create_candidate(turn_id, candidate_text)
+
+        async def legacy_app(scope, receive, send):
+            raise AssertionError("Legacy app should not run.")
+
+        sent_messages = []
+
+        async def send(message):
+            sent_messages.append(message)
+
+        middleware = FocusShadowMiddleware(legacy_app)
+
+        with (
+            patch(
+                "app.focus.middleware.prepare_background_chat_message",
+                return_value=("context", "visible"),
+            ),
+            patch(
+                "app.focus.middleware.record_background_assistant_reply"
+            ),
+        ):
+            await middleware(
+                self._scope("/api/chat/stream", turn_id),
+                self._receive_for("Show the streamed answer."),
+                send,
+            )
+
+        response_body = b"".join(
+            message.get("body", b"")
+            for message in sent_messages
+            if message["type"] == "http.response.body"
+        )
+        self.assertEqual(
+            _extract_sse_reply(response_body),
+            candidate_text,
+        )
+
+
+    async def test_guarded_search_injects_tool_response_and_citations(
+        self,
+    ) -> None:
+        turn_id = "turn-guarded-search"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.TOOL,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.START_FOCUS,
+                        title="Research starter symptoms",
+                        objective="Find evidence for the diagnosis.",
+                    )
+                ],
+                toolCalls=[
+                    PlannedToolCall(
+                        tool=ToolName.SEARCH,
+                        attachToFocus=True,
+                        reason="Find current sources.",
+                    )
+                ],
+                responseIntent=ResponseIntent(
+                    answerDirectly=False,
+                    attachToFocus=True,
+                    acknowledge="Searching now.",
+                ),
+                confidence=1.0,
+            ),
+            message="Search for single-click no-start causes.",
+            turn_id=turn_id,
+            source="unit-test",
+        )
+
+        async def search_app(scope, receive, send):
+            body = json.dumps(
+                {
+                    "ok": True,
+                    "query": "single-click no-start causes",
+                    "summary": "A single click often points to the starter circuit.",
+                    "recommendation": "Inspect the battery terminals first.",
+                    "steps": ["Check terminal tightness."],
+                    "sources": [
+                        {
+                            "title": "Starter diagnosis",
+                            "url": "https://example.com/starter",
+                            "domain": "example.com",
+                        }
+                    ],
+                    "provider": "test",
+                    "message": "Search completed.",
+                }
+            ).encode("utf-8")
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"content-length", str(len(body)).encode("ascii")),
+                    ],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": body,
+                    "more_body": False,
+                }
+            )
+
+        sent_messages = []
+
+        async def send(message):
+            sent_messages.append(message)
+
+        middleware = FocusShadowMiddleware(search_app)
+        with (
+            patch("app.focus.middleware._start_observation"),
+            patch(
+                "app.focus.middleware._wait_for_guarded_observation",
+                new=AsyncMock(return_value=True),
+            ),
+        ):
+            await middleware(
+                self._scope("/api/search", turn_id),
+                self._receive_payload(
+                    {"query": "single-click no-start causes"}
+                ),
+                send,
+            )
+
+        response_start = next(
+            message
+            for message in sent_messages
+            if message["type"] == "http.response.start"
+        )
+        self.assertEqual(
+            dict(response_start["headers"])[b"x-qmeet-response-source"],
+            b"focus-tool-guarded",
+        )
+        response_body = b"".join(
+            message.get("body", b"")
+            for message in sent_messages
+            if message["type"] == "http.response.body"
+        )
+        payload = json.loads(response_body.decode("utf-8"))
+        self.assertEqual(
+            payload["focusResponse"]["responseSource"],
+            "focus-tool-guarded",
+        )
+        self.assertEqual(
+            payload["focusResponse"]["citations"][0]["url"],
+            "https://example.com/starter",
+        )
+        self.assertIn(
+            "Starter diagnosis",
+            payload["focusResponse"]["text"],
+        )
+
+        reply_event = next(
+            event
+            for event in reversed(list_events())
+            if event.type == FocusEventType.ASSISTANT_REPLIED
+            and event.sourceTurnId == turn_id
+        )
+        self.assertEqual(
+            reply_event.source,
+            "focus-tool-visible-response",
+        )
+        self.assertEqual(reply_event.payload["audit"]["findings"], [])
+
+
+    async def test_missing_candidate_falls_back_to_legacy_app(
+        self,
+    ) -> None:
+        turn_id = "turn-guarded-fallback"
+        legacy_called = False
+
+        async def legacy_app(scope, receive, send):
+            nonlocal legacy_called
+            legacy_called = True
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [
+                        (
+                            b"content-type",
+                            b"application/json; charset=utf-8",
+                        )
+                    ],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": json.dumps(
+                        {
+                            "reply": "Legacy fallback response.",
+                            "state": "speaking",
+                        }
+                    ).encode("utf-8"),
+                    "more_body": False,
+                }
+            )
+
+        sent_messages = []
+
+        async def send(message):
+            sent_messages.append(message)
+
+        middleware = FocusShadowMiddleware(legacy_app)
+
+        with (
+            patch(
+                "app.focus.middleware._start_observation"
+            ),
+            patch(
+                "app.focus.middleware._wait_for_guarded_observation",
+                new=AsyncMock(return_value=False),
+            ),
+        ):
+            await middleware(
+                self._scope("/api/chat", turn_id),
+                self._receive_for("Use fallback."),
+                send,
+            )
+
+        self.assertTrue(legacy_called)
+        response_body = b"".join(
+            message.get("body", b"")
+            for message in sent_messages
+            if message["type"] == "http.response.body"
+        )
+        payload = json.loads(response_body.decode("utf-8"))
+        self.assertEqual(
+            payload["reply"],
+            "Legacy fallback response.",
+        )
+        response_start = next(
+            message
+            for message in sent_messages
+            if message["type"] == "http.response.start"
+        )
+        headers = dict(response_start.get("headers", []))
+        self.assertEqual(
+            headers[b"x-qmeet-fallback-reason"],
+            b"observation_timeout",
+        )
+
+        await asyncio.sleep(0)
+        reply_events = [
+            event
+            for event in list_events()
+            if event.type == FocusEventType.ASSISTANT_REPLIED
+            and event.sourceTurnId == turn_id
+        ]
+        self.assertEqual(len(reply_events), 1)
+        self.assertEqual(
+            reply_events[0].payload["guardedFallback"]["reason"],
+            "observation_timeout",
+        )
+
+
+    async def test_work_context_failure_records_fallback_reason(self) -> None:
+        turn_id = "turn-guarded-work-context-fallback"
+        self._create_candidate(turn_id, "Canonical response.")
+
+        async def legacy_app(scope, receive, send):
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [
+                        (b"content-type", b"application/json; charset=utf-8")
+                    ],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": json.dumps(
+                        {
+                            "reply": "Legacy after work-context failure.",
+                            "state": "speaking",
+                        }
+                    ).encode("utf-8"),
+                    "more_body": False,
+                }
+            )
+
+        sent_messages = []
+
+        async def send(message):
+            sent_messages.append(message)
+
+        middleware = FocusShadowMiddleware(legacy_app)
+
+        with patch(
+            "app.focus.middleware._prepare_guarded_work_context",
+            return_value=False,
+        ):
+            await middleware(
+                self._scope("/api/chat", turn_id),
+                self._receive_for("Show the answer."),
+                send,
+            )
+
+        response_start = next(
+            message
+            for message in sent_messages
+            if message["type"] == "http.response.start"
+        )
+        self.assertEqual(
+            dict(response_start["headers"])[
+                b"x-qmeet-fallback-reason"
+            ],
+            b"work_context_sync_failed",
+        )
+
+        await asyncio.sleep(0)
+        reply_event = next(
+            event
+            for event in reversed(list_events())
+            if event.type == FocusEventType.ASSISTANT_REPLIED
+            and event.sourceTurnId == turn_id
+        )
+        self.assertEqual(
+            reply_event.payload["guardedFallback"]["reason"],
+            "work_context_sync_failed",
+        )
+
 
 
 if __name__ == "__main__":

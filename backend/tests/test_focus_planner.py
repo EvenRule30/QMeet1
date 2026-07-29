@@ -125,6 +125,7 @@ class FocusPlannerContextTests(unittest.TestCase):
                     "responseIntent": {
                         "acknowledge": "Understood.",
                         "answerDirectly": True,
+                        "attachToFocus": True,
                         "guidance": "Provide the requested instructions.",
                         "askQuestion": "Do you have a second vehicle available?",
                     }
@@ -138,6 +139,9 @@ class FocusPlannerContextTests(unittest.TestCase):
         )
         self.assertTrue(
             compact["responseIntent"]["answerDirectly"]
+        )
+        self.assertTrue(
+            compact["responseIntent"]["attachToFocus"]
         )
         self.assertEqual(
             compact["responseIntent"]["askQuestion"],
@@ -195,6 +199,7 @@ class FocusPlannerContextTests(unittest.TestCase):
                     "plan": {
                         "responseIntent": {
                             "answerDirectly": True,
+                            "attachToFocus": True,
                             "guidance": (
                                 "Provide jump-start instructions after "
                                 "the prerequisite is answered."
@@ -237,6 +242,9 @@ class FocusPlannerContextTests(unittest.TestCase):
         self.assertEqual(
             summary[0]["payload"]["message"],
             "Yes, please give me the instructions.",
+        )
+        self.assertTrue(
+            summary[0]["payload"]["responseIntent"]["attachToFocus"]
         )
         self.assertNotIn("text", summary[1]["payload"])
         self.assertEqual(

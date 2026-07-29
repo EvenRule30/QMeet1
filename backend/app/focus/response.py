@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 from app.focus.models import TurnPlan, TurnRoute
 
@@ -53,8 +54,45 @@ _PERMISSION_OFFER_QUESTION_PATTERN = re.compile(
 )
 
 
+_NUMBERED_STEP_PATTERN = re.compile(
+    r"(?:^|\n)\s*(\d{1,2})[.)]\s+",
+    re.MULTILINE,
+)
+
+_SUSPICIOUS_TRAILING_FRAGMENT_PATTERN = re.compile(
+    r"(?:"
+    r"[,;:/\\-]\s*\d{0,3}|"
+    r"\b(?:and|or|to|before|after|with|without|when|while|for)\s*"
+    r")$",
+    re.IGNORECASE,
+)
+
+_TERMINAL_CHARACTERS = frozenset(".?!)]}\"'")
+
+
 def _clean(value: str) -> str:
-    return " ".join(value.split()).strip()
+    """Normalize whitespace while preserving intentional paragraph/list breaks."""
+
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n")
+    output_lines: list[str] = []
+    previous_was_blank = False
+
+    for raw_line in normalized.split("\n"):
+        line = " ".join(raw_line.split()).strip()
+
+        if not line:
+            if output_lines and not previous_was_blank:
+                output_lines.append("")
+            previous_was_blank = True
+            continue
+
+        output_lines.append(line)
+        previous_was_blank = False
+
+    while output_lines and output_lines[-1] == "":
+        output_lines.pop()
+
+    return "\n".join(output_lines).strip()
 
 
 def _real_tool_calls(plan: TurnPlan) -> list:
@@ -63,6 +101,75 @@ def _real_tool_calls(plan: TurnPlan) -> list:
         for tool_call in plan.toolCalls
         if tool_call.tool.value != "none"
     ]
+
+
+def _has_balanced_delimiters(value: str) -> bool:
+    pairs = {
+        ")": "(",
+        "]": "[",
+        "}": "{",
+    }
+    stack: list[str] = []
+
+    for character in value:
+        if character in pairs.values():
+            stack.append(character)
+            continue
+
+        if character not in pairs:
+            continue
+
+        if not stack or stack.pop() != pairs[character]:
+            return False
+
+    return not stack
+
+
+def _procedure_integrity_reasons(guidance: str) -> list[str]:
+    """Return deterministic reasons a delivered procedure looks incomplete."""
+
+    if not guidance or not _PROCEDURAL_DELIVERY_PATTERN.search(guidance):
+        return []
+
+    reasons: list[str] = []
+    stripped = guidance.rstrip()
+    numbered_matches = list(_NUMBERED_STEP_PATTERN.finditer(guidance))
+
+    if numbered_matches:
+        step_numbers = [
+            int(match.group(1))
+            for match in numbered_matches
+        ]
+        expected_numbers = list(
+            range(1, len(step_numbers) + 1)
+        )
+
+        if step_numbers != expected_numbers:
+            reasons.append("nonsequential_numbered_steps")
+
+        for index, match in enumerate(numbered_matches):
+            content_start = match.end()
+            content_end = (
+                numbered_matches[index + 1].start()
+                if index + 1 < len(numbered_matches)
+                else len(guidance)
+            )
+            step_content = guidance[content_start:content_end].strip()
+
+            if len(step_content) < 8:
+                reasons.append("incomplete_numbered_step")
+                break
+
+    if stripped and stripped[-1] not in _TERMINAL_CHARACTERS:
+        reasons.append("unterminated_procedure")
+
+    if _SUSPICIOUS_TRAILING_FRAGMENT_PATTERN.search(stripped):
+        reasons.append("malformed_trailing_fragment")
+
+    if not _has_balanced_delimiters(guidance):
+        reasons.append("unbalanced_delimiters")
+
+    return list(dict.fromkeys(reasons))
 
 
 def compose_response_candidate(plan: TurnPlan) -> str:
@@ -154,6 +261,9 @@ def build_response_candidate(plan: TurnPlan) -> dict[str, Any]:
     ):
         reasons.append("direct_answer_deferred_to_offer")
 
+    if plan.responseIntent.answerDirectly and guidance:
+        reasons.extend(_procedure_integrity_reasons(guidance))
+
     if question and question.casefold() not in text.casefold():
         reasons.append("candidate_missing_canonical_question")
 
@@ -181,3 +291,150 @@ def build_response_candidate(plan: TurnPlan) -> dict[str, Any]:
             "minimumConfidence": _MIN_ACTIVE_CONFIDENCE,
         },
     }
+
+
+def _clean_tool_source(raw_source: dict[str, Any]) -> dict[str, str] | None:
+    url = str(raw_source.get("url", "")).strip()[:1000]
+    title = _clean(str(raw_source.get("title", "")))[:240]
+    domain = _clean(str(raw_source.get("domain", "")))[:160]
+
+    if not domain and url:
+        try:
+            domain = urlparse(url).netloc.removeprefix("www.")[:160]
+        except ValueError:
+            domain = ""
+
+    if not url or not (title or domain):
+        return None
+
+    return {
+        "title": title or domain or url,
+        "url": url,
+        "domain": domain,
+    }
+
+
+def build_tool_response_candidate(
+    *,
+    tool: str,
+    success: bool,
+    query: str,
+    summary: str,
+    recommendation: str = "",
+    steps: list[str] | None = None,
+    sources: list[dict[str, Any]] | None = None,
+    attach_to_focus: bool,
+) -> dict[str, Any]:
+    """Build a deterministic candidate from verified tool output.
+
+    This does not call a second model. Search output remains the source of truth,
+    and citations are retained both in the visible text and as structured
+    metadata for the frontend and audit log.
+    """
+
+    clean_tool = _clean(tool).casefold()
+    clean_query = _clean(query)[:500]
+    clean_summary = _clean(summary)[:2200]
+    clean_recommendation = _clean(recommendation)[:800]
+
+    clean_steps: list[str] = []
+    for raw_step in steps or []:
+        step = _clean(str(raw_step))[:500]
+        if step and step.casefold() not in {
+            existing.casefold() for existing in clean_steps
+        }:
+            clean_steps.append(step)
+        if len(clean_steps) >= 3:
+            break
+
+    citations: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    for raw_source in sources or []:
+        if not isinstance(raw_source, dict):
+            continue
+        citation = _clean_tool_source(raw_source)
+        if citation is None:
+            continue
+        key = citation["url"].casefold()
+        if key in seen_urls:
+            continue
+        seen_urls.add(key)
+        citations.append(citation)
+        if len(citations) >= 5:
+            break
+
+    sections: list[str] = []
+    if clean_query:
+        sections.append(f'Search complete for "{clean_query}".')
+    else:
+        sections.append("Search complete.")
+
+    if clean_summary:
+        sections.append(clean_summary)
+
+    if (
+        clean_recommendation
+        and clean_recommendation.casefold() not in clean_summary.casefold()
+    ):
+        sections.append(f"Recommendation: {clean_recommendation}")
+
+    if clean_steps:
+        step_lines = ["Next steps:"]
+        step_lines.extend(
+            f"{index}. {step}"
+            for index, step in enumerate(clean_steps, start=1)
+        )
+        sections.append("\n".join(step_lines))
+
+    if citations:
+        source_lines = ["Sources:"]
+        source_lines.extend(
+            f'[{index}] [{citation["title"]}]({citation["url"]})'
+            for index, citation in enumerate(citations, start=1)
+        )
+        sections.append("\n".join(source_lines))
+
+    text = "\n\n".join(section for section in sections if section).strip()
+    reasons: list[str] = []
+
+    if not attach_to_focus:
+        reasons.append("tool_result_not_attached_to_focus")
+    if clean_tool != "search":
+        reasons.append("unsupported_tool_result")
+    if not success:
+        reasons.append("tool_result_failed")
+    if not clean_summary:
+        reasons.append("missing_tool_summary")
+    if not citations:
+        reasons.append("missing_tool_citations")
+    if not text:
+        reasons.append("empty_candidate")
+    if len(text) > 4000:
+        reasons.append("candidate_too_long")
+
+    deduplicated_reasons = list(dict.fromkeys(reasons))
+
+    return {
+        "text": text[:4000],
+        "stage": "tool_result",
+        "components": {
+            "summary": clean_summary,
+            "recommendation": clean_recommendation,
+            "steps": clean_steps,
+        },
+        "citations": citations,
+        "toolEvidence": {
+            "tool": clean_tool,
+            "success": bool(success),
+            "query": clean_query,
+            "resultIds": [citation["url"] for citation in citations],
+            "citationCount": len(citations),
+        },
+        "eligibility": {
+            "eligible": not deduplicated_reasons,
+            "reasons": deduplicated_reasons,
+            "confidence": 1.0 if success else 0.0,
+            "minimumConfidence": 1.0,
+        },
+    }
+

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from threading import RLock
@@ -10,7 +11,10 @@ from typing import Iterable
 from uuid import uuid4
 
 from app.focus.audit import build_response_audit
-from app.focus.response import build_response_candidate
+from app.focus.response import (
+    build_response_candidate,
+    build_tool_response_candidate,
+)
 from app.focus.models import (
     FocusEvent,
     FocusEventLog,
@@ -26,6 +30,7 @@ from app.focus.models import (
     PlannedToolCall,
     ToolName,
     TurnPlan,
+    TurnRoute,
 )
 
 
@@ -55,6 +60,19 @@ _LIST_FIELDS = {
 
 class FocusStoreError(Exception):
     """Safe error raised by the Focus event store."""
+
+
+@dataclass(frozen=True)
+class GuardedResponseDecision:
+    """Explain whether a canonical candidate may control the visible reply."""
+
+    candidate: FocusEvent | None = None
+    fallbackReason: str = ""
+    fallbackDetails: tuple[str, ...] = ()
+
+    @property
+    def eligible(self) -> bool:
+        return self.candidate is not None and not self.fallbackReason
 
 
 def _now_iso() -> str:
@@ -198,6 +216,560 @@ def list_events(limit: int = 200) -> list[FocusEvent]:
 def event_count() -> int:
     with _STORE_LOCK:
         return len(_read_log_unlocked().events)
+
+
+_EXPECTED_FALLBACK_REASONS = frozenset({
+    "not_attached_to_focus",
+    "tool_requested",
+    "candidate_not_direct",
+})
+
+_SAFETY_FALLBACK_REASONS = frozenset({
+    "candidate_ineligible",
+    "candidate_below_confidence_threshold",
+    "empty_candidate",
+    "missing_eligibility",
+    "candidate_missing_focus",
+    "no_active_focus",
+    "focus_mismatch",
+})
+
+_SYSTEM_FAILURE_FALLBACK_REASONS = frozenset({
+    "observation_timeout",
+    "missing_candidate",
+    "work_context_sync_failed",
+})
+
+
+def _fallback_category(reason: str) -> str:
+    normalized = reason.strip()
+
+    if normalized in _EXPECTED_FALLBACK_REASONS:
+        return "expected"
+    if normalized in _SAFETY_FALLBACK_REASONS:
+        return "safety"
+    if normalized in _SYSTEM_FAILURE_FALLBACK_REASONS:
+        return "system_failure"
+    return "unknown"
+
+
+def response_selection_summary() -> dict[str, object]:
+    """Summarize explicit guarded visible-response decisions.
+
+    Shadow-era assistant replies are intentionally excluded. A guarded
+    decision is counted only when the canonical candidate controlled the
+    visible reply or when the legacy reply contains guarded fallback
+    telemetry. If a turn was recorded more than once, only its latest
+    decision contributes to the aggregate.
+
+    ``successRate`` remains the original raw takeover ratio for backward
+    compatibility. ``guardedTakeoverRate`` excludes expected routing
+    fallbacks, while ``healthyDecisionRate`` treats expected and safety
+    fallbacks as correct guarded behavior and penalizes only system failures
+    or unknown outcomes.
+    """
+
+    with _STORE_LOCK:
+        events = list(_read_log_unlocked().events)
+
+    decisions_by_turn: dict[str, dict[str, object]] = {}
+    decision_order: list[str] = []
+
+    for event in events:
+        if event.type != FocusEventType.ASSISTANT_REPLIED:
+            continue
+
+        payload = event.payload
+        fallback = payload.get("guardedFallback")
+        outcome = ""
+        reason = ""
+        details: list[str] = []
+        category = "takeover"
+
+        if event.source in {
+            "focus-visible-response",
+            "focus-tool-visible-response",
+        }:
+            outcome = "takeover"
+        elif isinstance(fallback, dict) and fallback.get("used") is True:
+            outcome = "fallback"
+            reason = str(fallback.get("reason", "")).strip()
+            category = _fallback_category(reason)
+            raw_details = fallback.get("details", [])
+            if isinstance(raw_details, list):
+                details = [
+                    str(detail).strip()
+                    for detail in raw_details
+                    if str(detail).strip()
+                ]
+
+        if not outcome:
+            continue
+
+        audit = payload.get("audit", {})
+        candidate_eligible = (
+            audit.get("candidateEligible")
+            if isinstance(audit, dict)
+            else None
+        )
+        healthy = (
+            outcome == "takeover"
+            or category in {"expected", "safety"}
+        )
+        turn_key = event.sourceTurnId.strip() or event.id
+        decision = {
+            "sourceTurnId": event.sourceTurnId,
+            "focusId": event.focusId,
+            "outcome": outcome,
+            "reason": reason,
+            "category": category,
+            "healthy": healthy,
+            "details": details,
+            "candidateEligible": candidate_eligible,
+            "responseSource": event.source,
+            "createdAt": event.createdAt,
+        }
+
+        if turn_key in decisions_by_turn:
+            decision_order.remove(turn_key)
+        decision_order.append(turn_key)
+        decisions_by_turn[turn_key] = decision
+
+    decisions = [decisions_by_turn[key] for key in decision_order]
+    takeover_count = sum(
+        1 for decision in decisions if decision["outcome"] == "takeover"
+    )
+    fallback_count = sum(
+        1 for decision in decisions if decision["outcome"] == "fallback"
+    )
+    fallback_reasons: dict[str, int] = {}
+    category_counts = {
+        "expected": 0,
+        "safety": 0,
+        "systemFailure": 0,
+        "unknown": 0,
+    }
+    reasons_by_category: dict[str, dict[str, int]] = {
+        "expected": {},
+        "safety": {},
+        "systemFailure": {},
+        "unknown": {},
+    }
+
+    category_key_by_value = {
+        "expected": "expected",
+        "safety": "safety",
+        "system_failure": "systemFailure",
+        "unknown": "unknown",
+    }
+
+    for decision in decisions:
+        if decision["outcome"] != "fallback":
+            continue
+
+        reason = str(decision["reason"] or "unknown")
+        fallback_reasons[reason] = fallback_reasons.get(reason, 0) + 1
+
+        category_value = str(decision["category"])
+        category_key = category_key_by_value.get(
+            category_value,
+            "unknown",
+        )
+        category_counts[category_key] += 1
+        category_reasons = reasons_by_category[category_key]
+        category_reasons[reason] = category_reasons.get(reason, 0) + 1
+
+    decision_count = takeover_count + fallback_count
+    expected_fallback_count = category_counts["expected"]
+    safety_fallback_count = category_counts["safety"]
+    system_failure_count = category_counts["systemFailure"]
+    unknown_fallback_count = category_counts["unknown"]
+
+    raw_takeover_rate = (
+        round(takeover_count / decision_count, 4)
+        if decision_count
+        else 0.0
+    )
+
+    guarded_attempt_count = (
+        takeover_count
+        + safety_fallback_count
+        + system_failure_count
+        + unknown_fallback_count
+    )
+    guarded_takeover_rate = (
+        round(takeover_count / guarded_attempt_count, 4)
+        if guarded_attempt_count
+        else 0.0
+    )
+
+    healthy_decision_count = (
+        takeover_count
+        + expected_fallback_count
+        + safety_fallback_count
+    )
+    healthy_decision_rate = (
+        round(healthy_decision_count / decision_count, 4)
+        if decision_count
+        else 0.0
+    )
+
+    return {
+        "decisionCount": decision_count,
+        "takeoverCount": takeover_count,
+        "fallbackCount": fallback_count,
+        "successRate": raw_takeover_rate,
+        "takeoverRate": raw_takeover_rate,
+        "guardedAttemptCount": guarded_attempt_count,
+        "guardedTakeoverRate": guarded_takeover_rate,
+        "healthyDecisionCount": healthy_decision_count,
+        "healthyDecisionRate": healthy_decision_rate,
+        "expectedFallbackCount": expected_fallback_count,
+        "safetyFallbackCount": safety_fallback_count,
+        "systemFailureCount": system_failure_count,
+        "unknownFallbackCount": unknown_fallback_count,
+        "fallbackReasons": fallback_reasons,
+        "fallbackCategoryCounts": category_counts,
+        "fallbackReasonsByCategory": reasons_by_category,
+        "latestDecision": decisions[-1] if decisions else None,
+    }
+
+
+
+def guarded_tool_response_decision_for_turn(
+    source_turn_id: str,
+    *,
+    tool: ToolName = ToolName.SEARCH,
+) -> GuardedResponseDecision:
+    """Return an eligible post-tool candidate for guarded presentation."""
+
+    turn_id = source_turn_id.strip()
+    if not turn_id:
+        return GuardedResponseDecision(fallbackReason="missing_turn_id")
+
+    with _STORE_LOCK:
+        events = list(_read_log_unlocked().events)
+
+    turn_events = [
+        event for event in events if event.sourceTurnId == turn_id
+    ]
+    tool_request = next(
+        (
+            event
+            for event in reversed(turn_events)
+            if event.type == FocusEventType.TOOL_REQUESTED
+            and str(event.payload.get("tool", "")) == tool.value
+        ),
+        None,
+    )
+    if tool_request is None:
+        return GuardedResponseDecision(
+            fallbackReason="missing_tool_request",
+        )
+    if (
+        not tool_request.focusId.strip()
+        or tool_request.payload.get("attachToFocus") is not True
+    ):
+        return GuardedResponseDecision(
+            fallbackReason="tool_not_attached_to_focus",
+        )
+
+    tool_result = next(
+        (
+            event
+            for event in reversed(turn_events)
+            if event.type in {
+                FocusEventType.TOOL_COMPLETED,
+                FocusEventType.TOOL_FAILED,
+            }
+            and str(event.payload.get("tool", "")) == tool.value
+        ),
+        None,
+    )
+    if tool_result is None:
+        return GuardedResponseDecision(
+            fallbackReason="missing_tool_result",
+        )
+    if tool_result.type == FocusEventType.TOOL_FAILED:
+        return GuardedResponseDecision(fallbackReason="tool_failed")
+
+    candidate = next(
+        (
+            event
+            for event in reversed(turn_events)
+            if event.type == FocusEventType.RESPONSE_CANDIDATE
+            and str(event.payload.get("stage", "")) == "tool_result"
+            and isinstance(event.payload.get("toolEvidence"), dict)
+            and event.payload["toolEvidence"].get("tool") == tool.value
+        ),
+        None,
+    )
+    if candidate is None:
+        return GuardedResponseDecision(
+            fallbackReason="missing_tool_response_candidate",
+        )
+
+    payload = candidate.payload
+    text = str(payload.get("text", "")).strip()
+    eligibility = payload.get("eligibility")
+    evidence = payload.get("toolEvidence")
+
+    if payload.get("attachToFocus") is not True:
+        return GuardedResponseDecision(
+            fallbackReason="tool_response_not_attached_to_focus",
+        )
+    if not text:
+        return GuardedResponseDecision(fallbackReason="empty_candidate")
+    if not isinstance(eligibility, dict):
+        return GuardedResponseDecision(
+            fallbackReason="missing_eligibility",
+        )
+    if not isinstance(evidence, dict):
+        return GuardedResponseDecision(
+            fallbackReason="missing_tool_evidence",
+        )
+    if evidence.get("success") is not True:
+        return GuardedResponseDecision(
+            fallbackReason="tool_evidence_unsuccessful",
+        )
+
+    raw_reasons = eligibility.get("reasons", [])
+    eligibility_reasons = tuple(
+        str(reason).strip()
+        for reason in raw_reasons
+        if str(reason).strip()
+    ) if isinstance(raw_reasons, list) else ()
+    if eligibility.get("eligible") is not True or eligibility_reasons:
+        return GuardedResponseDecision(
+            fallbackReason="candidate_ineligible",
+            fallbackDetails=eligibility_reasons,
+        )
+
+    current = reduce_events(events)
+    if not current.focusId.strip():
+        return GuardedResponseDecision(fallbackReason="no_active_focus")
+    if candidate.focusId.strip() != current.focusId.strip():
+        return GuardedResponseDecision(
+            fallbackReason="focus_mismatch",
+            fallbackDetails=(
+                candidate.focusId.strip() or "missing_candidate_focus",
+                current.focusId.strip(),
+            ),
+        )
+
+    return GuardedResponseDecision(candidate=candidate)
+
+
+def record_tool_response_candidate(
+    *,
+    tool: ToolName,
+    success: bool,
+    query: str,
+    summary: str,
+    recommendation: str = "",
+    steps: list[str] | None = None,
+    sources: list[dict] | None = None,
+    source_turn_id: str,
+    source: str = "focus-tool-response-candidate",
+) -> FocusEvent | None:
+    """Persist one deterministic candidate after verified tool completion."""
+
+    turn_id = source_turn_id.strip()
+    if not turn_id:
+        return None
+
+    with _STORE_LOCK:
+        document = _read_log_unlocked()
+        turn_events = [
+            event
+            for event in document.events
+            if event.sourceTurnId == turn_id
+        ]
+        existing = next(
+            (
+                event
+                for event in reversed(turn_events)
+                if event.type == FocusEventType.RESPONSE_CANDIDATE
+                and str(event.payload.get("stage", "")) == "tool_result"
+                and isinstance(event.payload.get("toolEvidence"), dict)
+                and event.payload["toolEvidence"].get("tool") == tool.value
+            ),
+            None,
+        )
+        if existing is not None:
+            return existing
+
+        tool_request = next(
+            (
+                event
+                for event in reversed(turn_events)
+                if event.type == FocusEventType.TOOL_REQUESTED
+                and str(event.payload.get("tool", "")) == tool.value
+            ),
+            None,
+        )
+        if tool_request is None:
+            return None
+
+        focus_id = tool_request.focusId.strip()
+        attach_to_focus = bool(
+            focus_id
+            and tool_request.payload.get("attachToFocus") is True
+        )
+        candidate_payload = build_tool_response_candidate(
+            tool=tool.value,
+            success=success,
+            query=query,
+            summary=summary,
+            recommendation=recommendation,
+            steps=steps or [],
+            sources=sources or [],
+            attach_to_focus=attach_to_focus,
+        )
+        candidate_payload["attachToFocus"] = attach_to_focus
+
+        event = _new_event(
+            FocusEventType.RESPONSE_CANDIDATE,
+            focus_id=focus_id if attach_to_focus else "",
+            payload=candidate_payload,
+            source_turn_id=turn_id,
+            source=source,
+            confidence=1.0 if success else 0.0,
+        )
+        document.events.append(event)
+        _atomic_write_unlocked(document)
+        return event
+
+
+def guarded_response_decision_for_turn(
+    source_turn_id: str,
+) -> GuardedResponseDecision:
+    """Return the candidate decision and a deterministic fallback reason.
+
+    Reasons are intentionally stable telemetry values rather than prose. They
+    explain why guarded mode used the legacy chat path for a given turn.
+    """
+
+    turn_id = source_turn_id.strip()
+    if not turn_id:
+        return GuardedResponseDecision(
+            fallbackReason="missing_turn_id",
+        )
+
+    with _STORE_LOCK:
+        events = list(_read_log_unlocked().events)
+
+    turn_events = [
+        event
+        for event in events
+        if event.sourceTurnId == turn_id
+    ]
+    if any(
+        event.type == FocusEventType.TOOL_REQUESTED
+        for event in turn_events
+    ):
+        return GuardedResponseDecision(
+            fallbackReason="tool_requested",
+        )
+
+    candidate = next(
+        (
+            event
+            for event in reversed(turn_events)
+            if event.type == FocusEventType.RESPONSE_CANDIDATE
+        ),
+        None,
+    )
+    if candidate is None:
+        return GuardedResponseDecision(
+            fallbackReason="missing_candidate",
+        )
+
+    payload = candidate.payload
+    text = str(payload.get("text", "")).strip()
+    stage = str(payload.get("stage", "")).strip()
+    eligibility = payload.get("eligibility")
+
+    if payload.get("attachToFocus") is not True:
+        return GuardedResponseDecision(
+            fallbackReason="not_attached_to_focus",
+        )
+    if not text:
+        return GuardedResponseDecision(
+            fallbackReason="empty_candidate",
+        )
+    if stage != "direct":
+        return GuardedResponseDecision(
+            fallbackReason="candidate_not_direct",
+            fallbackDetails=(stage or "missing_stage",),
+        )
+    if not isinstance(eligibility, dict):
+        return GuardedResponseDecision(
+            fallbackReason="missing_eligibility",
+        )
+
+    raw_reasons = eligibility.get("reasons", [])
+    eligibility_reasons = (
+        tuple(str(reason).strip() for reason in raw_reasons if str(reason).strip())
+        if isinstance(raw_reasons, list)
+        else ("invalid_eligibility_reasons",)
+    )
+    if eligibility.get("eligible") is not True or eligibility_reasons:
+        return GuardedResponseDecision(
+            fallbackReason="candidate_ineligible",
+            fallbackDetails=eligibility_reasons,
+        )
+
+    try:
+        minimum_confidence = float(
+            eligibility.get("minimumConfidence", 0.9)
+        )
+        candidate_confidence = float(
+            eligibility.get("confidence", candidate.confidence)
+        )
+    except (TypeError, ValueError):
+        return GuardedResponseDecision(
+            fallbackReason="invalid_candidate_confidence",
+        )
+
+    if candidate_confidence < minimum_confidence:
+        return GuardedResponseDecision(
+            fallbackReason="candidate_below_confidence_threshold",
+            fallbackDetails=(
+                f"confidence={candidate_confidence}",
+                f"minimum={minimum_confidence}",
+            ),
+        )
+
+    candidate_focus_id = candidate.focusId.strip()
+    if not candidate_focus_id:
+        return GuardedResponseDecision(
+            fallbackReason="candidate_missing_focus",
+        )
+
+    current_focus_id = reduce_events(events).focusId.strip()
+    if not current_focus_id:
+        return GuardedResponseDecision(
+            fallbackReason="no_active_focus",
+        )
+    if candidate_focus_id != current_focus_id:
+        return GuardedResponseDecision(
+            fallbackReason="focus_mismatch",
+            fallbackDetails=(
+                f"candidate={candidate_focus_id}",
+                f"active={current_focus_id}",
+            ),
+        )
+
+    return GuardedResponseDecision(candidate=candidate)
+
+
+def eligible_response_candidate_for_turn(
+    source_turn_id: str,
+) -> FocusEvent | None:
+    """Compatibility wrapper returning only an eligible guarded candidate."""
+
+    return guarded_response_decision_for_turn(source_turn_id).candidate
 
 
 def _append_unique(values: list[str], candidate: str, limit: int = 80) -> None:
@@ -964,12 +1536,22 @@ def apply_turn_plan(
     response_candidate = build_response_candidate(plan)
     response_candidate_text = str(response_candidate.get("text", "")).strip()
     if response_candidate_text:
+        response_attaches_to_focus = bool(
+            active_focus_id
+            and not transient_tool_turn
+            and (
+                has_focus_operations
+                or plan.route == TurnRoute.FOCUS_ACTION
+                or plan.responseIntent.attachToFocus
+            )
+        )
         candidate_focus_id = (
             active_focus_id
-            if active_focus_id and not transient_tool_turn
-            else turn_focus_id
+            if response_attaches_to_focus
+            else ""
         )
         response_candidate["text"] = response_candidate_text[:12000]
+        response_candidate["attachToFocus"] = response_attaches_to_focus
         events.append(
             _new_event(
                 FocusEventType.RESPONSE_CANDIDATE,
@@ -1076,6 +1658,8 @@ def record_assistant_reply(
     source: str = "assistant-response",
     transport: str = "",
     response_status: int = 200,
+    fallback_reason: str = "",
+    fallback_details: Iterable[str] = (),
 ) -> FocusState:
     reply_text = text.strip()
     if not reply_text:
@@ -1093,15 +1677,31 @@ def record_assistant_reply(
             source_turn_id=source_turn_id,
         )
 
+        clean_fallback_reason = fallback_reason.strip()[:120]
+        clean_fallback_details = [
+            str(detail).strip()[:500]
+            for detail in fallback_details
+            if str(detail).strip()
+        ][:20]
+        payload = {
+            "text": reply_text[:12000],
+            "transport": transport[:40],
+            "responseStatus": response_status,
+            "audit": audit,
+        }
+        if clean_fallback_reason:
+            payload["guardedFallback"] = {
+                "used": True,
+                "reason": clean_fallback_reason,
+                "details": clean_fallback_details,
+            }
+            audit["guardedFallbackReason"] = clean_fallback_reason
+            audit["guardedFallbackDetails"] = clean_fallback_details
+
         event = _new_event(
             FocusEventType.ASSISTANT_REPLIED,
             focus_id=focus_id,
-            payload={
-                "text": reply_text[:12000],
-                "transport": transport[:40],
-                "responseStatus": response_status,
-                "audit": audit,
-            },
+            payload=payload,
             source_turn_id=source_turn_id,
             source=source,
         )

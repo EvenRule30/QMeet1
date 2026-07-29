@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
 
+from app.focus.middleware import focus_response_mode
 from app.focus.models import (
     ObserveTurnRequest,
     PlanPreviewRequest,
@@ -22,7 +23,9 @@ from app.focus.store import (
     list_events,
     record_tool_result,
     reset_store,
+    response_selection_summary,
 )
+
 
 router = APIRouter(prefix="/api/focus", tags=["focus"])
 
@@ -32,10 +35,12 @@ async def focus_status():
     return {
         "ok": True,
         "mode": focus_mode(),
+        "responseMode": focus_response_mode(),
         "plannerEnabled": planner_enabled(),
         "model": DEFAULT_MODEL,
         "eventCount": event_count(),
         "path": str(event_file()),
+        "responseSelection": response_selection_summary(),
         "message": "Focus is running beside the legacy focus system.",
     }
 
@@ -109,7 +114,9 @@ async def focus_reset():
         return {
             "ok": True,
             "state": state.model_dump(mode="json"),
-            "message": "Focus event log cleared. Legacy focus data was not changed.",
+            "message": (
+                "Focus event log cleared. Legacy focus data was not changed."
+            ),
         }
     except FocusStoreError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

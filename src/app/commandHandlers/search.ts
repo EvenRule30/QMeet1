@@ -26,24 +26,32 @@ export async function handleSearchCommand(
     case 'run-search': {
       const preparedSearchQuery = commandMatch.payload?.trim() ?? '';
       deps.setActivePanel('search');
-
       let confirmationContent = 'Opening search.';
 
       if (preparedSearchQuery) {
         const searchResponse = await deps.runWebSearch(preparedSearchQuery);
 
         if (searchResponse?.ok) {
-          const sourceCount = searchResponse.sources?.length ?? 0;
-          const stepCount = searchResponse.steps?.length ?? 0;
-          const sourceText = sourceCount > 0
-            ? ` ${sourceCount} source${sourceCount === 1 ? '' : 's'} added.`
-            : '';
-          const stepText = stepCount > 0
-            ? ` ${stepCount} action step${stepCount === 1 ? '' : 's'} included.`
-            : '';
-          confirmationContent = `Search complete. I put the full result in the Search panel.${stepText}${sourceText}`;
+          const guardedText = searchResponse.focusResponse?.text?.trim() ?? '';
+
+          if (guardedText) {
+            confirmationContent = guardedText;
+          } else {
+            const sourceCount = searchResponse.sources?.length ?? 0;
+            const stepCount = searchResponse.steps?.length ?? 0;
+            const sourceText = sourceCount > 0
+              ? ` ${sourceCount} source${sourceCount === 1 ? '' : 's'} added.`
+              : '';
+            const stepText = stepCount > 0
+              ? ` ${stepCount} action step${stepCount === 1 ? '' : 's'} included.`
+              : '';
+            confirmationContent = `Search complete.
+I put the full result in the Search panel.${stepText}${sourceText}`;
+          }
         } else {
-          confirmationContent = searchResponse?.message || deps.searchError || 'Web search failed.';
+          confirmationContent = searchResponse?.message
+            || deps.searchError
+            || 'Web search failed.';
         }
       }
 

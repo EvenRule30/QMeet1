@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 import unittest
@@ -26,7 +27,9 @@ from app.focus.store import (
     event_count,
     get_state,
     list_events,
+    record_assistant_reply,
     record_tool_result,
+    response_selection_summary,
     reduce_events,
     reset_store,
     seed_from_legacy,
@@ -1025,6 +1028,312 @@ class FocusStoreTests(unittest.TestCase):
         self.assertNotEqual(
             updated.nextAction,
             "What happens when you try to start the car?",
+        )
+
+
+    def test_response_selection_summary_starts_empty(self) -> None:
+        summary = response_selection_summary()
+
+        self.assertEqual(summary["decisionCount"], 0)
+        self.assertEqual(summary["takeoverCount"], 0)
+        self.assertEqual(summary["fallbackCount"], 0)
+        self.assertEqual(summary["successRate"], 0.0)
+        self.assertEqual(summary["takeoverRate"], 0.0)
+        self.assertEqual(summary["guardedAttemptCount"], 0)
+        self.assertEqual(summary["guardedTakeoverRate"], 0.0)
+        self.assertEqual(summary["healthyDecisionCount"], 0)
+        self.assertEqual(summary["healthyDecisionRate"], 0.0)
+        self.assertEqual(summary["expectedFallbackCount"], 0)
+        self.assertEqual(summary["safetyFallbackCount"], 0)
+        self.assertEqual(summary["systemFailureCount"], 0)
+        self.assertEqual(summary["unknownFallbackCount"], 0)
+        self.assertEqual(summary["fallbackReasons"], {})
+        self.assertEqual(
+            summary["fallbackCategoryCounts"],
+            {
+                "expected": 0,
+                "safety": 0,
+                "systemFailure": 0,
+                "unknown": 0,
+            },
+        )
+        self.assertIsNone(summary["latestDecision"])
+
+    def test_response_selection_summary_counts_guarded_decisions(self) -> None:
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.FOCUS_ACTION,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.START_FOCUS,
+                        title="Diagnose car trouble",
+                        objective="Restore reliable starting.",
+                    )
+                ],
+            ),
+            message="Help diagnose my car.",
+            turn_id="turn-summary-start",
+            source="unit-test",
+        )
+
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.RESPOND,
+                responseIntent=ResponseIntent(
+                    answerDirectly=True,
+                    attachToFocus=True,
+                    guidance="Check the battery terminals first.",
+                ),
+                confidence=1.0,
+            ),
+            message="What should I check next?",
+            turn_id="turn-summary-takeover",
+            source="unit-test",
+        )
+        record_assistant_reply(
+            text="Check the battery terminals first.",
+            source_turn_id="turn-summary-takeover",
+            source="focus-visible-response",
+            transport="sse",
+        )
+
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.RESPOND,
+                responseIntent=ResponseIntent(
+                    answerDirectly=True,
+                    attachToFocus=False,
+                    guidance="I do not have a dog.",
+                ),
+                confidence=1.0,
+            ),
+            message="What is your dog's last name?",
+            turn_id="turn-summary-fallback",
+            source="unit-test",
+        )
+        record_assistant_reply(
+            text="I am QMeet and do not have a dog.",
+            source_turn_id="turn-summary-fallback",
+            source="chat-visible-response",
+            transport="sse",
+            fallback_reason="not_attached_to_focus",
+        )
+
+        summary = response_selection_summary()
+
+        self.assertEqual(summary["decisionCount"], 2)
+        self.assertEqual(summary["takeoverCount"], 1)
+        self.assertEqual(summary["fallbackCount"], 1)
+        self.assertEqual(summary["successRate"], 0.5)
+        self.assertEqual(summary["takeoverRate"], 0.5)
+        self.assertEqual(summary["guardedAttemptCount"], 1)
+        self.assertEqual(summary["guardedTakeoverRate"], 1.0)
+        self.assertEqual(summary["healthyDecisionCount"], 2)
+        self.assertEqual(summary["healthyDecisionRate"], 1.0)
+        self.assertEqual(summary["expectedFallbackCount"], 1)
+        self.assertEqual(summary["safetyFallbackCount"], 0)
+        self.assertEqual(summary["systemFailureCount"], 0)
+        self.assertEqual(summary["unknownFallbackCount"], 0)
+        self.assertEqual(
+            summary["fallbackReasons"],
+            {"not_attached_to_focus": 1},
+        )
+        self.assertEqual(
+            summary["fallbackCategoryCounts"],
+            {
+                "expected": 1,
+                "safety": 0,
+                "systemFailure": 0,
+                "unknown": 0,
+            },
+        )
+        self.assertEqual(
+            summary["fallbackReasonsByCategory"]["expected"],
+            {"not_attached_to_focus": 1},
+        )
+        self.assertEqual(
+            summary["latestDecision"]["sourceTurnId"],
+            "turn-summary-fallback",
+        )
+        self.assertEqual(
+            summary["latestDecision"]["outcome"],
+            "fallback",
+        )
+        self.assertEqual(
+            summary["latestDecision"]["reason"],
+            "not_attached_to_focus",
+        )
+        self.assertEqual(
+            summary["latestDecision"]["category"],
+            "expected",
+        )
+        self.assertTrue(summary["latestDecision"]["healthy"])
+
+    def test_response_selection_summary_counts_tool_takeover(self) -> None:
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.FOCUS_ACTION,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.START_FOCUS,
+                        title="Research starter symptoms",
+                        objective="Find evidence for the diagnosis.",
+                    )
+                ],
+            ),
+            message="Start research.",
+            turn_id="turn-tool-summary-start",
+            source="unit-test",
+        )
+        record_assistant_reply(
+            text="Search result with citations.",
+            source_turn_id="turn-tool-summary-visible",
+            source="focus-tool-visible-response",
+            transport="search-json",
+        )
+
+        summary = response_selection_summary()
+
+        self.assertEqual(summary["decisionCount"], 1)
+        self.assertEqual(summary["takeoverCount"], 1)
+        self.assertEqual(summary["fallbackCount"], 0)
+        self.assertEqual(summary["guardedTakeoverRate"], 1.0)
+        self.assertEqual(
+            summary["latestDecision"]["responseSource"],
+            "focus-tool-visible-response",
+        )
+
+    def test_response_selection_summary_separates_safety_and_failures(
+        self,
+    ) -> None:
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.FOCUS_ACTION,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.START_FOCUS,
+                        title="Diagnose car trouble",
+                        objective="Restore reliable starting.",
+                    )
+                ],
+            ),
+            message="Help diagnose my car.",
+            turn_id="turn-category-start",
+            source="unit-test",
+        )
+
+        record_assistant_reply(
+            text="Safe legacy fallback.",
+            source_turn_id="turn-category-safety",
+            source="chat-visible-response",
+            fallback_reason="candidate_ineligible",
+            fallback_details=["unterminated_procedure"],
+        )
+        record_assistant_reply(
+            text="Legacy response after synchronization failure.",
+            source_turn_id="turn-category-system",
+            source="chat-visible-response",
+            fallback_reason="work_context_sync_failed",
+        )
+        record_assistant_reply(
+            text="Legacy response for an unrecognized reason.",
+            source_turn_id="turn-category-unknown",
+            source="chat-visible-response",
+            fallback_reason="unexpected_guard",
+        )
+
+        summary = response_selection_summary()
+
+        self.assertEqual(summary["decisionCount"], 3)
+        self.assertEqual(summary["takeoverCount"], 0)
+        self.assertEqual(summary["guardedAttemptCount"], 3)
+        self.assertEqual(summary["guardedTakeoverRate"], 0.0)
+        self.assertEqual(summary["healthyDecisionCount"], 1)
+        self.assertEqual(summary["healthyDecisionRate"], 0.3333)
+        self.assertEqual(summary["expectedFallbackCount"], 0)
+        self.assertEqual(summary["safetyFallbackCount"], 1)
+        self.assertEqual(summary["systemFailureCount"], 1)
+        self.assertEqual(summary["unknownFallbackCount"], 1)
+        self.assertEqual(
+            summary["fallbackCategoryCounts"],
+            {
+                "expected": 0,
+                "safety": 1,
+                "systemFailure": 1,
+                "unknown": 1,
+            },
+        )
+        self.assertEqual(
+            summary["fallbackReasonsByCategory"]["safety"],
+            {"candidate_ineligible": 1},
+        )
+        self.assertEqual(
+            summary["fallbackReasonsByCategory"]["systemFailure"],
+            {"work_context_sync_failed": 1},
+        )
+        self.assertEqual(
+            summary["fallbackReasonsByCategory"]["unknown"],
+            {"unexpected_guard": 1},
+        )
+        self.assertEqual(
+            summary["latestDecision"]["category"],
+            "unknown",
+        )
+        self.assertFalse(summary["latestDecision"]["healthy"])
+
+    def test_response_selection_summary_uses_latest_decision_per_turn(
+        self,
+    ) -> None:
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.FOCUS_ACTION,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.START_FOCUS,
+                        title="Diagnose car trouble",
+                        objective="Restore reliable starting.",
+                    )
+                ],
+            ),
+            message="Help diagnose my car.",
+            turn_id="turn-dedupe-start",
+            source="unit-test",
+        )
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.RESPOND,
+                responseIntent=ResponseIntent(
+                    answerDirectly=True,
+                    attachToFocus=True,
+                    guidance="Inspect the battery terminals.",
+                ),
+                confidence=1.0,
+            ),
+            message="What should I inspect?",
+            turn_id="turn-dedupe-decision",
+            source="unit-test",
+        )
+        record_assistant_reply(
+            text="Legacy fallback.",
+            source_turn_id="turn-dedupe-decision",
+            source="chat-visible-response",
+            fallback_reason="work_context_sync_failed",
+        )
+        record_assistant_reply(
+            text="Inspect the battery terminals.",
+            source_turn_id="turn-dedupe-decision",
+            source="focus-visible-response",
+        )
+
+        summary = response_selection_summary()
+
+        self.assertEqual(summary["decisionCount"], 1)
+        self.assertEqual(summary["takeoverCount"], 1)
+        self.assertEqual(summary["fallbackCount"], 0)
+        self.assertEqual(summary["fallbackReasons"], {})
+        self.assertEqual(
+            summary["latestDecision"]["outcome"],
+            "takeover",
         )
 
 

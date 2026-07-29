@@ -521,6 +521,20 @@ export interface SearchResultCard {
   detail: string;
 }
 
+export interface FocusToolCitation {
+  title: string;
+  url: string;
+  domain: string;
+}
+
+export interface FocusToolResponse {
+  text: string;
+  tool: string;
+  citations: FocusToolCitation[];
+  sourceTurnId: string;
+  responseSource: 'focus-tool-guarded';
+}
+
 export interface SearchResponse {
   ok: boolean;
   query: string;
@@ -531,6 +545,7 @@ export interface SearchResponse {
   sources: SearchSourceItem[];
   provider: string;
   message: string;
+  focusResponse?: FocusToolResponse;
 }
 
 export type CommandIntentName = 'command' | 'chat';

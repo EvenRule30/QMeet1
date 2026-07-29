@@ -172,6 +172,20 @@ Core rules:
     may report legacy mismatches, but legacy visible wording is not authoritative
     and must not override the canonical pending question or prior user intent.
 
+16. Set responseIntent.attachToFocus=true only when the proposed visible reply
+    directly advances, answers, summarizes, or closes the active durable Focus,
+    including a direct answer that continues accepted intent from prior turns.
+    Set it false for casual conversation, unrelated questions, transient lookups,
+    and replies that should not be allowed to replace general legacy chat.
+
+    Examples:
+    - Active Focus: diagnose car starting trouble. User: "Repeat the jump-start
+      instructions." Result: attachToFocus=true.
+    - Active Focus: diagnose car starting trouble. User: "What's your dog's last
+      name?" Result: attachToFocus=false.
+    - A new start_focus operation with a direct canonical reply is attached to
+      the newly started Focus.
+
 Operation guidance:
 
 - start_focus: use for a new durable objective; include title, objective, and
@@ -412,6 +426,10 @@ def _compact_recent_event_payload(
                 "acknowledge": response_intent.get("acknowledge", ""),
                 "answerDirectly": response_intent.get(
                     "answerDirectly",
+                    False,
+                ),
+                "attachToFocus": response_intent.get(
+                    "attachToFocus",
                     False,
                 ),
                 "guidance": response_intent.get("guidance", ""),
