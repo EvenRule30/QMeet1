@@ -411,9 +411,14 @@ export default function App() {
             }
 
       if (commandRoute !== 'confirmed' && isDestructiveLocalCommand(commandMatch.command)) {
+        const taskCompletionTarget = commandMatch.command === 'mark-task-done'
+          ? commandMatch.payload?.trim() ?? ''
+          : '';
         const frontendCommand = commandMatch.command === 'delete-calendar-event'
           ? buildCalendarDeleteFrontendCommand(commandMatch.calendarDelete)
-          : getFrontendCommandForLocalCommand(commandMatch.command);
+          : commandMatch.command === 'mark-task-done' && taskCompletionTarget
+            ? `mark task ${taskCompletionTarget} done`
+            : getFrontendCommandForLocalCommand(commandMatch.command);
         const isCalendarDeleteCommand = commandMatch.command === 'delete-last-event' || commandMatch.command === 'delete-calendar-event';
         const targetDeleteEvent = commandMatch.command === 'delete-last-event'
           ? await findCalendarEventForDeletion()

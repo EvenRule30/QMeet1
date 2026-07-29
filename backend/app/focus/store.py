@@ -524,11 +524,6 @@ _CONFIRMATION_GATED_LEGACY_ACTIONS = frozenset({
     "edit_calendar_event",
     "delete_last_calendar_event",
     "clear_calendar",
-    "save_note",
-    "delete_last_note",
-    "clear_notes",
-    "save_task",
-    "mark_task_done",
 })
 
 _PROTECTED_LEGACY_ACTIONS = frozenset({
@@ -536,6 +531,14 @@ _PROTECTED_LEGACY_ACTIONS = frozenset({
     "link_visual_to_focus",
     "clear_visual_context",
     "delete_last_visual_observation",
+    "save_note",
+    "delete_last_note",
+    "clear_notes",
+    "remember_task",
+    "save_task",
+    "mark_task_done",
+    "delete_last_task",
+    "clear_done_tasks",
 })
 
 
@@ -547,6 +550,8 @@ _SAFE_LEGACY_ROUTE_ACTIONS = {
     "read_visual_history": "visual_read",
     "summarize_visual_context": "visual_read",
     "read_focus_visuals": "visual_read",
+    "read_notes": "notes_read",
+    "read_memory": "tasks_read",
 }
 
 
@@ -615,6 +620,8 @@ def _focus_route_class(
             ToolName.SEARCH.value,
             ToolName.CALENDAR_READ.value,
             ToolName.VISUAL_READ.value,
+            ToolName.NOTES_READ.value,
+            ToolName.TASKS_READ.value,
         }:
             return "", "unsupported_tool", (tool_name or "unknown",)
         if route != TurnRoute.TOOL.value:
@@ -1932,6 +1939,9 @@ def apply_turn_plan(
             tool_call.tool in {
                 ToolName.VISUAL_READ,
                 ToolName.VISUAL_WRITE,
+                ToolName.NOTES_READ,
+                ToolName.TASKS_READ,
+                ToolName.MEMORY_WRITE,
             }
             and not tool_call.requiresConfirmation
             and not tool_call.attachToFocus
@@ -2062,7 +2072,7 @@ def apply_turn_plan(
         if tool_call.tool == ToolName.NONE:
             continue
         if route_only_tool_turn:
-            # The existing frontend owns synchronized visual-memory reads and
+            # The existing frontend owns synchronized visual, Notes, and Tasks reads
             # protected local mutations. These planner tool calls are only
             # independent routing classifications, so do not create orphan
             # pending TOOL_REQUESTED events.

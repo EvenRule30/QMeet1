@@ -124,6 +124,144 @@ function isFocusToolResponse(value: unknown): value is FocusToolResponse {
   );
 }
 
+
+type CommandIntentPayload = {
+  intent?: unknown;
+  action?: unknown;
+  confidence?: unknown;
+  frontendCommand?: unknown;
+  payload?: unknown;
+  reason?: unknown;
+  [key: string]: unknown;
+};
+
+function normalizeCommandText(value: string): string {
+  return value
+    .trim()
+    .replace(/[?!,;:]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/[.]+$/g, '')
+    .trim();
+}
+
+function extractNamedTaskCompletionTarget(message: string): string {
+  const normalized = normalizeCommandText(message);
+  const politePrefix =
+    '(?:(?:please\\s+)?(?:can|could|would|will)\\s+you\\s+(?:please\\s+)?|please\\s+)?';
+  const patterns = [
+    new RegExp(
+      `^${politePrefix}(?:mark|set|complete|finish)\\s+` +
+        '(?:the\\s+)?(?:task\\s+)?(?:called|named|about)?\\s*' +
+        '(.+?)\\s+(?:as\\s+)?(?:done|complete|completed|finished)$',
+      'i',
+    ),
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+    if (!match?.[1]) continue;
+
+    const target = match[1]
+      .replace(/\s+task$/i, '')
+      .replace(/^[\s'\"]+|[\s'\"]+$/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (target) return target;
+  }
+
+  return '';
+}
+
+function normalizedAction(value: unknown): string {
+  return typeof value === 'string'
+    ? value.trim().toLowerCase().replace(/-/g, '_')
+    : '';
+}
+
+export function repairNamedTaskCompletionResponse(
+  message: string,
+  value: unknown,
+): CommandIntentPayload | null {
+  if (!value || typeof value !== 'object') return null;
+
+  const payload = value as CommandIntentPayload;
+  if (
+    normalizedAction(payload.intent) !== 'command' ||
+    normalizedAction(payload.action) !== 'mark_task_done'
+  ) {
+    return null;
+  }
+
+  const target = extractNamedTaskCompletionTarget(message);
+  if (!target) return null;
+
+  const rawCommand =
+    typeof payload.frontendCommand === 'string'
+      ? payload.frontendCommand.trim()
+      : '';
+  const rawPayload =
+    payload.payload && typeof payload.payload === 'object'
+      ? (payload.payload as Record<string, unknown>)
+      : {};
+  const existingValue =
+    typeof rawPayload.value === 'string' ? rawPayload.value.trim() : '';
+
+  const targetKey = target.toLowerCase();
+  const commandHasTarget = rawCommand.toLowerCase().includes(targetKey);
+  const payloadHasTarget = existingValue.toLowerCase() === targetKey;
+
+  if (commandHasTarget && payloadHasTarget) {
+    return null;
+  }
+
+  return {
+    ...payload,
+    frontendCommand: `mark task ${target} done`,
+    payload: {
+      ...rawPayload,
+      operation: 'complete_task',
+      value: target,
+    },
+  };
+}
+
+async function readCommandMessage(request: Request): Promise<string> {
+  try {
+    const payload = (await request.clone().json()) as { message?: unknown };
+    return typeof payload.message === 'string' ? payload.message.trim() : '';
+  } catch {
+    return '';
+  }
+}
+
+async function repairCommandResponse(
+  response: Response,
+  message: string,
+): Promise<Response> {
+  if (!response.ok || !message) return response;
+
+  try {
+    const payload = (await response.clone().json()) as unknown;
+    const repaired = repairNamedTaskCompletionResponse(message, payload);
+    if (!repaired) return response;
+
+    const headers = new Headers(response.headers);
+    headers.delete('content-length');
+    headers.delete('content-encoding');
+    headers.set('content-type', 'application/json; charset=utf-8');
+    headers.set('x-qmeet-client-command-repair', 'named-task-target');
+
+    return new Response(JSON.stringify(repaired), {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  } catch {
+    return response;
+  }
+}
+
 export function beginExplicitCalendarRead(): void {
   explicitCalendarReadPending = true;
 }
@@ -146,9 +284,16 @@ export function installQMeetFocusTurnHeaders(): void {
   ): Promise<Response> => {
     const request = new Request(input, init);
     const path = getRequestPath(request);
+    const commandMessage =
+      path === '/api/command/interpret'
+        ? await readCommandMessage(request)
+        : '';
 
     if (!shouldAttachTurnId(request, path)) {
-      return originalFetch(request);
+      const response = await originalFetch(request);
+      return path === '/api/command/interpret'
+        ? repairCommandResponse(response, commandMessage)
+        : response;
     }
 
     const turnId = resolveTurnId(request, path);
@@ -188,7 +333,9 @@ export function installQMeetFocusTurnHeaders(): void {
       }
     }
 
-    return response;
+    return path === '/api/command/interpret'
+      ? repairCommandResponse(response, commandMessage)
+      : response;
   };
 }
 

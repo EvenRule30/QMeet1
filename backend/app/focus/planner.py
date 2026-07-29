@@ -15,6 +15,8 @@ except Exception:  # pragma: no cover - startup remains available in mock mode.
 from app.focus.legacy import load_legacy_focus_seed
 from app.focus.route_bridge import (
     calendar_write_intent,
+    memory_mutation_intent,
+    memory_read_intent,
     visual_mutation_intent,
     visual_read_intent,
 )
@@ -98,6 +100,12 @@ Core rules:
      as a protected route marker. Set requiresConfirmation=false and
      attachToFocus=false. Focus must not execute the mutation or answer as chat;
      the existing frontend visual-memory handler remains authoritative.
+   - Reading saved notes uses notes_read. Reading or summarizing the task list
+     uses tasks_read. Both are route-only reads: requiresConfirmation=false,
+     attachToFocus=false, and no durable Focus operations.
+   - Creating, completing, clearing, or deleting notes or tasks uses
+     memory_write only as a protected route marker. Focus must not execute or
+     narrate the mutation; the existing frontend memory handler owns it.
 
 4. Distinguish focus continuation, correction, and replacement precisely:
 
@@ -268,6 +276,10 @@ Tool names available in this first slice:
 - calendar_read
 - calendar_write
 - visual_read
+- visual_write
+- notes_read
+- tasks_read
+- memory_write
 - open_search
 - start_focus
 - end_focus
@@ -594,6 +606,107 @@ def _calendar_focus_is_relevant(state: FocusState) -> bool:
 
 
 
+def _normalize_memory_mutation_plan(
+    plan: TurnPlan,
+    *,
+    source: str,
+    message: str,
+) -> TurnPlan:
+    """Normalize Notes and Tasks mutations as protected route-only markers."""
+
+    if source != "command-interpret-shadow":
+        return plan
+
+    mutation = memory_mutation_intent(message)
+    if mutation is None:
+        return plan
+
+    arguments = [
+        ToolArgument(key="operation", value=mutation.operation),
+    ]
+    if mutation.payload:
+        arguments.append(ToolArgument(key="value", value=mutation.payload))
+
+    return plan.model_copy(
+        update={
+            "route": TurnRoute.TOOL,
+            "focusOperations": [],
+            "toolCalls": [
+                PlannedToolCall(
+                    tool=ToolName.MEMORY_WRITE,
+                    arguments=arguments,
+                    reason=(
+                        "Mark a protected Notes or Tasks mutation for the "
+                        "existing deterministic frontend handler."
+                    ),
+                    requiresConfirmation=False,
+                    attachToFocus=False,
+                )
+            ],
+            "responseIntent": ResponseIntent(
+                answerDirectly=False,
+                attachToFocus=False,
+            ),
+            "confidence": max(plan.confidence, 0.99),
+            "reason": (
+                "Notes or Tasks mutation normalized as a protected route-only "
+                "tool; Focus does not execute or narrate the mutation."
+            ),
+        }
+    )
+
+
+def _normalize_memory_read_plan(
+    plan: TurnPlan,
+    *,
+    source: str,
+    message: str,
+) -> TurnPlan:
+    """Normalize read-only Notes and Tasks summaries as route-only tools."""
+
+    if source != "command-interpret-shadow":
+        return plan
+
+    read_intent = memory_read_intent(message)
+    if read_intent is None:
+        return plan
+
+    tool = (
+        ToolName.NOTES_READ
+        if read_intent.surface == "notes"
+        else ToolName.TASKS_READ
+    )
+    return plan.model_copy(
+        update={
+            "route": TurnRoute.TOOL,
+            "focusOperations": [],
+            "toolCalls": [
+                PlannedToolCall(
+                    tool=tool,
+                    arguments=[
+                        ToolArgument(key="surface", value=read_intent.surface),
+                    ],
+                    reason=(
+                        "Read synchronized Notes or Tasks through the existing "
+                        "deterministic frontend command."
+                    ),
+                    requiresConfirmation=False,
+                    attachToFocus=False,
+                )
+            ],
+            "responseIntent": ResponseIntent(
+                answerDirectly=False,
+                attachToFocus=False,
+            ),
+            "confidence": max(plan.confidence, 0.99),
+            "reason": (
+                "Notes or Tasks read normalized as a safe route-only tool "
+                "with no memory mutation."
+            ),
+        }
+    )
+
+
 def _normalize_visual_mutation_plan(
     plan: TurnPlan,
     *,
@@ -766,6 +879,16 @@ def _normalize_calendar_read_plan(
     because the model omitted attachToFocus.
     """
 
+    plan = _normalize_memory_mutation_plan(
+        plan,
+        source=source,
+        message=message,
+    )
+    plan = _normalize_memory_read_plan(
+        plan,
+        source=source,
+        message=message,
+    )
     plan = _normalize_visual_mutation_plan(
         plan,
         source=source,

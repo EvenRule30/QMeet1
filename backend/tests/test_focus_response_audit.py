@@ -2334,6 +2334,232 @@ class FocusGuardedRouteMiddlewareTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.payload["outcome"], "takeover")
         self.assertEqual(event.payload["routeClass"], "visual_read")
 
+    async def test_route_bridge_restores_notes_read(self) -> None:
+        turn_id = "turn-route-bridge-notes-read"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.TOOL,
+                toolCalls=[
+                    PlannedToolCall(
+                        tool=ToolName.NOTES_READ,
+                        requiresConfirmation=False,
+                        attachToFocus=False,
+                    )
+                ],
+                confidence=1.0,
+            ),
+            message="Could you summarize my notes?",
+            turn_id=turn_id,
+            source="command-interpret-shadow",
+        )
+
+        sent = await self._run(
+            turn_id=turn_id,
+            message="Could you summarize my notes?",
+            legacy_payload={
+                "intent": "chat",
+                "action": "none",
+                "confidence": 0.8,
+                "frontendCommand": "",
+                "payload": {},
+                "reason": "Legacy model mislabeled Notes read as chat.",
+            },
+        )
+
+        headers = dict(next(
+            item for item in sent if item["type"] == "http.response.start"
+        )["headers"])
+        self.assertEqual(headers[b"x-qmeet-route-source"], b"focus-guarded")
+        body = b"".join(
+            item.get("body", b"")
+            for item in sent
+            if item["type"] == "http.response.body"
+        )
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(payload["intent"], "command")
+        self.assertEqual(payload["action"], "read_notes")
+        self.assertEqual(payload["frontendCommand"], "read my notes")
+        self.assertEqual(payload["payload"], {"surface": "notes"})
+
+        event = next(
+            event for event in reversed(list_events())
+            if event.type == FocusEventType.ROUTE_SELECTION
+            and event.sourceTurnId == turn_id
+        )
+        self.assertEqual(event.payload["outcome"], "takeover")
+        self.assertEqual(event.payload["routeClass"], "notes_read")
+
+    async def test_route_bridge_restores_tasks_read(self) -> None:
+        turn_id = "turn-route-bridge-tasks-read"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.TOOL,
+                toolCalls=[
+                    PlannedToolCall(
+                        tool=ToolName.TASKS_READ,
+                        requiresConfirmation=False,
+                        attachToFocus=False,
+                    )
+                ],
+                confidence=1.0,
+            ),
+            message="Could you show me my open tasks?",
+            turn_id=turn_id,
+            source="command-interpret-shadow",
+        )
+
+        sent = await self._run(
+            turn_id=turn_id,
+            message="Could you show me my open tasks?",
+            legacy_payload={
+                "intent": "chat",
+                "action": "none",
+                "confidence": 0.8,
+                "frontendCommand": "",
+                "payload": {},
+                "reason": "Legacy model mislabeled Tasks read as chat.",
+            },
+        )
+
+        headers = dict(next(
+            item for item in sent if item["type"] == "http.response.start"
+        )["headers"])
+        self.assertEqual(headers[b"x-qmeet-route-source"], b"focus-guarded")
+        body = b"".join(
+            item.get("body", b"")
+            for item in sent
+            if item["type"] == "http.response.body"
+        )
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(payload["action"], "read_memory")
+        self.assertEqual(payload["frontendCommand"], "read memory")
+        self.assertEqual(payload["payload"], {"surface": "tasks"})
+
+    async def test_route_bridge_restores_protected_task_completion(self) -> None:
+        turn_id = "turn-route-bridge-task-complete"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.TOOL,
+                toolCalls=[
+                    PlannedToolCall(
+                        tool=ToolName.MEMORY_WRITE,
+                        requiresConfirmation=False,
+                        attachToFocus=False,
+                    )
+                ],
+                confidence=1.0,
+            ),
+            message="Could you mark the budget task done?",
+            turn_id=turn_id,
+            source="command-interpret-shadow",
+        )
+
+        sent = await self._run(
+            turn_id=turn_id,
+            message="Could you mark the budget task done?",
+            legacy_payload={
+                "intent": "chat",
+                "action": "none",
+                "confidence": 0.8,
+                "frontendCommand": "",
+                "payload": {},
+                "reason": "Legacy model mislabeled task completion as chat.",
+            },
+        )
+
+        headers = dict(next(
+            item for item in sent if item["type"] == "http.response.start"
+        )["headers"])
+        self.assertEqual(
+            headers[b"x-qmeet-route-fallback"],
+            b"protected_legacy_route",
+        )
+        body = b"".join(
+            item.get("body", b"")
+            for item in sent
+            if item["type"] == "http.response.body"
+        )
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(payload["action"], "mark_task_done")
+        self.assertEqual(payload["frontendCommand"], "mark task budget done")
+        self.assertEqual(
+            payload["payload"],
+            {"operation": "complete_task", "value": "budget"},
+        )
+
+        event = next(
+            event for event in reversed(list_events())
+            if event.type == FocusEventType.ROUTE_SELECTION
+            and event.sourceTurnId == turn_id
+        )
+        self.assertEqual(event.payload["outcome"], "fallback")
+        self.assertEqual(event.payload["reason"], "protected_legacy_route")
+        self.assertEqual(event.payload["legacyAction"], "mark_task_done")
+
+    async def test_route_bridge_preserves_named_task_when_legacy_command_is_vague(
+        self,
+    ) -> None:
+        turn_id = "turn-route-bridge-task-target-preservation"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.TOOL,
+                toolCalls=[
+                    PlannedToolCall(
+                        tool=ToolName.MEMORY_WRITE,
+                        requiresConfirmation=False,
+                        attachToFocus=False,
+                    )
+                ],
+                confidence=1.0,
+            ),
+            message="Could you mark the budget task done?",
+            turn_id=turn_id,
+            source="command-interpret-shadow",
+        )
+
+        sent = await self._run(
+            turn_id=turn_id,
+            message="Could you mark the budget task done?",
+            legacy_payload={
+                "intent": "command",
+                "action": "mark_task_done",
+                "confidence": 1.0,
+                "frontendCommand": "mark task done",
+                "payload": {"operation": "complete_task"},
+                "reason": "Legacy model recognized completion but lost the title.",
+            },
+        )
+
+        headers = dict(next(
+            item for item in sent if item["type"] == "http.response.start"
+        )["headers"])
+        self.assertEqual(
+            headers[b"x-qmeet-route-fallback"],
+            b"protected_legacy_route",
+        )
+        body = b"".join(
+            item.get("body", b"")
+            for item in sent
+            if item["type"] == "http.response.body"
+        )
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(payload["action"], "mark_task_done")
+        self.assertEqual(payload["frontendCommand"], "mark task budget done")
+        self.assertEqual(
+            payload["payload"],
+            {"operation": "complete_task", "value": "budget"},
+        )
+        self.assertIn("preserved the named task target", payload["reason"])
+
+        event = next(
+            event for event in reversed(list_events())
+            if event.type == FocusEventType.ROUTE_SELECTION
+            and event.sourceTurnId == turn_id
+        )
+        self.assertEqual(event.payload["outcome"], "fallback")
+        self.assertEqual(event.payload["reason"], "protected_legacy_route")
+        self.assertEqual(event.payload["legacyAction"], "mark_task_done")
+
     async def test_route_bridge_restores_protected_visual_delete(self) -> None:
         turn_id = "turn-route-bridge-visual-delete"
         apply_turn_plan(

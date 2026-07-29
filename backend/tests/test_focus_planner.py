@@ -20,6 +20,8 @@ from app.focus.planner import (
     _compact_recent_event_payload,
     _normalize_calendar_read_plan,
     _normalize_calendar_write_plan,
+    _normalize_memory_mutation_plan,
+    _normalize_memory_read_plan,
     _normalize_visual_mutation_plan,
     _normalize_visual_read_plan,
     _plan_question_errors,
@@ -35,16 +37,108 @@ class FocusPlannerCalendarToolContractTests(unittest.TestCase):
         self.assertEqual(ToolName.CALENDAR_WRITE.value, "calendar_write")
         self.assertEqual(ToolName.VISUAL_READ.value, "visual_read")
         self.assertEqual(ToolName.VISUAL_WRITE.value, "visual_write")
+        self.assertEqual(ToolName.NOTES_READ.value, "notes_read")
+        self.assertEqual(ToolName.TASKS_READ.value, "tasks_read")
+        self.assertEqual(ToolName.MEMORY_WRITE.value, "memory_write")
         self.assertIn("calendar_read", _PLANNER_SYSTEM_PROMPT)
         self.assertIn("calendar_write", _PLANNER_SYSTEM_PROMPT)
         self.assertIn("visual_read", _PLANNER_SYSTEM_PROMPT)
         self.assertIn("visual_write", _PLANNER_SYSTEM_PROMPT)
+        self.assertIn("notes_read", _PLANNER_SYSTEM_PROMPT)
+        self.assertIn("tasks_read", _PLANNER_SYSTEM_PROMPT)
+        self.assertIn("memory_write", _PLANNER_SYSTEM_PROMPT)
         self.assertIn("calendar-read-shadow", _PLANNER_SYSTEM_PROMPT)
         self.assertIn("Never fabricate tool", _PLANNER_SYSTEM_PROMPT)
         self.assertIn(
             "results, calendar contents, free time",
             _PLANNER_SYSTEM_PROMPT,
         )
+
+
+class FocusPlannerMemoryRoutingNormalizationTests(unittest.TestCase):
+    def test_notes_read_is_normalized_as_route_only_tool(self) -> None:
+        plan = TurnPlan(
+            route=TurnRoute.RESPOND,
+            focusOperations=[
+                FocusOperation(
+                    kind=FocusOperationKind.ADD_LIST_ITEM,
+                    field=FocusField.KNOWN_FACTS,
+                    value="This must not be stored.",
+                )
+            ],
+            responseIntent=ResponseIntent(
+                answerDirectly=True,
+                attachToFocus=True,
+                guidance="I will read your notes.",
+            ),
+            confidence=0.7,
+        )
+
+        normalized = _normalize_memory_read_plan(
+            plan,
+            source="command-interpret-shadow",
+            message="Could you summarize my notes?",
+        )
+
+        self.assertEqual(normalized.route, TurnRoute.TOOL)
+        self.assertEqual(normalized.focusOperations, [])
+        self.assertEqual(normalized.toolCalls[0].tool, ToolName.NOTES_READ)
+        self.assertFalse(normalized.toolCalls[0].requiresConfirmation)
+        self.assertFalse(normalized.toolCalls[0].attachToFocus)
+        self.assertEqual(
+            {argument.key: argument.value for argument in normalized.toolCalls[0].arguments},
+            {"surface": "notes"},
+        )
+        self.assertFalse(normalized.responseIntent.answerDirectly)
+        self.assertGreaterEqual(normalized.confidence, 0.99)
+
+    def test_tasks_read_is_normalized_as_route_only_tool(self) -> None:
+        normalized = _normalize_memory_read_plan(
+            TurnPlan(route=TurnRoute.RESPOND, confidence=0.8),
+            source="command-interpret-shadow",
+            message="Could you show me my open tasks?",
+        )
+        self.assertEqual(normalized.toolCalls[0].tool, ToolName.TASKS_READ)
+        self.assertEqual(
+            {argument.key: argument.value for argument in normalized.toolCalls[0].arguments},
+            {"surface": "tasks"},
+        )
+
+    def test_task_mutation_is_not_normalized_as_read(self) -> None:
+        plan = TurnPlan(route=TurnRoute.RESPOND, confidence=0.8)
+        normalized = _normalize_memory_read_plan(
+            plan,
+            source="command-interpret-shadow",
+            message="Could you mark the budget task done?",
+        )
+        self.assertEqual(normalized, plan)
+
+    def test_task_completion_is_protected_route_only_write(self) -> None:
+        normalized = _normalize_memory_mutation_plan(
+            TurnPlan(
+                route=TurnRoute.RESPOND,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.ADD_LIST_ITEM,
+                        field=FocusField.KNOWN_FACTS,
+                        value="Must be suppressed.",
+                    )
+                ],
+                confidence=0.8,
+            ),
+            source="command-interpret-shadow",
+            message="Could you mark the budget task done?",
+        )
+        self.assertEqual(normalized.route, TurnRoute.TOOL)
+        self.assertEqual(normalized.focusOperations, [])
+        self.assertEqual(normalized.toolCalls[0].tool, ToolName.MEMORY_WRITE)
+        self.assertFalse(normalized.toolCalls[0].requiresConfirmation)
+        self.assertFalse(normalized.toolCalls[0].attachToFocus)
+        self.assertEqual(
+            {argument.key: argument.value for argument in normalized.toolCalls[0].arguments},
+            {"operation": "complete_task", "value": "budget"},
+        )
+
 
 
 class FocusPlannerVisualReadNormalizationTests(unittest.TestCase):

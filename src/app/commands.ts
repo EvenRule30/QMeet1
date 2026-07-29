@@ -652,12 +652,19 @@ function extractTaskPayload(normalized: string): string | null {
 }
 
 function extractTaskDonePayload(normalized: string): string | null {
+  const commandText = normalized
+    .replace(
+      /^(?:(?:please\s+)?(?:can|could|would|will)\s+you\s+|please\s+|i\s+(?:want|need)\s+you\s+to\s+)/i,
+      '',
+    )
+    .trim();
+
   const broadDonePatterns = [
     /^(?:please\s+)?(?:mark|set)\s+(?:the\s+)?(?:task\s+)?(?:as\s+)?(?:done|complete|completed|finished)$/i,
     /^(?:please\s+)?(?:complete|finish)\s+(?:the\s+)?(?:next|latest|last|current)?\s*task$/i,
   ];
 
-  if (broadDonePatterns.some((pattern) => pattern.test(normalized))) {
+  if (broadDonePatterns.some((pattern) => pattern.test(commandText))) {
     return '';
   }
 
@@ -672,20 +679,23 @@ function extractTaskDonePayload(normalized: string): string | null {
   ];
 
   for (const pattern of ordinalTaskPatterns) {
-    const match = normalized.match(pattern);
+    const match = commandText.match(pattern);
     const payload = match?.[1] ? cleanCommandPayload(match[1]) : '';
     if (payload) return payload;
   }
 
   const patterns = [
+    /^(?:complete|finish)\s+(?:the\s+)?(.+?)\s+task$/i,
     /^(?:please\s+)?(?:mark|set|complete|finish)\s+(?:the\s+)?(?:task\s+)?(?:called|named|about)?\s*(.+?)\s+(?:as\s+)?(?:done|complete|completed|finished)$/i,
     /^(?:please\s+)?(?:mark|set)\s+(?:the\s+)?(?:task\s+)?(.+?)\s+(?:as\s+)?(?:done|complete|completed|finished)$/i,
     /^(?:please\s+)?(?:i|we)\s+(?:did|finished|completed|got through|handled)\s+(?:the\s+)?(?:task\s+)?(?:called|named|about)?\s*(.+)$/i,
   ];
 
   for (const pattern of patterns) {
-    const match = normalized.match(pattern);
-    const payload = match?.[1] ? cleanCommandPayload(match[1]) : '';
+    const match = commandText.match(pattern);
+    const payload = match?.[1]
+      ? cleanCommandPayload(match[1]).replace(/\s+tasks?$/i, '').trim()
+      : '';
     if (payload) return payload;
   }
 

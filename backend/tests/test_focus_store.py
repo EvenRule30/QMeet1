@@ -1476,6 +1476,112 @@ class FocusStoreTests(unittest.TestCase):
         self.assertEqual(decision.focusRouteClass, "search")
         self.assertEqual(decision.legacyRouteClass, "search")
 
+    def test_guarded_route_selector_accepts_notes_and_tasks_reads(self) -> None:
+        cases = [
+            (
+                "turn-route-notes-read",
+                ToolName.NOTES_READ,
+                "read_notes",
+                "notes_read",
+            ),
+            (
+                "turn-route-tasks-read",
+                ToolName.TASKS_READ,
+                "read_memory",
+                "tasks_read",
+            ),
+        ]
+
+        for turn_id, tool, action, route_class in cases:
+            with self.subTest(route_class=route_class):
+                apply_turn_plan(
+                    TurnPlan(
+                        route=TurnRoute.TOOL,
+                        toolCalls=[
+                            PlannedToolCall(
+                                tool=tool,
+                                requiresConfirmation=False,
+                                attachToFocus=False,
+                            )
+                        ],
+                        confidence=0.99,
+                    ),
+                    message=f"Read {route_class}.",
+                    turn_id=turn_id,
+                    source="command-interpret-shadow",
+                )
+
+                decision = guarded_route_decision_for_turn(
+                    turn_id,
+                    {
+                        "intent": "command",
+                        "action": action,
+                        "confidence": 0.99,
+                        "frontendCommand": "read memory",
+                        "payload": {},
+                    },
+                )
+                self.assertTrue(decision.eligible)
+                self.assertEqual(decision.routeClass, route_class)
+                self.assertEqual(decision.focusRouteClass, route_class)
+                self.assertEqual(decision.legacyRouteClass, route_class)
+
+                turn_events = [
+                    event for event in list_events()
+                    if event.sourceTurnId == turn_id
+                ]
+                self.assertEqual(
+                    [event.type for event in turn_events],
+                    [FocusEventType.TURN_PLANNED],
+                )
+                self.assertTrue(
+                    turn_events[0].payload["executionPolicy"]["routeOnlyTool"]
+                )
+
+    def test_memory_write_marker_is_route_only_and_non_mutating(self) -> None:
+        turn_id = "turn-route-task-complete"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.TOOL,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.ADD_LIST_ITEM,
+                        field=FocusField.KNOWN_FACTS,
+                        value="Must be suppressed.",
+                    )
+                ],
+                toolCalls=[
+                    PlannedToolCall(
+                        tool=ToolName.MEMORY_WRITE,
+                        requiresConfirmation=False,
+                        attachToFocus=False,
+                    )
+                ],
+                responseIntent=ResponseIntent(
+                    answerDirectly=True,
+                    attachToFocus=True,
+                    guidance="I completed it.",
+                ),
+                confidence=0.99,
+            ),
+            message="Mark the budget task done.",
+            turn_id=turn_id,
+            source="command-interpret-shadow",
+        )
+
+        turn_events = [
+            event for event in list_events()
+            if event.sourceTurnId == turn_id
+        ]
+        self.assertEqual(
+            [event.type for event in turn_events],
+            [FocusEventType.TURN_PLANNED],
+        )
+        policy = turn_events[0].payload["executionPolicy"]
+        self.assertTrue(policy["transientTool"])
+        self.assertTrue(policy["routeOnlyTool"])
+        self.assertEqual(policy["suppressedFocusOperationCount"], 1)
+
     def test_guarded_route_selector_accepts_visual_read_agreement(self) -> None:
         turn_id = "turn-route-visual-history"
         apply_turn_plan(
@@ -1620,6 +1726,20 @@ class FocusStoreTests(unittest.TestCase):
         self.assertFalse(protected_visual_mutation.eligible)
         self.assertEqual(
             protected_visual_mutation.fallbackReason,
+            "protected_legacy_route",
+        )
+
+        protected_task_mutation = guarded_route_decision_for_turn(
+            turn_id,
+            {
+                "intent": "command",
+                "action": "mark_task_done",
+                "frontendCommand": "mark task budget done",
+            },
+        )
+        self.assertFalse(protected_task_mutation.eligible)
+        self.assertEqual(
+            protected_task_mutation.fallbackReason,
             "protected_legacy_route",
         )
 

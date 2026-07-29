@@ -26,6 +26,21 @@ class VisualMutationIntent:
 
 
 @dataclass(frozen=True)
+class MemoryReadIntent:
+    surface: str
+    action: str
+    frontend_command: str
+
+
+@dataclass(frozen=True)
+class MemoryMutationIntent:
+    action: str
+    frontend_command: str
+    operation: str
+    payload: str = ""
+
+
+@dataclass(frozen=True)
 class CalendarWriteIntent:
     day: str
     time: str
@@ -126,6 +141,201 @@ def calendar_write_intent(message: str) -> CalendarWriteIntent | None:
 
     return None
 
+
+
+def memory_read_intent(message: str) -> MemoryReadIntent | None:
+    """Recognize read-only Notes and Tasks summaries.
+
+    These requests use the existing synchronized frontend memory readouts. They
+    never create, edit, complete, clear, or delete a note or task.
+    """
+
+    text = _normalize_message(message)
+    if not text:
+        return None
+
+    notes_patterns = [
+        re.compile(
+            rf"^{_POLITE_PREFIX}(?:read|list|show|display|summarize|recap|review|tell\s+me)\s+"
+            r"(?:me\s+)?(?:the\s+|my\s+)?(?:saved\s+|recent\s+)?notes$",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            rf"^{_POLITE_PREFIX}(?:what\s+notes\s+do\s+i\s+have|"
+            r"what\s+are\s+my\s+notes)$",
+            re.IGNORECASE,
+        ),
+    ]
+    if any(pattern.fullmatch(text) for pattern in notes_patterns):
+        return MemoryReadIntent(
+            surface="notes",
+            action="read_notes",
+            frontend_command="read my notes",
+        )
+
+    tasks_patterns = [
+        re.compile(
+            rf"^{_POLITE_PREFIX}(?:read|list|show|display|summarize|recap|review|tell\s+me)\s+"
+            r"(?:me\s+)?(?:the\s+|my\s+)?(?:open\s+|current\s+|saved\s+)?"
+            r"(?:tasks|task\s+list|to-do\s+list|todo\s+list|work\s+log)$",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            rf"^{_POLITE_PREFIX}(?:what\s+tasks\s+do\s+i\s+have|"
+            r"what\s+are\s+my\s+tasks)$",
+            re.IGNORECASE,
+        ),
+    ]
+    if any(pattern.fullmatch(text) for pattern in tasks_patterns):
+        return MemoryReadIntent(
+            surface="tasks",
+            action="read_memory",
+            frontend_command="read memory",
+        )
+
+    return None
+
+
+def memory_mutation_intent(message: str) -> MemoryMutationIntent | None:
+    """Recognize protected note/task mutations owned by frontend handlers."""
+
+    text = _normalize_message(message)
+    if not text:
+        return None
+
+    delete_note_patterns = [
+        re.compile(
+            rf"^{_POLITE_PREFIX}(?:delete|remove|erase|clear)\s+"
+            r"(?:the\s+|my\s+)?(?:last|latest|newest|most\s+recent)\s+note$",
+            re.IGNORECASE,
+        ),
+    ]
+    if any(pattern.fullmatch(text) for pattern in delete_note_patterns):
+        return MemoryMutationIntent(
+            action="delete_last_note",
+            frontend_command="delete last note",
+            operation="delete_last_note",
+        )
+
+    clear_notes_patterns = [
+        re.compile(
+            rf"^{_POLITE_PREFIX}(?:clear|delete|remove|wipe)\s+"
+            r"(?:all\s+|my\s+)?notes$",
+            re.IGNORECASE,
+        ),
+    ]
+    if any(pattern.fullmatch(text) for pattern in clear_notes_patterns):
+        return MemoryMutationIntent(
+            action="clear_notes",
+            frontend_command="clear notes",
+            operation="clear_notes",
+        )
+
+    save_note_patterns = [
+        re.compile(
+            rf"^{_POLITE_PREFIX}(?:note|remember)\s+that\s+(.+)$",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            rf"^{_POLITE_PREFIX}(?:save|add|take|write|create|make)\s+"
+            r"(?:a\s+)?note(?:\s+(?:that|saying|called|about))?\s+(.+)$",
+            re.IGNORECASE,
+        ),
+    ]
+    for pattern in save_note_patterns:
+        match = pattern.fullmatch(text)
+        if match is None:
+            continue
+        payload = _clean_payload(match.group(1))
+        if payload:
+            return MemoryMutationIntent(
+                action="save_note",
+                frontend_command=f"note that {payload}",
+                operation="save_note",
+                payload=payload,
+            )
+
+    delete_task_patterns = [
+        re.compile(
+            rf"^{_POLITE_PREFIX}(?:delete|remove|erase|clear)\s+"
+            r"(?:the\s+|my\s+)?(?:last|latest|newest|most\s+recent)\s+task$",
+            re.IGNORECASE,
+        ),
+    ]
+    if any(pattern.fullmatch(text) for pattern in delete_task_patterns):
+        return MemoryMutationIntent(
+            action="delete_last_task",
+            frontend_command="delete last task",
+            operation="delete_last_task",
+        )
+
+    clear_tasks_patterns = [
+        re.compile(
+            rf"^{_POLITE_PREFIX}(?:clear|remove|delete)\s+"
+            r"(?:the\s+|my\s+)?(?:completed|done|finished)\s+tasks$",
+            re.IGNORECASE,
+        ),
+    ]
+    if any(pattern.fullmatch(text) for pattern in clear_tasks_patterns):
+        return MemoryMutationIntent(
+            action="clear_done_tasks",
+            frontend_command="clear completed tasks",
+            operation="clear_done_tasks",
+        )
+
+    complete_task_patterns = [
+        re.compile(
+            rf"^{_POLITE_PREFIX}(?:mark|set|complete|finish)\s+"
+            r"(?:the\s+)?(?:task\s+)?(?:called|named|about)?\s*(.+?)\s+"
+            r"(?:as\s+)?(?:done|complete|completed|finished)$",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            rf"^{_POLITE_PREFIX}(?:complete|finish)\s+"
+            r"(?:the\s+)?(?:next|latest|last|current)\s+task$",
+            re.IGNORECASE,
+        ),
+    ]
+    for pattern in complete_task_patterns:
+        match = pattern.fullmatch(text)
+        if match is None:
+            continue
+        payload = _clean_payload(match.group(1)) if match.lastindex else ""
+        payload = re.sub(r"\s+task$", "", payload, flags=re.IGNORECASE).strip()
+        command = f"mark task {payload} done" if payload else "complete task"
+        return MemoryMutationIntent(
+            action="mark_task_done",
+            frontend_command=command,
+            operation="complete_task",
+            payload=payload,
+        )
+
+    save_task_patterns = [
+        re.compile(
+            rf"^{_POLITE_PREFIX}(?:remember|remind\s+me)\s+to\s+(.+)$",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            rf"^{_POLITE_PREFIX}(?:remember|save|add|create|make)\s+"
+            r"(?:this\s+)?(?:as\s+)?(?:a\s+)?task\s*"
+            r"(?:to|that|called|named|:)?\s+(.+)$",
+            re.IGNORECASE,
+        ),
+    ]
+    for pattern in save_task_patterns:
+        match = pattern.fullmatch(text)
+        if match is None:
+            continue
+        payload = _clean_payload(match.group(1))
+        if payload:
+            return MemoryMutationIntent(
+                action="remember_task",
+                frontend_command=f"remember to {payload}",
+                operation="save_task",
+                payload=payload,
+            )
+
+    return None
 
 
 def visual_mutation_intent(message: str) -> VisualMutationIntent | None:
@@ -302,6 +512,46 @@ def visual_read_intent(message: str) -> VisualReadIntent | None:
     return None
 
 
+def _memory_mutation_command(message: str) -> dict[str, Any] | None:
+    intent = memory_mutation_intent(message)
+    if intent is None:
+        return None
+
+    payload: dict[str, str] = {"operation": intent.operation}
+    if intent.payload:
+        payload["value"] = intent.payload
+
+    return {
+        "intent": "command",
+        "action": intent.action,
+        "confidence": 0.99,
+        "frontendCommand": intent.frontend_command,
+        "payload": payload,
+        "reason": (
+            "Deterministic guarded-route bridge recognized a protected "
+            "Notes or Tasks mutation owned by the existing frontend handler."
+        ),
+    }
+
+
+def _memory_read_command(message: str) -> dict[str, Any] | None:
+    intent = memory_read_intent(message)
+    if intent is None:
+        return None
+
+    return {
+        "intent": "command",
+        "action": intent.action,
+        "confidence": 0.99,
+        "frontendCommand": intent.frontend_command,
+        "payload": {"surface": intent.surface},
+        "reason": (
+            "Deterministic guarded-route bridge recognized a safe read of "
+            "synchronized Notes or Tasks memory."
+        ),
+    }
+
+
 def _visual_mutation_command(message: str) -> dict[str, Any] | None:
     intent = visual_mutation_intent(message)
     if intent is None:
@@ -425,20 +675,92 @@ def _search_command(message: str) -> dict[str, Any] | None:
     return None
 
 
+def _repair_specific_task_completion_payload(
+    message: str,
+    payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Preserve a named task target when legacy routing drops its payload.
+
+    This does not change the selected command class or execute the mutation.
+    It only restores the deterministic frontend command and payload from the
+    original user message before the existing confirmation gate stores it.
+    """
+
+    intent = memory_mutation_intent(message)
+    if (
+        intent is None
+        or intent.operation != "complete_task"
+        or not intent.payload
+    ):
+        return None
+
+    legacy_intent = str(payload.get("intent", "")).strip().casefold()
+    legacy_action = str(payload.get("action", "")).strip().casefold()
+    if legacy_intent != "command" or legacy_action not in {
+        "mark_task_done",
+        "mark-task-done",
+    }:
+        return None
+
+    raw_payload = payload.get("payload")
+    legacy_payload = dict(raw_payload) if isinstance(raw_payload, dict) else {}
+    legacy_value = str(legacy_payload.get("value", "")).strip()
+    legacy_command = str(payload.get("frontendCommand", "")).strip()
+    normalized_target = _clean_payload(intent.payload).casefold()
+
+    target_already_preserved = (
+        legacy_value.casefold() == normalized_target
+        and normalized_target in legacy_command.casefold()
+    )
+    if target_already_preserved:
+        return None
+
+    legacy_payload.update({
+        "operation": intent.operation,
+        "value": intent.payload,
+    })
+
+    repaired = dict(payload)
+    repaired.update({
+        "intent": "command",
+        "action": "mark_task_done",
+        "confidence": max(
+            float(payload.get("confidence", 0.0) or 0.0),
+            0.99,
+        ),
+        "frontendCommand": intent.frontend_command,
+        "payload": legacy_payload,
+        "reason": (
+            "Deterministic guarded-route bridge preserved the named task "
+            "target for the existing confirmation-gated completion command."
+        ),
+    })
+    return repaired
+
+
 def repair_legacy_command_payload(
     message: str,
     payload: dict[str, Any],
 ) -> tuple[dict[str, Any], bool]:
     """Repair narrow commands that the legacy model mislabeled as chat.
 
-    Existing command decisions are never changed. Read-only routes may enter
-    guarded agreement. Calendar writes and visual-memory mutations are only
-    translated into existing frontend command contracts; legacy/local code
-    remains authoritative for their execution.
+    Existing command route classes are never changed. A narrow protected-write
+    repair may restore a task title that the legacy command already selected
+    but omitted from its frontend payload. Read-only routes may enter guarded
+    agreement. Calendar writes and local-memory mutations are translated into
+    existing frontend command contracts; legacy/local code remains
+    authoritative for their execution.
     """
 
     if not isinstance(payload, dict):
         return payload, False
+
+    specific_task_repair = _repair_specific_task_completion_payload(
+        message,
+        payload,
+    )
+    if specific_task_repair is not None:
+        return specific_task_repair, True
 
     intent = str(payload.get("intent", "")).strip().casefold()
     action = str(payload.get("action", "")).strip().casefold()
@@ -470,6 +792,10 @@ def repair_legacy_command_payload(
     if visual_mutation is not None:
         return visual_mutation, True
 
+    memory_mutation = _memory_mutation_command(message)
+    if memory_mutation is not None:
+        return memory_mutation, True
+
     calendar_read = _calendar_read_command(message)
     if calendar_read is not None:
         return calendar_read, True
@@ -477,6 +803,10 @@ def repair_legacy_command_payload(
     visual_read = _visual_read_command(message)
     if visual_read is not None:
         return visual_read, True
+
+    memory_read = _memory_read_command(message)
+    if memory_read is not None:
+        return memory_read, True
 
     search = _search_command(message)
     if search is not None:
