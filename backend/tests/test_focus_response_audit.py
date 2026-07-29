@@ -977,6 +977,180 @@ class FocusResponseAuditTests(unittest.TestCase):
         self.assertIn("missing_tool_citations", decision.fallbackDetails)
 
 
+    def test_calendar_candidate_lists_verified_events_without_free_time_claim(
+        self,
+    ) -> None:
+        turn_id = "turn-calendar-events"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.TOOL,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.START_FOCUS,
+                        title="Prepare for meetings",
+                        objective="Prepare for today's scheduled meetings.",
+                    )
+                ],
+                toolCalls=[
+                    PlannedToolCall(
+                        tool=ToolName.CALENDAR_READ,
+                        attachToFocus=True,
+                    )
+                ],
+                confidence=1.0,
+            ),
+            message="Read my calendar for today.",
+            turn_id=turn_id,
+            source="unit-test",
+        )
+        record_tool_result(
+            tool=ToolName.CALENDAR_READ,
+            success=True,
+            summary="One event returned.",
+            result_ids=["event-1"],
+            source_turn_id=turn_id,
+        )
+        candidate = record_tool_response_candidate(
+            tool=ToolName.CALENDAR_READ,
+            success=True,
+            calendar_connected=True,
+            calendar_view="today",
+            calendar_events=[
+                {
+                    "id": "event-1",
+                    "title": "Client review",
+                    "time": "10:00 AM",
+                    "location": "Room A",
+                }
+            ],
+            source_turn_id=turn_id,
+        )
+
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertTrue(candidate.payload["eligibility"]["eligible"])
+        self.assertIn("10:00 AM — Client review", candidate.payload["text"])
+        self.assertNotIn("calendar is clear", candidate.payload["text"])
+        self.assertEqual(
+            candidate.payload["toolEvidence"]["eventCount"],
+            1,
+        )
+        decision = guarded_tool_response_decision_for_turn(
+            turn_id,
+            tool=ToolName.CALENDAR_READ,
+        )
+        self.assertTrue(decision.eligible)
+
+    def test_empty_connected_calendar_can_make_verified_clear_claim(
+        self,
+    ) -> None:
+        turn_id = "turn-calendar-empty"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.TOOL,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.START_FOCUS,
+                        title="Plan today's work",
+                        objective="Plan around today's schedule.",
+                    )
+                ],
+                toolCalls=[
+                    PlannedToolCall(
+                        tool=ToolName.CALENDAR_READ,
+                        attachToFocus=True,
+                    )
+                ],
+                confidence=1.0,
+            ),
+            message="Read my calendar for today.",
+            turn_id=turn_id,
+            source="unit-test",
+        )
+        record_tool_result(
+            tool=ToolName.CALENDAR_READ,
+            success=True,
+            summary="No events returned.",
+            result_ids=[],
+            source_turn_id=turn_id,
+        )
+        candidate = record_tool_response_candidate(
+            tool=ToolName.CALENDAR_READ,
+            success=True,
+            calendar_connected=True,
+            calendar_view="today",
+            calendar_events=[],
+            source_turn_id=turn_id,
+        )
+
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertTrue(candidate.payload["eligibility"]["eligible"])
+        self.assertIn("calendar is clear", candidate.payload["text"])
+        record_assistant_reply(
+            text=candidate.payload["text"],
+            source_turn_id=turn_id,
+            source="focus-tool-visible-response",
+            transport="calendar-json",
+        )
+        reply = next(
+            event
+            for event in reversed(list_events())
+            if event.type == FocusEventType.ASSISTANT_REPLIED
+        )
+        self.assertEqual(reply.payload["audit"]["findings"], [])
+
+    def test_disconnected_calendar_candidate_is_rejected(self) -> None:
+        turn_id = "turn-calendar-disconnected"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.TOOL,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.START_FOCUS,
+                        title="Plan today's work",
+                        objective="Plan around today's schedule.",
+                    )
+                ],
+                toolCalls=[
+                    PlannedToolCall(
+                        tool=ToolName.CALENDAR_READ,
+                        attachToFocus=True,
+                    )
+                ],
+                confidence=1.0,
+            ),
+            message="Read my calendar for today.",
+            turn_id=turn_id,
+            source="unit-test",
+        )
+        record_tool_result(
+            tool=ToolName.CALENDAR_READ,
+            success=True,
+            summary="Calendar is disconnected.",
+            result_ids=[],
+            source_turn_id=turn_id,
+        )
+        record_tool_response_candidate(
+            tool=ToolName.CALENDAR_READ,
+            success=True,
+            calendar_connected=False,
+            calendar_view="today",
+            calendar_events=[],
+            source_turn_id=turn_id,
+        )
+
+        decision = guarded_tool_response_decision_for_turn(
+            turn_id,
+            tool=ToolName.CALENDAR_READ,
+        )
+        self.assertFalse(decision.eligible)
+        self.assertIn(
+            decision.fallbackReason,
+            {"calendar_not_connected", "candidate_ineligible"},
+        )
+
+
 class FocusMiddlewareReceiveTests(unittest.IsolatedAsyncioTestCase):
     async def test_replay_receive_delegates_after_replaying_body(self) -> None:
         delegated = asyncio.Event()
@@ -1047,16 +1221,22 @@ class FocusGuardedResponseMiddlewareTests(
         self._temporary_directory.cleanup()
 
     @staticmethod
-    def _scope(path: str, turn_id: str) -> dict:
+    def _scope(
+        path: str,
+        turn_id: str,
+        *,
+        method: str = "POST",
+        query_string: bytes = b"",
+    ) -> dict:
         return {
             "type": "http",
             "asgi": {"version": "3.0"},
             "http_version": "1.1",
-            "method": "POST",
+            "method": method,
             "scheme": "http",
             "path": path,
             "raw_path": path.encode("ascii"),
-            "query_string": b"",
+            "query_string": query_string,
             "root_path": "",
             "server": ("testserver", 80),
             "client": ("testclient", 50000),
@@ -1358,6 +1538,208 @@ class FocusGuardedResponseMiddlewareTests(
         )
         self.assertEqual(reply_event.payload["audit"]["findings"], [])
 
+
+    async def test_guarded_calendar_injects_verified_response_and_keeps_events(
+        self,
+    ) -> None:
+        turn_id = "turn-guarded-calendar"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.TOOL,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.START_FOCUS,
+                        title="Prepare for meetings",
+                        objective="Prepare for today's meetings.",
+                    )
+                ],
+                toolCalls=[
+                    PlannedToolCall(
+                        tool=ToolName.CALENDAR_READ,
+                        attachToFocus=True,
+                    )
+                ],
+                confidence=1.0,
+            ),
+            message="Read my calendar for today.",
+            turn_id=turn_id,
+            source="unit-test",
+        )
+
+        async def calendar_app(scope, receive, send):
+            body = json.dumps(
+                {
+                    "ok": True,
+                    "configured": True,
+                    "connected": True,
+                    "source": "google",
+                    "view": "today",
+                    "events": [
+                        {
+                            "id": "event-1",
+                            "title": "Client review",
+                            "dateKey": "2026-07-29",
+                            "time": "10:00 AM",
+                            "createdAt": "2026-07-28T10:00:00-07:00",
+                            "source": "google",
+                            "location": "Room A",
+                            "allDay": False,
+                        }
+                    ],
+                    "message": "Loaded one Google Calendar event.",
+                }
+            ).encode("utf-8")
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"content-length", str(len(body)).encode("ascii")),
+                    ],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": body,
+                    "more_body": False,
+                }
+            )
+
+        sent_messages = []
+
+        async def send(message):
+            sent_messages.append(message)
+
+        middleware = FocusShadowMiddleware(calendar_app)
+        with patch(
+            "app.focus.middleware._wait_for_guarded_observation",
+            new=AsyncMock(return_value=True),
+        ):
+            await middleware(
+                self._scope(
+                    "/api/calendar/events",
+                    turn_id,
+                    method="GET",
+                    query_string=b"view=today",
+                ),
+                self._receive_payload({}),
+                send,
+            )
+
+        response_body = b"".join(
+            message.get("body", b"")
+            for message in sent_messages
+            if message["type"] == "http.response.body"
+        )
+        payload = json.loads(response_body.decode("utf-8"))
+        self.assertEqual(payload["events"][0]["title"], "Client review")
+        self.assertEqual(
+            payload["focusResponse"]["tool"],
+            "calendar_read",
+        )
+        self.assertEqual(payload["focusResponse"]["citations"], [])
+        self.assertIn("Client review", payload["focusResponse"]["text"])
+        self.assertNotIn(
+            "calendar is clear",
+            payload["focusResponse"]["text"],
+        )
+
+        reply_event = next(
+            event
+            for event in reversed(list_events())
+            if event.type == FocusEventType.ASSISTANT_REPLIED
+            and event.sourceTurnId == turn_id
+        )
+        self.assertEqual(
+            reply_event.source,
+            "focus-tool-visible-response",
+        )
+        self.assertEqual(reply_event.payload["transport"], "calendar-json")
+        self.assertEqual(reply_event.payload["audit"]["findings"], [])
+
+
+    async def test_calendar_fallback_records_response_selection(
+        self,
+    ) -> None:
+        turn_id = "turn-calendar-unattached"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.TOOL,
+                toolCalls=[
+                    PlannedToolCall(
+                        tool=ToolName.CALENDAR_READ,
+                        attachToFocus=False,
+                    )
+                ],
+                confidence=1.0,
+            ),
+            message="Read my calendar for today.",
+            turn_id=turn_id,
+            source="unit-test",
+        )
+
+        async def calendar_app(scope, receive, send):
+            body = json.dumps(
+                {
+                    "ok": True,
+                    "connected": True,
+                    "view": "today",
+                    "events": [],
+                    "message": "No events today.",
+                }
+            ).encode("utf-8")
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [(b"content-type", b"application/json")],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": body,
+                    "more_body": False,
+                }
+            )
+
+        sent_messages = []
+
+        async def send(message):
+            sent_messages.append(message)
+
+        middleware = FocusShadowMiddleware(calendar_app)
+        with patch(
+            "app.focus.middleware._wait_for_guarded_observation",
+            new=AsyncMock(return_value=True),
+        ):
+            await middleware(
+                self._scope(
+                    "/api/calendar/events",
+                    turn_id,
+                    method="GET",
+                    query_string=b"view=today",
+                ),
+                self._receive_payload({}),
+                send,
+            )
+
+        selection = next(
+            event
+            for event in reversed(list_events())
+            if event.type == FocusEventType.RESPONSE_SELECTION
+            and event.sourceTurnId == turn_id
+        )
+        self.assertEqual(
+            selection.payload["reason"],
+            "tool_not_attached_to_focus",
+        )
+        self.assertEqual(
+            selection.payload["responseSource"],
+            "calendar-legacy-readout",
+        )
 
     async def test_missing_candidate_falls_back_to_legacy_app(
         self,

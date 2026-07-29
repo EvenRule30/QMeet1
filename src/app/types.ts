@@ -464,6 +464,7 @@ export interface CalendarEventsResponse {
   view: CalendarBackendView;
   events: CalendarEvent[];
   message: string;
+  focusResponse?: FocusToolResponse;
 }
 
 export interface CalendarCreateEventRequest {

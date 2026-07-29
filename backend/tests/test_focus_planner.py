@@ -8,17 +8,87 @@ from app.focus.models import (
     FocusField,
     FocusOperation,
     FocusOperationKind,
+    FocusState,
+    PlannedToolCall,
     ResponseIntent,
     TurnPlan,
+    ToolName,
     TurnRoute,
 )
 from app.focus.planner import (
+    _PLANNER_SYSTEM_PROMPT,
     _compact_recent_event_payload,
+    _normalize_calendar_read_plan,
     _plan_question_errors,
     _recent_event_summary,
     _question_is_atomic,
     _strip_invalid_follow_up,
 )
+
+
+class FocusPlannerCalendarToolContractTests(unittest.TestCase):
+    def test_calendar_read_tool_is_available_and_prompted(self) -> None:
+        self.assertEqual(ToolName.CALENDAR_READ.value, "calendar_read")
+        self.assertIn("calendar_read", _PLANNER_SYSTEM_PROMPT)
+        self.assertIn("calendar-read-shadow", _PLANNER_SYSTEM_PROMPT)
+        self.assertIn("Never fabricate tool", _PLANNER_SYSTEM_PROMPT)
+        self.assertIn(
+            "results, calendar contents, free time",
+            _PLANNER_SYSTEM_PROMPT,
+        )
+
+
+class FocusPlannerCalendarAttachmentTests(unittest.TestCase):
+    def test_meeting_focus_repairs_calendar_attachment(self) -> None:
+        state = FocusState(
+            focusId="focus-meetings",
+            title="Prepare for my meetings today",
+            objective="Be ready for today's work meetings.",
+            status="active",
+        )
+        plan = TurnPlan(
+            route=TurnRoute.RESPOND,
+            toolCalls=[],
+        )
+
+        normalized = _normalize_calendar_read_plan(
+            plan,
+            state=state,
+            source="calendar-read-shadow",
+            message="Read my calendar for today.",
+        )
+
+        self.assertEqual(normalized.route, TurnRoute.TOOL)
+        self.assertEqual(len(normalized.toolCalls), 1)
+        self.assertEqual(normalized.toolCalls[0].tool, ToolName.CALENDAR_READ)
+        self.assertTrue(normalized.toolCalls[0].attachToFocus)
+
+    def test_unrelated_focus_keeps_calendar_transient(self) -> None:
+        state = FocusState(
+            focusId="focus-car",
+            title="Diagnose car trouble",
+            objective="Restore reliable starting.",
+            status="active",
+        )
+        plan = TurnPlan(
+            route=TurnRoute.TOOL,
+            toolCalls=[
+                PlannedToolCall(
+                    tool=ToolName.CALENDAR_READ,
+                    attachToFocus=True,
+                )
+            ],
+        )
+
+        normalized = _normalize_calendar_read_plan(
+            plan,
+            state=state,
+            source="calendar-read-shadow",
+            message="Read my calendar for tomorrow.",
+        )
+
+        self.assertFalse(normalized.toolCalls[0].attachToFocus)
+        self.assertEqual(normalized.toolCalls[0].arguments[0].value, "tomorrow")
 
 
 class FocusPlannerQuestionValidationTests(unittest.TestCase):

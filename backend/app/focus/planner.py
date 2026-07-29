@@ -17,7 +17,10 @@ from app.focus.models import (
     FocusOperationKind,
     FocusState,
     ObserveTurnRequest,
+    PlannedToolCall,
     ResponseIntent,
+    ToolArgument,
+    ToolName,
     TurnPlan,
     TurnRoute,
 )
@@ -71,6 +74,11 @@ Core rules:
    - Emotional importance or a complicated question alone does not make a
      lookup durable. "Why did my dog run away?" is a transient Search. "Help me
      find my missing dog and keep track of what I have tried" is durable work.
+
+   - source="calendar-read-shadow" means QMeet is reading the user's connected
+     Google Calendar for the requested view. Plan one calendar_read tool call.
+     Attach it only when the calendar evidence directly advances the active
+     durable Focus; otherwise keep it transient.
 
 4. Distinguish focus continuation, correction, and replacement precisely:
 
@@ -133,9 +141,10 @@ Core rules:
    - Avoid: "Have you tested or replaced the battery, or do the lights dim?"
    - Prefer: "Do the dashboard lights dim when you try to start the car?"
 
-7. Current prices, availability, links, schedules, news, and source research
-   require a Search tool call. Never fabricate tool results or claim a tool has
-   completed.
+7. Current prices, public availability, links, news, and web research require
+   a Search tool call. Reading the user's own Google Calendar or answering what
+   is scheduled on it requires calendar_read, not Search. Never fabricate tool
+   results, calendar contents, free time, or claim a tool has completed.
 
 8. A tool request creates a pending action only when attachToFocus=true. Tool
    completion will arrive later as a separate event from deterministic code.
@@ -222,9 +231,22 @@ Examples:
   User query: "current RTX laptops under $4,000"
   Result: Search tool call with attachToFocus=true; continue the current Focus.
 
+- Active Focus: prepare for today's client meetings.
+  source: calendar-read-shadow
+  User request: "Read my calendar for today."
+  Result: calendar_read with attachToFocus=true because the verified events
+  directly advance meeting preparation.
+
+- Active Focus: diagnose car trouble.
+  source: calendar-read-shadow
+  User request: "What's on my calendar today?"
+  Result: calendar_read with attachToFocus=false; do not let the calendar reply
+  replace the unrelated car-trouble Focus response.
+
 Tool names available in this first slice:
 
 - search
+- calendar_read
 - open_search
 - start_focus
 - end_focus
@@ -512,6 +534,105 @@ def _planner_input(message: str, state: FocusState, source: str) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
+_CALENDAR_FOCUS_RELEVANCE_PATTERN = re.compile(
+    r"\b(?:calendar|meeting|meetings|appointment|appointments|agenda|"
+    r"schedule|scheduling|interview|interviews|standup|stand-up|demo|"
+    r"briefing|briefings|presentation|presentations|client call|sales call|"
+    r"conference call|video call)\b",
+    re.IGNORECASE,
+)
+
+
+def _calendar_view_from_message(message: str) -> str:
+    normalized = " ".join(message.split()).casefold()
+    if "tomorrow" in normalized:
+        return "tomorrow"
+    if "week" in normalized:
+        return "week"
+    return "today"
+
+
+def _calendar_focus_is_relevant(state: FocusState) -> bool:
+    if not state.focusId.strip() or state.status.value in {"inactive", "complete"}:
+        return False
+
+    durable_context = " ".join(
+        [
+            state.title,
+            state.objective,
+            state.deliverable,
+            state.subject,
+            state.nextAction,
+            *state.tags,
+            *state.requirements,
+            *state.milestones,
+            *state.knownFacts,
+        ]
+    )
+    return bool(_CALENDAR_FOCUS_RELEVANCE_PATTERN.search(durable_context))
+
+
+def _normalize_calendar_read_plan(
+    plan: TurnPlan,
+    *,
+    state: FocusState,
+    source: str,
+    message: str,
+) -> TurnPlan:
+    """Deterministically record Calendar reads and repair Focus attachment.
+
+    The endpoint itself is already executing a Calendar read. The planner may
+    describe that read imperfectly, but the event log must still contain one
+    calendar_read tool request. Attachment is repaired from durable Focus
+    context so a meeting-preparation Focus cannot silently fall back merely
+    because the model omitted attachToFocus.
+    """
+
+    if source != "calendar-read-shadow":
+        return plan
+
+    should_attach = _calendar_focus_is_relevant(state)
+    view = _calendar_view_from_message(message)
+    normalized_calls: list[PlannedToolCall] = []
+    found_calendar_read = False
+
+    for tool_call in plan.toolCalls:
+        if tool_call.tool != ToolName.CALENDAR_READ:
+            normalized_calls.append(tool_call)
+            continue
+
+        if found_calendar_read:
+            continue
+        found_calendar_read = True
+        normalized_calls.append(
+            tool_call.model_copy(
+                update={
+                    "arguments": [ToolArgument(key="view", value=view)],
+                    "requiresConfirmation": False,
+                    "attachToFocus": should_attach,
+                }
+            )
+        )
+
+    if not found_calendar_read:
+        normalized_calls.append(
+            PlannedToolCall(
+                tool=ToolName.CALENDAR_READ,
+                arguments=[ToolArgument(key="view", value=view)],
+                reason="Record the verified Calendar read already being executed.",
+                requiresConfirmation=False,
+                attachToFocus=should_attach,
+            )
+        )
+
+    return plan.model_copy(
+        update={
+            "route": TurnRoute.TOOL,
+            "toolCalls": normalized_calls,
+        }
+    )
+
+
 def _fallback_plan(message: str, state: FocusState, reason: str) -> TurnPlan:
     """Safe fallback that does not recreate the old phrase-matching system."""
     stripped = " ".join(message.split()).strip()
@@ -540,10 +661,15 @@ async def preview_turn_plan(
     state = get_state()
 
     if not planner_enabled() or AsyncOpenAI is None:
-        return _fallback_plan(
-            message,
-            state,
-            "Focus planner is unavailable; no semantic state was guessed.",
+        return _normalize_calendar_read_plan(
+            _fallback_plan(
+                message,
+                state,
+                "Focus planner is unavailable; no semantic state was guessed.",
+            ),
+            state=state,
+            source=source,
+            message=message,
         )
 
     client = AsyncOpenAI()
@@ -559,15 +685,25 @@ async def preview_turn_plan(
         )
     except Exception as exc:
         LOGGER.exception("Focus planner failed")
-        return _fallback_plan(
-            message,
-            state,
-            f"Focus planner failed safely: {type(exc).__name__}.",
+        return _normalize_calendar_read_plan(
+            _fallback_plan(
+                message,
+                state,
+                f"Focus planner failed safely: {type(exc).__name__}.",
+            ),
+            state=state,
+            source=source,
+            message=message,
         )
 
     question_errors = _plan_question_errors(parsed)
     if not question_errors:
-        return parsed
+        return _normalize_calendar_read_plan(
+            parsed,
+            state=state,
+            source=source,
+            message=message,
+        )
 
     LOGGER.warning(
         "Focus planner produced a non-atomic follow-up; requesting repair: %s",
@@ -583,13 +719,28 @@ async def preview_turn_plan(
         )
     except Exception:
         LOGGER.exception("Focus planner question repair failed")
-        return _strip_invalid_follow_up(parsed, question_errors)
+        return _normalize_calendar_read_plan(
+            _strip_invalid_follow_up(parsed, question_errors),
+            state=state,
+            source=source,
+            message=message,
+        )
 
     repaired_errors = _plan_question_errors(repaired)
     if repaired_errors:
-        return _strip_invalid_follow_up(repaired, repaired_errors)
+        return _normalize_calendar_read_plan(
+            _strip_invalid_follow_up(repaired, repaired_errors),
+            state=state,
+            source=source,
+            message=message,
+        )
 
-    return repaired
+    return _normalize_calendar_read_plan(
+        repaired,
+        state=state,
+        source=source,
+        message=message,
+    )
 
 
 async def observe_turn(

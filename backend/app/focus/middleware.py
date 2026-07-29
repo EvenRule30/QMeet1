@@ -5,6 +5,7 @@ import json
 import logging
 import os
 from typing import Any
+from urllib.parse import parse_qs
 from uuid import uuid4
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -16,6 +17,7 @@ from app.focus.store import (
     guarded_response_decision_for_turn,
     guarded_tool_response_decision_for_turn,
     record_assistant_reply,
+    record_response_selection,
     record_tool_response_candidate,
     record_tool_result,
 )
@@ -463,6 +465,60 @@ def _search_result_details(
     )
 
 
+def _calendar_view(scope: Scope) -> str:
+    raw_query = scope.get("query_string", b"")
+    try:
+        query = parse_qs(raw_query.decode("utf-8", errors="ignore"))
+    except (AttributeError, UnicodeDecodeError):
+        query = {}
+    view = str((query.get("view") or ["today"])[0]).strip().casefold()
+    return view if view in {"today", "tomorrow", "week"} else "today"
+
+
+def _calendar_observation_message(view: str) -> str:
+    label = {
+        "today": "today",
+        "tomorrow": "tomorrow",
+        "week": "this week",
+    }.get(view, "today")
+    return f"Read my calendar for {label}."
+
+
+def _calendar_result_details(
+    payload: dict[str, Any],
+    view: str,
+) -> tuple[bool, bool, str, list[dict[str, Any]], list[str]]:
+    success = bool(payload.get("ok", True))
+    connected = bool(payload.get("connected", False))
+    message = " ".join(str(payload.get("message") or "").split()).strip()
+    raw_events = payload.get("events")
+    events: list[dict[str, Any]] = []
+    result_ids: list[str] = []
+
+    if isinstance(raw_events, list):
+        for raw_event in raw_events:
+            if not isinstance(raw_event, dict):
+                continue
+            event = dict(raw_event)
+            title = " ".join(str(event.get("title") or "").split()).strip()
+            if not title:
+                continue
+            events.append(event)
+            event_id = str(
+                event.get("id") or event.get("googleEventId") or ""
+            ).strip()
+            if event_id and event_id not in result_ids:
+                result_ids.append(event_id)
+            if len(events) >= 100:
+                break
+
+    summary = message or (
+        f"Calendar read returned {len(events)} event"
+        f"{'s' if len(events) != 1 else ''} for {view}."
+    )
+    return success, connected, summary[:2200], events, result_ids
+
+
 def _focus_tool_response_payload(
     candidate_event,
     *,
@@ -580,6 +636,7 @@ class FocusShadowMiddleware:
         if path not in {
             "/api/command/interpret",
             "/api/search",
+            "/api/calendar/events",
             "/api/chat",
             "/api/chat/stream",
         }:
@@ -757,6 +814,170 @@ class FocusShadowMiddleware:
                 )
             return
 
+        if path == "/api/calendar/events":
+            view = _calendar_view(scope)
+            _start_observation(
+                _calendar_observation_message(view),
+                source="calendar-read-shadow",
+                turn_id=turn_id,
+            )
+
+            response_status = 500
+            response_content_type = ""
+            response_headers: list[tuple[bytes, bytes]] = []
+            response_chunks: list[bytes] = []
+            response_size = 0
+
+            async def capture_calendar_send(message: Message) -> None:
+                nonlocal response_status
+                nonlocal response_content_type
+                nonlocal response_headers
+                nonlocal response_size
+
+                if message["type"] == "http.response.start":
+                    response_status = int(message.get("status", 500))
+                    response_headers = list(message.get("headers", []))
+                    for raw_name, raw_value in response_headers:
+                        if raw_name.lower() == b"content-type":
+                            response_content_type = raw_value.decode(
+                                "latin-1",
+                                errors="ignore",
+                            )
+
+                elif message["type"] == "http.response.body":
+                    chunk = message.get("body", b"")
+                    if (
+                        chunk
+                        and response_size + len(chunk) <= _MAX_BODY_BYTES
+                    ):
+                        response_chunks.append(chunk)
+                        response_size += len(chunk)
+
+            await self.app(scope, replay_receive, capture_calendar_send)
+
+            response_body = b"".join(response_chunks)
+            response_payload = _json_payload(
+                response_body,
+                response_content_type,
+            )
+            (
+                success,
+                connected,
+                summary,
+                calendar_events,
+                result_ids,
+            ) = _calendar_result_details(response_payload, view)
+            success = success and 200 <= response_status < 300
+            guarded_mode = focus_response_mode() == "guarded"
+
+            if guarded_mode and response_payload:
+                observation_completed = await _wait_for_guarded_observation(
+                    turn_id
+                )
+                fallback_reason = ""
+                fallback_details: tuple[str, ...] = ()
+                candidate_event = None
+
+                if observation_completed:
+                    try:
+                        record_tool_result(
+                            tool=ToolName.CALENDAR_READ,
+                            success=success,
+                            summary=summary,
+                            result_ids=result_ids,
+                            source_turn_id=turn_id,
+                            source="calendar-router-result",
+                        )
+                        record_tool_response_candidate(
+                            tool=ToolName.CALENDAR_READ,
+                            success=success,
+                            calendar_connected=connected,
+                            calendar_view=view,
+                            calendar_events=calendar_events,
+                            source_turn_id=turn_id,
+                        )
+                        decision = guarded_tool_response_decision_for_turn(
+                            turn_id,
+                            tool=ToolName.CALENDAR_READ,
+                        )
+                        candidate_event = decision.candidate
+                        fallback_reason = decision.fallbackReason
+                        fallback_details = decision.fallbackDetails
+                    except Exception:
+                        fallback_reason = "tool_response_build_failed"
+                        LOGGER.exception(
+                            "Focus could not build guarded Calendar response "
+                            "for turn %s",
+                            turn_id,
+                        )
+
+                    if candidate_event is not None:
+                        focus_response = _focus_tool_response_payload(
+                            candidate_event,
+                            turn_id=turn_id,
+                        )
+                        candidate_text = str(
+                            focus_response.get("text", "")
+                        ).strip()
+                        if candidate_text:
+                            response_payload["focusResponse"] = focus_response
+                            await _record_assistant_reply_safely(
+                                turn_id=turn_id,
+                                text=candidate_text,
+                                transport="calendar-json",
+                                response_status=response_status,
+                                source="focus-tool-visible-response",
+                            )
+                            await _send_buffered_json_response(
+                                status=response_status,
+                                headers=response_headers,
+                                payload=response_payload,
+                                send=send,
+                                response_source="focus-tool-guarded",
+                            )
+                            return
+                else:
+                    fallback_reason = "observation_timeout"
+                    LOGGER.warning(
+                        "Focus guarded Calendar response timed out for turn "
+                        "%s; preserving the original Calendar payload.",
+                        turn_id,
+                    )
+
+                record_response_selection(
+                    source_turn_id=turn_id,
+                    outcome="fallback",
+                    reason=fallback_reason or "missing_tool_response_candidate",
+                    details=fallback_details,
+                    response_source="calendar-legacy-readout",
+                    tool=ToolName.CALENDAR_READ,
+                )
+
+            await _send_buffered_json_response(
+                status=response_status,
+                headers=response_headers,
+                payload=response_payload,
+                send=send,
+            )
+
+            if not guarded_mode or not response_payload:
+                async def record_calendar_result() -> None:
+                    await _wait_for_observation(turn_id)
+                    record_tool_result(
+                        tool=ToolName.CALENDAR_READ,
+                        success=success,
+                        summary=summary,
+                        result_ids=result_ids,
+                        source_turn_id=turn_id,
+                        source="calendar-router-result",
+                    )
+
+                asyncio.create_task(
+                    record_calendar_result(),
+                    name=f"qmeet-focus-calendar-result-{turn_id}",
+                )
+            return
+
         query = str(request_payload.get("query") or "").strip()
 
         if query:
@@ -819,6 +1040,9 @@ class FocusShadowMiddleware:
             observation_completed = await _wait_for_guarded_observation(
                 turn_id
             )
+            fallback_reason = ""
+            fallback_details: tuple[str, ...] = ()
+            candidate_event = None
             if observation_completed:
                 try:
                     record_tool_result(
@@ -844,8 +1068,10 @@ class FocusShadowMiddleware:
                         tool=ToolName.SEARCH,
                     )
                     candidate_event = decision.candidate
+                    fallback_reason = decision.fallbackReason
+                    fallback_details = decision.fallbackDetails
                 except Exception:
-                    candidate_event = None
+                    fallback_reason = "tool_response_build_failed"
                     LOGGER.exception(
                         "Focus could not build guarded Search response for "
                         "turn %s",
@@ -878,10 +1104,22 @@ class FocusShadowMiddleware:
                         )
                         return
             else:
+                fallback_reason = "observation_timeout"
+                fallback_details = ()
                 LOGGER.warning(
                     "Focus guarded Search response timed out for turn %s; "
                     "preserving the original Search payload.",
                     turn_id,
+                )
+
+            if candidate_event is None:
+                record_response_selection(
+                    source_turn_id=turn_id,
+                    outcome="fallback",
+                    reason=fallback_reason or "missing_tool_response_candidate",
+                    details=fallback_details,
+                    response_source="search-legacy-readout",
+                    tool=ToolName.SEARCH,
                 )
 
         await _send_buffered_json_response(

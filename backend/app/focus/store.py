@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime
@@ -222,6 +223,9 @@ _EXPECTED_FALLBACK_REASONS = frozenset({
     "not_attached_to_focus",
     "tool_requested",
     "candidate_not_direct",
+    "tool_not_attached_to_focus",
+    "tool_response_not_attached_to_focus",
+    "calendar_not_connected",
 })
 
 _SAFETY_FALLBACK_REASONS = frozenset({
@@ -232,12 +236,21 @@ _SAFETY_FALLBACK_REASONS = frozenset({
     "candidate_missing_focus",
     "no_active_focus",
     "focus_mismatch",
+    "tool_evidence_unsuccessful",
+    "invalid_calendar_view",
+    "invalid_calendar_evidence",
+    "calendar_availability_without_empty_view_evidence",
 })
 
 _SYSTEM_FAILURE_FALLBACK_REASONS = frozenset({
     "observation_timeout",
     "missing_candidate",
     "work_context_sync_failed",
+    "missing_tool_request",
+    "missing_tool_result",
+    "missing_tool_response_candidate",
+    "missing_tool_evidence",
+    "tool_response_build_failed",
 })
 
 
@@ -276,7 +289,10 @@ def response_selection_summary() -> dict[str, object]:
     decision_order: list[str] = []
 
     for event in events:
-        if event.type != FocusEventType.ASSISTANT_REPLIED:
+        if event.type not in {
+            FocusEventType.ASSISTANT_REPLIED,
+            FocusEventType.RESPONSE_SELECTION,
+        }:
             continue
 
         payload = event.payload
@@ -285,33 +301,57 @@ def response_selection_summary() -> dict[str, object]:
         reason = ""
         details: list[str] = []
         category = "takeover"
+        candidate_eligible: bool | None = None
+        response_source = event.source
 
-        if event.source in {
-            "focus-visible-response",
-            "focus-tool-visible-response",
-        }:
-            outcome = "takeover"
-        elif isinstance(fallback, dict) and fallback.get("used") is True:
-            outcome = "fallback"
-            reason = str(fallback.get("reason", "")).strip()
-            category = _fallback_category(reason)
-            raw_details = fallback.get("details", [])
+        if event.type == FocusEventType.RESPONSE_SELECTION:
+            outcome = str(payload.get("outcome", "")).strip()
+            reason = str(payload.get("reason", "")).strip()
+            raw_details = payload.get("details", [])
             if isinstance(raw_details, list):
                 details = [
                     str(detail).strip()
                     for detail in raw_details
                     if str(detail).strip()
                 ]
+            raw_candidate_eligible = payload.get("candidateEligible")
+            if isinstance(raw_candidate_eligible, bool):
+                candidate_eligible = raw_candidate_eligible
+            response_source = str(
+                payload.get("responseSource", event.source)
+            ).strip()
+            category = (
+                "takeover"
+                if outcome == "takeover"
+                else _fallback_category(reason)
+            )
+        else:
+            if event.source in {
+                "focus-visible-response",
+                "focus-tool-visible-response",
+            }:
+                outcome = "takeover"
+            elif isinstance(fallback, dict) and fallback.get("used") is True:
+                outcome = "fallback"
+                reason = str(fallback.get("reason", "")).strip()
+                category = _fallback_category(reason)
+                raw_details = fallback.get("details", [])
+                if isinstance(raw_details, list):
+                    details = [
+                        str(detail).strip()
+                        for detail in raw_details
+                        if str(detail).strip()
+                    ]
 
-        if not outcome:
+            audit = payload.get("audit", {})
+            candidate_eligible = (
+                audit.get("candidateEligible")
+                if isinstance(audit, dict)
+                else None
+            )
+
+        if outcome not in {"takeover", "fallback"}:
             continue
-
-        audit = payload.get("audit", {})
-        candidate_eligible = (
-            audit.get("candidateEligible")
-            if isinstance(audit, dict)
-            else None
-        )
         healthy = (
             outcome == "takeover"
             or category in {"expected", "safety"}
@@ -326,7 +366,7 @@ def response_selection_summary() -> dict[str, object]:
             "healthy": healthy,
             "details": details,
             "candidateEligible": candidate_eligible,
-            "responseSource": event.source,
+            "responseSource": response_source,
             "createdAt": event.createdAt,
         }
 
@@ -533,6 +573,42 @@ def guarded_tool_response_decision_for_turn(
             fallbackReason="tool_evidence_unsuccessful",
         )
 
+    if tool == ToolName.CALENDAR_READ:
+        connected = evidence.get("calendarConnected") is True
+        calendar_view = str(evidence.get("calendarView", "")).strip()
+        event_count = evidence.get("eventCount")
+        calendar_events = evidence.get("events")
+        if not connected:
+            return GuardedResponseDecision(
+                fallbackReason="calendar_not_connected",
+            )
+        if calendar_view not in {"today", "tomorrow", "week"}:
+            return GuardedResponseDecision(
+                fallbackReason="invalid_calendar_view",
+            )
+        if (
+            not isinstance(event_count, int)
+            or event_count < 0
+            or not isinstance(calendar_events, list)
+            or len(calendar_events) != event_count
+        ):
+            return GuardedResponseDecision(
+                fallbackReason="invalid_calendar_evidence",
+            )
+        claims_clear = re.search(
+            r"\b(?:calendar\s+(?:is|looks|seems)\s+(?:clear|open|free)|"
+            r"no\s+events\s+(?:are\s+)?scheduled|"
+            r"nothing\s+(?:is\s+)?scheduled)\b",
+            text,
+            re.IGNORECASE,
+        )
+        if claims_clear and event_count != 0:
+            return GuardedResponseDecision(
+                fallbackReason=(
+                    "calendar_availability_without_empty_view_evidence"
+                ),
+            )
+
     raw_reasons = eligibility.get("reasons", [])
     eligibility_reasons = tuple(
         str(reason).strip()
@@ -564,11 +640,14 @@ def record_tool_response_candidate(
     *,
     tool: ToolName,
     success: bool,
-    query: str,
-    summary: str,
+    query: str = "",
+    summary: str = "",
     recommendation: str = "",
     steps: list[str] | None = None,
     sources: list[dict] | None = None,
+    calendar_connected: bool | None = None,
+    calendar_view: str = "",
+    calendar_events: list[dict] | None = None,
     source_turn_id: str,
     source: str = "focus-tool-response-candidate",
 ) -> FocusEvent | None:
@@ -624,6 +703,9 @@ def record_tool_response_candidate(
             recommendation=recommendation,
             steps=steps or [],
             sources=sources or [],
+            calendar_connected=calendar_connected,
+            calendar_view=calendar_view,
+            calendar_events=calendar_events or [],
             attach_to_focus=attach_to_focus,
         )
         candidate_payload["attachToFocus"] = attach_to_focus
@@ -1649,6 +1731,52 @@ def _focus_id_for_turn(
             return event.focusId.strip()
 
     return ""
+
+
+def record_response_selection(
+    *,
+    source_turn_id: str,
+    outcome: str,
+    reason: str = "",
+    details: Iterable[str] = (),
+    response_source: str = "focus-tool-fallback",
+    candidate_eligible: bool | None = None,
+    tool: ToolName | None = None,
+) -> FocusState:
+    """Record a guarded decision even when no backend reply is emitted."""
+
+    normalized_outcome = outcome.strip().casefold()
+    if normalized_outcome not in {"takeover", "fallback"}:
+        return get_state()
+
+    with _STORE_LOCK:
+        document = _read_log_unlocked()
+        focus_id = _focus_id_for_turn(document.events, source_turn_id)
+        payload: dict[str, object] = {
+            "outcome": normalized_outcome,
+            "reason": reason.strip()[:120],
+            "details": [
+                str(detail).strip()[:500]
+                for detail in details
+                if str(detail).strip()
+            ][:20],
+            "responseSource": response_source.strip()[:80],
+        }
+        if isinstance(candidate_eligible, bool):
+            payload["candidateEligible"] = candidate_eligible
+        if tool is not None:
+            payload["tool"] = tool.value
+
+        event = _new_event(
+            FocusEventType.RESPONSE_SELECTION,
+            focus_id=focus_id,
+            payload=payload,
+            source_turn_id=source_turn_id,
+            source="focus-response-selection",
+        )
+        document.events.append(event)
+        _atomic_write_unlocked(document)
+        return reduce_events(document.events)
 
 
 def record_assistant_reply(

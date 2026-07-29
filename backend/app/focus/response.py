@@ -314,99 +314,261 @@ def _clean_tool_source(raw_source: dict[str, Any]) -> dict[str, str] | None:
     }
 
 
+def _clean_calendar_event(raw_event: dict[str, Any]) -> dict[str, Any] | None:
+    title = _clean(str(raw_event.get("title") or ""))[:240]
+    event_id = _clean(
+        str(
+            raw_event.get("id")
+            or raw_event.get("googleEventId")
+            or ""
+        )
+    )[:300]
+    date_key = _clean(str(raw_event.get("dateKey") or ""))[:40]
+    time_label = _clean(str(raw_event.get("time") or ""))[:80]
+    start = _clean(str(raw_event.get("start") or ""))[:100]
+    end = _clean(str(raw_event.get("end") or ""))[:100]
+    location = _clean(str(raw_event.get("location") or ""))[:240]
+    all_day = bool(raw_event.get("allDay", False))
+
+    if not title:
+        return None
+
+    return {
+        "id": event_id,
+        "title": title,
+        "dateKey": date_key,
+        "time": time_label,
+        "start": start,
+        "end": end,
+        "location": location,
+        "allDay": all_day,
+    }
+
+
+def _calendar_view_label(view: str) -> str:
+    return {
+        "today": "today",
+        "tomorrow": "tomorrow",
+        "week": "this week",
+    }.get(view, "the requested view")
+
+
+def _calendar_text_claims_clear(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(?:calendar\s+(?:is|looks|seems)\s+(?:clear|open|free)|"
+            r"no\s+events\s+(?:are\s+)?scheduled|nothing\s+(?:is\s+)?scheduled)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
 def build_tool_response_candidate(
     *,
     tool: str,
     success: bool,
-    query: str,
-    summary: str,
+    query: str = "",
+    summary: str = "",
     recommendation: str = "",
     steps: list[str] | None = None,
     sources: list[dict[str, Any]] | None = None,
+    calendar_connected: bool | None = None,
+    calendar_view: str = "",
+    calendar_events: list[dict[str, Any]] | None = None,
     attach_to_focus: bool,
 ) -> dict[str, Any]:
     """Build a deterministic candidate from verified tool output.
 
-    This does not call a second model. Search output remains the source of truth,
-    and citations are retained both in the visible text and as structured
-    metadata for the frontend and audit log.
+    This does not call a second model. Search output remains the source of truth
+    for Search candidates. Calendar candidates are composed only from the
+    connected-calendar flag, requested view, and returned event records.
     """
 
     clean_tool = _clean(tool).casefold()
-    clean_query = _clean(query)[:500]
-    clean_summary = _clean(summary)[:2200]
-    clean_recommendation = _clean(recommendation)[:800]
-
-    clean_steps: list[str] = []
-    for raw_step in steps or []:
-        step = _clean(str(raw_step))[:500]
-        if step and step.casefold() not in {
-            existing.casefold() for existing in clean_steps
-        }:
-            clean_steps.append(step)
-        if len(clean_steps) >= 3:
-            break
-
-    citations: list[dict[str, str]] = []
-    seen_urls: set[str] = set()
-    for raw_source in sources or []:
-        if not isinstance(raw_source, dict):
-            continue
-        citation = _clean_tool_source(raw_source)
-        if citation is None:
-            continue
-        key = citation["url"].casefold()
-        if key in seen_urls:
-            continue
-        seen_urls.add(key)
-        citations.append(citation)
-        if len(citations) >= 5:
-            break
-
-    sections: list[str] = []
-    if clean_query:
-        sections.append(f'Search complete for "{clean_query}".')
-    else:
-        sections.append("Search complete.")
-
-    if clean_summary:
-        sections.append(clean_summary)
-
-    if (
-        clean_recommendation
-        and clean_recommendation.casefold() not in clean_summary.casefold()
-    ):
-        sections.append(f"Recommendation: {clean_recommendation}")
-
-    if clean_steps:
-        step_lines = ["Next steps:"]
-        step_lines.extend(
-            f"{index}. {step}"
-            for index, step in enumerate(clean_steps, start=1)
-        )
-        sections.append("\n".join(step_lines))
-
-    if citations:
-        source_lines = ["Sources:"]
-        source_lines.extend(
-            f'[{index}] [{citation["title"]}]({citation["url"]})'
-            for index, citation in enumerate(citations, start=1)
-        )
-        sections.append("\n".join(source_lines))
-
-    text = "\n\n".join(section for section in sections if section).strip()
     reasons: list[str] = []
 
     if not attach_to_focus:
         reasons.append("tool_result_not_attached_to_focus")
-    if clean_tool != "search":
-        reasons.append("unsupported_tool_result")
     if not success:
         reasons.append("tool_result_failed")
-    if not clean_summary:
-        reasons.append("missing_tool_summary")
-    if not citations:
-        reasons.append("missing_tool_citations")
+
+    if clean_tool == "search":
+        clean_query = _clean(query)[:500]
+        clean_summary = _clean(summary)[:2200]
+        clean_recommendation = _clean(recommendation)[:800]
+
+        clean_steps: list[str] = []
+        for raw_step in steps or []:
+            step = _clean(str(raw_step))[:500]
+            if step and step.casefold() not in {
+                existing.casefold() for existing in clean_steps
+            }:
+                clean_steps.append(step)
+            if len(clean_steps) >= 3:
+                break
+
+        citations: list[dict[str, str]] = []
+        seen_urls: set[str] = set()
+        for raw_source in sources or []:
+            if not isinstance(raw_source, dict):
+                continue
+            citation = _clean_tool_source(raw_source)
+            if citation is None:
+                continue
+            key = citation["url"].casefold()
+            if key in seen_urls:
+                continue
+            seen_urls.add(key)
+            citations.append(citation)
+            if len(citations) >= 5:
+                break
+
+        sections: list[str] = []
+        if clean_query:
+            sections.append(f'Search complete for "{clean_query}".')
+        else:
+            sections.append("Search complete.")
+
+        if clean_summary:
+            sections.append(clean_summary)
+
+        if (
+            clean_recommendation
+            and clean_recommendation.casefold() not in clean_summary.casefold()
+        ):
+            sections.append(f"Recommendation: {clean_recommendation}")
+
+        if clean_steps:
+            step_lines = ["Next steps:"]
+            step_lines.extend(
+                f"{index}. {step}"
+                for index, step in enumerate(clean_steps, start=1)
+            )
+            sections.append("\n".join(step_lines))
+
+        if citations:
+            source_lines = ["Sources:"]
+            source_lines.extend(
+                f'[{index}] [{citation["title"]}]({citation["url"]})'
+                for index, citation in enumerate(citations, start=1)
+            )
+            sections.append("\n".join(source_lines))
+
+        text = "\n\n".join(
+            section for section in sections if section
+        ).strip()
+
+        if not clean_summary:
+            reasons.append("missing_tool_summary")
+        if not citations:
+            reasons.append("missing_tool_citations")
+
+        components: dict[str, Any] = {
+            "summary": clean_summary,
+            "recommendation": clean_recommendation,
+            "steps": clean_steps,
+        }
+        tool_evidence: dict[str, Any] = {
+            "tool": clean_tool,
+            "success": bool(success),
+            "query": clean_query,
+            "resultIds": [citation["url"] for citation in citations],
+            "citationCount": len(citations),
+        }
+
+    elif clean_tool == "calendar_read":
+        clean_view = _clean(calendar_view).casefold()
+        connected = calendar_connected is True
+        clean_events: list[dict[str, Any]] = []
+        seen_events: set[str] = set()
+
+        for raw_event in calendar_events or []:
+            if not isinstance(raw_event, dict):
+                continue
+            event = _clean_calendar_event(raw_event)
+            if event is None:
+                continue
+            identity = (
+                event["id"]
+                or "|".join(
+                    [event["title"], event["start"], event["dateKey"]]
+                )
+            ).casefold()
+            if identity in seen_events:
+                continue
+            seen_events.add(identity)
+            clean_events.append(event)
+            if len(clean_events) >= 20:
+                break
+
+        view_label = _calendar_view_label(clean_view)
+        sections = [f"Calendar read complete for {view_label}."]
+
+        if not connected:
+            sections.append(
+                "Google Calendar is not connected, so QMeet cannot verify "
+                "the schedule for this view."
+            )
+        elif clean_events:
+            event_lines = ["Scheduled events:"]
+            for event in clean_events:
+                time_label = event["time"] or (
+                    "All day" if event["allDay"] else "Time not provided"
+                )
+                location_suffix = (
+                    f" · {event['location']}" if event["location"] else ""
+                )
+                event_lines.append(
+                    f"- {time_label} — {event['title']}{location_suffix}"
+                )
+            sections.append("\n".join(event_lines))
+        else:
+            sections.append(
+                f"No events are scheduled for {view_label}, so the calendar "
+                "is clear for that view."
+            )
+
+        text = "\n\n".join(sections).strip()
+        event_count = len(clean_events)
+
+        if clean_view not in {"today", "tomorrow", "week"}:
+            reasons.append("invalid_calendar_view")
+        if not connected:
+            reasons.append("calendar_not_connected")
+        if _calendar_text_claims_clear(text) and (
+            not connected or event_count != 0
+        ):
+            reasons.append("unsupported_calendar_availability_claim")
+
+        components = {
+            "calendarView": clean_view,
+            "eventCount": event_count,
+            "events": clean_events,
+        }
+        tool_evidence = {
+            "tool": clean_tool,
+            "success": bool(success),
+            "calendarConnected": connected,
+            "calendarView": clean_view,
+            "eventCount": event_count,
+            "eventIds": [
+                event["id"] for event in clean_events if event["id"]
+            ],
+            "events": clean_events,
+        }
+        citations = []
+
+    else:
+        text = ""
+        components = {}
+        citations = []
+        tool_evidence = {
+            "tool": clean_tool,
+            "success": bool(success),
+        }
+        reasons.append("unsupported_tool_result")
+
     if not text:
         reasons.append("empty_candidate")
     if len(text) > 4000:
@@ -417,19 +579,9 @@ def build_tool_response_candidate(
     return {
         "text": text[:4000],
         "stage": "tool_result",
-        "components": {
-            "summary": clean_summary,
-            "recommendation": clean_recommendation,
-            "steps": clean_steps,
-        },
+        "components": components,
         "citations": citations,
-        "toolEvidence": {
-            "tool": clean_tool,
-            "success": bool(success),
-            "query": clean_query,
-            "resultIds": [citation["url"] for citation in citations],
-            "citationCount": len(citations),
-        },
+        "toolEvidence": tool_evidence,
         "eligibility": {
             "eligible": not deduplicated_reasons,
             "reasons": deduplicated_reasons,

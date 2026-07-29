@@ -1,3 +1,5 @@
+import type { FocusToolResponse } from '../types';
+
 const QMEET_TURN_HEADER = 'X-QMeet-Turn-Id';
 const TURN_LINK_WINDOW_MS = 60_000;
 
@@ -9,6 +11,7 @@ const TURN_FOLLOW_UP_PATHS = new Set([
   '/api/chat',
   '/api/chat/stream',
   '/api/search',
+  '/api/calendar/events',
 ]);
 
 type ActiveTurn = {
@@ -19,6 +22,10 @@ type ActiveTurn = {
 
 let activeTurn: ActiveTurn | null = null;
 let interceptorInstalled = false;
+let latestCalendarFocusResponse: {
+  turnId: string;
+  response: FocusToolResponse;
+} | null = null;
 
 function createTurnId(): string {
   const randomPart =
@@ -89,11 +96,30 @@ function resolveTurnId(request: Request, path: string): string {
 }
 
 function shouldAttachTurnId(request: Request, path: string): boolean {
-  if (request.method.toUpperCase() !== 'POST') {
+  const method = request.method.toUpperCase();
+
+  if (path === '/api/calendar/events') {
+    return method === 'GET';
+  }
+
+  if (method !== 'POST') {
     return false;
   }
 
   return TURN_START_PATHS.has(path) || TURN_FOLLOW_UP_PATHS.has(path);
+}
+
+function isFocusToolResponse(value: unknown): value is FocusToolResponse {
+  if (!value || typeof value !== 'object') return false;
+
+  const candidate = value as Partial<FocusToolResponse>;
+  return (
+    typeof candidate.text === 'string' &&
+    typeof candidate.tool === 'string' &&
+    Array.isArray(candidate.citations) &&
+    typeof candidate.sourceTurnId === 'string' &&
+    candidate.responseSource === 'focus-tool-guarded'
+  );
 }
 
 export function installQMeetFocusTurnHeaders(): void {
@@ -115,14 +141,37 @@ export function installQMeetFocusTurnHeaders(): void {
       return originalFetch(request);
     }
 
+    const turnId = resolveTurnId(request, path);
     const headers = new Headers(request.headers);
-    headers.set(QMEET_TURN_HEADER, resolveTurnId(request, path));
+    headers.set(QMEET_TURN_HEADER, turnId);
 
-    return originalFetch(
+    if (path === '/api/calendar/events') {
+      latestCalendarFocusResponse = null;
+    }
+
+    const response = await originalFetch(
       new Request(request, {
         headers,
       }),
     );
+
+    if (path === '/api/calendar/events' && response.ok) {
+      try {
+        const payload = (await response.clone().json()) as {
+          focusResponse?: unknown;
+        };
+        if (isFocusToolResponse(payload.focusResponse)) {
+          latestCalendarFocusResponse = {
+            turnId,
+            response: payload.focusResponse,
+          };
+        }
+      } catch {
+        latestCalendarFocusResponse = null;
+      }
+    }
+
+    return response;
   };
 }
 
@@ -132,4 +181,14 @@ export function getActiveQMeetTurnId(): string | null {
   }
 
   return activeTurn.id;
+}
+
+export function consumeLatestCalendarFocusResponse(): FocusToolResponse | null {
+  if (!latestCalendarFocusResponse) return null;
+
+  const activeTurnId = getActiveQMeetTurnId();
+  const stored = latestCalendarFocusResponse;
+  latestCalendarFocusResponse = null;
+
+  return activeTurnId === stored.turnId ? stored.response : null;
 }

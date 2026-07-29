@@ -14,6 +14,7 @@ import {
   describeCalendarDeletePayload,
   type CalendarDeleteCriteria,
 } from '../lib/calendarUtils';
+import { consumeLatestCalendarFocusResponse } from '../lib/focusTurnHeaders';
 
 export type CalendarCommandResult = {
   handled: boolean;
@@ -47,7 +48,6 @@ export async function handleCalendarCommand(
       deps.setCalendarView('today');
       deps.setActivePanel('calendar');
       return { handled: true };
-
     case 'refresh-calendar': {
       const refreshedEvents = await deps.refreshGoogleCalendar(deps.calendarView);
       deps.setActivePanel('calendar');
@@ -59,7 +59,6 @@ export async function handleCalendarCommand(
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }
-
     case 'edit-last-event': {
       const updatedEvent = await deps.editLastCalendarEvent(commandMatch.calendarEdit);
       deps.setActivePanel('calendar');
@@ -73,7 +72,6 @@ export async function handleCalendarCommand(
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }
-
     case 'add-calendar-event': {
       const addedEvent = await deps.saveCalendarEvent(commandMatch.calendarEvent);
       const targetView = commandMatch.calendarEvent?.day ?? 'today';
@@ -89,7 +87,6 @@ export async function handleCalendarCommand(
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }
-
     case 'read-calendar': {
       const requestedCalendarView = commandMatch.calendarView ?? 'all';
       const remoteCalendarView: CalendarBackendView =
@@ -97,6 +94,7 @@ export async function handleCalendarCommand(
       const remoteEvents = deps.googleCalendarStatus?.connected
         ? await deps.refreshGoogleCalendar(remoteCalendarView)
         : deps.googleCalendarEvents;
+      const guardedFocusResponse = consumeLatestCalendarFocusResponse();
       const sourceEvents = deps.googleCalendarStatus?.connected ? remoteEvents : deps.calendarEvents;
       const hasTodayEvents = sourceEvents.some((event) => isEventForCalendarView(event, 'today'));
       const hasTomorrowEvents = sourceEvents.some((event) => isEventForCalendarView(event, 'tomorrow'));
@@ -107,16 +105,17 @@ export async function handleCalendarCommand(
           : hasTomorrowEvents
             ? 'tomorrow'
             : deps.calendarView;
-
       deps.setCalendarView(targetView);
       deps.setActivePanel('calendar');
       return {
         handled: true,
-        confirmationContent: deps.getCalendarReadout(requestedCalendarView, remoteEvents),
+        confirmationContent:
+          guardedFocusResponse?.tool === 'calendar_read' && guardedFocusResponse.text.trim()
+            ? guardedFocusResponse.text.trim()
+            : deps.getCalendarReadout(requestedCalendarView, remoteEvents),
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }
-
     case 'delete-calendar-event': {
       const targetView = commandMatch.calendarDelete?.day ?? deps.calendarView;
       const deletedEvent = await deps.deleteCalendarEventByCriteria(commandMatch.calendarDelete);
@@ -132,7 +131,6 @@ export async function handleCalendarCommand(
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }
-
     case 'delete-last-event': {
       const deletedEvent = await deps.deleteLastCalendarEvent();
       deps.setActivePanel('calendar');
@@ -146,7 +144,6 @@ export async function handleCalendarCommand(
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }
-
     case 'clear-calendar':
       deps.clearCalendarEvents();
 
@@ -162,7 +159,6 @@ export async function handleCalendarCommand(
         confirmationContent: 'Cleared all local calendar events.',
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
-
     case 'show-today':
       deps.setCalendarView('today');
       deps.setActivePanel('calendar');

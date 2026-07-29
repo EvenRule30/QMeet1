@@ -23,11 +23,16 @@ from app.focus.models import (
 )
 from app.focus.legacy import load_legacy_focus_seed
 from app.focus.store import (
+    _atomic_write_unlocked,
+    _read_log_unlocked,
     apply_turn_plan,
     event_count,
     get_state,
     list_events,
+    guarded_tool_response_decision_for_turn,
     record_assistant_reply,
+    record_response_selection,
+    record_tool_response_candidate,
     record_tool_result,
     response_selection_summary,
     reduce_events,
@@ -1031,6 +1036,75 @@ class FocusStoreTests(unittest.TestCase):
         )
 
 
+    def test_calendar_selector_rejects_clear_claim_with_event_evidence(
+        self,
+    ) -> None:
+        turn_id = "turn-calendar-evidence-guard"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.TOOL,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.START_FOCUS,
+                        title="Prepare for meetings",
+                        objective="Prepare for today's meetings.",
+                    )
+                ],
+                toolCalls=[
+                    PlannedToolCall(
+                        tool=ToolName.CALENDAR_READ,
+                        attachToFocus=True,
+                    )
+                ],
+                confidence=1.0,
+            ),
+            message="Read my calendar for today.",
+            turn_id=turn_id,
+            source="unit-test",
+        )
+        record_tool_result(
+            tool=ToolName.CALENDAR_READ,
+            success=True,
+            summary="One event returned.",
+            result_ids=["event-1"],
+            source_turn_id=turn_id,
+        )
+        candidate = record_tool_response_candidate(
+            tool=ToolName.CALENDAR_READ,
+            success=True,
+            calendar_connected=True,
+            calendar_view="today",
+            calendar_events=[
+                {
+                    "id": "event-1",
+                    "title": "Client review",
+                    "time": "10:00 AM",
+                }
+            ],
+            source_turn_id=turn_id,
+        )
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+
+        document = _read_log_unlocked()
+        stored = next(
+            event
+            for event in document.events
+            if event.id == candidate.id
+        )
+        stored.payload["text"] = "The calendar is clear today."
+        _atomic_write_unlocked(document)
+
+        decision = guarded_tool_response_decision_for_turn(
+            turn_id,
+            tool=ToolName.CALENDAR_READ,
+        )
+        self.assertFalse(decision.eligible)
+        self.assertEqual(
+            decision.fallbackReason,
+            "calendar_availability_without_empty_view_evidence",
+        )
+
     def test_response_selection_summary_starts_empty(self) -> None:
         summary = response_selection_summary()
 
@@ -1280,6 +1354,30 @@ class FocusStoreTests(unittest.TestCase):
             "unknown",
         )
         self.assertFalse(summary["latestDecision"]["healthy"])
+
+    def test_response_selection_summary_counts_tool_fallback_without_reply(
+        self,
+    ) -> None:
+        record_response_selection(
+            source_turn_id="turn-calendar-fallback",
+            outcome="fallback",
+            reason="tool_not_attached_to_focus",
+            response_source="calendar-legacy-readout",
+            tool=ToolName.CALENDAR_READ,
+        )
+
+        summary = response_selection_summary()
+
+        self.assertEqual(summary["decisionCount"], 1)
+        self.assertEqual(summary["expectedFallbackCount"], 1)
+        self.assertEqual(
+            summary["fallbackReasons"],
+            {"tool_not_attached_to_focus": 1},
+        )
+        self.assertEqual(
+            summary["latestDecision"]["responseSource"],
+            "calendar-legacy-readout",
+        )
 
     def test_response_selection_summary_uses_latest_decision_per_turn(
         self,
