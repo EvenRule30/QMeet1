@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, HTTPException, Query
 
 from app.focus.middleware import focus_response_mode, focus_route_mode
@@ -29,10 +31,20 @@ from app.focus.store import (
 
 
 router = APIRouter(prefix="/api/focus", tags=["focus"])
+_SESSION_STARTED_AT = datetime.now().astimezone().isoformat()
 
 
 @router.get("/status")
 async def focus_status():
+    response_selection = response_selection_summary()
+    route_selection = route_selection_summary()
+    session_response_selection = response_selection_summary(
+        since_created_at=_SESSION_STARTED_AT,
+    )
+    session_route_selection = route_selection_summary(
+        since_created_at=_SESSION_STARTED_AT,
+    )
+
     return {
         "ok": True,
         "mode": focus_mode(),
@@ -42,8 +54,13 @@ async def focus_status():
         "model": DEFAULT_MODEL,
         "eventCount": event_count(),
         "path": str(event_file()),
-        "responseSelection": response_selection_summary(),
-        "routeSelection": route_selection_summary(),
+        "responseSelection": response_selection,
+        "routeSelection": route_selection,
+        "currentSession": {
+            "startedAt": _SESSION_STARTED_AT,
+            "responseSelection": session_response_selection,
+            "routeSelection": session_route_selection,
+        },
         "message": "Focus is running beside the legacy focus system.",
     }
 

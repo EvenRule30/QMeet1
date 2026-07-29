@@ -1136,6 +1136,74 @@ class FocusStoreTests(unittest.TestCase):
         )
         self.assertIsNone(summary["latestDecision"])
 
+    def test_guard_summaries_can_filter_to_current_session_window(self) -> None:
+        record_response_selection(
+            source_turn_id="turn-window-old-response",
+            outcome="fallback",
+            reason="missing_tool_request",
+            response_source="calendar-legacy-readout",
+        )
+        record_response_selection(
+            source_turn_id="turn-window-current-response",
+            outcome="fallback",
+            reason="not_attached_to_focus",
+            response_source="chat-visible-response",
+        )
+        record_route_selection(
+            source_turn_id="turn-window-old-route",
+            outcome="fallback",
+            reason="route_disagreement",
+            details=["focus=chat", "legacy=search"],
+        )
+        record_route_selection(
+            source_turn_id="turn-window-current-route",
+            outcome="takeover",
+            route_class="tasks_read",
+            focus_route_class="tasks_read",
+            legacy_route_class="tasks_read",
+            response_source="focus-route-guarded",
+        )
+
+        document = _read_log_unlocked()
+        for event in document.events:
+            if event.sourceTurnId in {
+                "turn-window-old-response",
+                "turn-window-old-route",
+            }:
+                event.createdAt = "2026-07-29T10:00:00+00:00"
+            if event.sourceTurnId in {
+                "turn-window-current-response",
+                "turn-window-current-route",
+            }:
+                event.createdAt = "2026-07-29T14:00:00+00:00"
+        _atomic_write_unlocked(document)
+
+        cutoff = "2026-07-29T12:00:00+00:00"
+        response_summary = response_selection_summary(
+            since_created_at=cutoff,
+        )
+        route_summary = route_selection_summary(
+            since_created_at=cutoff,
+        )
+
+        self.assertEqual(response_summary["decisionCount"], 1)
+        self.assertEqual(response_summary["expectedFallbackCount"], 1)
+        self.assertEqual(response_summary["systemFailureCount"], 0)
+        self.assertEqual(
+            response_summary["latestDecision"]["sourceTurnId"],
+            "turn-window-current-response",
+        )
+        self.assertEqual(response_summary["windowStart"], cutoff)
+
+        self.assertEqual(route_summary["decisionCount"], 1)
+        self.assertEqual(route_summary["takeoverCount"], 1)
+        self.assertEqual(route_summary["safetyFallbackCount"], 0)
+        self.assertEqual(
+            route_summary["latestDecision"]["sourceTurnId"],
+            "turn-window-current-route",
+        )
+        self.assertEqual(route_summary["windowStart"], cutoff)
+
     def test_response_selection_summary_counts_guarded_decisions(self) -> None:
         apply_turn_plan(
             TurnPlan(

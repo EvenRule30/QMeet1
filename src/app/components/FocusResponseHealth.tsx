@@ -56,6 +56,7 @@ type GuardSelection<TDecision extends GuardDecision> = {
     unknown: Record<string, number>;
   };
   latestDecision: TDecision | null;
+  windowStart?: string;
 };
 
 type FocusStatusResponse = {
@@ -68,6 +69,11 @@ type FocusStatusResponse = {
   eventCount: number;
   responseSelection: GuardSelection<FocusResponseDecision>;
   routeSelection?: GuardSelection<FocusRouteDecision>;
+  currentSession?: {
+    startedAt: string;
+    responseSelection: GuardSelection<FocusResponseDecision>;
+    routeSelection?: GuardSelection<FocusRouteDecision>;
+  };
 };
 
 const REFRESH_INTERVAL_MS = 10_000;
@@ -76,6 +82,10 @@ function formatPercent(value: number): string {
   if (!Number.isFinite(value)) return '—';
   const percentage = Math.max(0, Math.min(1, value)) * 100;
   return `${percentage >= 99.95 ? percentage.toFixed(0) : percentage.toFixed(1)}%`;
+}
+
+function formatPercentForCount(value: number, count: number): string {
+  return count > 0 ? formatPercent(value) : '—';
 }
 
 function formatLabel(value: string): string {
@@ -205,28 +215,33 @@ export function FocusResponseHealth() {
     };
   }, []);
 
-  const responseSelection = status?.responseSelection ?? null;
-  const routeSelection = status?.routeSelection ?? null;
-  const responseLatest = responseSelection?.latestDecision ?? null;
-  const routeLatest = routeSelection?.latestDecision ?? null;
+  const recordedResponseSelection = status?.responseSelection ?? null;
+  const recordedRouteSelection = status?.routeSelection ?? null;
+  const sessionResponseSelection =
+    status?.currentSession?.responseSelection ?? recordedResponseSelection;
+  const sessionRouteSelection =
+    status?.currentSession?.routeSelection ?? recordedRouteSelection;
+  const sessionStartedAt = status?.currentSession?.startedAt ?? '';
+  const responseLatest = sessionResponseSelection?.latestDecision ?? null;
+  const routeLatest = sessionRouteSelection?.latestDecision ?? null;
 
   const responseHealthClass = useMemo(() => {
-    if (!responseSelection) return 'status-card';
+    if (!sessionResponseSelection) return 'status-card';
     return healthCardClass(
-      responseSelection.systemFailureCount,
-      responseSelection.unknownFallbackCount,
+      sessionResponseSelection.systemFailureCount,
+      sessionResponseSelection.unknownFallbackCount,
     );
-  }, [responseSelection]);
+  }, [sessionResponseSelection]);
 
   const routeHealthClass = useMemo(() => {
-    if (!routeSelection) return 'status-card';
+    if (!sessionRouteSelection) return 'status-card';
     return healthCardClass(
-      routeSelection.systemFailureCount,
-      routeSelection.unknownFallbackCount,
+      sessionRouteSelection.systemFailureCount,
+      sessionRouteSelection.unknownFallbackCount,
     );
-  }, [routeSelection]);
+  }, [sessionRouteSelection]);
 
-  if (loading && !responseSelection) {
+  if (loading && !recordedResponseSelection) {
     return (
       <div className="panel-section status-detail-section" aria-live="polite">
         <div className="panel-section-title">Focus Guard Health</div>
@@ -235,7 +250,7 @@ export function FocusResponseHealth() {
     );
   }
 
-  if (!responseSelection) {
+  if (!recordedResponseSelection) {
     return (
       <div className="panel-section status-detail-section" aria-live="polite">
         <div className="panel-section-title">Focus Guard Health</div>
@@ -250,126 +265,160 @@ export function FocusResponseHealth() {
     <>
       <div className="panel-section status-detail-section" aria-live="polite">
         <div className="panel-section-title">Focus Response Health</div>
-        <div className="status-grid">
-          <div className={responseHealthClass}>
-            <div className="status-card-title">Healthy Decisions</div>
-            <div className="status-card-value">
-              {formatPercent(responseSelection.healthyDecisionRate)}
-            </div>
-            <div className="status-card-meta">
-              {responseSelection.healthyDecisionCount} of{' '}
-              {responseSelection.decisionCount} decisions
-            </div>
-          </div>
-          <div className="status-card status-card-good">
-            <div className="status-card-title">Guarded Takeover</div>
-            <div className="status-card-value">
-              {formatPercent(responseSelection.guardedTakeoverRate)}
-            </div>
-            <div className="status-card-meta">
-              {responseSelection.takeoverCount} of{' '}
-              {responseSelection.guardedAttemptCount} attempts
-            </div>
-          </div>
-          <div className="status-card">
-            <div className="status-card-title">Expected Fallbacks</div>
-            <div className="status-card-value">
-              {responseSelection.expectedFallbackCount}
-            </div>
-            <div className="status-card-meta">Correct off-focus or tool routing</div>
-          </div>
-          <div
-            className={`status-card ${
-              responseSelection.systemFailureCount === 0
-                ? 'status-card-good'
-                : 'status-card-warn'
-            }`}
-          >
-            <div className="status-card-title">Recorded System Failures</div>
-            <div className="status-card-value">
-              {responseSelection.systemFailureCount}
-            </div>
-            <div className="status-card-meta">
-              Append-only history · {responseSelection.unknownFallbackCount} unknown
-            </div>
-          </div>
-        </div>
-        <div className="status-detail-list">
-          <div className="status-detail-row">
-            <span>Planner mode</span>
-            <strong>{formatLabel(status?.mode || 'unknown')}</strong>
-          </div>
-          <div className="status-detail-row">
-            <span>Visible response mode</span>
-            <strong>{formatLabel(status?.responseMode || 'unknown')}</strong>
-          </div>
-          <div className="status-detail-row">
-            <span>Safety fallbacks</span>
-            <strong>{responseSelection.safetyFallbackCount}</strong>
-          </div>
-          <div className="status-detail-row">
-            <span>Latest recorded decision</span>
-            <strong>{formatDecision(responseLatest)}</strong>
-          </div>
-          <div className="status-detail-row">
-            <span>Recorded decision detail</span>
-            <strong>{responseDecisionDetail(responseLatest)}</strong>
-          </div>
-          <div className="status-detail-row">
-            <span>Recorded decision time</span>
-            <strong>
-              {responseLatest ? formatDecisionTime(responseLatest.createdAt) : '—'}
-            </strong>
-          </div>
-        </div>
-      </div>
-
-      <div className="panel-section status-detail-section" aria-live="polite">
-        <div className="panel-section-title">Planner Routing Health</div>
-        {routeSelection ? (
+        {sessionResponseSelection ? (
           <>
             <div className="status-grid">
-              <div className={routeHealthClass}>
-                <div className="status-card-title">Healthy Routing</div>
+              <div className={responseHealthClass}>
+                <div className="status-card-title">Healthy This Session</div>
                 <div className="status-card-value">
-                  {formatPercent(routeSelection.healthyDecisionRate)}
+                  {formatPercentForCount(
+                    sessionResponseSelection.healthyDecisionRate,
+                    sessionResponseSelection.decisionCount,
+                  )}
                 </div>
                 <div className="status-card-meta">
-                  {routeSelection.healthyDecisionCount} of{' '}
-                  {routeSelection.decisionCount} decisions
+                  {sessionResponseSelection.healthyDecisionCount} of{' '}
+                  {sessionResponseSelection.decisionCount} decisions
                 </div>
               </div>
               <div className="status-card status-card-good">
                 <div className="status-card-title">Guarded Takeover</div>
                 <div className="status-card-value">
-                  {formatPercent(routeSelection.guardedTakeoverRate)}
+                  {formatPercentForCount(
+                    sessionResponseSelection.guardedTakeoverRate,
+                    sessionResponseSelection.guardedAttemptCount,
+                  )}
                 </div>
                 <div className="status-card-meta">
-                  {routeSelection.takeoverCount} of{' '}
-                  {routeSelection.guardedAttemptCount} attempts
+                  {sessionResponseSelection.takeoverCount} of{' '}
+                  {sessionResponseSelection.guardedAttemptCount} attempts
                 </div>
               </div>
               <div className="status-card">
                 <div className="status-card-title">Expected Fallbacks</div>
                 <div className="status-card-value">
-                  {routeSelection.expectedFallbackCount}
+                  {sessionResponseSelection.expectedFallbackCount}
                 </div>
-                <div className="status-card-meta">Confirmation-gated legacy routes</div>
+                <div className="status-card-meta">Current backend session</div>
               </div>
               <div
                 className={`status-card ${
-                  routeSelection.safetyFallbackCount === 0
+                  sessionResponseSelection.systemFailureCount === 0 &&
+                  sessionResponseSelection.unknownFallbackCount === 0
                     ? 'status-card-good'
                     : 'status-card-warn'
                 }`}
               >
-                <div className="status-card-title">Safety Blocks</div>
+                <div className="status-card-title">Session Failures</div>
                 <div className="status-card-value">
-                  {routeSelection.safetyFallbackCount}
+                  {sessionResponseSelection.systemFailureCount}
                 </div>
                 <div className="status-card-meta">
-                  {routeSelection.systemFailureCount} system ·{' '}
-                  {routeSelection.unknownFallbackCount} unknown
+                  All-time: {recordedResponseSelection.systemFailureCount} system ·{' '}
+                  {recordedResponseSelection.unknownFallbackCount} unknown
+                </div>
+              </div>
+            </div>
+            <div className="status-detail-list">
+              <div className="status-detail-row">
+                <span>Session started</span>
+                <strong>
+                  {sessionStartedAt ? formatDecisionTime(sessionStartedAt) : 'Legacy metrics'}
+                </strong>
+              </div>
+              <div className="status-detail-row">
+                <span>Planner mode</span>
+                <strong>{formatLabel(status?.mode || 'unknown')}</strong>
+              </div>
+              <div className="status-detail-row">
+                <span>Visible response mode</span>
+                <strong>{formatLabel(status?.responseMode || 'unknown')}</strong>
+              </div>
+              <div className="status-detail-row">
+                <span>Session safety fallbacks</span>
+                <strong>{sessionResponseSelection.safetyFallbackCount}</strong>
+              </div>
+              <div className="status-detail-row">
+                <span>Latest session decision</span>
+                <strong>{formatDecision(responseLatest)}</strong>
+              </div>
+              <div className="status-detail-row">
+                <span>Session decision detail</span>
+                <strong>{responseDecisionDetail(responseLatest)}</strong>
+              </div>
+              <div className="status-detail-row">
+                <span>Session decision time</span>
+                <strong>
+                  {responseLatest ? formatDecisionTime(responseLatest.createdAt) : '—'}
+                </strong>
+              </div>
+              <div className="status-detail-row">
+                <span>Recorded response history</span>
+                <strong>
+                  {recordedResponseSelection.decisionCount} decisions ·{' '}
+                  {recordedResponseSelection.systemFailureCount} system failures
+                </strong>
+              </div>
+            </div>
+          </>
+        ) : (
+          <p className="panel-section-text">No response-session metrics are available.</p>
+        )}
+      </div>
+
+      <div className="panel-section status-detail-section" aria-live="polite">
+        <div className="panel-section-title">Planner Routing Health</div>
+        {sessionRouteSelection ? (
+          <>
+            <div className="status-grid">
+              <div className={routeHealthClass}>
+                <div className="status-card-title">Healthy This Session</div>
+                <div className="status-card-value">
+                  {formatPercentForCount(
+                    sessionRouteSelection.healthyDecisionRate,
+                    sessionRouteSelection.decisionCount,
+                  )}
+                </div>
+                <div className="status-card-meta">
+                  {sessionRouteSelection.healthyDecisionCount} of{' '}
+                  {sessionRouteSelection.decisionCount} decisions
+                </div>
+              </div>
+              <div className="status-card status-card-good">
+                <div className="status-card-title">Guarded Takeover</div>
+                <div className="status-card-value">
+                  {formatPercentForCount(
+                    sessionRouteSelection.guardedTakeoverRate,
+                    sessionRouteSelection.guardedAttemptCount,
+                  )}
+                </div>
+                <div className="status-card-meta">
+                  {sessionRouteSelection.takeoverCount} of{' '}
+                  {sessionRouteSelection.guardedAttemptCount} attempts
+                </div>
+              </div>
+              <div className="status-card">
+                <div className="status-card-title">Expected Fallbacks</div>
+                <div className="status-card-value">
+                  {sessionRouteSelection.expectedFallbackCount}
+                </div>
+                <div className="status-card-meta">Protected legacy mutations</div>
+              </div>
+              <div
+                className={`status-card ${
+                  sessionRouteSelection.systemFailureCount === 0 &&
+                  sessionRouteSelection.unknownFallbackCount === 0
+                    ? 'status-card-good'
+                    : 'status-card-warn'
+                }`}
+              >
+                <div className="status-card-title">Session Safety Blocks</div>
+                <div className="status-card-value">
+                  {sessionRouteSelection.safetyFallbackCount}
+                </div>
+                <div className="status-card-meta">
+                  All-time: {recordedRouteSelection?.safetyFallbackCount ?? 0} safety ·{' '}
+                  {recordedRouteSelection?.systemFailureCount ?? 0} system
                 </div>
               </div>
             </div>
@@ -379,7 +428,7 @@ export function FocusResponseHealth() {
                 <strong>{formatLabel(status?.routeMode || 'shadow')}</strong>
               </div>
               <div className="status-detail-row">
-                <span>Latest route decision</span>
+                <span>Latest session route</span>
                 <strong>{formatDecision(routeLatest)}</strong>
               </div>
               <div className="status-detail-row">
@@ -387,9 +436,16 @@ export function FocusResponseHealth() {
                 <strong>{routeAgreementDetail(routeLatest)}</strong>
               </div>
               <div className="status-detail-row">
-                <span>Latest route time</span>
+                <span>Session route time</span>
                 <strong>
                   {routeLatest ? formatDecisionTime(routeLatest.createdAt) : '—'}
+                </strong>
+              </div>
+              <div className="status-detail-row">
+                <span>Recorded route history</span>
+                <strong>
+                  {recordedRouteSelection?.decisionCount ?? 0} decisions ·{' '}
+                  {recordedRouteSelection?.systemFailureCount ?? 0} system failures
                 </strong>
               </div>
               <div className="status-detail-row">
@@ -413,4 +469,5 @@ export function FocusResponseHealth() {
       </div>
     </>
   );
+
 }

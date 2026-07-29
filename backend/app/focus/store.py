@@ -236,6 +236,36 @@ def event_count() -> int:
         return len(_read_log_unlocked().events)
 
 
+def _parse_iso_datetime(value: str) -> datetime | None:
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if normalized.endswith("Z"):
+        normalized = f"{normalized[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.astimezone()
+
+
+def _events_since(
+    events: Iterable[FocusEvent],
+    since_created_at: str,
+) -> list[FocusEvent]:
+    cutoff = _parse_iso_datetime(since_created_at)
+    items = list(events)
+    if cutoff is None:
+        return items
+
+    filtered: list[FocusEvent] = []
+    for event in items:
+        created_at = _parse_iso_datetime(event.createdAt)
+        if created_at is not None and created_at >= cutoff:
+            filtered.append(event)
+    return filtered
+
+
 _EXPECTED_FALLBACK_REASONS = frozenset({
     "not_attached_to_focus",
     "tool_requested",
@@ -283,7 +313,10 @@ def _fallback_category(reason: str) -> str:
     return "unknown"
 
 
-def response_selection_summary() -> dict[str, object]:
+def response_selection_summary(
+    *,
+    since_created_at: str = "",
+) -> dict[str, object]:
     """Summarize explicit guarded visible-response decisions.
 
     Shadow-era assistant replies are intentionally excluded. A guarded
@@ -301,6 +334,7 @@ def response_selection_summary() -> dict[str, object]:
 
     with _STORE_LOCK:
         events = list(_read_log_unlocked().events)
+    events = _events_since(events, since_created_at)
 
     decisions_by_turn: dict[str, dict[str, object]] = {}
     decision_order: list[str] = []
@@ -489,6 +523,7 @@ def response_selection_summary() -> dict[str, object]:
         "fallbackCategoryCounts": category_counts,
         "fallbackReasonsByCategory": reasons_by_category,
         "latestDecision": decisions[-1] if decisions else None,
+        "windowStart": since_created_at.strip(),
     }
 
 
@@ -800,11 +835,15 @@ def record_route_selection(
         return reduce_events(document.events)
 
 
-def route_selection_summary() -> dict[str, object]:
+def route_selection_summary(
+    *,
+    since_created_at: str = "",
+) -> dict[str, object]:
     """Summarize explicit guarded command-routing decisions."""
 
     with _STORE_LOCK:
         events = list(_read_log_unlocked().events)
+    events = _events_since(events, since_created_at)
 
     decisions_by_turn: dict[str, dict[str, object]] = {}
     order: list[str] = []
@@ -923,6 +962,7 @@ def route_selection_summary() -> dict[str, object]:
         "fallbackCategoryCounts": category_counts,
         "fallbackReasonsByCategory": reasons_by_category,
         "latestDecision": decisions[-1] if decisions else None,
+        "windowStart": since_created_at.strip(),
     }
 
 
