@@ -8,6 +8,8 @@ from app.focus.middleware import focus_response_mode, focus_route_mode
 from app.focus.native_read_middleware import (
     native_read_route_mode,
     native_read_routes_enabled,
+    native_write_route_mode,
+    native_write_routes_enabled,
 )
 from app.focus.models import (
     ExactRouteObservationRequest,
@@ -61,6 +63,8 @@ async def focus_status():
     route_mode = focus_route_mode()
     native_read_mode = native_read_route_mode()
     native_read_enabled = native_read_routes_enabled()
+    native_write_mode = native_write_route_mode()
+    native_write_enabled = native_write_routes_enabled()
     is_planner_enabled = planner_enabled()
 
     response_selection = response_selection_summary()
@@ -102,6 +106,9 @@ async def focus_status():
         "routeMode": route_mode,
         "nativeReadRouteMode": native_read_mode,
         "nativeReadRoutesEnabled": native_read_enabled,
+        "nativeWriteRouteMode": native_write_mode,
+        "nativeWriteRoutesEnabled": native_write_enabled,
+        "nativeWriteRouteScope": ["save_note", "remember_task"],
         "plannerEnabled": is_planner_enabled,
         "model": DEFAULT_MODEL,
         "eventCount": event_count(),
