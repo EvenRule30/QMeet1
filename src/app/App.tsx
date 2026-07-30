@@ -26,7 +26,10 @@ import {
   getBriefToolSpeech,
   getResultToastForCommand,
 } from './lib/toastUtils';
-import { getCommandActionLabel } from './lib/memoryUtils';
+import {
+  getCommandActionLabel,
+  shouldRecordRecentAction,
+} from './lib/memoryUtils';
 import {
   buildInterpreterClarifyPrompt,
   buildInterpreterDestructivePrompt,
@@ -639,8 +642,11 @@ export default function App() {
         setMessages((prev) => [...prev, userMsg, confirmationMsg]);
       }
 
-      if (commandMatch.command !== 'clear-done-tasks') {
-        addRecentAction(getCommandActionLabel(commandMatch.command), confirmationContent);
+      if (shouldRecordRecentAction(commandMatch.command)) {
+        addRecentAction(
+          getCommandActionLabel(commandMatch.command),
+          confirmationContent,
+        );
       }
       pushResultToast(getResultToastForCommand(commandMatch.command, confirmationContent));
 

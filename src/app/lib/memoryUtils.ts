@@ -1,3 +1,35 @@
+import type { LocalCommand } from '../commands';
+
+const MEANINGFUL_RECENT_ACTION_COMMANDS = new Set<LocalCommand>([
+  'save-note',
+  'delete-last-note',
+  'clear-notes',
+  'start-focus-session',
+  'update-focus-session',
+  'end-focus-session',
+  'focus-to-tasks',
+  'summarize-focus-session',
+  'save-focus-summary',
+  'end-focus-with-summary',
+  'resume-last-focus-session',
+  'prepare-calendar-focus',
+  'create-meeting-follow-up-tasks',
+  'wrap-up-meeting-focus',
+  'create-visual-observation',
+  'link-visual-to-focus',
+  'clear-visual-context',
+  'delete-last-visual-observation',
+  'remember-task',
+  'mark-task-done',
+  'delete-last-task',
+  'run-search',
+  'add-calendar-event',
+  'edit-last-event',
+  'delete-calendar-event',
+  'delete-last-event',
+  'clear-calendar',
+]);
+
 export function normalizeMemoryLookup(value: string): string {
   return value
     .toLowerCase()
@@ -18,6 +50,10 @@ export function formatMemoryTime(value: string): string {
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+export function shouldRecordRecentAction(command: LocalCommand): boolean {
+  return MEANINGFUL_RECENT_ACTION_COMMANDS.has(command);
 }
 
 export function getCommandActionLabel(command: string): string {
@@ -44,6 +80,22 @@ export function getCommandActionLabel(command: string): string {
       return 'Ended focus with summary';
     case 'end-focus-session':
       return 'Ended focus session';
+    case 'resume-last-focus-session':
+      return 'Resumed focus session';
+    case 'prepare-calendar-focus':
+      return 'Prepared meeting focus';
+    case 'create-meeting-follow-up-tasks':
+      return 'Created meeting follow-up tasks';
+    case 'wrap-up-meeting-focus':
+      return 'Wrapped up meeting focus';
+    case 'create-visual-observation':
+      return 'Saved visual observation';
+    case 'link-visual-to-focus':
+      return 'Linked visual context to focus';
+    case 'clear-visual-context':
+      return 'Cleared visual context';
+    case 'delete-last-visual-observation':
+      return 'Deleted visual observation';
     case 'remember-task':
       return 'Saved task';
     case 'mark-task-done':
@@ -63,6 +115,8 @@ export function getCommandActionLabel(command: string): string {
     case 'delete-calendar-event':
     case 'delete-last-event':
       return 'Deleted calendar event';
+    case 'clear-calendar':
+      return 'Cleared calendar';
     case 'read-calendar':
       return 'Read calendar';
     case 'read-notes':
