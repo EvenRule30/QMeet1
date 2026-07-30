@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
 
@@ -16,6 +17,54 @@ _UNSUPPORTED_CALENDAR_AVAILABILITY_SENTENCE_PATTERN = re.compile(
 )
 
 _SENTENCE_BOUNDARY_PATTERN = re.compile(r"(?<=[.!?])\s+")
+
+_TIME_WITH_MERIDIEM_PATTERN = re.compile(
+    r"\b(?P<hour>1[0-2]|0?[1-9])"
+    r"(?::(?P<minute>[0-5]\d))?\s*"
+    r"(?P<meridiem>a\.?m\.?|p\.?m\.?)\b",
+    re.IGNORECASE,
+)
+_SAME_DAY_TIME_CONTEXT_PATTERN = re.compile(
+    r"\b(?:today|this morning|this afternoon|this evening|tonight)\b",
+    re.IGNORECASE,
+)
+_EVENT_CONTEXT_PATTERN = re.compile(
+    r"\b(?:calendar\s+event|meeting|appointment|interview|standup|"
+    r"stand-up|demo|briefing|presentation|client\s+call|sales\s+call|"
+    r"conference\s+call|video\s+call|work\s+call)\b",
+    re.IGNORECASE,
+)
+_EXPLICIT_OTHER_DAY_PATTERN = re.compile(
+    r"\b(?:tomorrow|the\s+day\s+after\s+tomorrow|later\s+this\s+week|"
+    r"next\s+(?:week|month|monday|tuesday|wednesday|thursday|friday|"
+    r"saturday|sunday)|this\s+(?:monday|tuesday|wednesday|thursday|"
+    r"friday|saturday|sunday)|(?:monday|tuesday|wednesday|thursday|"
+    r"friday|saturday|sunday)(?:'s)?|(?:jan(?:uary)?|feb(?:ruary)?|"
+    r"mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|"
+    r"sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+"
+    r"\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?|\d{4}-\d{2}-\d{2}|"
+    r"\d{1,2}/\d{1,2}(?:/\d{2,4})?)\b",
+    re.IGNORECASE,
+)
+_PROSPECTIVE_EVENT_PATTERN = re.compile(
+    r"\b(?:upcoming|next|scheduled|coming up|ahead of|before|"
+    r"prepare(?:d|ing)?(?:\s+for)?|review(?:\s+first)?|start(?:\s+by)?|"
+    r"attend|join|address|discuss|bring)\b",
+    re.IGNORECASE,
+)
+_PAST_EVENT_PATTERN = re.compile(
+    r"\b(?:was|were|did|had|ended|finished|completed|earlier|"
+    r"already happened|already ended|took place|attended|discussed|"
+    r"notes from|recap of|after|meeting\s+(?:notes|minutes|recording|"
+    r"transcript)|follow-up|follow up)\b",
+    re.IGNORECASE,
+)
+_STALE_EVENT_CLOCK_GRACE = timedelta(minutes=5)
+_GROUNDED_MEETING_PREP_GUIDANCE = (
+    "For meeting preparation, start with the agenda, expected attendees, "
+    "and any relevant materials or prior notes. Then identify the decision "
+    "or outcome you need from the meeting."
+)
 
 _TOOL_BACKED_CLAIM_PATTERNS = (
     (
@@ -35,7 +84,6 @@ _TOOL_BACKED_CLAIM_PATTERNS = (
         ),
     ),
 )
-
 _PROMISE_WITHOUT_DELIVERY_PATTERN = re.compile(
     r"\b(?:"
     r"i(?:'ll| will| can)\s+(?:provide|give|explain|show|walk you through)|"
@@ -44,7 +92,6 @@ _PROMISE_WITHOUT_DELIVERY_PATTERN = re.compile(
     r")\b",
     re.IGNORECASE,
 )
-
 _PROCEDURAL_DELIVERY_PATTERN = re.compile(
     r"(?:^|\n)\s*(?:\d+[.)]|[-*])\s+|"
     r"(?:^|[.!?]\s+)(?:first|second|third|finally)\s*[, :]\s+|"
@@ -68,7 +115,6 @@ _NUMBERED_STEP_PATTERN = re.compile(
     r"(?:^|\n)\s*(\d{1,2})[.)]\s+",
     re.MULTILINE,
 )
-
 _SUSPICIOUS_TRAILING_FRAGMENT_PATTERN = re.compile(
     r"(?:"
     r"[,;:/\\-]\s*\d{0,3}|"
@@ -86,7 +132,6 @@ def _clean(value: str) -> str:
     normalized = value.replace("\r\n", "\n").replace("\r", "\n")
     output_lines: list[str] = []
     previous_was_blank = False
-
     for raw_line in normalized.split("\n"):
         line = " ".join(raw_line.split()).strip()
 
@@ -105,6 +150,69 @@ def _clean(value: str) -> str:
     return "\n".join(output_lines).strip()
 
 
+def _local_now() -> datetime:
+    return datetime.now().astimezone()
+
+
+def _meridiem_time_minutes(match: re.Match[str]) -> int:
+    hour = int(match.group("hour"))
+    minute = int(match.group("minute") or "0")
+    meridiem = match.group("meridiem").replace(".", "").casefold()
+    if meridiem == "pm" and hour != 12:
+        hour += 12
+    elif meridiem == "am" and hour == 12:
+        hour = 0
+    return (hour * 60) + minute
+
+
+def _has_stale_prospective_same_day_claim(
+    text: str,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Detect past clock times presented as still-upcoming event guidance.
+
+    A time-only meeting reference such as "the 3:00 PM work meeting" is
+    treated as same-day unless the sentence explicitly names another day or
+    date. This closes the gap where model wording omitted the word "today".
+    """
+
+    current = now or _local_now()
+    if current.tzinfo is None:
+        current = current.astimezone()
+
+    compact_text = " ".join((text or "").split())
+    if not compact_text:
+        return False
+
+    current_minutes = (current.hour * 60) + current.minute
+    grace_minutes = int(_STALE_EVENT_CLOCK_GRACE.total_seconds() // 60)
+
+    for sentence in _SENTENCE_BOUNDARY_PATTERN.split(compact_text):
+        has_same_day_context = bool(
+            _SAME_DAY_TIME_CONTEXT_PATTERN.search(sentence)
+        )
+        has_event_context = bool(_EVENT_CONTEXT_PATTERN.search(sentence))
+        if not has_same_day_context and not has_event_context:
+            continue
+        if (
+            not has_same_day_context
+            and _EXPLICIT_OTHER_DAY_PATTERN.search(sentence)
+        ):
+            continue
+        if not _PROSPECTIVE_EVENT_PATTERN.search(sentence):
+            continue
+        if _PAST_EVENT_PATTERN.search(sentence):
+            continue
+
+        for match in _TIME_WITH_MERIDIEM_PATTERN.finditer(sentence):
+            event_minutes = _meridiem_time_minutes(match)
+            if current_minutes - event_minutes > grace_minutes:
+                return True
+
+    return False
+
+
 def _remove_unsupported_calendar_availability(value: str) -> tuple[str, bool]:
     """Remove direct-response sentences that infer availability without a read.
 
@@ -116,7 +224,6 @@ def _remove_unsupported_calendar_availability(value: str) -> tuple[str, bool]:
     cleaned = _clean(value)
     if not cleaned:
         return "", False
-
     repaired_lines: list[str] = []
     removed = False
 
@@ -124,7 +231,6 @@ def _remove_unsupported_calendar_availability(value: str) -> tuple[str, bool]:
         if not line:
             repaired_lines.append("")
             continue
-
         sentences = _SENTENCE_BOUNDARY_PATTERN.split(line)
         kept_sentences: list[str] = []
         for sentence in sentences:
@@ -137,7 +243,6 @@ def _remove_unsupported_calendar_availability(value: str) -> tuple[str, bool]:
                 removed = True
                 continue
             kept_sentences.append(sentence)
-
         if kept_sentences:
             repaired_lines.append(" ".join(kept_sentences))
 
@@ -148,20 +253,40 @@ def _remove_unsupported_calendar_availability(value: str) -> tuple[str, bool]:
 def _direct_response_components(
     plan: TurnPlan,
 ) -> tuple[str, str, str, list[str]]:
-    repairs: list[str] = []
-    components: list[str] = []
-
-    for raw in (
+    raw_components = (
         plan.responseIntent.acknowledge,
         plan.responseIntent.guidance,
         plan.responseIntent.askQuestion,
-    ):
+    )
+    stale_components = [
+        bool(raw.strip()) and _has_stale_prospective_same_day_claim(raw)
+        for raw in raw_components
+    ]
+
+    repairs: list[str] = []
+    components: list[str] = []
+    for index, raw in enumerate(raw_components):
+        if stale_components[index]:
+            components.append("")
+            continue
         repaired, removed = _remove_unsupported_calendar_availability(raw)
         components.append(repaired)
         if removed:
             repairs.append("removed_unsupported_calendar_availability")
 
     acknowledge, guidance, question = components
+    if any(stale_components):
+        # Do not fall back to legacy chat after detecting stale calendar prose.
+        # Replace the unsafe timed claim with useful meeting-prep guidance that
+        # does not assert an event title, date, time, or current status.
+        if stale_components[1] or not guidance:
+            guidance = _GROUNDED_MEETING_PREP_GUIDANCE
+        if stale_components[2]:
+            question = ""
+        repairs.append(
+            "replaced_stale_prospective_event_with_grounded_meeting_guidance"
+        )
+
     return acknowledge, guidance, question, list(dict.fromkeys(repairs))
 
 
@@ -188,7 +313,6 @@ def _has_balanced_delimiters(value: str) -> bool:
 
         if character not in pairs:
             continue
-
         if not stack or stack.pop() != pairs[character]:
             return False
 
@@ -204,7 +328,6 @@ def _procedure_integrity_reasons(guidance: str) -> list[str]:
     reasons: list[str] = []
     stripped = guidance.rstrip()
     numbered_matches = list(_NUMBERED_STEP_PATTERN.finditer(guidance))
-
     if numbered_matches:
         step_numbers = [
             int(match.group(1))
@@ -216,7 +339,6 @@ def _procedure_integrity_reasons(guidance: str) -> list[str]:
 
         if step_numbers != expected_numbers:
             reasons.append("nonsequential_numbered_steps")
-
         for index, match in enumerate(numbered_matches):
             content_start = match.end()
             content_end = (
@@ -229,7 +351,6 @@ def _procedure_integrity_reasons(guidance: str) -> list[str]:
             if len(step_content) < 8:
                 reasons.append("incomplete_numbered_step")
                 break
-
     if stripped and stripped[-1] not in _TERMINAL_CHARACTERS:
         reasons.append("unterminated_procedure")
 
@@ -248,7 +369,6 @@ def _compose_component_text(
     question: str,
 ) -> str:
     parts: list[str] = []
-
     for value in (acknowledge, guidance, question):
         cleaned = _clean(value)
         if not cleaned:
@@ -276,7 +396,6 @@ def compose_response_candidate(plan: TurnPlan) -> str:
 
     if _real_tool_calls(plan):
         return ""
-
     acknowledge, guidance, question, _ = _direct_response_components(plan)
     return _compose_component_text(acknowledge, guidance, question)
 
@@ -288,7 +407,6 @@ def build_response_candidate(plan: TurnPlan) -> dict[str, Any]:
     replacement; it only records whether this candidate would be eligible for a
     future guarded cutover.
     """
-
     raw_acknowledge = _clean(plan.responseIntent.acknowledge)
     raw_guidance = _clean(plan.responseIntent.guidance)
     raw_question = _clean(plan.responseIntent.askQuestion)
@@ -306,7 +424,6 @@ def build_response_candidate(plan: TurnPlan) -> dict[str, Any]:
         guidance,
         question,
     )
-
     # Keep a non-empty diagnostic candidate when repair removes the entire
     # response. The eligibility verdict blocks it from ever becoming visible,
     # while the event remains available for deterministic fallback telemetry.
@@ -319,12 +436,17 @@ def build_response_candidate(plan: TurnPlan) -> dict[str, Any]:
 
     if not text:
         reasons.append("empty_candidate")
-
     calendar_claim_removed = (
         "removed_unsupported_calendar_availability" in repairs
     )
     if calendar_claim_removed and not repaired_text and raw_text:
         reasons.append("calendar_availability_without_tool")
+    stale_event_claim_repaired = (
+        "replaced_stale_prospective_event_with_grounded_meeting_guidance"
+        in repairs
+    )
+    if stale_event_claim_repaired and not repaired_text and raw_text:
+        reasons.append("stale_event_repair_failed")
 
     if plan.route not in {
         TurnRoute.RESPOND,
@@ -335,7 +457,6 @@ def build_response_candidate(plan: TurnPlan) -> dict[str, Any]:
 
     if plan.confidence < _MIN_ACTIVE_CONFIDENCE:
         reasons.append("confidence_below_threshold")
-
     if (
         plan.responseIntent.answerDirectly
         and not guidance
@@ -351,7 +472,6 @@ def build_response_candidate(plan: TurnPlan) -> dict[str, Any]:
         and not _PROCEDURAL_DELIVERY_PATTERN.search(guidance)
     ):
         reasons.append("direct_answer_promised_not_delivered")
-
     if (
         plan.responseIntent.answerDirectly
         and question
@@ -362,10 +482,8 @@ def build_response_candidate(plan: TurnPlan) -> dict[str, Any]:
 
     if plan.responseIntent.answerDirectly and guidance:
         reasons.extend(_procedure_integrity_reasons(guidance))
-
     if question and question.casefold() not in text.casefold():
         reasons.append("candidate_missing_canonical_question")
-
     for code, pattern in _TOOL_BACKED_CLAIM_PATTERNS:
         claim_text = raw_text if code == "calendar_availability_without_tool" else text
         if claim_text and pattern.search(claim_text):
@@ -379,9 +497,7 @@ def build_response_candidate(plan: TurnPlan) -> dict[str, Any]:
 
     if len(text) > 4000:
         reasons.append("candidate_too_long")
-
     deduplicated_reasons = list(dict.fromkeys(reasons))
-
     return {
         "text": text,
         "stage": "direct",
@@ -413,7 +529,6 @@ def _clean_tool_source(raw_source: dict[str, Any]) -> dict[str, str] | None:
 
     if not url or not (title or domain):
         return None
-
     return {
         "title": title or domain or url,
         "url": url,
@@ -436,7 +551,6 @@ def _clean_calendar_event(raw_event: dict[str, Any]) -> dict[str, Any] | None:
     end = _clean(str(raw_event.get("end") or ""))[:100]
     location = _clean(str(raw_event.get("location") or ""))[:240]
     all_day = bool(raw_event.get("allDay", False))
-
     if not title:
         return None
 
@@ -486,7 +600,6 @@ def build_tool_response_candidate(
     attach_to_focus: bool,
 ) -> dict[str, Any]:
     """Build a deterministic candidate from verified tool output.
-
     This does not call a second model. Search output remains the source of truth
     for Search candidates. Calendar candidates are composed only from the
     connected-calendar flag, requested view, and returned event records.
@@ -499,12 +612,10 @@ def build_tool_response_candidate(
         reasons.append("tool_result_not_attached_to_focus")
     if not success:
         reasons.append("tool_result_failed")
-
     if clean_tool == "search":
         clean_query = _clean(query)[:500]
         clean_summary = _clean(summary)[:2200]
         clean_recommendation = _clean(recommendation)[:800]
-
         clean_steps: list[str] = []
         for raw_step in steps or []:
             step = _clean(str(raw_step))[:500]
@@ -514,7 +625,6 @@ def build_tool_response_candidate(
                 clean_steps.append(step)
             if len(clean_steps) >= 3:
                 break
-
         citations: list[dict[str, str]] = []
         seen_urls: set[str] = set()
         for raw_source in sources or []:
@@ -530,7 +640,6 @@ def build_tool_response_candidate(
             citations.append(citation)
             if len(citations) >= 5:
                 break
-
         sections: list[str] = []
         if clean_query:
             sections.append(f'Search complete for "{clean_query}".')
@@ -545,7 +654,6 @@ def build_tool_response_candidate(
             and clean_recommendation.casefold() not in clean_summary.casefold()
         ):
             sections.append(f"Recommendation: {clean_recommendation}")
-
         if clean_steps:
             step_lines = ["Next steps:"]
             step_lines.extend(
@@ -553,7 +661,6 @@ def build_tool_response_candidate(
                 for index, step in enumerate(clean_steps, start=1)
             )
             sections.append("\n".join(step_lines))
-
         if citations:
             source_lines = ["Sources:"]
             source_lines.extend(
@@ -565,12 +672,10 @@ def build_tool_response_candidate(
         text = "\n\n".join(
             section for section in sections if section
         ).strip()
-
         if not clean_summary:
             reasons.append("missing_tool_summary")
         if not citations:
             reasons.append("missing_tool_citations")
-
         components: dict[str, Any] = {
             "summary": clean_summary,
             "recommendation": clean_recommendation,
@@ -583,13 +688,11 @@ def build_tool_response_candidate(
             "resultIds": [citation["url"] for citation in citations],
             "citationCount": len(citations),
         }
-
     elif clean_tool == "calendar_read":
         clean_view = _clean(calendar_view).casefold()
         connected = calendar_connected is True
         clean_events: list[dict[str, Any]] = []
         seen_events: set[str] = set()
-
         for raw_event in calendar_events or []:
             if not isinstance(raw_event, dict):
                 continue
@@ -608,10 +711,8 @@ def build_tool_response_candidate(
             clean_events.append(event)
             if len(clean_events) >= 20:
                 break
-
         view_label = _calendar_view_label(clean_view)
         sections = [f"Calendar read complete for {view_label}."]
-
         if not connected:
             sections.append(
                 "Google Calendar is not connected, so QMeet cannot verify "
@@ -635,7 +736,6 @@ def build_tool_response_candidate(
                 f"No events are scheduled for {view_label}, so the calendar "
                 "is clear for that view."
             )
-
         text = "\n\n".join(sections).strip()
         event_count = len(clean_events)
 
@@ -647,7 +747,6 @@ def build_tool_response_candidate(
             not connected or event_count != 0
         ):
             reasons.append("unsupported_calendar_availability_claim")
-
         components = {
             "calendarView": clean_view,
             "eventCount": event_count,
@@ -665,7 +764,6 @@ def build_tool_response_candidate(
             "events": clean_events,
         }
         citations = []
-
     else:
         text = ""
         components = {}
@@ -682,7 +780,6 @@ def build_tool_response_candidate(
         reasons.append("candidate_too_long")
 
     deduplicated_reasons = list(dict.fromkeys(reasons))
-
     return {
         "text": text[:4000],
         "stage": "tool_result",
@@ -696,4 +793,3 @@ def build_tool_response_candidate(
             "minimumConfidence": 1.0,
         },
     }
-
