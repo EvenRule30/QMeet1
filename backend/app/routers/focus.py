@@ -5,6 +5,10 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException, Query
 
 from app.focus.middleware import focus_response_mode, focus_route_mode
+from app.focus.native_read_middleware import (
+    native_read_route_mode,
+    native_read_routes_enabled,
+)
 from app.focus.models import (
     ExactRouteObservationRequest,
     ObserveTurnRequest,
@@ -55,6 +59,8 @@ async def focus_status():
     planner_mode = focus_mode()
     response_mode = focus_response_mode()
     route_mode = focus_route_mode()
+    native_read_mode = native_read_route_mode()
+    native_read_enabled = native_read_routes_enabled()
     is_planner_enabled = planner_enabled()
 
     response_selection = response_selection_summary()
@@ -94,6 +100,8 @@ async def focus_status():
         "mode": planner_mode,
         "responseMode": response_mode,
         "routeMode": route_mode,
+        "nativeReadRouteMode": native_read_mode,
+        "nativeReadRoutesEnabled": native_read_enabled,
         "plannerEnabled": is_planner_enabled,
         "model": DEFAULT_MODEL,
         "eventCount": event_count(),

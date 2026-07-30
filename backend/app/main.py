@@ -8,6 +8,9 @@ load_dotenv()
 
 from app.background_context_middleware import BackgroundWorkContextMiddleware  # noqa: E402
 from app.focus.middleware import FocusShadowMiddleware  # noqa: E402
+from app.focus.native_read_middleware import (  # noqa: E402
+    FocusNativeReadRouteMiddleware,
+)
 from app.routers import (  # noqa: E402
     calendar,
     chat,
@@ -20,12 +23,13 @@ from app.routers import (  # noqa: E402
 )
 
 app = FastAPI(title="QMeet Agent Backend")
-
-# The legacy observer remains active during the architecture reset. Focus
-# runs beside it in shadow mode and writes to a separate event log.
+# Middleware is registered inside-out. FocusShadowMiddleware remains outside the
+# native read router so it still owns shared turn planning, guarded comparison,
+# telemetry, and fallback. The native layer only replaces the downstream legacy
+# command-model call for a conservative read-only allowlist.
 app.add_middleware(BackgroundWorkContextMiddleware)
+app.add_middleware(FocusNativeReadRouteMiddleware)
 app.add_middleware(FocusShadowMiddleware)
-
 frontend_origin = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
 # For prototype LAN/tablet testing this stays permissive. Tighten this before
 # a real deployment by switching allow_origins back to [frontend_origin].
