@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
 
 import { QMEET_API_BASE_URL } from '../api';
+
 
 type GuardDecision = {
   sourceTurnId: string;
@@ -87,6 +89,18 @@ type ExactRouteObservationSummary = {
   windowStart?: string;
 };
 
+type SuccessfulValidation = {
+  kind: 'active_validation' | 'promotion_readiness' | string;
+  plannerMode: string;
+  validatedAt: string;
+  sessionStartedAt: string;
+  routeDecisions: number;
+  responseGuardedAttempts: number;
+  exactRouteObservations: number;
+  routeHealthyRate: number;
+  responseHealthyRate: number;
+};
+
 type PromotionReadiness = {
   status: 'ready' | 'collecting' | 'blocked' | string;
   ready: boolean;
@@ -95,6 +109,13 @@ type PromotionReadiness = {
   recommendation: string;
   blockers: string[];
   missingEvidence: string[];
+  stage?: 'active_validation' | 'promotion_readiness' | 'planner_setup' | string;
+  panelTitle?: string;
+  statusLabel?: string;
+  statusMeta?: string;
+  evidenceLabel?: string;
+  automaticActionLabel?: string;
+  lastSuccessfulValidation?: SuccessfulValidation | null;
   sampleRequirements: {
     routeDecisions: number;
     responseGuardedAttempts: number;
@@ -128,6 +149,18 @@ type FocusStatusResponse = {
     routeSelection?: GuardSelection<FocusRouteDecision>;
     exactRouteObservation?: ExactRouteObservationSummary;
   };
+};
+
+type StatusCardProps = {
+  title: string;
+  value: ReactNode;
+  meta: ReactNode;
+  className?: string;
+};
+
+type DetailRowProps = {
+  label: string;
+  value: ReactNode;
 };
 
 const REFRESH_INTERVAL_MS = 10_000;
@@ -164,6 +197,18 @@ function formatDecisionTime(value: string): string {
   });
 }
 
+function formatDateTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Unknown time';
+  return date.toLocaleString([], {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 function healthCardClass(
   systemFailureCount: number,
   unknownFallbackCount: number,
@@ -175,9 +220,7 @@ function healthCardClass(
 
 function responseDecisionDetail(decision: FocusResponseDecision | null): string {
   if (!decision) return '—';
-  if (decision.outcome === 'takeover') {
-    return formatLabel(decision.responseSource);
-  }
+  if (decision.outcome === 'takeover') return formatLabel(decision.responseSource);
   if (decision.details.length > 0) {
     return decision.details.map(formatLabel).join(', ');
   }
@@ -192,7 +235,6 @@ function responseDecisionDetail(decision: FocusResponseDecision | null): string 
 
 function routeAgreementDetail(decision: FocusRouteDecision | null): string {
   if (!decision) return '—';
-
   if (
     decision.reason === 'confirmation_gated_legacy_route' &&
     decision.details.length > 0
@@ -218,6 +260,25 @@ function routeAgreementDetail(decision: FocusRouteDecision | null): string {
     : 'No route details recorded';
 }
 
+function StatusCard({ title, value, meta, className = 'status-card' }: StatusCardProps) {
+  return (
+    <div className={className}>
+      <div className="status-card-title">{title}</div>
+      <div className="status-card-value">{value}</div>
+      <div className="status-card-meta">{meta}</div>
+    </div>
+  );
+}
+
+function DetailRow({ label, value }: DetailRowProps) {
+  return (
+    <div className="status-detail-row">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
 export function FocusResponseHealth() {
   const [status, setStatus] = useState<FocusStatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -231,7 +292,6 @@ export function FocusResponseHealth() {
       activeController?.abort();
       const controller = new AbortController();
       activeController = controller;
-
       try {
         const response = await fetch(`${QMEET_API_BASE_URL}/api/focus/status`, {
           headers: { Accept: 'application/json' },
@@ -240,7 +300,6 @@ export function FocusResponseHealth() {
         if (!response.ok) {
           throw new Error(`Focus status returned ${response.status}.`);
         }
-
         const nextStatus = (await response.json()) as FocusStatusResponse;
         if (!mounted) return;
         setStatus(nextStatus);
@@ -282,12 +341,30 @@ export function FocusResponseHealth() {
   const responseLatest = sessionResponseSelection?.latestDecision ?? null;
   const routeLatest = sessionRouteSelection?.latestDecision ?? null;
   const exactRouteLatest = sessionExactRouteObservation?.latestObservation ?? null;
-  const promotionReadiness = status?.promotionReadiness ?? null;
-  const readinessClass = promotionReadiness?.status === 'ready'
+  const validation = status?.promotionReadiness ?? null;
+  const lastSuccessfulValidation = validation?.lastSuccessfulValidation ?? null;
+  const isActiveMode = status?.mode.trim().toLowerCase() === 'active';
+
+  const validationTitle =
+    validation?.panelTitle ||
+    (isActiveMode ? 'Active Planner Validation' : 'Planner Promotion Readiness');
+  const validationStatusLabel =
+    validation?.statusLabel || formatLabel(validation?.status || 'unknown');
+  const validationStatusMeta =
+    validation?.statusMeta || (isActiveMode ? 'Current-session guarded health' : 'Manual review only');
+  const evidenceLabel =
+    validation?.evidenceLabel ||
+    (isActiveMode ? 'Health evidence still needed' : 'Evidence still needed');
+  const automaticActionLabel =
+    validation?.automaticActionLabel ||
+    (isActiveMode ? 'Automatic mode changes' : 'Automatic promotion');
+
+  const validationClass = validation?.status === 'ready'
     ? 'status-card status-card-good'
-    : promotionReadiness?.status === 'blocked'
+    : validation?.status === 'blocked'
       ? 'status-card status-card-warn'
       : 'status-card';
+
   const exactLocalActionCount = sessionExactRouteObservation
     ? Math.max(
         0,
@@ -339,97 +416,66 @@ export function FocusResponseHealth() {
         {sessionResponseSelection ? (
           <>
             <div className="status-grid">
-              <div className={responseHealthClass}>
-                <div className="status-card-title">Healthy This Session</div>
-                <div className="status-card-value">
-                  {formatPercentForCount(
-                    sessionResponseSelection.healthyDecisionRate,
-                    sessionResponseSelection.decisionCount,
-                  )}
-                </div>
-                <div className="status-card-meta">
-                  {sessionResponseSelection.healthyDecisionCount} of{' '}
-                  {sessionResponseSelection.decisionCount} decisions
-                </div>
-              </div>
-              <div className="status-card status-card-good">
-                <div className="status-card-title">Guarded Takeover</div>
-                <div className="status-card-value">
-                  {formatPercentForCount(
-                    sessionResponseSelection.guardedTakeoverRate,
-                    sessionResponseSelection.guardedAttemptCount,
-                  )}
-                </div>
-                <div className="status-card-meta">
-                  {sessionResponseSelection.takeoverCount} of{' '}
-                  {sessionResponseSelection.guardedAttemptCount} attempts
-                </div>
-              </div>
-              <div className="status-card">
-                <div className="status-card-title">Expected Fallbacks</div>
-                <div className="status-card-value">
-                  {sessionResponseSelection.expectedFallbackCount}
-                </div>
-                <div className="status-card-meta">Current backend session</div>
-              </div>
-              <div
-                className={`status-card ${
-                  sessionResponseSelection.systemFailureCount === 0 &&
-                  sessionResponseSelection.unknownFallbackCount === 0
-                    ? 'status-card-good'
-                    : 'status-card-warn'
-                }`}
-              >
-                <div className="status-card-title">Session Failures</div>
-                <div className="status-card-value">
-                  {sessionResponseSelection.systemFailureCount}
-                </div>
-                <div className="status-card-meta">
-                  All-time: {recordedResponseSelection.systemFailureCount} system ·{' '}
-                  {recordedResponseSelection.unknownFallbackCount} unknown
-                </div>
-              </div>
+              <StatusCard
+                className={responseHealthClass}
+                title="Healthy This Session"
+                value={formatPercentForCount(
+                  sessionResponseSelection.healthyDecisionRate,
+                  sessionResponseSelection.decisionCount,
+                )}
+                meta={`${sessionResponseSelection.healthyDecisionCount} of ${sessionResponseSelection.decisionCount} decisions`}
+              />
+              <StatusCard
+                className="status-card status-card-good"
+                title="Guarded Takeover"
+                value={formatPercentForCount(
+                  sessionResponseSelection.guardedTakeoverRate,
+                  sessionResponseSelection.guardedAttemptCount,
+                )}
+                meta={`${sessionResponseSelection.takeoverCount} of ${sessionResponseSelection.guardedAttemptCount} attempts`}
+              />
+              <StatusCard
+                title="Expected Fallbacks"
+                value={sessionResponseSelection.expectedFallbackCount}
+                meta="Current backend session"
+              />
+              <StatusCard
+                className={healthCardClass(
+                  sessionResponseSelection.systemFailureCount,
+                  sessionResponseSelection.unknownFallbackCount,
+                )}
+                title="Session Failures"
+                value={sessionResponseSelection.systemFailureCount}
+                meta={`All-time: ${recordedResponseSelection.systemFailureCount} system · ${recordedResponseSelection.unknownFallbackCount} unknown`}
+              />
             </div>
             <div className="status-detail-list">
-              <div className="status-detail-row">
-                <span>Session started</span>
-                <strong>
-                  {sessionStartedAt ? formatDecisionTime(sessionStartedAt) : 'Legacy metrics'}
-                </strong>
-              </div>
-              <div className="status-detail-row">
-                <span>Planner mode</span>
-                <strong>{formatLabel(status?.mode || 'unknown')}</strong>
-              </div>
-              <div className="status-detail-row">
-                <span>Visible response mode</span>
-                <strong>{formatLabel(status?.responseMode || 'unknown')}</strong>
-              </div>
-              <div className="status-detail-row">
-                <span>Session safety fallbacks</span>
-                <strong>{sessionResponseSelection.safetyFallbackCount}</strong>
-              </div>
-              <div className="status-detail-row">
-                <span>Latest session decision</span>
-                <strong>{formatDecision(responseLatest)}</strong>
-              </div>
-              <div className="status-detail-row">
-                <span>Session decision detail</span>
-                <strong>{responseDecisionDetail(responseLatest)}</strong>
-              </div>
-              <div className="status-detail-row">
-                <span>Session decision time</span>
-                <strong>
-                  {responseLatest ? formatDecisionTime(responseLatest.createdAt) : '—'}
-                </strong>
-              </div>
-              <div className="status-detail-row">
-                <span>Recorded response history</span>
-                <strong>
-                  {recordedResponseSelection.decisionCount} decisions ·{' '}
-                  {recordedResponseSelection.systemFailureCount} system failures
-                </strong>
-              </div>
+              <DetailRow
+                label="Session started"
+                value={sessionStartedAt ? formatDecisionTime(sessionStartedAt) : 'Legacy metrics'}
+              />
+              <DetailRow label="Planner mode" value={formatLabel(status?.mode || 'unknown')} />
+              <DetailRow
+                label="Visible response mode"
+                value={formatLabel(status?.responseMode || 'unknown')}
+              />
+              <DetailRow
+                label="Session safety fallbacks"
+                value={sessionResponseSelection.safetyFallbackCount}
+              />
+              <DetailRow label="Latest session decision" value={formatDecision(responseLatest)} />
+              <DetailRow
+                label="Session decision detail"
+                value={responseDecisionDetail(responseLatest)}
+              />
+              <DetailRow
+                label="Session decision time"
+                value={responseLatest ? formatDecisionTime(responseLatest.createdAt) : '—'}
+              />
+              <DetailRow
+                label="Recorded response history"
+                value={`${recordedResponseSelection.decisionCount} decisions · ${recordedResponseSelection.systemFailureCount} system failures`}
+              />
             </div>
           </>
         ) : (
@@ -442,93 +488,56 @@ export function FocusResponseHealth() {
         {sessionRouteSelection ? (
           <>
             <div className="status-grid">
-              <div className={routeHealthClass}>
-                <div className="status-card-title">Healthy This Session</div>
-                <div className="status-card-value">
-                  {formatPercentForCount(
-                    sessionRouteSelection.healthyDecisionRate,
-                    sessionRouteSelection.decisionCount,
-                  )}
-                </div>
-                <div className="status-card-meta">
-                  {sessionRouteSelection.healthyDecisionCount} of{' '}
-                  {sessionRouteSelection.decisionCount} decisions
-                </div>
-              </div>
-              <div className="status-card status-card-good">
-                <div className="status-card-title">Guarded Takeover</div>
-                <div className="status-card-value">
-                  {formatPercentForCount(
-                    sessionRouteSelection.guardedTakeoverRate,
-                    sessionRouteSelection.guardedAttemptCount,
-                  )}
-                </div>
-                <div className="status-card-meta">
-                  {sessionRouteSelection.takeoverCount} of{' '}
-                  {sessionRouteSelection.guardedAttemptCount} attempts
-                </div>
-              </div>
-              <div className="status-card">
-                <div className="status-card-title">Expected Fallbacks</div>
-                <div className="status-card-value">
-                  {sessionRouteSelection.expectedFallbackCount}
-                </div>
-                <div className="status-card-meta">Protected legacy mutations</div>
-              </div>
-              <div
-                className={`status-card ${
-                  sessionRouteSelection.systemFailureCount === 0 &&
-                  sessionRouteSelection.unknownFallbackCount === 0
-                    ? 'status-card-good'
-                    : 'status-card-warn'
-                }`}
-              >
-                <div className="status-card-title">Session Safety Blocks</div>
-                <div className="status-card-value">
-                  {sessionRouteSelection.safetyFallbackCount}
-                </div>
-                <div className="status-card-meta">
-                  All-time: {recordedRouteSelection?.safetyFallbackCount ?? 0} safety ·{' '}
-                  {recordedRouteSelection?.systemFailureCount ?? 0} system
-                </div>
-              </div>
+              <StatusCard
+                className={routeHealthClass}
+                title="Healthy This Session"
+                value={formatPercentForCount(
+                  sessionRouteSelection.healthyDecisionRate,
+                  sessionRouteSelection.decisionCount,
+                )}
+                meta={`${sessionRouteSelection.healthyDecisionCount} of ${sessionRouteSelection.decisionCount} decisions`}
+              />
+              <StatusCard
+                className="status-card status-card-good"
+                title="Guarded Takeover"
+                value={formatPercentForCount(
+                  sessionRouteSelection.guardedTakeoverRate,
+                  sessionRouteSelection.guardedAttemptCount,
+                )}
+                meta={`${sessionRouteSelection.takeoverCount} of ${sessionRouteSelection.guardedAttemptCount} attempts`}
+              />
+              <StatusCard
+                title="Expected Fallbacks"
+                value={sessionRouteSelection.expectedFallbackCount}
+                meta="Protected legacy mutations"
+              />
+              <StatusCard
+                className={healthCardClass(
+                  sessionRouteSelection.systemFailureCount,
+                  sessionRouteSelection.unknownFallbackCount,
+                )}
+                title="Session Safety Blocks"
+                value={sessionRouteSelection.safetyFallbackCount}
+                meta={`All-time: ${recordedRouteSelection?.safetyFallbackCount ?? 0} safety · ${recordedRouteSelection?.systemFailureCount ?? 0} system`}
+              />
             </div>
             <div className="status-detail-list">
-              <div className="status-detail-row">
-                <span>Route mode</span>
-                <strong>{formatLabel(status?.routeMode || 'shadow')}</strong>
-              </div>
-              <div className="status-detail-row">
-                <span>Latest session route</span>
-                <strong>{formatDecision(routeLatest)}</strong>
-              </div>
-              <div className="status-detail-row">
-                <span>Route detail</span>
-                <strong>{routeAgreementDetail(routeLatest)}</strong>
-              </div>
-              <div className="status-detail-row">
-                <span>Session route time</span>
-                <strong>
-                  {routeLatest ? formatDecisionTime(routeLatest.createdAt) : '—'}
-                </strong>
-              </div>
-              <div className="status-detail-row">
-                <span>Recorded route history</span>
-                <strong>
-                  {recordedRouteSelection?.decisionCount ?? 0} decisions ·{' '}
-                  {recordedRouteSelection?.systemFailureCount ?? 0} system failures
-                </strong>
-              </div>
-              <div className="status-detail-row">
-                <span>Focus events</span>
-                <strong>{status?.eventCount ?? '—'}</strong>
-              </div>
-              {error && (
-                <div className="status-detail-row">
-                  <span>Refresh</span>
-                  <strong>Showing last data · {error}</strong>
-                </div>
-              )}
+              <DetailRow
+                label="Route mode"
+                value={formatLabel(status?.routeMode || 'shadow')}
+              />
+              <DetailRow label="Latest session route" value={formatDecision(routeLatest)} />
+              <DetailRow label="Route detail" value={routeAgreementDetail(routeLatest)} />
+              <DetailRow
+                label="Session route time"
+                value={routeLatest ? formatDecisionTime(routeLatest.createdAt) : '—'}
+              />
+              <DetailRow
+                label="Recorded route history"
+                value={`${recordedRouteSelection?.decisionCount ?? 0} decisions · ${recordedRouteSelection?.systemFailureCount ?? 0} system failures`}
+              />
+              <DetailRow label="Focus events" value={status?.eventCount ?? '—'} />
+              {error && <DetailRow label="Refresh" value={`Showing last data · ${error}`} />}
             </div>
           </>
         ) : (
@@ -540,79 +549,81 @@ export function FocusResponseHealth() {
       </div>
 
       <div className="panel-section status-detail-section" aria-live="polite">
-        <div className="panel-section-title">Planner Promotion Readiness</div>
-        {promotionReadiness ? (
+        <div className="panel-section-title">{validationTitle}</div>
+        {validation ? (
           <>
             <div className="status-grid">
-              <div className={readinessClass}>
-                <div className="status-card-title">Current Status</div>
-                <div className="status-card-value">
-                  {formatLabel(promotionReadiness.status)}
-                </div>
-                <div className="status-card-meta">Manual review only</div>
-              </div>
-              <div className="status-card">
-                <div className="status-card-title">Guarded Routes</div>
-                <div className="status-card-value">
-                  {promotionReadiness.currentSamples.routeDecisions} /{' '}
-                  {promotionReadiness.sampleRequirements.routeDecisions}
-                </div>
-                <div className="status-card-meta">Current-session decisions</div>
-              </div>
-              <div className="status-card">
-                <div className="status-card-title">Guarded Responses</div>
-                <div className="status-card-value">
-                  {promotionReadiness.currentSamples.responseGuardedAttempts} /{' '}
-                  {promotionReadiness.sampleRequirements.responseGuardedAttempts}
-                </div>
-                <div className="status-card-meta">Eligible takeover attempts</div>
-              </div>
-              <div className="status-card">
-                <div className="status-card-title">Exact Routes</div>
-                <div className="status-card-value">
-                  {promotionReadiness.currentSamples.exactRouteObservations} /{' '}
-                  {promotionReadiness.sampleRequirements.exactRouteObservations}
-                </div>
-                <div className="status-card-meta">Frontend route observations</div>
-              </div>
+              <StatusCard
+                className={validationClass}
+                title={isActiveMode ? 'Current Health' : 'Current Status'}
+                value={validationStatusLabel}
+                meta={validationStatusMeta}
+              />
+              <StatusCard
+                title="Guarded Routes"
+                value={`${validation.currentSamples.routeDecisions} / ${validation.sampleRequirements.routeDecisions}`}
+                meta="Current-session decisions"
+              />
+              <StatusCard
+                title="Guarded Responses"
+                value={`${validation.currentSamples.responseGuardedAttempts} / ${validation.sampleRequirements.responseGuardedAttempts}`}
+                meta="Eligible takeover attempts"
+              />
+              <StatusCard
+                title="Exact Routes"
+                value={`${validation.currentSamples.exactRouteObservations} / ${validation.sampleRequirements.exactRouteObservations}`}
+                meta="Frontend route observations"
+              />
             </div>
             <div className="status-detail-list">
-              <div className="status-detail-row">
-                <span>Recommendation</span>
-                <strong>{promotionReadiness.recommendation}</strong>
-              </div>
-              <div className="status-detail-row">
-                <span>Blocking evidence</span>
-                <strong>
-                  {promotionReadiness.blockers.length
-                    ? promotionReadiness.blockers.join(' ')
-                    : 'None'}
-                </strong>
-              </div>
-              <div className="status-detail-row">
-                <span>Evidence still needed</span>
-                <strong>
-                  {promotionReadiness.missingEvidence.length
-                    ? promotionReadiness.missingEvidence.join(' ')
-                    : 'Thresholds satisfied'}
-                </strong>
-              </div>
-              <div className="status-detail-row">
-                <span>Required healthy rate</span>
-                <strong>
-                  {formatPercent(promotionReadiness.sampleRequirements.healthyRate)}
-                </strong>
-              </div>
-              <div className="status-detail-row">
-                <span>Automatic promotion</span>
-                <strong>Disabled</strong>
-              </div>
+              <DetailRow label="Recommendation" value={validation.recommendation} />
+              <DetailRow
+                label="Blocking evidence"
+                value={validation.blockers.length ? validation.blockers.join(' ') : 'None'}
+              />
+              <DetailRow
+                label={evidenceLabel}
+                value={
+                  validation.missingEvidence.length
+                    ? validation.missingEvidence.join(' ')
+                    : 'Thresholds satisfied'
+                }
+              />
+              <DetailRow
+                label="Required healthy rate"
+                value={formatPercent(validation.sampleRequirements.healthyRate)}
+              />
+              <DetailRow label={automaticActionLabel} value="Disabled" />
+              <DetailRow
+                label="Last successful validation"
+                value={
+                  lastSuccessfulValidation
+                    ? formatDateTime(lastSuccessfulValidation.validatedAt)
+                    : 'No successful validation recorded yet'
+                }
+              />
+              {lastSuccessfulValidation && (
+                <>
+                  <DetailRow
+                    label="Validated mode"
+                    value={formatLabel(lastSuccessfulValidation.plannerMode)}
+                  />
+                  <DetailRow
+                    label="Validated evidence"
+                    value={`${lastSuccessfulValidation.routeDecisions} guarded routes · ${lastSuccessfulValidation.responseGuardedAttempts} guarded responses · ${lastSuccessfulValidation.exactRouteObservations} exact routes`}
+                  />
+                  <DetailRow
+                    label="Validated health"
+                    value={`${formatPercent(lastSuccessfulValidation.routeHealthyRate)} routing · ${formatPercent(lastSuccessfulValidation.responseHealthyRate)} responses`}
+                  />
+                </>
+              )}
             </div>
           </>
         ) : (
           <p className="panel-section-text">
-            Promotion-readiness metrics are unavailable. Restart the backend after
-            installing the readiness evaluator.
+            Validation metrics are unavailable. Restart the backend after installing the
+            readiness evaluator.
           </p>
         )}
       </div>
@@ -622,100 +633,77 @@ export function FocusResponseHealth() {
         {sessionExactRouteObservation ? (
           <>
             <div className="status-grid">
-              <div className="status-card">
-                <div className="status-card-title">Observed This Session</div>
-                <div className="status-card-value">
-                  {sessionExactRouteObservation.observationCount}
-                </div>
-                <div className="status-card-meta">Frontend exact-command routes</div>
-              </div>
-              <div className="status-card status-card-good">
-                <div className="status-card-title">Read Routes</div>
-                <div className="status-card-value">
-                  {sessionExactRouteObservation.readCount}
-                </div>
-                <div className="status-card-meta">Deterministic local readouts</div>
-              </div>
-              <div className="status-card">
-                <div className="status-card-title">Local Actions</div>
-                <div className="status-card-value">{exactLocalActionCount}</div>
-                <div className="status-card-meta">UI, voice, writes, and Focus actions</div>
-              </div>
-              <div
-                className={`status-card ${
+              <StatusCard
+                title="Observed This Session"
+                value={sessionExactRouteObservation.observationCount}
+                meta="Frontend exact-command routes"
+              />
+              <StatusCard
+                className="status-card status-card-good"
+                title="Read Routes"
+                value={sessionExactRouteObservation.readCount}
+                meta="Deterministic local readouts"
+              />
+              <StatusCard
+                title="Local Actions"
+                value={exactLocalActionCount}
+                meta="UI, voice, writes, and Focus actions"
+              />
+              <StatusCard
+                className={
                   sessionExactRouteObservation.unknownCount === 0
-                    ? 'status-card-good'
-                    : 'status-card-warn'
-                }`}
-              >
-                <div className="status-card-title">Unclassified</div>
-                <div className="status-card-value">
-                  {sessionExactRouteObservation.unknownCount}
-                </div>
-                <div className="status-card-meta">
-                  {sessionExactRouteObservation.confirmationRequiredCount} confirmation gates
-                </div>
-              </div>
+                    ? 'status-card status-card-good'
+                    : 'status-card status-card-warn'
+                }
+                title="Unclassified"
+                value={sessionExactRouteObservation.unknownCount}
+                meta={`${sessionExactRouteObservation.confirmationRequiredCount} confirmation gates`}
+              />
             </div>
             <div className="status-detail-list">
-              <div className="status-detail-row">
-                <span>Latest exact command</span>
-                <strong>
-                  {exactRouteLatest ? formatLabel(exactRouteLatest.command) : 'No exact routes yet'}
-                </strong>
-              </div>
-              <div className="status-detail-row">
-                <span>Exact route class</span>
-                <strong>
-                  {exactRouteLatest ? formatLabel(exactRouteLatest.routeClass) : '—'}
-                </strong>
-              </div>
-              <div className="status-detail-row">
-                <span>Exact route category</span>
-                <strong>
-                  {exactRouteLatest ? formatLabel(exactRouteLatest.category) : '—'}
-                </strong>
-              </div>
-              <div className="status-detail-row">
-                <span>Confirmation gate</span>
-                <strong>
-                  {exactRouteLatest
+              <DetailRow
+                label="Latest exact command"
+                value={exactRouteLatest ? formatLabel(exactRouteLatest.command) : 'No exact routes yet'}
+              />
+              <DetailRow
+                label="Exact route class"
+                value={exactRouteLatest ? formatLabel(exactRouteLatest.routeClass) : '—'}
+              />
+              <DetailRow
+                label="Exact route category"
+                value={exactRouteLatest ? formatLabel(exactRouteLatest.category) : '—'}
+              />
+              <DetailRow
+                label="Confirmation gate"
+                value={
+                  exactRouteLatest
                     ? exactRouteLatest.requiresConfirmation
                       ? 'Required'
                       : 'Not required'
-                    : '—'}
-                </strong>
-              </div>
-              <div className="status-detail-row">
-                <span>Session exact-route time</span>
-                <strong>
-                  {exactRouteLatest ? formatDecisionTime(exactRouteLatest.createdAt) : '—'}
-                </strong>
-              </div>
-              <div className="status-detail-row">
-                <span>Session route mix</span>
-                <strong>
-                  {sessionExactRouteObservation.mutationCount} mutations ·{' '}
-                  {sessionExactRouteObservation.focusActionCount} Focus actions ·{' '}
-                  {sessionExactRouteObservation.uiCount} UI
-                </strong>
-              </div>
-              <div className="status-detail-row">
-                <span>Recorded exact-route history</span>
-                <strong>
-                  {recordedExactRouteObservation?.observationCount ?? 0} observations
-                </strong>
-              </div>
+                    : '—'
+                }
+              />
+              <DetailRow
+                label="Session exact-route time"
+                value={exactRouteLatest ? formatDecisionTime(exactRouteLatest.createdAt) : '—'}
+              />
+              <DetailRow
+                label="Session route mix"
+                value={`${sessionExactRouteObservation.mutationCount} mutations · ${sessionExactRouteObservation.focusActionCount} Focus actions · ${sessionExactRouteObservation.uiCount} UI`}
+              />
+              <DetailRow
+                label="Recorded exact-route history"
+                value={`${recordedExactRouteObservation?.observationCount ?? 0} observations`}
+              />
             </div>
           </>
         ) : (
           <p className="panel-section-text">
-            Exact local-route metrics are unavailable. Restart the backend after
-            installing the route-observation endpoint.
+            Exact local-route metrics are unavailable. Restart the backend after installing
+            the route-observation endpoint.
           </p>
         )}
       </div>
     </>
   );
-
 }

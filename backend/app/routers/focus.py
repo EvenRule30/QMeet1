@@ -18,7 +18,10 @@ from app.focus.planner import (
     planner_enabled,
     preview_turn_plan,
 )
-from app.focus.readiness import build_promotion_readiness
+from app.focus.readiness import (
+    build_promotion_readiness,
+    update_last_successful_validation,
+)
 from app.focus.store import (
     FocusStoreError,
     event_count,
@@ -38,8 +41,22 @@ router = APIRouter(prefix="/api/focus", tags=["focus"])
 _SESSION_STARTED_AT = datetime.now().astimezone().isoformat()
 
 
+def _status_message(planner_mode: str) -> str:
+    normalized_mode = planner_mode.strip().casefold()
+    if normalized_mode == "active":
+        return "Focus planner is active with guarded legacy safeguards."
+    if normalized_mode == "off":
+        return "Focus planner is disabled; the legacy focus system remains available."
+    return "Focus is running beside the legacy focus system."
+
+
 @router.get("/status")
 async def focus_status():
+    planner_mode = focus_mode()
+    response_mode = focus_response_mode()
+    route_mode = focus_route_mode()
+    is_planner_enabled = planner_enabled()
+
     response_selection = response_selection_summary()
     route_selection = route_selection_summary()
     exact_route_observation = exact_route_observation_summary()
@@ -56,18 +73,28 @@ async def focus_status():
         response_selection=session_response_selection,
         route_selection=session_route_selection,
         exact_route_observation=session_exact_route_observation,
-        planner_mode=focus_mode(),
-        response_mode=focus_response_mode(),
-        route_mode=focus_route_mode(),
-        planner_enabled=planner_enabled(),
+        planner_mode=planner_mode,
+        response_mode=response_mode,
+        route_mode=route_mode,
+        planner_enabled=is_planner_enabled,
+    )
+    promotion_readiness["lastSuccessfulValidation"] = (
+        update_last_successful_validation(
+            readiness=promotion_readiness,
+            session_started_at=_SESSION_STARTED_AT,
+            planner_mode=planner_mode,
+            response_mode=response_mode,
+            route_mode=route_mode,
+            planner_enabled=is_planner_enabled,
+        )
     )
 
     return {
         "ok": True,
-        "mode": focus_mode(),
-        "responseMode": focus_response_mode(),
-        "routeMode": focus_route_mode(),
-        "plannerEnabled": planner_enabled(),
+        "mode": planner_mode,
+        "responseMode": response_mode,
+        "routeMode": route_mode,
+        "plannerEnabled": is_planner_enabled,
         "model": DEFAULT_MODEL,
         "eventCount": event_count(),
         "path": str(event_file()),
@@ -81,7 +108,7 @@ async def focus_status():
             "routeSelection": session_route_selection,
             "exactRouteObservation": session_exact_route_observation,
         },
-        "message": "Focus is running beside the legacy focus system.",
+        "message": _status_message(planner_mode),
     }
 
 
