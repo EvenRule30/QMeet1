@@ -1957,6 +1957,60 @@ def has_turn(turn_id: str) -> bool:
         )
 
 
+def chat_response_recovery_allowed(source_turn_id: str) -> bool:
+    """Return whether a routed legacy-chat fallback may recover a candidate.
+
+    Command interpretation and the later chat request intentionally share one
+    turn ID. When the command planner selected a route-only tool but the legacy
+    router selected normal chat, the first plan contains no direct response
+    candidate. The chat request may run one candidate-only recovery plan for
+    that same turn, but only after a recorded route fallback to legacy chat.
+    """
+
+    turn_id = source_turn_id.strip()
+    if not turn_id:
+        return False
+
+    with _STORE_LOCK:
+        turn_events = [
+            event
+            for event in _read_log_unlocked().events
+            if event.sourceTurnId == turn_id
+        ]
+
+    if not any(
+        event.type == FocusEventType.TURN_PLANNED
+        for event in turn_events
+    ):
+        return False
+    if any(
+        event.type in {
+            FocusEventType.RESPONSE_CANDIDATE,
+            FocusEventType.TOOL_REQUESTED,
+        }
+        for event in turn_events
+    ):
+        return False
+
+    route_selection = next(
+        (
+            event
+            for event in reversed(turn_events)
+            if event.type == FocusEventType.ROUTE_SELECTION
+        ),
+        None,
+    )
+    if route_selection is None:
+        return False
+
+    payload = route_selection.payload
+    return (
+        str(payload.get("outcome", "")).strip().casefold() == "fallback"
+        and str(payload.get("legacyIntent", "")).strip().casefold()
+        == "chat"
+    )
+
+
 def seed_from_legacy(seed: LegacyFocusSeed | None) -> FocusState:
     if seed is None:
         return get_state()
@@ -2403,43 +2457,168 @@ def apply_turn_plan(
 
     # Direct response candidates are created only for non-tool turns. Tool
     # turns must wait for the verified tool result, which is recorded later by
-    # record_tool_response_candidate. This also prevents diagnostic text from
-    # an ineligible tool plan from leaking into the event sequence.
+    # record_tool_response_candidate. Preserve empty diagnostic candidates for
+    # non-tool turns so guarded selection can report ``empty_candidate`` as a
+    # safety fallback instead of misclassifying the turn as a missing-candidate
+    # system failure.
     if not has_real_tool_call:
         response_candidate = build_response_candidate(plan)
         response_candidate_text = str(
             response_candidate.get("text", "")
         ).strip()
-        if response_candidate_text:
-            response_attaches_to_focus = bool(
-                active_focus_id
-                and not transient_tool_turn
-                and (
-                    has_focus_operations
-                    or plan.route == TurnRoute.FOCUS_ACTION
-                    or plan.responseIntent.attachToFocus
-                )
+        response_attaches_to_focus = bool(
+            active_focus_id
+            and not transient_tool_turn
+            and (
+                has_focus_operations
+                or plan.route == TurnRoute.FOCUS_ACTION
+                or plan.responseIntent.attachToFocus
             )
-            candidate_focus_id = (
-                active_focus_id
-                if response_attaches_to_focus
-                else ""
+        )
+        candidate_focus_id = (
+            active_focus_id
+            if response_attaches_to_focus
+            else ""
+        )
+        response_candidate["text"] = response_candidate_text[:12000]
+        response_candidate["attachToFocus"] = response_attaches_to_focus
+        events.append(
+            _new_event(
+                FocusEventType.RESPONSE_CANDIDATE,
+                focus_id=candidate_focus_id,
+                payload=response_candidate,
+                source_turn_id=turn_id,
+                source="focus-response-candidate",
+                confidence=plan.confidence,
             )
-            response_candidate["text"] = response_candidate_text[:12000]
-            response_candidate["attachToFocus"] = response_attaches_to_focus
-            events.append(
-                _new_event(
-                    FocusEventType.RESPONSE_CANDIDATE,
-                    focus_id=candidate_focus_id,
-                    payload=response_candidate,
-                    source_turn_id=turn_id,
-                    source="focus-response-candidate",
-                    confidence=plan.confidence,
-                )
-            )
+        )
 
     append_events(events)
     return get_state()
+
+
+def record_chat_response_recovery_candidate(
+    plan: TurnPlan,
+    *,
+    source_turn_id: str,
+    source: str = "focus-chat-recovery-candidate",
+) -> FocusEvent | None:
+    """Persist one candidate-only re-plan after a route fallback to chat.
+
+    The original command-interpret plan remains the sole semantic turn plan.
+    This function never reapplies Focus operations, never creates tool requests,
+    and never appends another TURN_PLANNED event. It only gives guarded response
+    selection a deterministic candidate or an explicit ineligibility reason.
+    """
+
+    turn_id = source_turn_id.strip()
+    if not turn_id:
+        return None
+
+    with _STORE_LOCK:
+        document = _read_log_unlocked()
+        turn_events = [
+            event
+            for event in document.events
+            if event.sourceTurnId == turn_id
+        ]
+
+        existing_candidate = next(
+            (
+                event
+                for event in reversed(turn_events)
+                if event.type == FocusEventType.RESPONSE_CANDIDATE
+            ),
+            None,
+        )
+        if existing_candidate is not None:
+            return existing_candidate
+
+        if any(
+            event.type == FocusEventType.TOOL_REQUESTED
+            for event in turn_events
+        ):
+            return None
+
+        route_selection = next(
+            (
+                event
+                for event in reversed(turn_events)
+                if event.type == FocusEventType.ROUTE_SELECTION
+            ),
+            None,
+        )
+        if route_selection is None:
+            return None
+        route_payload = route_selection.payload
+        if not (
+            str(route_payload.get("outcome", "")).strip().casefold()
+            == "fallback"
+            and str(route_payload.get("legacyIntent", ""))
+            .strip()
+            .casefold()
+            == "chat"
+        ):
+            return None
+
+        current = reduce_events(document.events)
+        active_focus_id = current.focusId.strip()
+        active_focus_is_open = bool(active_focus_id) and current.status not in {
+            FocusStatus.INACTIVE,
+            FocusStatus.COMPLETE,
+        }
+
+        candidate_payload = build_response_candidate(plan)
+        candidate_text = str(candidate_payload.get("text", "")).strip()
+        eligibility = candidate_payload.get("eligibility")
+        if not isinstance(eligibility, dict):
+            eligibility = {
+                "eligible": False,
+                "reasons": ["missing_eligibility"],
+                "confidence": plan.confidence,
+                "minimumConfidence": 0.9,
+            }
+            candidate_payload["eligibility"] = eligibility
+
+        raw_reasons = eligibility.get("reasons", [])
+        reasons = (
+            [str(reason).strip() for reason in raw_reasons if str(reason).strip()]
+            if isinstance(raw_reasons, list)
+            else ["invalid_eligibility_reasons"]
+        )
+        if plan.focusOperations:
+            reasons.append("recovery_focus_operations_not_applied")
+        reasons = list(dict.fromkeys(reasons))
+        eligibility["reasons"] = reasons
+        eligibility["eligible"] = not reasons
+
+        response_attaches_to_focus = bool(
+            active_focus_is_open
+            and (
+                bool(plan.focusOperations)
+                or plan.route == TurnRoute.FOCUS_ACTION
+                or plan.responseIntent.attachToFocus
+            )
+        )
+        candidate_payload["text"] = candidate_text[:12000]
+        candidate_payload["attachToFocus"] = response_attaches_to_focus
+        candidate_payload["recovery"] = {
+            "kind": "route_fallback_chat",
+            "focusOperationsApplied": False,
+            "toolRequestsCreated": False,
+        }
+
+        event = _new_event(
+            FocusEventType.RESPONSE_CANDIDATE,
+            focus_id=active_focus_id if response_attaches_to_focus else "",
+            payload=candidate_payload,
+            source_turn_id=turn_id,
+            source=source,
+            confidence=plan.confidence,
+        )
+        document.events.append(event)
+        _atomic_write_unlocked(document)
+        return event
 
 
 def _focus_id_for_tool_result(

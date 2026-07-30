@@ -18,6 +18,7 @@ from app.focus.planner import (
     planner_enabled,
     preview_turn_plan,
 )
+from app.focus.readiness import build_promotion_readiness
 from app.focus.store import (
     FocusStoreError,
     event_count,
@@ -51,6 +52,15 @@ async def focus_status():
     session_exact_route_observation = exact_route_observation_summary(
         since_created_at=_SESSION_STARTED_AT,
     )
+    promotion_readiness = build_promotion_readiness(
+        response_selection=session_response_selection,
+        route_selection=session_route_selection,
+        exact_route_observation=session_exact_route_observation,
+        planner_mode=focus_mode(),
+        response_mode=focus_response_mode(),
+        route_mode=focus_route_mode(),
+        planner_enabled=planner_enabled(),
+    )
 
     return {
         "ok": True,
@@ -64,6 +74,7 @@ async def focus_status():
         "responseSelection": response_selection,
         "routeSelection": route_selection,
         "exactRouteObservation": exact_route_observation,
+        "promotionReadiness": promotion_readiness,
         "currentSession": {
             "startedAt": _SESSION_STARTED_AT,
             "responseSelection": session_response_selection,

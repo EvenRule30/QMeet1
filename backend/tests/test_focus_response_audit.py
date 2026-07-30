@@ -25,6 +25,7 @@ from app.focus.middleware import (
 from app.focus.models import (
     FocusEventType,
     FocusOperation,
+    ObserveTurnRequest,
     FocusOperationKind,
     PlannedToolCall,
     ResponseIntent,
@@ -32,6 +33,7 @@ from app.focus.models import (
     TurnPlan,
     TurnRoute,
 )
+from app.focus.planner import observe_turn
 from app.focus.store import (
     apply_turn_plan,
     eligible_response_candidate_for_turn,
@@ -40,6 +42,7 @@ from app.focus.store import (
     get_state,
     list_events,
     record_assistant_reply,
+    record_route_selection,
     record_tool_response_candidate,
     record_tool_result,
     reset_store,
@@ -279,6 +282,49 @@ class FocusResponseAuditTests(unittest.TestCase):
         self.assertNotEqual(before.focusId, after_plan.focusId)
         replayed = get_state()
         self.assertEqual(after_plan, replayed)
+
+    def test_empty_non_tool_plan_records_diagnostic_candidate(self) -> None:
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.FOCUS_ACTION,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.START_FOCUS,
+                        title="Prepare for meetings",
+                        objective="Be ready for today's meetings.",
+                    )
+                ],
+                responseIntent=ResponseIntent(
+                    answerDirectly=True,
+                    attachToFocus=True,
+                ),
+                confidence=1.0,
+            ),
+            message="Help me prepare for my meetings.",
+            turn_id="turn-empty-diagnostic-candidate",
+            source="unit-test",
+        )
+
+        candidates = [
+            event
+            for event in list_events()
+            if event.type == FocusEventType.RESPONSE_CANDIDATE
+            and event.sourceTurnId == "turn-empty-diagnostic-candidate"
+        ]
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].payload["text"], "")
+        self.assertFalse(candidates[0].payload["eligibility"]["eligible"])
+        self.assertIn(
+            "empty_candidate",
+            candidates[0].payload["eligibility"]["reasons"],
+        )
+
+        decision = guarded_response_decision_for_turn(
+            "turn-empty-diagnostic-candidate"
+        )
+        self.assertIsNone(decision.candidate)
+        self.assertEqual(decision.fallbackReason, "empty_candidate")
+        self.assertNotEqual(decision.fallbackReason, "missing_candidate")
 
     def test_audit_exposes_candidate_text(self) -> None:
         turn_id = self._create_turn()
@@ -2023,6 +2069,307 @@ class FocusGuardedResponseMiddlewareTests(
             "work_context_sync_failed",
         )
 
+
+
+class FocusRouteFallbackChatRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self._temporary_directory = tempfile.TemporaryDirectory()
+        self._event_file = (
+            Path(self._temporary_directory.name)
+            / "qmeet_focus_chat_recovery_test.json"
+        )
+        self._environment_patch = patch.dict(
+            os.environ,
+            {
+                "QMEET_FOCUS_FILE": str(self._event_file),
+                "QMEET_FOCUS_MODE": "shadow",
+                "QMEET_FOCUS_RESPONSE_MODE": "guarded",
+            },
+            clear=False,
+        )
+        self._environment_patch.start()
+        reset_store()
+
+    def tearDown(self) -> None:
+        self._environment_patch.stop()
+        self._temporary_directory.cleanup()
+
+    async def test_route_fallback_to_chat_recovers_candidate_without_reapplying_turn(self) -> None:
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.FOCUS_ACTION,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.START_FOCUS,
+                        title="Prepare for meetings",
+                        objective="Be ready for today's meetings.",
+                    )
+                ],
+                responseIntent=ResponseIntent(
+                    acknowledge="Meeting preparation focus started.",
+                    attachToFocus=True,
+                ),
+                confidence=1.0,
+            ),
+            message="Start a meeting preparation focus.",
+            turn_id="turn-recovery-seed",
+            source="unit-test",
+        )
+        turn_id = "turn-route-fallback-chat-recovery"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.TOOL,
+                toolCalls=[
+                    PlannedToolCall(
+                        tool=ToolName.TASKS_READ,
+                        requiresConfirmation=False,
+                        attachToFocus=False,
+                    )
+                ],
+                confidence=0.98,
+            ),
+            message="What should I review first for my meeting focus?",
+            turn_id=turn_id,
+            source="command-interpret-shadow",
+        )
+        record_route_selection(
+            source_turn_id=turn_id,
+            outcome="fallback",
+            focus_route_class="tasks_read",
+            legacy_route_class="chat",
+            reason="route_disagreement",
+            details=("focus=tasks_read", "legacy=chat"),
+            focus_confidence=0.98,
+            legacy_intent="chat",
+            legacy_action="none",
+        )
+        state_before = get_state().model_dump(mode="json")
+        recovery_plan = TurnPlan(
+            route=TurnRoute.RESPOND,
+            responseIntent=ResponseIntent(
+                answerDirectly=True,
+                attachToFocus=True,
+                guidance="Review the meeting objective and the decisions you need first.",
+            ),
+            confidence=0.99,
+        )
+
+        with patch(
+            "app.focus.planner.preview_turn_plan",
+            new=AsyncMock(return_value=recovery_plan),
+        ):
+            observed_plan, state_after = await observe_turn(
+                ObserveTurnRequest(
+                    message="What should I review first for my meeting focus?",
+                    source="chat-request-shadow",
+                    apply=True,
+                ),
+                turn_id=turn_id,
+            )
+
+        self.assertEqual(observed_plan.route, TurnRoute.RESPOND)
+        self.assertEqual(
+            state_after.model_dump(mode="json"),
+            state_before,
+        )
+        turn_events = [
+            event
+            for event in list_events(limit=200)
+            if event.sourceTurnId == turn_id
+        ]
+        self.assertEqual(
+            sum(
+                event.type == FocusEventType.TURN_PLANNED
+                for event in turn_events
+            ),
+            1,
+        )
+        candidates = [
+            event
+            for event in turn_events
+            if event.type == FocusEventType.RESPONSE_CANDIDATE
+        ]
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(
+            candidates[0].source,
+            "focus-chat-recovery-candidate",
+        )
+        self.assertEqual(
+            candidates[0].payload["recovery"]["kind"],
+            "route_fallback_chat",
+        )
+        decision = guarded_response_decision_for_turn(turn_id)
+        self.assertTrue(decision.eligible)
+        self.assertEqual(decision.fallbackReason, "")
+
+    async def test_middleware_recovers_route_fallback_candidate_on_shared_turn(self) -> None:
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.FOCUS_ACTION,
+                focusOperations=[
+                    FocusOperation(
+                        kind=FocusOperationKind.START_FOCUS,
+                        title="Prepare for meetings",
+                    )
+                ],
+                responseIntent=ResponseIntent(attachToFocus=True),
+                confidence=1.0,
+            ),
+            message="Start meeting preparation.",
+            turn_id="turn-middleware-recovery-seed",
+            source="unit-test",
+        )
+        turn_id = "turn-middleware-route-fallback-recovery"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.TOOL,
+                toolCalls=[
+                    PlannedToolCall(
+                        tool=ToolName.TASKS_READ,
+                        requiresConfirmation=False,
+                        attachToFocus=False,
+                    )
+                ],
+                confidence=0.98,
+            ),
+            message="What should I review first for my meeting focus?",
+            turn_id=turn_id,
+            source="command-interpret-shadow",
+        )
+        record_route_selection(
+            source_turn_id=turn_id,
+            outcome="fallback",
+            focus_route_class="tasks_read",
+            legacy_route_class="chat",
+            reason="route_disagreement",
+            legacy_intent="chat",
+            legacy_action="none",
+        )
+        recovery_plan = TurnPlan(
+            route=TurnRoute.RESPOND,
+            responseIntent=ResponseIntent(
+                answerDirectly=True,
+                attachToFocus=True,
+                guidance="Review the meeting objective first.",
+            ),
+            confidence=0.99,
+        )
+        legacy_called = False
+
+        async def legacy_app(scope, receive, send):
+            nonlocal legacy_called
+            legacy_called = True
+            body = json.dumps({"reply": "Legacy reply."}).encode("utf-8")
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [(b"content-type", b"application/json")],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": body,
+                    "more_body": False,
+                }
+            )
+
+        sent_messages: list[dict] = []
+
+        async def send(message):
+            sent_messages.append(message)
+
+        sent_request = False
+
+        async def receive():
+            nonlocal sent_request
+            if not sent_request:
+                sent_request = True
+                return {
+                    "type": "http.request",
+                    "body": json.dumps(
+                        {
+                            "message": (
+                                "What should I review first for my meeting focus?"
+                            )
+                        }
+                    ).encode("utf-8"),
+                    "more_body": False,
+                }
+            return {"type": "http.disconnect"}
+
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/api/chat",
+            "raw_path": b"/api/chat",
+            "query_string": b"",
+            "root_path": "",
+            "server": ("testserver", 80),
+            "client": ("testclient", 50000),
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"x-qmeet-turn-id", turn_id.encode("ascii")),
+            ],
+        }
+        middleware = FocusShadowMiddleware(legacy_app)
+        with (
+            patch(
+                "app.focus.planner.preview_turn_plan",
+                new=AsyncMock(return_value=recovery_plan),
+            ),
+            patch(
+                "app.focus.middleware._prepare_guarded_work_context",
+                return_value=True,
+            ),
+        ):
+            await middleware(scope, receive, send)
+
+        self.assertFalse(legacy_called)
+        response_body = b"".join(
+            message.get("body", b"")
+            for message in sent_messages
+            if message["type"] == "http.response.body"
+        )
+        payload = json.loads(response_body.decode("utf-8"))
+        self.assertEqual(payload["reply"], "Review the meeting objective first.")
+        decision = guarded_response_decision_for_turn(turn_id)
+        self.assertTrue(decision.eligible)
+
+    async def test_duplicate_turn_without_legacy_chat_fallback_stays_noop(self) -> None:
+        turn_id = "turn-duplicate-without-recovery"
+        apply_turn_plan(
+            TurnPlan(
+                route=TurnRoute.RESPOND,
+                responseIntent=ResponseIntent(
+                    guidance="Existing candidate.",
+                ),
+                confidence=0.99,
+            ),
+            message="Existing turn.",
+            turn_id=turn_id,
+            source="unit-test",
+        )
+
+        with patch(
+            "app.focus.planner.preview_turn_plan",
+            new=AsyncMock(),
+        ) as preview_mock:
+            plan, _ = await observe_turn(
+                ObserveTurnRequest(
+                    message="Existing turn.",
+                    source="chat-request-shadow",
+                    apply=True,
+                ),
+                turn_id=turn_id,
+            )
+
+        self.assertEqual(plan.route, TurnRoute.NOOP)
+        preview_mock.assert_not_awaited()
 
 
 class FocusGuardedRouteMiddlewareTests(unittest.IsolatedAsyncioTestCase):

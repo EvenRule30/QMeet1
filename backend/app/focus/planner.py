@@ -34,9 +34,11 @@ from app.focus.models import (
 )
 from app.focus.store import (
     apply_turn_plan,
+    chat_response_recovery_allowed,
     get_state,
     has_turn,
     list_events,
+    record_chat_response_recovery_candidate,
     seed_from_legacy,
 )
 
@@ -1132,6 +1134,21 @@ async def observe_turn(
     seed_from_legacy(load_legacy_focus_seed())
 
     if has_turn(effective_turn_id):
+        if (
+            request.source == "chat-request-shadow"
+            and chat_response_recovery_allowed(effective_turn_id)
+        ):
+            plan = await preview_turn_plan(
+                request.message,
+                source=request.source,
+            )
+            if request.apply:
+                record_chat_response_recovery_candidate(
+                    plan,
+                    source_turn_id=effective_turn_id,
+                )
+            return plan, get_state()
+
         return (
             TurnPlan(
                 route=TurnRoute.NOOP,

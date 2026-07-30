@@ -87,6 +87,29 @@ type ExactRouteObservationSummary = {
   windowStart?: string;
 };
 
+type PromotionReadiness = {
+  status: 'ready' | 'collecting' | 'blocked' | string;
+  ready: boolean;
+  promotionTarget: string;
+  automaticPromotion: boolean;
+  recommendation: string;
+  blockers: string[];
+  missingEvidence: string[];
+  sampleRequirements: {
+    routeDecisions: number;
+    responseGuardedAttempts: number;
+    exactRouteObservations: number;
+    healthyRate: number;
+  };
+  currentSamples: {
+    routeDecisions: number;
+    responseGuardedAttempts: number;
+    exactRouteObservations: number;
+    routeHealthyRate: number;
+    responseHealthyRate: number;
+  };
+};
+
 type FocusStatusResponse = {
   ok: boolean;
   mode: string;
@@ -98,6 +121,7 @@ type FocusStatusResponse = {
   responseSelection: GuardSelection<FocusResponseDecision>;
   routeSelection?: GuardSelection<FocusRouteDecision>;
   exactRouteObservation?: ExactRouteObservationSummary;
+  promotionReadiness?: PromotionReadiness;
   currentSession?: {
     startedAt: string;
     responseSelection: GuardSelection<FocusResponseDecision>;
@@ -258,6 +282,12 @@ export function FocusResponseHealth() {
   const responseLatest = sessionResponseSelection?.latestDecision ?? null;
   const routeLatest = sessionRouteSelection?.latestDecision ?? null;
   const exactRouteLatest = sessionExactRouteObservation?.latestObservation ?? null;
+  const promotionReadiness = status?.promotionReadiness ?? null;
+  const readinessClass = promotionReadiness?.status === 'ready'
+    ? 'status-card status-card-good'
+    : promotionReadiness?.status === 'blocked'
+      ? 'status-card status-card-warn'
+      : 'status-card';
   const exactLocalActionCount = sessionExactRouteObservation
     ? Math.max(
         0,
@@ -505,6 +535,84 @@ export function FocusResponseHealth() {
           <p className="panel-section-text">
             Route-selection metrics are unavailable. Restart the backend after enabling
             Phase 19 guarded routing.
+          </p>
+        )}
+      </div>
+
+      <div className="panel-section status-detail-section" aria-live="polite">
+        <div className="panel-section-title">Planner Promotion Readiness</div>
+        {promotionReadiness ? (
+          <>
+            <div className="status-grid">
+              <div className={readinessClass}>
+                <div className="status-card-title">Current Status</div>
+                <div className="status-card-value">
+                  {formatLabel(promotionReadiness.status)}
+                </div>
+                <div className="status-card-meta">Manual review only</div>
+              </div>
+              <div className="status-card">
+                <div className="status-card-title">Guarded Routes</div>
+                <div className="status-card-value">
+                  {promotionReadiness.currentSamples.routeDecisions} /{' '}
+                  {promotionReadiness.sampleRequirements.routeDecisions}
+                </div>
+                <div className="status-card-meta">Current-session decisions</div>
+              </div>
+              <div className="status-card">
+                <div className="status-card-title">Guarded Responses</div>
+                <div className="status-card-value">
+                  {promotionReadiness.currentSamples.responseGuardedAttempts} /{' '}
+                  {promotionReadiness.sampleRequirements.responseGuardedAttempts}
+                </div>
+                <div className="status-card-meta">Eligible takeover attempts</div>
+              </div>
+              <div className="status-card">
+                <div className="status-card-title">Exact Routes</div>
+                <div className="status-card-value">
+                  {promotionReadiness.currentSamples.exactRouteObservations} /{' '}
+                  {promotionReadiness.sampleRequirements.exactRouteObservations}
+                </div>
+                <div className="status-card-meta">Frontend route observations</div>
+              </div>
+            </div>
+            <div className="status-detail-list">
+              <div className="status-detail-row">
+                <span>Recommendation</span>
+                <strong>{promotionReadiness.recommendation}</strong>
+              </div>
+              <div className="status-detail-row">
+                <span>Blocking evidence</span>
+                <strong>
+                  {promotionReadiness.blockers.length
+                    ? promotionReadiness.blockers.join(' ')
+                    : 'None'}
+                </strong>
+              </div>
+              <div className="status-detail-row">
+                <span>Evidence still needed</span>
+                <strong>
+                  {promotionReadiness.missingEvidence.length
+                    ? promotionReadiness.missingEvidence.join(' ')
+                    : 'Thresholds satisfied'}
+                </strong>
+              </div>
+              <div className="status-detail-row">
+                <span>Required healthy rate</span>
+                <strong>
+                  {formatPercent(promotionReadiness.sampleRequirements.healthyRate)}
+                </strong>
+              </div>
+              <div className="status-detail-row">
+                <span>Automatic promotion</span>
+                <strong>Disabled</strong>
+              </div>
+            </div>
+          </>
+        ) : (
+          <p className="panel-section-text">
+            Promotion-readiness metrics are unavailable. Restart the backend after
+            installing the readiness evaluator.
           </p>
         )}
       </div>
