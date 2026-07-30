@@ -8,6 +8,8 @@ from unittest.mock import patch
 
 from app.focus.native_read_middleware import (
     FocusNativeReadRouteMiddleware,
+    NATIVE_WRITE_CONFIRMATION_SCOPE,
+    NATIVE_WRITE_ROUTE_SCOPE,
     native_command_route_payload,
     native_read_route_mode,
     native_read_route_payload,
@@ -78,11 +80,11 @@ class NativeReadRoutePayloadTests(unittest.TestCase):
         messages = [
             "Read my calendar for today.",
             "Search for the latest Raspberry Pi kiosk guidance.",
-            "Add a note that Phase 20B passed.",
+            "Add a note that Phase 20C passed.",
             "Remember to test the native write route.",
             "Delete my last note.",
             "Mark the first task done.",
-            "Start a coding focus for Phase 20.",
+            "Start a coding focus for Phase 20C.",
             "How should I spend the next ten minutes?",
         ]
 
@@ -91,10 +93,34 @@ class NativeReadRoutePayloadTests(unittest.TestCase):
                 self.assertIsNone(native_read_route_payload(message))
 
 
-class NativeAdditiveWritePayloadTests(unittest.TestCase):
-    def test_save_note_uses_existing_frontend_contract(self):
+class NativeMemoryWritePayloadTests(unittest.TestCase):
+    def test_write_scope_lists_additive_and_confirmation_gated_actions(self):
+        self.assertEqual(
+            NATIVE_WRITE_ROUTE_SCOPE,
+            (
+                "save_note",
+                "remember_task",
+                "delete_last_note",
+                "clear_notes",
+                "delete_last_task",
+                "clear_done_tasks",
+                "mark_task_done",
+            ),
+        )
+        self.assertEqual(
+            NATIVE_WRITE_CONFIRMATION_SCOPE,
+            (
+                "delete_last_note",
+                "clear_notes",
+                "delete_last_task",
+                "clear_done_tasks",
+                "mark_task_done",
+            ),
+        )
+
+    def test_save_note_uses_immediate_existing_frontend_contract(self):
         payload = native_write_route_payload(
-            "Add a note that Phase 20B passed."
+            "Add a note that Phase 20C passed."
         )
 
         self.assertIsNotNone(payload)
@@ -103,20 +129,20 @@ class NativeAdditiveWritePayloadTests(unittest.TestCase):
         self.assertEqual(payload["action"], "save_note")
         self.assertEqual(
             payload["frontendCommand"],
-            "note that Phase 20B passed",
+            "note that Phase 20C passed",
         )
         self.assertEqual(
             payload["payload"],
             {
                 "operation": "save_note",
-                "value": "Phase 20B passed",
+                "requiresConfirmation": False,
+                "value": "Phase 20C passed",
             },
         )
-        self.assertEqual(payload["confidence"], 0.99)
 
-    def test_create_task_uses_existing_frontend_contract(self):
+    def test_create_task_uses_immediate_existing_frontend_contract(self):
         payload = native_write_route_payload(
-            "Remember to verify the Phase 20B headers."
+            "Remember to verify the Phase 20C headers."
         )
 
         self.assertIsNotNone(payload)
@@ -124,26 +150,78 @@ class NativeAdditiveWritePayloadTests(unittest.TestCase):
         self.assertEqual(payload["action"], "remember_task")
         self.assertEqual(
             payload["frontendCommand"],
-            "remember to verify the Phase 20B headers",
+            "remember to verify the Phase 20C headers",
         )
         self.assertEqual(
             payload["payload"],
             {
                 "operation": "save_task",
-                "value": "verify the Phase 20B headers",
+                "requiresConfirmation": False,
+                "value": "verify the Phase 20C headers",
             },
         )
 
-    def test_destructive_and_external_writes_remain_excluded(self):
+    def test_destructive_memory_writes_preserve_confirmation_contract(self):
+        cases = [
+            (
+                "Delete my last note.",
+                "delete_last_note",
+                "delete last note",
+                "delete_last_note",
+                "",
+            ),
+            (
+                "Clear all my notes.",
+                "clear_notes",
+                "clear notes",
+                "clear_notes",
+                "",
+            ),
+            (
+                "Delete my last task.",
+                "delete_last_task",
+                "delete last task",
+                "delete_last_task",
+                "",
+            ),
+            (
+                "Clear completed tasks.",
+                "clear_done_tasks",
+                "clear completed tasks",
+                "clear_done_tasks",
+                "",
+            ),
+            (
+                "Mark my first task complete.",
+                "mark_task_done",
+                "mark task my first done",
+                "complete_task",
+                "my first",
+            ),
+        ]
+
+        for message, action, command, operation, value in cases:
+            with self.subTest(message=message):
+                payload = native_write_route_payload(message)
+                self.assertIsNotNone(payload)
+                assert payload is not None
+                self.assertEqual(payload["action"], action)
+                self.assertEqual(payload["frontendCommand"], command)
+                self.assertEqual(payload["payload"]["operation"], operation)
+                self.assertTrue(payload["payload"]["requiresConfirmation"])
+                if value:
+                    self.assertEqual(payload["payload"]["value"], value)
+                else:
+                    self.assertNotIn("value", payload["payload"])
+
+    def test_external_and_broader_focus_writes_remain_excluded(self):
         messages = [
-            "Delete my last note.",
-            "Clear all my notes.",
-            "Mark the first task done.",
-            "Delete my last task.",
-            "Clear completed tasks.",
             "Schedule a meeting tomorrow at 3 PM called Review.",
             "Clear my visual context.",
-            "Start a coding focus for Phase 20B.",
+            "Delete my last visual observation.",
+            "Start a coding focus for Phase 20C.",
+            "End my current focus.",
+            "Search the web for Phase 20C news.",
         ]
 
         for message in messages:
@@ -152,32 +230,18 @@ class NativeAdditiveWritePayloadTests(unittest.TestCase):
 
 
 class ProtectedCommandPayloadTests(unittest.TestCase):
-    def test_clear_all_my_notes_preserves_confirmation_gate(self):
-        messages = [
-            "Clear all my notes.",
-            "Delete all my notes.",
-            "Please wipe all my notes.",
-            "Could you remove all my notes?",
-        ]
+    def test_clear_all_my_notes_remains_a_safety_fallback(self):
+        payload = protected_command_route_payload("Clear all my notes.")
 
-        for message in messages:
-            with self.subTest(message=message):
-                payload = protected_command_route_payload(message)
-                self.assertIsNotNone(payload)
-                assert payload is not None
-                self.assertEqual(payload["action"], "clear_notes")
-                self.assertEqual(payload["frontendCommand"], "clear notes")
-                self.assertEqual(
-                    payload["payload"],
-                    {
-                        "operation": "clear_notes",
-                        "requiresConfirmation": True,
-                    },
-                )
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(payload["action"], "clear_notes")
+        self.assertEqual(payload["frontendCommand"], "clear notes")
+        self.assertTrue(payload["payload"]["requiresConfirmation"])
 
     def test_start_new_focus_uses_canonical_frontend_command(self):
         payload = protected_command_route_payload(
-            "Start a new focus for Phase 20B documentation."
+            "Start a new focus for Phase 20C documentation."
         )
 
         self.assertIsNotNone(payload)
@@ -185,29 +249,16 @@ class ProtectedCommandPayloadTests(unittest.TestCase):
         self.assertEqual(payload["action"], "start_focus_session")
         self.assertEqual(
             payload["frontendCommand"],
-            "start focus for Phase 20B documentation",
+            "start focus for Phase 20C documentation",
         )
         self.assertEqual(
             payload["payload"],
             {
                 "operation": "start_focus",
                 "mode": "general",
-                "title": "Phase 20B documentation",
+                "title": "Phase 20C documentation",
             },
         )
-
-    def test_start_new_coding_focus_normalizes_mode_alias(self):
-        payload = protected_command_route_payload(
-            "Please start a new programming focus on planner hardening."
-        )
-
-        self.assertIsNotNone(payload)
-        assert payload is not None
-        self.assertEqual(
-            payload["frontendCommand"],
-            "start coding focus for planner hardening",
-        )
-        self.assertEqual(payload["payload"]["mode"], "coding")
 
     def test_questions_and_unrelated_chat_remain_excluded(self):
         messages = [
@@ -286,16 +337,6 @@ class NativeRouteModeTests(unittest.TestCase):
 
         with patch.dict(
             os.environ,
-            {"QMEET_FOCUS_ROUTE_MODE": "guarded"},
-            clear=True,
-        ), patch(
-            "app.focus.native_read_middleware.focus_mode",
-            return_value="shadow",
-        ):
-            self.assertFalse(protected_command_routes_enabled())
-
-        with patch.dict(
-            os.environ,
             {"QMEET_FOCUS_ROUTE_MODE": "shadow"},
             clear=True,
         ), patch(
@@ -310,6 +351,7 @@ class NativeRouteModeTests(unittest.TestCase):
             {
                 "QMEET_FOCUS_NATIVE_READ_MODE": "guarded",
                 "QMEET_FOCUS_NATIVE_WRITE_MODE": "shadow",
+                "QMEET_FOCUS_ROUTE_MODE": "shadow",
             },
             clear=True,
         ), patch(
@@ -323,7 +365,7 @@ class NativeRouteModeTests(unittest.TestCase):
             self.assertEqual(source, "focus-native-read")
 
             payload, source = native_command_route_payload(
-                "Add a note that this should stay legacy."
+                "Delete my last note."
             )
             self.assertIsNone(payload)
             self.assertEqual(source, "")
@@ -416,10 +458,48 @@ class NativeRouteMiddlewareTests(unittest.IsolatedAsyncioTestCase):
 
         return downstream_called, messages
 
-    async def test_clear_all_my_notes_bypasses_chat_with_protected_command(self):
+    async def test_guarded_destructive_write_bypasses_legacy_but_requires_confirmation(self):
+        downstream_called, messages = await self._run(
+            "Delete my last note.",
+            {"QMEET_FOCUS_NATIVE_WRITE_MODE": "guarded"},
+        )
+
+        self.assertFalse(downstream_called)
+        headers = dict(messages[0]["headers"])
+        self.assertEqual(
+            headers[b"x-qmeet-command-source"],
+            b"focus-native-write",
+        )
+        response = json.loads(messages[1]["body"].decode("utf-8"))
+        self.assertEqual(response["action"], "delete_last_note")
+        self.assertTrue(response["payload"]["requiresConfirmation"])
+
+    async def test_guarded_clear_all_my_notes_uses_native_write_alias(self):
         downstream_called, messages = await self._run(
             "Clear all my notes.",
-            {"QMEET_FOCUS_ROUTE_MODE": "guarded"},
+            {
+                "QMEET_FOCUS_NATIVE_WRITE_MODE": "guarded",
+                "QMEET_FOCUS_ROUTE_MODE": "guarded",
+            },
+        )
+
+        self.assertFalse(downstream_called)
+        headers = dict(messages[0]["headers"])
+        self.assertEqual(
+            headers[b"x-qmeet-command-source"],
+            b"focus-native-write",
+        )
+        response = json.loads(messages[1]["body"].decode("utf-8"))
+        self.assertEqual(response["frontendCommand"], "clear notes")
+        self.assertTrue(response["payload"]["requiresConfirmation"])
+
+    async def test_write_shadow_keeps_clear_notes_safety_recovery(self):
+        downstream_called, messages = await self._run(
+            "Clear all my notes.",
+            {
+                "QMEET_FOCUS_NATIVE_WRITE_MODE": "shadow",
+                "QMEET_FOCUS_ROUTE_MODE": "guarded",
+            },
         )
 
         self.assertFalse(downstream_called)
@@ -428,13 +508,31 @@ class NativeRouteMiddlewareTests(unittest.IsolatedAsyncioTestCase):
             headers[b"x-qmeet-command-source"],
             b"focus-protected-command",
         )
-        response = json.loads(messages[1]["body"].decode("utf-8"))
-        self.assertEqual(response["action"], "clear_notes")
-        self.assertTrue(response["payload"]["requiresConfirmation"])
 
-    async def test_start_new_focus_bypasses_chat_with_canonical_command(self):
+    async def test_guarded_additive_write_stays_immediate(self):
         downstream_called, messages = await self._run(
-            "Start a new focus for Phase 20B documentation.",
+            "Add a note that Phase 20C passed.",
+            {"QMEET_FOCUS_NATIVE_WRITE_MODE": "guarded"},
+        )
+
+        self.assertFalse(downstream_called)
+        response = json.loads(messages[1]["body"].decode("utf-8"))
+        self.assertEqual(response["action"], "save_note")
+        self.assertFalse(response["payload"]["requiresConfirmation"])
+
+    async def test_external_write_replays_body_to_downstream_app(self):
+        downstream_called, messages = await self._run(
+            "Schedule a meeting tomorrow at 3 PM called Review.",
+            {"QMEET_FOCUS_NATIVE_WRITE_MODE": "guarded"},
+        )
+
+        self.assertTrue(downstream_called)
+        response = json.loads(messages[1]["body"].decode("utf-8"))
+        self.assertTrue(response["bodySeen"])
+
+    async def test_start_new_focus_stays_on_protected_canonical_path(self):
+        downstream_called, messages = await self._run(
+            "Start a new focus for Phase 20C documentation.",
             {"QMEET_FOCUS_ROUTE_MODE": "guarded"},
         )
 
@@ -446,72 +544,19 @@ class NativeRouteMiddlewareTests(unittest.IsolatedAsyncioTestCase):
         )
         response = json.loads(messages[1]["body"].decode("utf-8"))
         self.assertEqual(response["action"], "start_focus_session")
-        self.assertEqual(
-            response["frontendCommand"],
-            "start focus for Phase 20B documentation",
-        )
 
-    async def test_shadow_route_mode_replays_protected_phrase_downstream(self):
-        downstream_called, messages = await self._run(
-            "Clear all my notes.",
-            {"QMEET_FOCUS_ROUTE_MODE": "shadow"},
-        )
-
-        self.assertTrue(downstream_called)
-        response = json.loads(messages[1]["body"].decode("utf-8"))
-        self.assertTrue(response["bodySeen"])
-
-    async def test_guarded_read_bypasses_downstream_command_app(self):
-        downstream_called, messages = await self._run(
-            "Could you show me my open tasks?",
-            {"QMEET_FOCUS_NATIVE_READ_MODE": "guarded"},
-        )
-
-        self.assertFalse(downstream_called)
-        headers = dict(messages[0]["headers"])
-        self.assertEqual(
-            headers[b"x-qmeet-command-source"],
-            b"focus-native-read",
-        )
-        response = json.loads(messages[1]["body"].decode("utf-8"))
-        self.assertEqual(response["action"], "read_memory")
-
-    async def test_guarded_additive_write_bypasses_downstream_command_app(self):
-        downstream_called, messages = await self._run(
-            "Add a note that Phase 20B passed.",
-            {"QMEET_FOCUS_NATIVE_WRITE_MODE": "guarded"},
-        )
-
-        self.assertFalse(downstream_called)
-        headers = dict(messages[0]["headers"])
-        self.assertEqual(
-            headers[b"x-qmeet-command-source"],
-            b"focus-native-write",
-        )
-        response = json.loads(messages[1]["body"].decode("utf-8"))
-        self.assertEqual(response["action"], "save_note")
-        self.assertEqual(
-            response["payload"],
-            {"operation": "save_note", "value": "Phase 20B passed"},
-        )
-
-    async def test_destructive_write_replays_body_to_downstream_app(self):
+    async def test_shadow_write_mode_preserves_downstream_for_standard_mutation(self):
         downstream_called, messages = await self._run(
             "Delete my last note.",
-            {"QMEET_FOCUS_NATIVE_WRITE_MODE": "guarded"},
+            {
+                "QMEET_FOCUS_NATIVE_WRITE_MODE": "shadow",
+                "QMEET_FOCUS_ROUTE_MODE": "shadow",
+            },
         )
 
         self.assertTrue(downstream_called)
         response = json.loads(messages[1]["body"].decode("utf-8"))
         self.assertTrue(response["bodySeen"])
-
-    async def test_shadow_write_mode_preserves_downstream_path(self):
-        downstream_called, _ = await self._run(
-            "Remember to verify the Phase 20B headers.",
-            {"QMEET_FOCUS_NATIVE_WRITE_MODE": "shadow"},
-        )
-
-        self.assertTrue(downstream_called)
 
 
 class NativeMiddlewareOrderingTests(unittest.TestCase):

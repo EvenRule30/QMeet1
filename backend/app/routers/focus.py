@@ -6,6 +6,8 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.focus.middleware import focus_response_mode, focus_route_mode
 from app.focus.native_read_middleware import (
+    NATIVE_WRITE_CONFIRMATION_SCOPE,
+    NATIVE_WRITE_ROUTE_SCOPE,
     native_read_route_mode,
     native_read_routes_enabled,
     native_write_route_mode,
@@ -108,7 +110,10 @@ async def focus_status():
         "nativeReadRoutesEnabled": native_read_enabled,
         "nativeWriteRouteMode": native_write_mode,
         "nativeWriteRoutesEnabled": native_write_enabled,
-        "nativeWriteRouteScope": ["save_note", "remember_task"],
+        "nativeWriteRouteScope": list(NATIVE_WRITE_ROUTE_SCOPE),
+        "nativeWriteConfirmationScope": list(
+            NATIVE_WRITE_CONFIRMATION_SCOPE
+        ),
         "plannerEnabled": is_planner_enabled,
         "model": DEFAULT_MODEL,
         "eventCount": event_count(),

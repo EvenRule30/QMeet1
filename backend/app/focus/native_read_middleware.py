@@ -17,7 +17,43 @@ from app.focus.route_bridge import (
 
 
 _MAX_BODY_BYTES = 1_000_000
-_ADDITIVE_MEMORY_OPERATIONS = frozenset({"save_note", "save_task"})
+_NATIVE_MEMORY_WRITE_OPERATIONS = frozenset(
+    {
+        "save_note",
+        "save_task",
+        "delete_last_note",
+        "clear_notes",
+        "delete_last_task",
+        "clear_done_tasks",
+        "complete_task",
+    }
+)
+_CONFIRMATION_REQUIRED_MEMORY_OPERATIONS = frozenset(
+    {
+        "delete_last_note",
+        "clear_notes",
+        "delete_last_task",
+        "clear_done_tasks",
+        "complete_task",
+    }
+)
+
+NATIVE_WRITE_ROUTE_SCOPE = (
+    "save_note",
+    "remember_task",
+    "delete_last_note",
+    "clear_notes",
+    "delete_last_task",
+    "clear_done_tasks",
+    "mark_task_done",
+)
+NATIVE_WRITE_CONFIRMATION_SCOPE = (
+    "delete_last_note",
+    "clear_notes",
+    "delete_last_task",
+    "clear_done_tasks",
+    "mark_task_done",
+)
 
 _PROTECTED_REQUEST_PREFIX = (
     r"(?:(?:please\s+)?(?:can|could|would|will)\s+you\s+(?:please\s+)?|"
@@ -64,10 +100,12 @@ def native_read_route_mode() -> str:
 
 
 def native_write_route_mode() -> str:
-    """Return the configured native additive-write rollout mode.
+    """Return the configured native local-memory write rollout mode.
 
-    Only reversible note creation and task creation are eligible. Destructive
-    mutations and every external-system write stay on the existing path.
+    Additive Notes and Tasks writes can execute immediately. Destructive local
+    Notes and Tasks mutations may bypass the legacy command model only because
+    the existing frontend confirmation gate remains authoritative. Calendar,
+    visual, and broader Focus lifecycle writes stay excluded.
     """
 
     return _rollout_mode("QMEET_FOCUS_NATIVE_WRITE_MODE")
@@ -173,33 +211,70 @@ def native_read_route_payload(message: str) -> dict[str, Any] | None:
     return None
 
 
-def native_write_route_payload(message: str) -> dict[str, Any] | None:
-    """Build a frontend command payload for reversible additive memory writes.
+def _memory_mutation_intent_with_aliases(message: str):
+    """Recognize local memory writes plus one protected grammar alias.
 
-    This is intentionally limited to creating one note or creating one task.
-    Completion, deletion, clearing, Calendar writes, visual mutations, and
-    Focus lifecycle changes remain excluded.
+    The shared route bridge recognizes the canonical clear-notes variants but
+    historically missed the natural phrase ``clear all my notes``. Preserve
+    that compatibility here without broadening the operation set.
     """
 
     intent = memory_mutation_intent(message)
-    if intent is None or intent.operation not in _ADDITIVE_MEMORY_OPERATIONS:
+    if intent is not None:
+        return intent
+
+    normalized = _normalize_protected_message(message)
+    if _CLEAR_ALL_MY_NOTES_PATTERN.fullmatch(normalized):
+        return memory_mutation_intent("clear all notes")
+    return None
+
+
+def native_write_route_payload(message: str) -> dict[str, Any] | None:
+    """Build existing frontend commands for local Notes and Tasks writes.
+
+    Additive writes are immediately executable. Destructive writes are only
+    eligible because the returned frontend command is already classified as
+    destructive by the application and therefore pauses for explicit user
+    confirmation before any local data changes.
+    """
+
+    intent = _memory_mutation_intent_with_aliases(message)
+    if (
+        intent is None
+        or intent.operation not in _NATIVE_MEMORY_WRITE_OPERATIONS
+    ):
         return None
-    if not intent.payload.strip():
+    if intent.operation in {"save_note", "save_task"} and not intent.payload.strip():
         return None
+
+    requires_confirmation = (
+        intent.operation in _CONFIRMATION_REQUIRED_MEMORY_OPERATIONS
+    )
+    payload: dict[str, Any] = {
+        "operation": intent.operation,
+        "requiresConfirmation": requires_confirmation,
+    }
+    if intent.payload.strip():
+        payload["value"] = intent.payload.strip()
+
+    if requires_confirmation:
+        reason = (
+            "Native Focus write routing recognized a protected local Notes "
+            "or Tasks mutation and preserved the frontend confirmation gate."
+        )
+    else:
+        reason = (
+            "Native Focus write routing recognized a reversible additive "
+            "Notes or Tasks memory write."
+        )
 
     return {
         "intent": "command",
         "action": intent.action,
         "confidence": 0.99,
         "frontendCommand": intent.frontend_command,
-        "payload": {
-            "operation": intent.operation,
-            "value": intent.payload,
-        },
-        "reason": (
-            "Native Focus write routing recognized a reversible additive "
-            "Notes or Tasks memory write."
-        ),
+        "payload": payload,
+        "reason": reason,
     }
 
 
@@ -273,11 +348,6 @@ def native_command_route_payload(
 ) -> tuple[dict[str, Any] | None, str]:
     """Return the eligible payload and its native command-source label."""
 
-    if protected_command_routes_enabled():
-        protected_payload = protected_command_route_payload(message)
-        if protected_payload is not None:
-            return protected_payload, "focus-protected-command"
-
     if native_read_routes_enabled():
         read_payload = native_read_route_payload(message)
         if read_payload is not None:
@@ -287,6 +357,11 @@ def native_command_route_payload(
         write_payload = native_write_route_payload(message)
         if write_payload is not None:
             return write_payload, "focus-native-write"
+
+    if protected_command_routes_enabled():
+        protected_payload = protected_command_route_payload(message)
+        if protected_payload is not None:
+            return protected_payload, "focus-protected-command"
 
     return None, ""
 
@@ -377,10 +452,12 @@ class FocusNativeReadRouteMiddleware:
     """Bypass the legacy command model for narrowly proven local commands.
 
     The historical class name is retained to avoid a middleware migration.
-    Read ownership remains unchanged. Phase 20B additionally permits only two
-    reversible additive writes: save one note and create one task. A narrow
-    protected-command recovery gate also prevents known destructive or Focus
-    lifecycle phrases from falling through to ordinary chat.
+    Read ownership remains unchanged. Phase 20C permits local Notes and Tasks
+    writes to bypass the legacy command model. Additions execute normally;
+    deletes, clears, and task completion still stop at the existing frontend
+    confirmation gate. Calendar, visual, and broader Focus lifecycle writes
+    remain excluded. A narrow protected-command recovery gate also prevents
+    known Focus lifecycle phrases from falling through to ordinary chat.
 
     This middleware must remain inside FocusShadowMiddleware. The outer Focus
     middleware still creates shared turn plans, records route telemetry, and
