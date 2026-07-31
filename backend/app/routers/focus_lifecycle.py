@@ -1,0 +1,52 @@
+from fastapi import APIRouter, HTTPException
+
+from app.focus.lifecycle import (
+    NativeFocusLifecycleError,
+    NativeFocusStartRequest,
+    NativeFocusStartResult,
+    get_native_focus_lifecycle_health,
+    start_focus_verified,
+)
+
+
+router = APIRouter(prefix="/api/focus/lifecycle", tags=["focus-lifecycle"])
+
+
+@router.post("/start", response_model=NativeFocusStartResult)
+async def start_native_focus(
+    request: NativeFocusStartRequest,
+) -> NativeFocusStartResult:
+    try:
+        result = start_focus_verified(request)
+    except NativeFocusLifecycleError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={
+                "code": exc.code,
+                "message": exc.message,
+                "verified": False,
+                "successClaimAllowed": False,
+            },
+        ) from exc
+
+    if not result.verified:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "verification_failed",
+                "message": "Canonical Focus state did not verify the transition.",
+                "verified": False,
+                "successClaimAllowed": False,
+            },
+        )
+    return result
+
+
+@router.get("/health")
+async def native_focus_lifecycle_health() -> dict[str, object]:
+    return {
+        "ok": True,
+        "ownership": "native",
+        "scope": ["start_focus", "replace_focus"],
+        "health": get_native_focus_lifecycle_health(),
+    }

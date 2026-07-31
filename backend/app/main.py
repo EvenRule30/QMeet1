@@ -5,7 +5,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
-
 from app.background_context_middleware import BackgroundWorkContextMiddleware  # noqa: E402
 from app.focus.middleware import FocusShadowMiddleware  # noqa: E402
 from app.focus.native_read_middleware import (  # noqa: E402
@@ -16,12 +15,12 @@ from app.routers import (  # noqa: E402
     chat,
     command,
     focus,
+    focus_lifecycle,
     memory,
     memory_state,
     search,
     visual,
 )
-
 app = FastAPI(title="QMeet Agent Backend")
 # Middleware is registered inside-out. FocusShadowMiddleware remains outside the
 # native read router so it still owns shared turn planning, guarded comparison,
@@ -43,7 +42,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 @app.get("/health")
 async def health():
     return {
@@ -60,3 +58,4 @@ app.include_router(memory.router)
 app.include_router(memory_state.router)
 app.include_router(visual.router)
 app.include_router(focus.router)
+app.include_router(focus_lifecycle.router)
