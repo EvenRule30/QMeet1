@@ -6,16 +6,21 @@ import {
   readStoredMemoryTasks,
 } from '../lib/memoryReadSurface';
 import { consumeNativeReadSurface } from '../lib/nativeReadSurfaceBridge';
+import {
+  applyVerifiedFocusProjection,
+  describeNativeFocusStartFailure,
+  projectVerifiedFocusToActiveSession,
+  startNativeFocusVerified,
+} from '../lib/nativeFocusLifecycle';
 
-export function handleMemoryCommand(
+export async function handleMemoryCommand(
   commandMatch: Parameters<typeof handleMemoryCommandCore>[0],
   deps: Parameters<typeof handleMemoryCommandCore>[1],
-): ReturnType<typeof handleMemoryCommandCore> {
+): Promise<ReturnType<typeof handleMemoryCommandCore>> {
   const nativeReadSurface =
     commandMatch.command === 'read-memory'
       ? consumeNativeReadSurface()
       : null;
-
   if (nativeReadSurface === 'tasks') {
     deps.setActivePanel('memory');
     return {
@@ -23,6 +28,42 @@ export function handleMemoryCommand(
       confirmationContent: formatOpenTasksReadout(readStoredMemoryTasks()),
       shouldSpeakConfirmation: deps.voiceOutputEnabled,
     };
+  }
+
+  if (commandMatch.command === 'start-focus-session') {
+    const requestedTitle =
+      commandMatch.focusSession?.title?.trim() ||
+      commandMatch.payload?.trim() ||
+      'Focus session';
+    const requestedMode = commandMatch.focusSession?.mode;
+
+    try {
+      const result = await startNativeFocusVerified({
+        title: requestedTitle,
+        objective: commandMatch.focusSession?.goal?.trim() || '',
+        mode: requestedMode,
+      });
+      const activeSession = projectVerifiedFocusToActiveSession(
+        result,
+        requestedMode,
+      );
+
+      applyVerifiedFocusProjection(activeSession);
+      deps.setActivePanel('memory');
+
+      return {
+        handled: true,
+        confirmationContent: result.message,
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    } catch (error) {
+      console.error('Verified native Focus start failed:', error);
+      return {
+        handled: true,
+        confirmationContent: describeNativeFocusStartFailure(error),
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
   }
 
   return handleMemoryCommandCore(commandMatch, deps);

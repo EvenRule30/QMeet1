@@ -25,6 +25,7 @@ import {
 import {
   getBriefToolSpeech,
   getResultToastForCommand,
+  hasFailureLanguage,
 } from './lib/toastUtils';
 import {
   getCommandActionLabel,
@@ -64,18 +65,12 @@ import {
 } from './lib/commandRouterUtils';
 import './App.css';
 
-
 type SplitCommandResult = {
   handled: boolean;
   confirmationContent?: string;
   shouldSpeakConfirmation?: boolean;
   confirmationSpeechRate?: number;
 };
-
-
-
-
-
 export default function App() {
   const [chatActive, setChatActive] = useState(false);
   const [orbState, setOrbState] = useState<OrbState>('idle');
@@ -200,7 +195,6 @@ export default function App() {
     setChatActive,
     setMessages,
   });
-
   // End chat and return to idle state
   const handleEndChat = useCallback(async () => {
     stopCurrentSpeech();
@@ -212,7 +206,6 @@ export default function App() {
     clearResultToasts();
     setChatActive(false);
     clearMessages();
-
     try {
       await resetConversation();
     } catch (error) {
@@ -231,7 +224,6 @@ export default function App() {
     setShowThinkingBubble(false);
     setActivePanel('none');
     setOrbState('idle');
-
     window.setTimeout(() => {
       orbAreaRef.current?.focus();
     }, 0);
@@ -254,7 +246,6 @@ export default function App() {
 
   // Calendar state and Google Calendar actions live in useCalendarController.
 
-
   const sendNormalChat = useCallback(async (messageText: string, visibleUserText: string) => {
     await sendStreamingChat(messageText, visibleUserText);
   }, [sendStreamingChat]);
@@ -264,14 +255,12 @@ export default function App() {
     if (!trimmed) return;
 
     const visibleUserText = (displayText ?? trimmed).trim() || trimmed;
-
     // Any new input supersedes the response currently being generated.
     // Local commands can return without reaching sendStreamingChat, so the
     // existing stream must be cancelled before command routing begins.
     stopCurrentSpeech();
     cancelActiveResponse();
     setOrbState('thinking');
-
     if (pendingInterpreterCommand) {
           if (isConfirmingPendingCommand(trimmed)) {
             const commandToRun = pendingInterpreterCommand;
@@ -283,7 +272,7 @@ export default function App() {
             setLastInterpreterReason(commandToRun.reason || 'User confirmed a pending destructive command.');
             return handleSend(commandToRun.frontendCommand, visibleUserText, 'confirmed');
           }
-    
+
           if (isRejectingPendingCommand(trimmed)) {
             finishListening();
             setShowThinkingBubble(false);
@@ -291,24 +280,23 @@ export default function App() {
             setLastInputRoute('Cancelled pending command');
             setLastLocalCommand('Pending command cancelled');
             setLastInterpreterReason(`User cancelled pending command: ${pendingInterpreterCommand.frontendCommand}.`);
-    
+
             if (!chatActive) setChatActive(true);
-    
+
             const now = Date.now();
             const userMsg = createUserMessage(now, visibleUserText);
             const assistantMsg = createAssistantMessage(now, 'Cancelled pending command.');
-    
+
             setMessages((prev) => [...prev, userMsg, assistantMsg]);
             pushResultToast({ kind: 'warning', title: 'Cancelled', detail: 'Pending command dismissed.' });
             speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
             return;
           }
-    
+
           setPendingInterpreterCommand(null);
         }
-
     const commandMatch = parseCommand(trimmed);
-    
+
     if (commandMatch) {
       if (commandRoute === 'exact') {
         const requiresExactConfirmation =
@@ -318,7 +306,6 @@ export default function App() {
             Boolean(googleCalendarStatus?.connected) &&
             Boolean(googleCalendarStatus?.writeEnabled)
           );
-
         observeExactLocalRoute({
           command: commandMatch.command,
           requiresConfirmation: requiresExactConfirmation,
@@ -334,10 +321,9 @@ export default function App() {
       const previousLastHeardTranscript = lastHeardTranscript;
       const previousLastNormalizedTranscript = lastNormalizedTranscript;
       const previousLastLocalCommand = lastLocalCommand;
-
       setLastLocalCommand(commandMatch.command);
       setPendingInterpreterCommand(null);
-      
+
       setLastInputRoute(getLocalCommandRouteLabel(commandRoute));
       if (commandRoute === 'exact') {
         setLastInterpreterAction('Not used');
@@ -345,9 +331,8 @@ export default function App() {
         setLastInterpreterConfidence(null);
         setLastInterpreterReason('Exact frontend parser matched before the command interpreter was needed.');
       }
-
       const userMsg = createUserMessage(now, visibleUserText);
-      
+
       if (
         commandRoute !== 'confirmed' &&
         commandMatch.command === 'add-calendar-event' &&
@@ -357,11 +342,9 @@ export default function App() {
         const targetView = commandMatch.calendarEvent?.day ?? 'today';
         const targetTime = commandMatch.calendarEvent?.time?.trim() || 'Later';
         const targetTitle = commandMatch.calendarEvent?.title?.trim() ?? '';
-
         if (targetTitle) {
           const frontendCommand = `add event ${targetView} at ${targetTime} called ${targetTitle}`;
           const confirmationPrompt = `I understood that as: create a Google Calendar event ${targetView} at ${targetTime}: ${targetTitle}. Say "confirm" to create it, or "cancel" to stop.`;
-
           setPendingInterpreterCommand({
             originalText: visibleUserText,
             frontendCommand,
@@ -375,7 +358,6 @@ export default function App() {
           setLastInterpreterFrontendCommand(frontendCommand);
           setLastInterpreterConfidence(commandRoute === 'exact' ? 1 : 0.9);
           setLastInterpreterReason('Google Calendar event creation requires confirmation before writing to the real calendar.');
-
           const assistantMsg = createAssistantMessage(now, confirmationPrompt);
 
           setMessages((prev) => [...prev, userMsg, assistantMsg]);
@@ -383,31 +365,29 @@ export default function App() {
           return;
         }
       }
-
       if (commandRoute !== 'confirmed' && commandMatch.command === 'edit-last-event') {
               const targetEditEvent = await findCalendarEventForChange();
               const editDescription = describeCalendarEditPayload(commandMatch.calendarEdit);
-      
+
               if (!targetEditEvent) {
                 setLastInputRoute('Edit command had no target');
                 setLastLocalCommand('No calendar event to edit');
-      
+
                 const assistantMsg = createAssistantMessage(
                   now,
                   googleCalendarStatus?.connected
                     ? 'I did not find a Google Calendar event to edit for the current view.'
                     : 'I did not find a local calendar event to edit.'
                 );
-      
+
                 setMessages((prev) => [...prev, userMsg, assistantMsg]);
                 speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
                 return;
               }
-      
               const frontendCommand = buildCalendarEditFrontendCommand(commandMatch.calendarEdit);
               const sourceLabel = targetEditEvent.source === 'google' ? 'Google Calendar' : 'local';
               const confirmationPrompt = `I understood that as: update ${sourceLabel} event: ${targetEditEvent.time || '—'}: ${targetEditEvent.title}. Changes: ${editDescription}. Say "confirm" to update it, or "cancel" to stop.`;
-      
+
               setPendingInterpreterCommand({
                 originalText: visibleUserText,
                 frontendCommand,
@@ -421,14 +401,12 @@ export default function App() {
               setLastInterpreterFrontendCommand(frontendCommand);
               setLastInterpreterConfidence(commandRoute === 'exact' ? 1 : 0.9);
               setLastInterpreterReason('Calendar event editing requires confirmation before changing the calendar.');
-      
               const assistantMsg = createAssistantMessage(now, confirmationPrompt);
-      
+
               setMessages((prev) => [...prev, userMsg, assistantMsg]);
               speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
               return;
             }
-
       if (commandRoute !== 'confirmed' && isDestructiveLocalCommand(commandMatch.command)) {
         const taskCompletionTarget = commandMatch.command === 'mark-task-done'
           ? commandMatch.payload?.trim() ?? ''
@@ -453,7 +431,6 @@ export default function App() {
           : isCalendarDeleteCommand
             ? `I did not find a calendar event matching ${deleteDescription}.`
             : `I understood that as: ${frontendCommand}. This changes or deletes local data. Say "confirm" to run it, or "cancel" to stop.`;
-
         if (isCalendarDeleteCommand && !targetDeleteEvent) {
           setLastInputRoute('Delete command had no target');
           setLastLocalCommand('No matching calendar event to delete');
@@ -464,7 +441,6 @@ export default function App() {
           speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
           return;
         }
-
         setPendingInterpreterCommand({
           originalText: visibleUserText,
           frontendCommand,
@@ -485,14 +461,12 @@ export default function App() {
             ? 'Exact frontend parser matched a destructive command, so QMeet paused for confirmation.'
             : 'Command interpreter mapped the input to a destructive command, so QMeet paused for confirmation.'
         );
-
         const assistantMsg = createAssistantMessage(now, confirmationPrompt);
 
         setMessages((prev) => [...prev, userMsg, assistantMsg]);
         speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
         return;
       }
-
       let confirmationContent =
         commandMatch.command === 'close-generic' && activePanel === 'none'
           ? 'No panel is open.'
@@ -501,7 +475,7 @@ export default function App() {
       let confirmationSpeechRate = speechRate;
       let replaceMessages = false;
       let speechConfirmationContent = getBriefToolSpeech(commandMatch.command, confirmationContent);
-      
+
       const notesCommandResult: SplitCommandResult = handleNotesCommand(commandMatch, {
         voiceOutputEnabled,
         setActivePanel,
@@ -511,10 +485,9 @@ export default function App() {
         clearNotes,
         getNotesReadout,
       });
-
       const memoryCommandResult: SplitCommandResult = notesCommandResult.handled
         ? { handled: false }
-        : handleMemoryCommand(commandMatch, {
+        : await handleMemoryCommand(commandMatch, {
             voiceOutputEnabled,
             setActivePanel,
             closePanel,
@@ -523,7 +496,6 @@ export default function App() {
             markMemoryTaskDone,
             clearCompletedTasks,
           });
-
       const searchCommandResult: SplitCommandResult = notesCommandResult.handled || memoryCommandResult.handled
         ? { handled: false }
         : await handleSearchCommand(commandMatch, {
@@ -534,7 +506,6 @@ export default function App() {
             runWebSearch,
             clearSearchState,
           });
-
       const voiceCommandResult: SplitCommandResult = notesCommandResult.handled || memoryCommandResult.handled || searchCommandResult.handled
         ? { handled: false }
         : handleVoiceCommand(commandMatch, {
@@ -551,7 +522,6 @@ export default function App() {
             setShowThinkingBubble,
             setOrbState,
           });
-
       const calendarCommandResult: SplitCommandResult = notesCommandResult.handled || memoryCommandResult.handled || searchCommandResult.handled || voiceCommandResult.handled
         ? { handled: false }
         : await handleCalendarCommand(commandMatch, {
@@ -572,7 +542,6 @@ export default function App() {
             getCalendarReadout,
             resetConversation,
           });
-
       const splitCommandResult: SplitCommandResult = notesCommandResult.handled
         ? notesCommandResult
         : memoryCommandResult.handled
@@ -582,7 +551,6 @@ export default function App() {
             : voiceCommandResult.handled
               ? voiceCommandResult
               : calendarCommandResult;
-
       if (splitCommandResult.handled) {
         if (splitCommandResult.confirmationContent !== undefined) {
           confirmationContent = splitCommandResult.confirmationContent;
@@ -591,7 +559,6 @@ export default function App() {
         if (splitCommandResult.shouldSpeakConfirmation !== undefined) {
           shouldSpeakConfirmation = splitCommandResult.shouldSpeakConfirmation;
         }
-
         if (splitCommandResult.confirmationSpeechRate !== undefined) {
           confirmationSpeechRate = splitCommandResult.confirmationSpeechRate;
         }
@@ -619,7 +586,6 @@ export default function App() {
       } else if (commandMatch.command === 'clear-chat') {
         replaceMessages = true;
         setPendingInterpreterCommand(null);
-
         try {
           await resetConversation();
         } catch (error) {
@@ -631,18 +597,19 @@ export default function App() {
         await handleEndChat();
         return;
       }
-
       speechConfirmationContent = getBriefToolSpeech(commandMatch.command, confirmationContent);
-      
+
       const confirmationMsg = createAssistantMessage(now, confirmationContent, 'tool');
-      
+
       if (replaceMessages) {
         setMessages([userMsg, confirmationMsg]);
       } else {
         setMessages((prev) => [...prev, userMsg, confirmationMsg]);
       }
-
-      if (shouldRecordRecentAction(commandMatch.command)) {
+      if (
+        shouldRecordRecentAction(commandMatch.command) &&
+        !hasFailureLanguage(confirmationContent)
+      ) {
         addRecentAction(
           getCommandActionLabel(commandMatch.command),
           confirmationContent,
@@ -657,7 +624,6 @@ export default function App() {
 
       return;
     }
-
     if (displayText) {
       finishListening();
       setShowThinkingBubble(false);
@@ -666,7 +632,6 @@ export default function App() {
       setLastInterpreterReason('The interpreter returned a frontend command, but the frontend parser could not execute it.');
 
       if (!chatActive) setChatActive(true);
-
       const now = Date.now();
       const userMsg = createUserMessage(now, visibleUserText);
       const assistantMsg = createAssistantMessage(now, 'I understood that as a command, but I could not match it to a local action.');
@@ -678,7 +643,6 @@ export default function App() {
 
     try {
       const interpretedCommand = await interpretCommandIntent(trimmed);
-
       if (
         interpretedCommand.intent === 'command' &&
         interpretedCommand.frontendCommand &&
@@ -700,7 +664,6 @@ export default function App() {
         setLastInterpreterFrontendCommand(interpretedCommand.frontendCommand);
         setLastInterpreterConfidence(interpretedCommand.confidence);
         setLastInterpreterReason(interpretedCommand.reason || 'Interpreter mapped fuzzy input to a destructive frontend command.');
-
         if (!chatActive) setChatActive(true);
 
         const now = Date.now();
@@ -711,7 +674,6 @@ export default function App() {
         speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
         return;
       }
-
       if (
         interpretedCommand.intent === 'command' &&
         interpretedCommand.frontendCommand &&
@@ -724,7 +686,6 @@ export default function App() {
         setLastInterpreterReason(interpretedCommand.reason || 'Interpreter mapped fuzzy input to a frontend command.');
         return handleSend(interpretedCommand.frontendCommand, visibleUserText, 'interpreter');
       }
-
       if (
         interpretedCommand.intent === 'command' &&
         interpretedCommand.frontendCommand &&
@@ -738,7 +699,6 @@ export default function App() {
         setLastInterpreterFrontendCommand(interpretedCommand.frontendCommand);
         setLastInterpreterConfidence(interpretedCommand.confidence);
         setLastInterpreterReason(interpretedCommand.reason || 'Interpreter confidence was below the automatic execution threshold.');
-
         const destructiveCommand = isDestructiveInterpreterCommand(interpretedCommand.frontendCommand);
         if (destructiveCommand) {
           setPendingInterpreterCommand({
@@ -749,7 +709,6 @@ export default function App() {
             reason: interpretedCommand.reason || 'Interpreter confidence was below the automatic execution threshold.',
           });
         }
-
         if (!chatActive) setChatActive(true);
 
         const now = Date.now();
@@ -760,7 +719,6 @@ export default function App() {
         speakAssistantText(assistantMsg.content);
         return;
       }
-
       setPendingInterpreterCommand(null);
       setLastInputRoute('Normal chat');
       setLastLocalCommand('No local command');
@@ -778,10 +736,9 @@ export default function App() {
       setLastInterpreterConfidence(null);
       setLastInterpreterReason(getInterpreterUnavailableReason(error));
     }
-
     await sendNormalChat(trimmed, visibleUserText);
   }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveMemoryTask, markMemoryTaskDone, clearCompletedTasks, getMemoryReadout, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, deleteCalendarEventByCriteria, findCalendarEventForDeletion, findCalendarEventForChange, getNextCalendarEventForDeletion, getNextCalendarEventForChange, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, runWebSearch, clearSearchState, searchError, pushResultToast, addRecentAction, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents, sendNormalChat]);
-  
+
   const handleOrbClick = useCallback(() => {
     // If QMeet is actively generating/streaming, tapping the orb should cancel
     // that response instead of starting a new listening session.
@@ -800,7 +757,6 @@ export default function App() {
       ]);
       return;
     }
-
     // If QMeet is speaking, tapping the orb should stop the speech and return
     // to idle. It should not immediately start listening from the same tap.
     if (orbState === 'speaking') {
@@ -812,14 +768,12 @@ export default function App() {
     if (orbState !== 'idle') {
       return;
     }
-
     startListening((rawTranscript, normalizedTranscript) => {
       setLastHeardTranscript(rawTranscript);
       setLastNormalizedTranscript(normalizedTranscript);
       handleSend(normalizedTranscript);
     });
   }, [orbState, responseActive, handleSend, stopCurrentSpeech, cancelActiveResponse, setMessages, startListening]);
-
   const statusSnapshot = new Date();
     const statusDateLabel = statusSnapshot.toLocaleDateString([], {
       weekday: 'short',
@@ -876,11 +830,9 @@ export default function App() {
       calendarCount: calendarEvents.length,
       taskCount: statusOpenTasksCount,
     });
-
   return (
     <div className="agent-screen">
       <TopStatusBar orbState={orbState} chatActive={chatActive} onEnd={handleEndChat} backendStatus={backendStatus} activity={assistantActivity} />
-
       <div className="agent-body">
         {/* Orb area: full width when idle, 38% when chat active */}
         <div
@@ -892,13 +844,11 @@ export default function App() {
           aria-label="QMeet orb — tap to activate"
         >
           <Orb state={orbState} active={chatActive} activity={assistantActivity} />
-
           {!chatActive && (
             <div className="idle-hint">
               <span>{orbState === 'listening' ? 'Listening…' : 'Ask QMeet anything…'}</span>
             </div>
           )}
-
           {orbState === 'listening' && (
             <div className="listening-preview">
               <div className="listening-preview-label">Heard:</div>
@@ -908,7 +858,6 @@ export default function App() {
             </div>
           )}
         </div>
-
         {/* Chat area: hidden when idle, 62% when active */}
         <div className={`chat-area ${chatActive ? 'chat-area-visible' : 'chat-area-hidden'}`}>
           <ChatPanel
@@ -919,7 +868,6 @@ export default function App() {
           <PromptBar onSend={handleSend} disabled={false} />
         </div>
       </div>
-
       {resultToasts.length > 0 && (
         <div className="result-toast-stack" aria-live="polite" aria-label="QMeet action updates">
           {resultToasts.map((toast) => (
@@ -944,12 +892,10 @@ export default function App() {
           ))}
         </div>
       )}
-
       {/* Panel Overlays */}
       {activePanel === 'menu' && (
         <MenuOverlay openLauncherPanel={openLauncherPanel} onClose={closePanel} />
       )}
-
       {activePanel === 'settings' && (
         <SettingsOverlay
           backendStatus={backendStatus}
@@ -961,7 +907,7 @@ export default function App() {
           onClose={closePanel}
         />
       )}
-      
+
       {activePanel === 'status' && (
         <StatusOverlay
           activePanelLabel={activePanelLabel}
@@ -999,7 +945,6 @@ export default function App() {
         />
       )}
 
-
       {activePanel === 'memory' && (
         <MemoryOverlay
           memorySyncState={memorySyncState}
@@ -1024,7 +969,6 @@ export default function App() {
           onClose={closePanel}
         />
       )}
-
       {activePanel === 'notes' && (
         <NotesOverlay
           notes={notes}
@@ -1034,7 +978,6 @@ export default function App() {
           onClose={closePanel}
         />
       )}
-
       {activePanel === 'calendar' && (
         <CalendarOverlay
           view={calendarView}
@@ -1051,7 +994,6 @@ export default function App() {
           onClose={closePanel}
         />
       )}
-
       {activePanel === 'search' && (
         <SearchOverlay
           query={searchQuery}
