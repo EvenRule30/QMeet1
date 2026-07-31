@@ -79,6 +79,7 @@ export async function handleMemoryCommand(
         ...(hasTitle ? { title: payload.title } : {}),
         ...(hasObjective ? { objective: payload.goal } : {}),
         ...(hasMode ? { mode: payload.mode } : {}),
+        ...(commandMatch.payload ? { sourceTurnId: commandMatch.payload } : {}),
       });
       const activeSession = projectVerifiedFocusToActiveSession(
         result,

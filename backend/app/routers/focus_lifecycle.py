@@ -12,6 +12,11 @@ from app.focus.lifecycle import (
     start_focus_verified,
     update_focus_verified,
 )
+from app.focus.semantic_update_preflight import (
+    SemanticFocusUpdatePreflightRequest,
+    SemanticFocusUpdatePreflightResult,
+    semantic_focus_update_preflight,
+)
 
 
 router = APIRouter(prefix="/api/focus/lifecycle", tags=["focus-lifecycle"])
@@ -73,11 +78,26 @@ async def update_native_focus(
     return result
 
 
+@router.post(
+    "/semantic-update/interpret",
+    response_model=SemanticFocusUpdatePreflightResult,
+)
+async def interpret_semantic_focus_update(
+    request: SemanticFocusUpdatePreflightRequest,
+) -> SemanticFocusUpdatePreflightResult:
+    return await semantic_focus_update_preflight(request)
+
+
 @router.get("/health")
 async def native_focus_lifecycle_health() -> dict[str, object]:
     return {
         "ok": True,
         "ownership": "native",
-        "scope": ["start_focus", "replace_focus", "update_focus"],
+        "scope": [
+            "start_focus",
+            "replace_focus",
+            "update_focus",
+            "semantic_update_interpret",
+        ],
         "health": get_native_focus_lifecycle_health(),
     }

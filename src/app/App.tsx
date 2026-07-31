@@ -12,8 +12,9 @@ import { CalendarOverlay } from './panels/CalendarOverlay';
 import { SearchOverlay } from './panels/SearchOverlay';
 import { OrbState, ActivePanel } from './types';
 import { resetConversation, interpretCommandIntent } from "./api";
-import { parseCommand } from './commands';
+import { parseCommand, type CommandMatch } from './commands';
 import { observeExactLocalRoute } from './lib/focusTurnHeaders';
+import { interpretSemanticFocusUpdate } from './lib/semanticFocusUpdate';
 import { getAssistantActivity, getPanelLabel } from './lib/activityUtils';
 import { getDateKeyForCalendarView } from './lib/dateUtils';
 import {
@@ -71,6 +72,7 @@ type SplitCommandResult = {
   shouldSpeakConfirmation?: boolean;
   confirmationSpeechRate?: number;
 };
+
 export default function App() {
   const [chatActive, setChatActive] = useState(false);
   const [orbState, setOrbState] = useState<OrbState>('idle');
@@ -250,7 +252,7 @@ export default function App() {
     await sendStreamingChat(messageText, visibleUserText);
   }, [sendStreamingChat]);
 
-  const handleSend = useCallback(async (text: string, displayText?: string, commandRoute: CommandRoute = 'exact') => {
+  const handleSend = useCallback(async (text: string, displayText?: string, commandRoute: CommandRoute = 'exact', forcedCommandMatch?: CommandMatch) => {
     const trimmed = text.trim();
     if (!trimmed) return;
 
@@ -295,7 +297,7 @@ export default function App() {
 
           setPendingInterpreterCommand(null);
         }
-    const commandMatch = parseCommand(trimmed);
+    const commandMatch = forcedCommandMatch ?? parseCommand(trimmed);
 
     if (commandMatch) {
       if (commandRoute === 'exact') {
@@ -638,6 +640,58 @@ export default function App() {
 
       setMessages((prev) => [...prev, userMsg, assistantMsg]);
       speakAssistantText(assistantMsg.content);
+      return;
+    }
+
+    const semanticFocusUpdate = await interpretSemanticFocusUpdate(trimmed);
+    if (semanticFocusUpdate.kind === 'update') {
+      setLastInputRoute('Semantic lifecycle Focus update');
+      setLastInterpreterAction('update_focus_session');
+      setLastInterpreterFrontendCommand('apply semantic focus update');
+      setLastInterpreterConfidence(semanticFocusUpdate.confidence);
+      setLastInterpreterReason(
+        semanticFocusUpdate.reason ||
+          'The dedicated lifecycle semantic classifier returned one typed Focus update.',
+      );
+      return handleSend(
+        'apply semantic focus update',
+        visibleUserText,
+        'interpreter',
+        semanticFocusUpdate.commandMatch,
+      );
+    }
+
+    if (
+      semanticFocusUpdate.kind === 'blocked' ||
+      (semanticFocusUpdate.kind === 'unavailable' &&
+        semanticFocusUpdate.possibleUpdate)
+    ) {
+      finishListening();
+      setShowThinkingBubble(false);
+      setPendingInterpreterCommand(null);
+      setLastInputRoute('Semantic Focus update blocked safely');
+      setLastLocalCommand('Focus update not executed');
+      setLastInterpreterAction('update_focus_session');
+      setLastInterpreterFrontendCommand('None');
+      setLastInterpreterConfidence(semanticFocusUpdate.confidence);
+      setLastInterpreterReason(semanticFocusUpdate.reason);
+
+      if (!chatActive) setChatActive(true);
+      const now = Date.now();
+      const userMsg = createUserMessage(now, visibleUserText);
+      const assistantMsg = createAssistantMessage(
+        now,
+        semanticFocusUpdate.message,
+      );
+      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      pushResultToast({
+        kind: 'warning',
+        title: 'Focus unchanged',
+        detail: semanticFocusUpdate.message,
+      });
+      speakAssistantText(assistantMsg.content, {
+        enabled: voiceOutputEnabled,
+      });
       return;
     }
 

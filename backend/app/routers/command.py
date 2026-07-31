@@ -9,6 +9,7 @@ from app.qmeet_orchestrator import interpret_qmeet_orchestrator
 
 router = APIRouter(prefix="/api/command", tags=["command"])
 
+
 MODE_WORDS = r"(?:general|coding|code|development|dev|programming|meeting|meetings|planning|plan|research|personal)"
 FOCUS_WORDS = r"(?:focus|focus session|active session|session|focus mode)"
 
@@ -918,6 +919,7 @@ async def command_interpret(req: CommandInterpretRequest):
     focus_intent = _focus_command_intent(message)
     if focus_intent is not None:
         return CommandInterpretResponse(**focus_intent)
+
     orchestrator_intent = await interpret_qmeet_orchestrator(
         message,
         ui_state=req.uiState,

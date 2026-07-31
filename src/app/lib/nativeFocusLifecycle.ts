@@ -18,6 +18,7 @@ export type NativeFocusUpdateInput = {
   title?: string;
   objective?: string;
   mode?: MemorySessionMode;
+  sourceTurnId?: string;
 };
 
 type NativeFocusOpenStatus = 'clarifying' | 'active' | 'waiting' | 'ready';
@@ -572,7 +573,8 @@ export async function updateNativeFocusVerified(
     ...(hasObjective ? { objective } : {}),
     ...(hasMode ? { mode } : {}),
   };
-  const sourceTurnId = createSourceTurnId();
+  const suppliedSourceTurnId = normalizeText(input.sourceTurnId);
+  const sourceTurnId = suppliedSourceTurnId || createSourceTurnId();
 
   let response: Response;
   try {
