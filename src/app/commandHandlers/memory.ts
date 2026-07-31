@@ -9,8 +9,10 @@ import { consumeNativeReadSurface } from '../lib/nativeReadSurfaceBridge';
 import {
   applyVerifiedFocusProjection,
   describeNativeFocusStartFailure,
+  describeNativeFocusUpdateFailure,
   projectVerifiedFocusToActiveSession,
   startNativeFocusVerified,
+  updateNativeFocusVerified,
 } from '../lib/nativeFocusLifecycle';
 
 export async function handleMemoryCommand(
@@ -61,6 +63,42 @@ export async function handleMemoryCommand(
       return {
         handled: true,
         confirmationContent: describeNativeFocusStartFailure(error),
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+  }
+
+  if (commandMatch.command === 'update-focus-session') {
+    const payload = commandMatch.focusSession ?? {};
+    const hasTitle = typeof payload.title === 'string';
+    const hasObjective = typeof payload.goal === 'string';
+    const hasMode = typeof payload.mode === 'string';
+
+    try {
+      const result = await updateNativeFocusVerified({
+        ...(hasTitle ? { title: payload.title } : {}),
+        ...(hasObjective ? { objective: payload.goal } : {}),
+        ...(hasMode ? { mode: payload.mode } : {}),
+      });
+      const activeSession = projectVerifiedFocusToActiveSession(
+        result,
+        hasMode ? payload.mode : undefined,
+      );
+
+      applyVerifiedFocusProjection(activeSession);
+      deps.setActivePanel('memory');
+
+      return {
+        handled: true,
+        confirmationContent: result.message,
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    } catch (error) {
+      console.error('Verified native Focus update failed:', error);
+      deps.setActivePanel('memory');
+      return {
+        handled: true,
+        confirmationContent: describeNativeFocusUpdateFailure(error),
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }

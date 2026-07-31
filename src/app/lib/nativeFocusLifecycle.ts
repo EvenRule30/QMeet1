@@ -14,6 +14,12 @@ export type NativeFocusStartInput = {
   tags?: string[];
 };
 
+export type NativeFocusUpdateInput = {
+  title?: string;
+  objective?: string;
+  mode?: MemorySessionMode;
+};
+
 type NativeFocusOpenStatus = 'clarifying' | 'active' | 'waiting' | 'ready';
 
 type NativeFocusState = {
@@ -35,6 +41,17 @@ type NativeFocusVerification = {
   details: string[];
 };
 
+type NativeFocusUpdateVerification = {
+  focusIdentityPreserved: boolean;
+  titleMatches: boolean;
+  objectiveMatches: boolean;
+  modeMatches: boolean;
+  exactlyOneFocusOpen: boolean;
+  updateEventsPersisted: boolean;
+  openFocusIds: string[];
+  details: string[];
+};
+
 export type NativeFocusStartResult = {
   ok: true;
   operation: 'start_focus';
@@ -45,6 +62,19 @@ export type NativeFocusStartResult = {
   closedFocusIds: string[];
   sourceTurnId: string;
   verification: NativeFocusVerification;
+  telemetryRecorded: boolean;
+  message: string;
+};
+
+export type NativeFocusUpdateResult = {
+  ok: true;
+  operation: 'update_focus';
+  outcome: 'updated' | 'reused';
+  verified: true;
+  activeFocus: NativeFocusState;
+  changedFields: Array<'title' | 'objective' | 'mode'>;
+  sourceTurnId: string;
+  verification: NativeFocusUpdateVerification;
   telemetryRecorded: boolean;
   message: string;
 };
@@ -61,15 +91,37 @@ type NativeFocusErrorPayload = {
   message?: unknown;
 };
 
-export class NativeFocusStartError extends Error {
+class NativeFocusLifecycleClientError extends Error {
   readonly code: string;
   readonly status: number | null;
 
-  constructor(message: string, options: { code?: string; status?: number | null } = {}) {
+  constructor(
+    name: string,
+    message: string,
+    options: { code?: string; status?: number | null } = {},
+  ) {
     super(message);
-    this.name = 'NativeFocusStartError';
-    this.code = options.code ?? 'native_focus_start_failed';
+    this.name = name;
+    this.code = options.code ?? 'native_focus_lifecycle_failed';
     this.status = options.status ?? null;
+  }
+}
+
+export class NativeFocusStartError extends NativeFocusLifecycleClientError {
+  constructor(message: string, options: { code?: string; status?: number | null } = {}) {
+    super('NativeFocusStartError', message, {
+      code: options.code ?? 'native_focus_start_failed',
+      status: options.status ?? null,
+    });
+  }
+}
+
+export class NativeFocusUpdateError extends NativeFocusLifecycleClientError {
+  constructor(message: string, options: { code?: string; status?: number | null } = {}) {
+    super('NativeFocusUpdateError', message, {
+      code: options.code ?? 'native_focus_update_failed',
+      status: options.status ?? null,
+    });
   }
 }
 
@@ -121,6 +173,17 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string');
 }
 
+function isChangedFieldArray(
+  value: unknown,
+): value is Array<'title' | 'objective' | 'mode'> {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (item) => item === 'title' || item === 'objective' || item === 'mode',
+    )
+  );
+}
+
 function isOpenFocusStatus(value: unknown): value is NativeFocusOpenStatus {
   return (
     value === 'clarifying' ||
@@ -130,9 +193,13 @@ function isOpenFocusStatus(value: unknown): value is NativeFocusOpenStatus {
   );
 }
 
+function modeTags(tags: string[]): string[] {
+  return tags.filter((rawTag) => rawTag.trim().toLowerCase().startsWith('mode:'));
+}
+
 function readModeTag(tags: string[]): MemorySessionMode | null {
-  for (const rawTag of tags) {
-    const normalized = rawTag.trim().toLowerCase();
+  for (let index = tags.length - 1; index >= 0; index -= 1) {
+    const normalized = tags[index].trim().toLowerCase();
     if (!normalized.startsWith('mode:')) continue;
     const mode = normalized.slice('mode:'.length);
     if (isMemorySessionMode(mode)) return mode;
@@ -140,37 +207,29 @@ function readModeTag(tags: string[]): MemorySessionMode | null {
   return null;
 }
 
-function parseErrorPayload(value: unknown): { code: string; message: string } {
+function parseErrorPayload(
+  value: unknown,
+  fallbackCode: string,
+  fallbackMessage: string,
+): { code: string; message: string } {
   if (!value || typeof value !== 'object') {
-    return {
-      code: 'native_focus_start_failed',
-      message: 'The canonical Focus service returned an unreadable error.',
-    };
+    return { code: fallbackCode, message: fallbackMessage };
   }
 
   const payload = value as NativeFocusErrorPayload;
   if (typeof payload.detail === 'string' && payload.detail.trim()) {
-    return {
-      code: 'native_focus_start_failed',
-      message: payload.detail.trim(),
-    };
+    return { code: fallbackCode, message: payload.detail.trim() };
   }
 
   if (payload.detail && typeof payload.detail === 'object') {
-    const code = normalizeText(payload.detail.code, 'native_focus_start_failed');
-    const message = normalizeText(
-      payload.detail.message,
-      'The canonical Focus service did not verify the transition.',
-    );
+    const code = normalizeText(payload.detail.code, fallbackCode);
+    const message = normalizeText(payload.detail.message, fallbackMessage);
     return { code, message };
   }
 
   return {
-    code: 'native_focus_start_failed',
-    message: normalizeText(
-      payload.message,
-      'The canonical Focus service did not verify the transition.',
-    ),
+    code: fallbackCode,
+    message: normalizeText(payload.message, fallbackMessage),
   };
 }
 
@@ -217,14 +276,8 @@ function normalizeStoredActiveSession(value: unknown): ActiveSession | null {
 function readStoredActiveSession(): ActiveSession | null {
   if (typeof window === 'undefined') return null;
 
-  const storageCandidates = [
-    window.localStorage,
-    window.sessionStorage,
-  ];
-  const keys = [
-    ACTIVE_SESSION_STORAGE_KEY,
-    ACTIVE_SESSION_SESSION_STORAGE_KEY,
-  ];
+  const storageCandidates = [window.localStorage, window.sessionStorage];
+  const keys = [ACTIVE_SESSION_STORAGE_KEY, ACTIVE_SESSION_SESSION_STORAGE_KEY];
 
   for (let index = 0; index < storageCandidates.length; index += 1) {
     try {
@@ -240,6 +293,24 @@ function readStoredActiveSession(): ActiveSession | null {
   return null;
 }
 
+function isNativeFocusState(value: unknown): value is NativeFocusState {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<NativeFocusState>;
+  return (
+    typeof candidate.focusId === 'string' &&
+    Boolean(candidate.focusId.trim()) &&
+    typeof candidate.title === 'string' &&
+    Boolean(candidate.title.trim()) &&
+    typeof candidate.objective === 'string' &&
+    isOpenFocusStatus(candidate.status) &&
+    isStringArray(candidate.tags) &&
+    typeof candidate.createdAt === 'string' &&
+    Boolean(candidate.createdAt.trim()) &&
+    typeof candidate.updatedAt === 'string' &&
+    Boolean(candidate.updatedAt.trim())
+  );
+}
+
 export function isVerifiedNativeFocusStartResult(
   value: unknown,
   expectedSourceTurnId: string,
@@ -247,8 +318,9 @@ export function isVerifiedNativeFocusStartResult(
   if (!value || typeof value !== 'object') return false;
 
   const candidate = value as Partial<NativeFocusStartResult>;
-  const activeFocus = candidate.activeFocus as Partial<NativeFocusState> | undefined;
-  const verification = candidate.verification as Partial<NativeFocusVerification> | undefined;
+  const verification = candidate.verification as
+    | Partial<NativeFocusVerification>
+    | undefined;
   const openFocusIds = verification?.openFocusIds;
 
   return (
@@ -261,24 +333,78 @@ export function isVerifiedNativeFocusStartResult(
     candidate.sourceTurnId === expectedSourceTurnId &&
     typeof candidate.message === 'string' &&
     Boolean(candidate.message.trim()) &&
-    typeof activeFocus?.focusId === 'string' &&
-    Boolean(activeFocus.focusId.trim()) &&
-    typeof activeFocus.title === 'string' &&
-    Boolean(activeFocus.title.trim()) &&
-    isOpenFocusStatus(activeFocus.status) &&
-    isStringArray(activeFocus.tags) &&
+    isNativeFocusState(candidate.activeFocus) &&
     verification?.activeFocusMatches === true &&
     verification.exactlyOneFocusOpen === true &&
     verification.startEventPersisted === true &&
     verification.previousFocusesClosed === true &&
     isStringArray(openFocusIds) &&
     openFocusIds.length === 1 &&
-    openFocusIds[0] === activeFocus.focusId
+    openFocusIds[0] === candidate.activeFocus.focusId
+  );
+}
+
+export function isVerifiedNativeFocusUpdateResult(
+  value: unknown,
+  expectedSourceTurnId: string,
+  expectedFocusId: string,
+  requestedUpdate: NativeFocusUpdateInput,
+): value is NativeFocusUpdateResult {
+  if (!value || typeof value !== 'object') return false;
+
+  const candidate = value as Partial<NativeFocusUpdateResult>;
+  const verification = candidate.verification as
+    | Partial<NativeFocusUpdateVerification>
+    | undefined;
+  const openFocusIds = verification?.openFocusIds;
+  if (!isNativeFocusState(candidate.activeFocus)) return false;
+
+  const hasTitle = Object.prototype.hasOwnProperty.call(requestedUpdate, 'title');
+  const hasObjective = Object.prototype.hasOwnProperty.call(
+    requestedUpdate,
+    'objective',
+  );
+  const hasMode = Object.prototype.hasOwnProperty.call(requestedUpdate, 'mode');
+
+  const requestedTitle = hasTitle ? normalizeText(requestedUpdate.title) : null;
+  const requestedObjective = hasObjective
+    ? normalizeText(requestedUpdate.objective)
+    : null;
+  const requestedMode = hasMode && isMemorySessionMode(requestedUpdate.mode)
+    ? requestedUpdate.mode
+    : null;
+  const canonicalModeTags = modeTags(candidate.activeFocus.tags);
+
+  return (
+    candidate.ok === true &&
+    candidate.operation === 'update_focus' &&
+    (candidate.outcome === 'updated' || candidate.outcome === 'reused') &&
+    candidate.verified === true &&
+    candidate.sourceTurnId === expectedSourceTurnId &&
+    candidate.activeFocus.focusId === expectedFocusId &&
+    typeof candidate.message === 'string' &&
+    Boolean(candidate.message.trim()) &&
+    isChangedFieldArray(candidate.changedFields) &&
+    verification?.focusIdentityPreserved === true &&
+    verification.titleMatches === true &&
+    verification.objectiveMatches === true &&
+    verification.modeMatches === true &&
+    verification.exactlyOneFocusOpen === true &&
+    verification.updateEventsPersisted === true &&
+    isStringArray(openFocusIds) &&
+    openFocusIds.length === 1 &&
+    openFocusIds[0] === expectedFocusId &&
+    (!hasTitle || candidate.activeFocus.title === requestedTitle) &&
+    (!hasObjective || candidate.activeFocus.objective === requestedObjective) &&
+    (!hasMode ||
+      (requestedMode !== null &&
+        readModeTag(candidate.activeFocus.tags) === requestedMode &&
+        canonicalModeTags.length === 1))
   );
 }
 
 export function projectVerifiedFocusToActiveSession(
-  result: NativeFocusStartResult,
+  result: NativeFocusStartResult | NativeFocusUpdateResult,
   requestedMode?: MemorySessionMode,
 ): ActiveSession {
   const activeFocus = result.activeFocus;
@@ -383,7 +509,11 @@ export async function startNativeFocusVerified(
   }
 
   if (!response.ok) {
-    const parsedError = parseErrorPayload(payload);
+    const parsedError = parseErrorPayload(
+      payload,
+      'native_focus_start_failed',
+      'The canonical Focus service did not verify the transition.',
+    );
     throw new NativeFocusStartError(parsedError.message, {
       code: parsedError.code,
       status: response.status,
@@ -403,6 +533,111 @@ export async function startNativeFocusVerified(
   return payload;
 }
 
+export async function updateNativeFocusVerified(
+  input: NativeFocusUpdateInput,
+): Promise<NativeFocusUpdateResult> {
+  const activeProjection = readStoredActiveSession();
+  if (!activeProjection) {
+    throw new NativeFocusUpdateError(
+      'No verified Focus display projection is available to identify the canonical Focus.',
+      { code: 'no_active_focus_projection' },
+    );
+  }
+
+  const hasTitle = Object.prototype.hasOwnProperty.call(input, 'title');
+  const hasObjective = Object.prototype.hasOwnProperty.call(input, 'objective');
+  const hasMode = Object.prototype.hasOwnProperty.call(input, 'mode');
+  if (!hasTitle && !hasObjective && !hasMode) {
+    throw new NativeFocusUpdateError('No Focus update fields were provided.', {
+      code: 'missing_focus_update',
+    });
+  }
+
+  const title = hasTitle ? normalizeText(input.title) : undefined;
+  if (hasTitle && !title) {
+    throw new NativeFocusUpdateError('A Focus title cannot be blank.', {
+      code: 'invalid_focus_title',
+    });
+  }
+  const objective = hasObjective ? normalizeText(input.objective) : undefined;
+  const mode = hasMode && isMemorySessionMode(input.mode) ? input.mode : undefined;
+  if (hasMode && !mode) {
+    throw new NativeFocusUpdateError('The requested Focus mode is not supported.', {
+      code: 'invalid_focus_mode',
+    });
+  }
+
+  const normalizedInput: NativeFocusUpdateInput = {
+    ...(hasTitle ? { title } : {}),
+    ...(hasObjective ? { objective } : {}),
+    ...(hasMode ? { mode } : {}),
+  };
+  const sourceTurnId = createSourceTurnId();
+
+  let response: Response;
+  try {
+    response = await fetch(`${QMEET_API_BASE_URL}/api/focus/lifecycle/update`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        [QMEET_TURN_HEADER]: sourceTurnId,
+      },
+      body: JSON.stringify({
+        expectedFocusId: activeProjection.id,
+        ...normalizedInput,
+        sourceTurnId,
+      }),
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message.trim() : '';
+    throw new NativeFocusUpdateError(
+      reason
+        ? `The canonical Focus service could not be reached: ${reason}`
+        : 'The canonical Focus service could not be reached.',
+      { code: 'focus_service_unavailable' },
+    );
+  }
+
+  let payload: unknown = null;
+  try {
+    payload = await response.json();
+  } catch {
+    // The validation below turns an unreadable success body into a blocked result.
+  }
+
+  if (!response.ok) {
+    const parsedError = parseErrorPayload(
+      payload,
+      'native_focus_update_failed',
+      'The canonical Focus service did not verify the update.',
+    );
+    throw new NativeFocusUpdateError(parsedError.message, {
+      code: parsedError.code,
+      status: response.status,
+    });
+  }
+
+  if (
+    !isVerifiedNativeFocusUpdateResult(
+      payload,
+      sourceTurnId,
+      activeProjection.id,
+      normalizedInput,
+    )
+  ) {
+    throw new NativeFocusUpdateError(
+      'The canonical Focus response did not prove that the update succeeded.',
+      {
+        code: 'client_verification_failed',
+        status: response.status,
+      },
+    );
+  }
+
+  return payload;
+}
+
 export function describeNativeFocusStartFailure(error: unknown): string {
   const reason =
     error instanceof Error && error.message.trim()
@@ -410,4 +645,13 @@ export function describeNativeFocusStartFailure(error: unknown): string {
       : '';
 
   return `I could not verify that the new Focus became canonical, so I will not claim it started.${reason}`;
+}
+
+export function describeNativeFocusUpdateFailure(error: unknown): string {
+  const reason =
+    error instanceof Error && error.message.trim()
+      ? ` ${error.message.trim()}`
+      : '';
+
+  return `I could not verify that the Focus update became canonical, so I will not claim it changed.${reason}`;
 }

@@ -9,10 +9,8 @@ from app.qmeet_orchestrator import interpret_qmeet_orchestrator
 
 router = APIRouter(prefix="/api/command", tags=["command"])
 
-
 MODE_WORDS = r"(?:general|coding|code|development|dev|programming|meeting|meetings|planning|plan|research|personal)"
 FOCUS_WORDS = r"(?:focus|focus session|active session|session|focus mode)"
-
 
 def _collapse_command_text(value: str) -> str:
     """Normalize speech-recognition spacing without changing the user's intent."""
@@ -35,7 +33,6 @@ def _collapse_command_text(value: str) -> str:
         text = collapsed.strip()
     return text.strip()
 
-
 def _command_response(
     *,
     action: str,
@@ -52,7 +49,6 @@ def _command_response(
         "payload": payload or {},
         "reason": reason,
     }
-
 
 def _first_match(patterns: list[str], text: str) -> re.Match[str] | None:
     for pattern in patterns:
@@ -73,7 +69,6 @@ def _active_session_title_from_context(client_context: dict[str, Any] | None) ->
     title = active_session.get("title")
     return title.strip() if isinstance(title, str) else ""
 
-
 def _is_active_focus_work_help(lowered: str) -> bool:
     patterns = [
         r"\bwhat\s+(?:do|should|can)\s+i\s+do\s+(?:now|next)\b",
@@ -88,11 +83,8 @@ def _is_active_focus_work_help(lowered: str) -> bool:
     ]
     return any(re.search(pattern, lowered, flags=re.IGNORECASE) for pattern in patterns)
 
-
-
 def _clean_payload(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip()).strip(" .,:;?!\"'")
-
 
 def _mode_from_text(value: str) -> str:
     lowered = value.lower()
@@ -108,7 +100,6 @@ def _mode_from_text(value: str) -> str:
         return "personal"
     return "general"
 
-
 def _is_focus_planning_question(value: str) -> bool:
     return bool(
         re.search(
@@ -117,7 +108,6 @@ def _is_focus_planning_question(value: str) -> bool:
             flags=re.IGNORECASE,
         )
     )
-
 
 def _is_explicit_focus_set_phrase(value: str) -> bool:
     return bool(
@@ -128,12 +118,10 @@ def _is_explicit_focus_set_phrase(value: str) -> bool:
         )
     )
 
-
 def _should_leave_focus_phrase_for_chat(full_phrase: str, payload: str) -> bool:
     if not _is_focus_planning_question(payload):
         return False
     return not _is_explicit_focus_set_phrase(full_phrase)
-
 
 def _default_focus_title(mode: str) -> str:
     if mode == "coding":
@@ -148,15 +136,12 @@ def _default_focus_title(mode: str) -> str:
         return "Personal session"
     return "Focus session"
 
-
-
 def _ui_shortcut_intent(message: str) -> dict[str, Any] | None:
     """Catch UI wording that the general interpreter tends to misread."""
     text = _collapse_command_text(message)
     lowered = text.lower()
     if not lowered:
         return None
-
     focus_menu_patterns = [
         r"^(?:please\s+)?(?:show|open|bring up|pull up|display)\s+(?:the\s+|my\s+)?(?:focus|current focus|active focus|focus session)\s+(?:menu|panel|controls?|screen)$",
         r"^(?:please\s+)?(?:show|open|bring up|pull up|display)\s+(?:the\s+)?(?:focus menu|focus panel|focus controls)$",
@@ -169,9 +154,7 @@ def _ui_shortcut_intent(message: str) -> dict[str, Any] | None:
             confidence=0.98,
             reason="Backend UI shortcut mapped focus menu wording to the Memory panel.",
         )
-
     return None
-
 
 
 def _task_completion_intent(message: str) -> dict[str, Any] | None:
@@ -180,7 +163,6 @@ def _task_completion_intent(message: str) -> dict[str, Any] | None:
     lowered = text.lower()
     if not lowered:
         return None
-
     ordinal_patterns = [
         r"^(?:please\s+)?(?:i|we)\s+(?:did|finished|completed|complete|finished up|got through|handled)\s+(?:the\s+)?((?:first|last|latest|most recent)\s+(?:\d+|one|two|couple|both|three|few|four|five|six|seven|eight|nine|ten)|both|all|everything|tasks?\s+\d+(?:\s*(?:,|and)\s*(?:tasks?\s*)?\d+)*)\s+(?:tasks?|steps?|items?|things?)?$",
         r"^(?:please\s+)?(?:i|we)\s+(?:am|are|'m|'re)?\s*(?:done|finished|complete|completed|through)\s+(?:with\s+)?(?:the\s+)?((?:first|last|latest|most recent)\s+(?:\d+|one|two|couple|both|three|few|four|five|six|seven|eight|nine|ten)|both|all|everything|tasks?\s+\d+(?:\s*(?:,|and)\s*(?:tasks?\s*)?\d+)*)\s+(?:tasks?|steps?|items?|things?)?$",
@@ -200,7 +182,6 @@ def _task_completion_intent(message: str) -> dict[str, Any] | None:
             reason="Backend task interpreter matched a natural multi-task completion update.",
             payload={"taskLookup": payload},
         )
-
     direct_patterns = [
         r"^(?:please\s+)?(?:mark|set|complete|finish)\s+(?:the\s+)?(?:task\s+)?(?:called|named|about)?\s*(.+?)\s+(?:as\s+)?(?:done|complete|completed|finished)$",
         r"^(?:please\s+)?(?:i|we)\s+(?:did|finished|completed|got through|handled)\s+(?:the\s+)?(?:task\s+)?(?:called|named|about)?\s*(.+)$",
@@ -215,7 +196,6 @@ def _task_completion_intent(message: str) -> dict[str, Any] | None:
             reason="Backend task interpreter matched a task completion update.",
             payload={"taskLookup": payload},
         )
-
     return None
 
 def _qmeet_guide_intent(message: str, client_context: dict[str, Any] | None = None) -> dict[str, Any] | None:
@@ -227,7 +207,6 @@ def _qmeet_guide_intent(message: str, client_context: dict[str, Any] | None = No
 
     if _active_session_title_from_context(client_context) and _is_active_focus_work_help(lowered):
         return None
-
     help_patterns = [
         r"\bwhat\s+can\s+(?:you|q\s*meet|qmeet|the\s+orb)\s+do\b",
         r"\bwhat\s+(?:are\s+you|is\s+q\s*meet|is\s+qmeet|is\s+the\s+orb)\s+(?:able\s+to\s+do|capable\s+of|for)\b",
@@ -253,7 +232,6 @@ def _qmeet_guide_intent(message: str, client_context: dict[str, Any] | None = No
     ]
     if not _first_match(help_patterns, lowered):
         return None
-
     topic = "overview"
     if re.search(
         r"\b(?:what\s+can\s+i\s+do\s+(?:now|next|with\s+it|with\s+this|with\s+that)|what\s+should\s+i\s+do\s+(?:now|next)|now\s+what|what\s+are\s+my\s+options|can\s+i\s+(?:click|tap|press))\b",
@@ -267,7 +245,6 @@ def _qmeet_guide_intent(message: str, client_context: dict[str, Any] | None = No
         flags=re.IGNORECASE,
     ):
         topic = "screen"
-
     topic_patterns = [
         ("meetings", r"\b(?:meeting|meetings|meet|event prep|wrap up|follow up|follow-up)\b"),
         ("calendar", r"\b(?:calendar|schedule|agenda|event|events|google calendar|appointment|appointments)\b"),
@@ -286,7 +263,6 @@ def _qmeet_guide_intent(message: str, client_context: dict[str, Any] | None = No
             if re.search(pattern, lowered, flags=re.IGNORECASE):
                 topic = candidate
                 break
-
     if topic == "context":
         command = "what can I do now with it"
     elif topic == "screen":
@@ -301,14 +277,12 @@ def _qmeet_guide_intent(message: str, client_context: dict[str, Any] | None = No
         payload={"topic": topic},
     )
 
-
 def _ad_hoc_preparation_focus_intent(message: str) -> dict[str, Any] | None:
     """Create a meeting-prep focus from natural appointment-prep phrasing."""
     text = _collapse_command_text(message)
     lowered = text.lower()
     if not lowered:
         return None
-
     generic_patterns = [
         r"^(?:yes\s+|yeah\s+|yep\s+|sure\s+|ok(?:ay)?\s+)?(?:please\s+)?(?:start|begin|create|open)\s+(?:that\s+|the\s+|my\s+)?(?:focus\s+)?(?:preparation|prep)\s+(?:block|focus|session)$",
         r"^(?:yes\s+|yeah\s+|yep\s+|sure\s+|ok(?:ay)?\s+)?(?:you\s+can\s+)?(?:start|begin|create|open)\s+(?:that\s+|the\s+|my\s+)?(?:focus\s+)?(?:preparation|prep)\s+(?:block|focus|session)$",
@@ -320,7 +294,6 @@ def _ad_hoc_preparation_focus_intent(message: str) -> dict[str, Any] | None:
             confidence=0.94,
             reason="Backend prep-focus router matched a natural focus-preparation-block request.",
         )
-
     has_prep = bool(
         re.search(
             r"\b(?:need|needs|want|wants|have|has|should|must)\s+to\s+(?:prepare|prep|get\s+ready)|\b(?:prepare|prep|get\s+ready)\s+(?:for|before)\b",
@@ -331,7 +304,6 @@ def _ad_hoc_preparation_focus_intent(message: str) -> dict[str, Any] | None:
     event_match = re.search(r"\b(appointment|meeting|event|call)\b", lowered, flags=re.IGNORECASE)
     if not has_prep or not event_match:
         return None
-
     time_match = re.search(r"\b(?:at|around|by|before)\s+((?:\d{1,2}:\d{2}|\d{1,2}\s+\d{2}|\d{1,2})\s*(?:a\s*\.?\s*m\.?|p\s*\.?\s*m\.?|am|pm)?)\b", text, flags=re.IGNORECASE)
     day_match = re.search(r"\b(today|tomorrow)\b", lowered, flags=re.IGNORECASE)
     event_word = event_match.group(1).lower()
@@ -347,7 +319,6 @@ def _ad_hoc_preparation_focus_intent(message: str) -> dict[str, Any] | None:
     if day_text:
         goal += f" {day_text}"
     goal += ". Review details, gather notes, prepare questions, and identify next steps."
-
     return _command_response(
         action="start_ad_hoc_prep_focus",
         frontend_command=f"start a meeting focus session for {title} with goal to {goal}",
@@ -356,15 +327,11 @@ def _ad_hoc_preparation_focus_intent(message: str) -> dict[str, Any] | None:
         payload={"title": title, "mode": "meeting", "goal": goal},
     )
 
-
-
-
 def _calendar_focus_intent(message: str) -> dict[str, Any] | None:
     """Catch calendar-to-focus prep/task commands before the general interpreter."""
     text = _collapse_command_text(message)
     if not text:
         return None
-
     lowered = text.lower()
     patterns = [
         r"^(?:please\s+)?(?:prepare|prep)\s+(?:me\s+)?(?:for\s+)?(?:my\s+)?(?:next|upcoming)\s+(?:calendar\s+)?(?:event|meeting|appointment|call)$",
@@ -377,7 +344,6 @@ def _calendar_focus_intent(message: str) -> dict[str, Any] | None:
         r"^(?:please\s+)?(?:turn|convert|break\s+down)\s+(?:my\s+)?(?:next|upcoming)\s+(?:calendar\s+)?(?:event|meeting|appointment|call)\s+(?:into|in\s+to)\s+(?:prep\s+)?tasks?$",
         r"^(?:please\s+)?(?:next|upcoming)\s+(?:meeting|event|calendar\s+event|appointment|call)\s+(?:prep\s+)?tasks?$",
     ]
-
     if _first_match(patterns, lowered):
         return _command_response(
             action="prepare_calendar_focus",
@@ -388,15 +354,12 @@ def _calendar_focus_intent(message: str) -> dict[str, Any] | None:
 
     return None
 
-
-
 def _meeting_wrapup_intent(message: str) -> dict[str, Any] | None:
     """Catch Phase 16C current-meeting wrap-up and follow-up commands."""
     text = _collapse_command_text(message)
     if not text:
         return None
     lowered = text.lower()
-
     wrap_patterns = [
         r"^(?:please\s+)?(?:wrap\s+up|close\s+out|finish|end)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:meeting|meeting\s+focus|meeting\s+session|meeting\s+prep|call|appointment)(?:\s+(?:with|and\s+save|and\s+write)\s+(?:a\s+)?(?:summary|recap|note|notes))?$",
         r"^(?:please\s+)?(?:end|finish|wrap\s+up|close)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:meeting|meeting\s+focus|meeting\s+session|call|appointment)\s+(?:with\s+)?(?:a\s+)?(?:summary|recap|note|notes)$",
@@ -411,7 +374,6 @@ def _meeting_wrapup_intent(message: str) -> dict[str, Any] | None:
             confidence=0.98,
             reason="Backend meeting wrap-up interpreter matched a summary-and-end command.",
         )
-
     follow_up_patterns = [
         r"^(?:please\s+)?(?:create|make|add|generate|build|capture|save)\s+(?:meeting\s+)?(?:follow\s*-?\s*up|followup|action)\s+(?:tasks|task\s+list|items|item|actions|next\s+steps|steps)\s+(?:for|from|based\s+on)?\s*(?:(?:this|the|my|our|current|active)\s+)*(?:meeting|meeting\s+focus|meeting\s+session|call|appointment|focus|session)?$",
         r"^(?:please\s+)?(?:turn|convert|break\s+down)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:meeting|meeting\s+focus|meeting\s+session|call|appointment)\s+(?:into|in\s+to)\s+(?:follow\s*-?\s*up\s+)?(?:tasks|task\s+list|action\s+items|next\s+steps|steps|checklist)$",
@@ -425,7 +387,6 @@ def _meeting_wrapup_intent(message: str) -> dict[str, Any] | None:
             confidence=0.98,
             reason="Backend meeting wrap-up interpreter matched a follow-up task command.",
         )
-
     save_summary_patterns = [
         r"^(?:please\s+)?(?:save|store|remember|write)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:meeting|call|appointment)\s+(?:as|to|in)\s+(?:a\s+)?(?:note|notes|memory|summary)$",
         r"^(?:please\s+)?(?:save|store|remember|write)\s+(?:a\s+)?(?:meeting\s+)?(?:summary|recap|note|notes)\s+(?:of|for)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:meeting|call|appointment)?$",
@@ -438,7 +399,6 @@ def _meeting_wrapup_intent(message: str) -> dict[str, Any] | None:
             confidence=0.96,
             reason="Backend meeting wrap-up interpreter matched a save-meeting-notes command.",
         )
-
     summarize_patterns = [
         r"^(?:please\s+)?(?:summarize|recap|review)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:meeting|meeting\s+focus|meeting\s+session|call|appointment)$",
         r"^(?:please\s+)?(?:give\s+me\s+|make\s+me\s+|create\s+)?(?:a\s+)?(?:meeting|call|appointment)\s+(?:summary|recap|review)$",
@@ -450,7 +410,6 @@ def _meeting_wrapup_intent(message: str) -> dict[str, Any] | None:
             confidence=0.95,
             reason="Backend meeting wrap-up interpreter matched a summarize-current-meeting command.",
         )
-
     return None
 
 def _visual_context_intent(message: str) -> dict[str, Any] | None:
@@ -460,7 +419,6 @@ def _visual_context_intent(message: str) -> dict[str, Any] | None:
         return None
 
     lowered = text.lower()
-
     link_focus_patterns = [
         r"^(?:please\s+)?(?:link|attach|pin|connect|save|add)\s+(?:the\s+|this\s+|my\s+|our\s+)?(?:last|latest|current|most\s+recent)?\s*(?:visual\s+)?(?:observation|visual\s+context|visual\s+memory|camera\s+observation|camera\s+memory|thing\s+(?:i|we)\s+saw|what\s+(?:i|we)\s+saw|what\s+you\s+saw)\s+(?:to|with|into|under|for)\s+(?:the\s+|my\s+|our\s+|current\s+|active\s+)?(?:focus|focus\s+session|session)$",
         r"^(?:please\s+)?(?:save|pin|attach|link)\s+(?:what\s+)?(?:you\s+)?(?:last\s+)?(?:saw|observed|captured)\s+(?:to|with|into|under|for)\s+(?:the\s+|my\s+|our\s+|current\s+|active\s+)?(?:focus|focus\s+session|session)$",
@@ -473,7 +431,6 @@ def _visual_context_intent(message: str) -> dict[str, Any] | None:
             confidence=0.98,
             reason="Backend visual-focus interpreter matched a link visual-to-focus command.",
         )
-
     focus_visual_patterns = [
         r"^(?:please\s+)?(?:show|read|list|display|summarize|recap|review)\s+(?:the\s+|my\s+|our\s+)?(?:visuals|visual\s+observations|visual\s+context|camera\s+observations|camera\s+context)\s+(?:for|linked\s+to|related\s+to|under|with)\s+(?:the\s+|my\s+|our\s+|current\s+|active\s+)?(?:focus|focus\s+session|session)$",
         r"^(?:please\s+)?(?:what\s+)?(?:visual\s+context|visuals|camera\s+context|things\s+(?:i|we)\s+saw)\s+(?:is|are)?\s*(?:linked\s+to|related\s+to|saved\s+for|under)\s+(?:the\s+|my\s+|our\s+|current\s+|active\s+)?(?:focus|focus\s+session|session)$",
@@ -487,7 +444,6 @@ def _visual_context_intent(message: str) -> dict[str, Any] | None:
             confidence=0.98,
             reason="Backend visual-focus interpreter matched a read focus-linked visual command.",
         )
-
     clear_patterns = [
         r"^(?:please\s+)?(?:clear|reset|wipe|forget|delete)\s+(?:the\s+|my\s+|all\s+)?(?:visual\s+context|visual\s+memory|visual\s+observations|camera\s+context|camera\s+memory)$",
         r"^(?:please\s+)?(?:clear|reset|wipe|forget|delete)\s+(?:everything\s+)?(?:i|we)\s+(?:saw|looked\s+at|were\s+looking\s+at)$",
@@ -499,7 +455,6 @@ def _visual_context_intent(message: str) -> dict[str, Any] | None:
             confidence=0.98,
             reason="Backend visual-context interpreter matched a clear command.",
         )
-
     delete_last_patterns = [
         r"^(?:please\s+)?(?:delete|remove|forget|erase)\s+(?:the\s+)?(?:last|latest|most\s+recent)\s+(?:visual\s+)?(?:observation|visual\s+note|visual\s+memory|camera\s+observation)$",
         r"^(?:please\s+)?(?:delete|remove|forget|erase)\s+(?:what\s+)?(?:i|we)\s+(?:just\s+)?(?:saw|looked\s+at)$",
@@ -511,7 +466,6 @@ def _visual_context_intent(message: str) -> dict[str, Any] | None:
             confidence=0.98,
             reason="Backend visual-context interpreter matched a delete-last command.",
         )
-
     summarize_patterns = [
         r"^(?:please\s+)?(?:summarize|recap|review)\s+(?:the\s+|my\s+|our\s+)?(?:visual\s+context|visual\s+memory|visual\s+observations|camera\s+context|camera\s+memory)$",
         r"^(?:please\s+)?(?:give\s+me\s+|make\s+me\s+|create\s+)?(?:a\s+)?(?:visual|camera)\s+(?:summary|recap|review)$",
@@ -523,7 +477,6 @@ def _visual_context_intent(message: str) -> dict[str, Any] | None:
             confidence=0.98,
             reason="Backend visual-context interpreter matched a visual summary command.",
         )
-
     history_patterns = [
         r"^(?:please\s+)?(?:show|read|list|display|open)\s+(?:the\s+|my\s+|our\s+)?(?:recent\s+|saved\s+|all\s+)?(?:visual\s+observations|visual\s+history|camera\s+observations|camera\s+history|things\s+(?:i|we)\s+saw)$",
         r"^(?:please\s+)?(?:what\s+(?:have|did)\s+(?:i|we)\s+(?:seen|looked\s+at|saved\s+visually))$",
@@ -536,7 +489,6 @@ def _visual_context_intent(message: str) -> dict[str, Any] | None:
             confidence=0.98,
             reason="Backend visual-context interpreter matched a visual history command.",
         )
-
     last_patterns = [
         r"^(?:please\s+)?(?:what\s+(?:was|is)|show|read|tell\s+me|display)\s+(?:the\s+|my\s+|our\s+)?(?:last|latest|most\s+recent)\s+(?:visual\s+observation|visual\s+note|visual\s+memory|camera\s+observation|camera\s+memory|thing\s+(?:i|we)\s+saw)$",
         r"^(?:please\s+)?(?:what\s+(?:did|do)\s+(?:i|we)\s+(?:last\s+)?(?:see|look\s+at)|what\s+(?:am|are)\s+(?:i|we)\s+looking\s+at|what\s+did\s+you\s+last\s+see|what\s+was\s+the\s+last\s+thing\s+you\s+saw)$",
@@ -549,7 +501,6 @@ def _visual_context_intent(message: str) -> dict[str, Any] | None:
             confidence=0.98,
             reason="Backend visual-context interpreter matched a last-visual-observation command.",
         )
-
     read_patterns = [
         r"^(?:please\s+)?(?:what\s+(?:was|is)|show|read|tell\s+me|display|open)\s+(?:the\s+|my\s+|our\s+)?(?:current\s+)?(?:visual\s+context|visual\s+memory|camera\s+context|camera\s+memory)$",
         r"^(?:visual\s+context|visual\s+memory|camera\s+context)$",
@@ -561,7 +512,6 @@ def _visual_context_intent(message: str) -> dict[str, Any] | None:
             confidence=0.98,
             reason="Backend visual-context interpreter matched a read command.",
         )
-
     observation_patterns = [
         r"^(?:please\s+)?(?:note|remember|save|record|store)\s+(?:visually|as\s+(?:a\s+)?visual\s+(?:note|observation)|in\s+visual\s+context)\s+(?:that\s+)?(.+)$",
         r"^(?:please\s+)?(?:visual\s+(?:note|observation)|visual\s+memory)\s+(?:that\s+)?(.+)$",
@@ -579,7 +529,6 @@ def _visual_context_intent(message: str) -> dict[str, Any] | None:
             reason="Backend visual-context interpreter matched a manual visual observation command.",
             payload={"summary": payload},
         )
-
     return None
 
 
@@ -594,9 +543,7 @@ def _focus_command_intent(message: str) -> dict[str, Any] | None:
     text = _collapse_command_text(message)
     if not text:
         return None
-
     lowered = text.lower()
-
     force_end_patterns = [
         r"^(?:please\s+)?(?:end|finish|stop|close|clear|discard)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session|focus mode)\s+(?:anyway|without\s+(?:saving|a\s+summary|summary|a\s+note|note))$",
         r"^(?:please\s+)?(?:end|finish|stop|close|clear|discard)\s+(?:anyway|without\s+(?:saving|a\s+summary|summary|a\s+note|note))$",
@@ -611,7 +558,6 @@ def _focus_command_intent(message: str) -> dict[str, Any] | None:
             confidence=0.99,
             reason="Backend focus interpreter matched an explicit force-end command.",
         )
-
     focus_to_tasks_patterns = [
         r"^(?:please\s+)?(?:turn|convert|make|create)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session|goal)\s+(?:into|to)\s+(?:tasks|task list|action items|next steps|steps|checklist)$",
         r"^(?:please\s+)?(?:make|create|add|generate)\s+(?:tasks|a task list|action items|next steps|steps|a checklist)\s+(?:for|from|based on)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session|goal)$",
@@ -628,7 +574,6 @@ def _focus_command_intent(message: str) -> dict[str, Any] | None:
             reason="Backend focus interpreter matched a focus-to-tasks command.",
         )
 
-
     end_with_summary_patterns = [
         r"^(?:please\s+)?(?:end|finish|wrap up|close)\s+(?:with|and\s+save|and\s+write)\s+(?:a\s+)?(?:summary|recap|note)$",
         r"^(?:please\s+)?(?:end|finish|wrap up|close)\s+(?:and\s+)?(?:summarize|recap|save\s+(?:a\s+)?summary|save)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session|matter|topic|work|thing)?$",
@@ -644,7 +589,6 @@ def _focus_command_intent(message: str) -> dict[str, Any] | None:
             confidence=0.98,
             reason="Backend focus interpreter matched an end-with-summary command.",
         )
-
     save_summary_patterns = [
         r"^(?:please\s+)?(?:save|store|remember|write)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session)\s+(?:as|to|in)\s+(?:a\s+)?(?:note|notes|memory|summary)$",
         r"^(?:please\s+)?(?:save|store|remember|write)\s+(?:a\s+)?(?:summary|recap)\s+(?:of|for)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session)$",
@@ -658,7 +602,6 @@ def _focus_command_intent(message: str) -> dict[str, Any] | None:
             confidence=0.98,
             reason="Backend focus interpreter matched a save-focus-summary command.",
         )
-
     summarize_patterns = [
         r"^(?:please\s+)?(?:summarize|recap|review)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session|matter|topic|work|thing)$",
         r"^(?:please\s+)?(?:give\s+me\s+|make\s+me\s+|create\s+)?(?:a\s+)?(?:focus|session)\s+(?:summary|recap|review)$",
@@ -672,7 +615,6 @@ def _focus_command_intent(message: str) -> dict[str, Any] | None:
             confidence=0.98,
             reason="Backend focus interpreter matched a focus summary command.",
         )
-
 
     enhanced_focus_recap_patterns: list[tuple[str, str, str]] = [
         (
@@ -707,7 +649,6 @@ def _focus_command_intent(message: str) -> dict[str, Any] | None:
                 routed_frontend_command = f"enhanced focus recap {explicit_window.replace('-', ' ')}"
             else:
                 routed_frontend_command = frontend_command
-
             return _command_response(
                 action="enhanced_focus_recap",
                 frontend_command=routed_frontend_command,
@@ -715,7 +656,6 @@ def _focus_command_intent(message: str) -> dict[str, Any] | None:
                 reason="Backend focus interpreter matched an enhanced focus recap command.",
                 payload={"timeframe": explicit_window},
             )
-
     focus_recap_patterns: list[tuple[str, str, str]] = [
         (
             r"^(?:please\s+)?(?:summarize|recap|review)\s+(?:what\s+)?(?:i|we)\s+(?:worked\s+on|focused\s+on|did|accomplished)\s+today$",
@@ -782,7 +722,6 @@ def _focus_command_intent(message: str) -> dict[str, Any] | None:
                 reason="Backend focus interpreter matched a focus activity recap command.",
                 payload={"timeframe": payload},
             )
-
     focus_history_patterns = [
         r"^(?:please\s+)?(?:show|list|read|display|open)\s+(?:my\s+|our\s+)?(?:recent\s+)?(?:focus\s+)?(?:history|sessions|focus\s+sessions)$",
         r"^(?:please\s+)?(?:show|list|read|display|open)\s+(?:my\s+|our\s+)?recent\s+(?:focuses|focus\s+sessions|sessions)$",
@@ -798,7 +737,6 @@ def _focus_command_intent(message: str) -> dict[str, Any] | None:
             confidence=0.98,
             reason="Backend focus interpreter matched a recent focus history command.",
         )
-
     last_focus_patterns = [
         r"^(?:please\s+)?(?:what\s+was|what\s+were|show|read|tell\s+me\s+about|display)\s+(?:my\s+|our\s+)?(?:last|latest|previous|most\s+recent)\s+(?:focus|focus\s+session|session)$",
         r"^(?:please\s+)?(?:what\s+did\s+(?:i|we)\s+focus\s+on\s+last|what\s+was\s+(?:i|we)\s+focused\s+on\s+last)$",
@@ -812,7 +750,6 @@ def _focus_command_intent(message: str) -> dict[str, Any] | None:
             confidence=0.98,
             reason="Backend focus interpreter matched a last-focus recall command.",
         )
-
     resume_focus_patterns = [
         r"^(?:please\s+)?(?:resume|restart|continue|reopen|restore)\s+(?:my\s+|our\s+|the\s+)?(?:last|latest|previous|most\s+recent)\s+(?:(general|coding|code|development|dev|programming|meeting|planning|research|personal)\s+)?(?:focus|focus\s+session|session)$",
         r"^(?:please\s+)?(?:start|open)\s+(?:my\s+|our\s+|the\s+)?(?:last|latest|previous|most\s+recent)\s+(?:(general|coding|code|development|dev|programming|meeting|planning|research|personal)\s+)?(?:focus|focus\s+session|session)\s+(?:again|back\s+up)$",
@@ -834,7 +771,6 @@ def _focus_command_intent(message: str) -> dict[str, Any] | None:
             reason="Backend focus interpreter matched a resume-focus command.",
             payload=payload,
         )
-
     read_patterns = [
         r"^(?:what(?:'s| is)|what is)\s+(?:the\s+|my\s+|our\s+)?(?:current\s+|active\s+)?(?:focus|focus session|active session)$",
         r"^(?:what am i focused on(?: right now)?|what are we focused on(?: right now)?|what are we focusing on(?: right now)?)$",
@@ -849,7 +785,6 @@ def _focus_command_intent(message: str) -> dict[str, Any] | None:
             confidence=0.98,
             reason="Backend focus interpreter matched a focus readout command.",
         )
-
     mode_only_match = re.search(
         rf"^(?:please\s+)?({MODE_WORDS})\s+(?:focus|focus session|session|focus mode)$",
         text,
@@ -865,7 +800,6 @@ def _focus_command_intent(message: str) -> dict[str, Any] | None:
             reason="Backend focus interpreter matched a mode-only focus command.",
             payload={"title": title, "mode": mode},
         )
-
     end_patterns = [
         rf"^(?:please\s+)?(?:end|stop|clear|close|leave|exit|finish|wrap up)\s+(?:(?:the|my|our|current|active)\s+)*(?:{MODE_WORDS}\s+)?{FOCUS_WORDS}$",
         rf"^(?:please\s+)?(?:end|stop|clear|close|leave|exit|finish|wrap up)\s+(?:(?:the|my|our|current|active|this|that)\s+)*(?:{MODE_WORDS}\s+)?(?:{FOCUS_WORDS}|matter|topic|work|thing)$",
@@ -880,7 +814,6 @@ def _focus_command_intent(message: str) -> dict[str, Any] | None:
             confidence=0.98,
             reason="Backend focus interpreter matched an end-focus command.",
         )
-
     goal_patterns = [
         r"^(?:please\s+)?(?:set|change|update)\s+(?:a\s+|the\s+|my\s+|our\s+)?(?:focus\s+)?goal\s+(?:to|as|on)\s+(.+)$",
         r"^(?:please\s+)?(?:let(?:'s| us)|lets)\s+set\s+(?:a\s+|the\s+|my\s+|our\s+)?(?:focus\s+)?goal\s+(?:to|as|on)\s+(.+)$",
@@ -897,14 +830,14 @@ def _focus_command_intent(message: str) -> dict[str, Any] | None:
             reason="Backend focus interpreter matched a focus goal update.",
             payload={"goal": goal},
         )
-
     update_patterns = [
         r"^(?:please\s+)?(?:set|change|update|make|switch)\s+(?:a\s+|the\s+|my\s+|our\s+|current\s+|active\s+)*(?:focus|focus session|active session)\s+(?:to|on|about|around|as)\s+(.+)$",
         r"^(?:please\s+)?(?:focus|refocus)\s+(?:me\s+|us\s+)?(?:on|around|about)\s+(.+)$",
         r"^(?:please\s+)?(?:let(?:'s| us)|lets)\s+focus\s+(?:on|around|about)\s+(.+)$",
         r"^(?:please\s+)?(?:i want to|i need to|we should|we need to|we want to)\s+focus\s+(?:on|around|about)\s+(.+)$",
         r"^(?:please\s+)?(?:my|our|the|current)\s+focus\s+(?:is|should be)\s+(.+)$",
-        r"^(?:please\s+)?(?:rename|retitle)\s+(?:the\s+)?(?:focus|focus session|active session)\s+(?:to|as|called|named)\s+(.+)$",
+        r"^(?:please\s+)?(?:rename|retitle)\s+(?:(?:the|my|our|current|active)\s+)?(?:focus|focus session|active session)\s+(?:to|as|called|named)\s+(.+)$",
+        r"^(?:please\s+)?(?:set|change|update)\s+(?:(?:the|my|our|current|active)\s+)?(?:focus|session)\s+title\s+(?:to|as)\s+(.+)$",
     ]
     match = _first_match(update_patterns, text)
     if match and match.group(1).strip():
@@ -918,9 +851,8 @@ def _focus_command_intent(message: str) -> dict[str, Any] | None:
             reason="Backend focus interpreter matched a focus update command.",
             payload={"title": title, "mode": _mode_from_text(title)},
         )
-
     mode_update_match = re.search(
-        r"^(?:please\s+)?(?:set|change|update)\s+(?:the\s+)?(?:focus|session)\s+mode\s+(?:to|as)\s+(.+)$",
+        r"^(?:please\s+)?(?:set|change|update)\s+(?:(?:the|my|our|current|active)\s+)?(?:focus|session)\s+mode\s+(?:to|as)\s+(.+)$",
         text,
         flags=re.IGNORECASE,
     )
@@ -933,7 +865,6 @@ def _focus_command_intent(message: str) -> dict[str, Any] | None:
             reason="Backend focus interpreter matched a focus mode update.",
             payload={"mode": mode_text},
         )
-
     start_patterns = [
         rf"^(?:please\s+)?(?:start|begin|create|open)\s+(?:a\s+|the\s+)?(?:{MODE_WORDS}\s+)?(?:focus session|focus|session|focus mode)(?:\s+(?:for|on|about|around|called|named|to|with(?:\s+the)?\s+goal\s+(?:of|to))\s+(.+))?$",
         r"^(?:please\s+)?(?:start|begin|create|open)\s+(?:a\s+|the\s+)?(?:focus session|focus|session|focus mode)\s+(?:in|as)\s+.+?\s+mode(?:\s+(?:for|on|about|around|to|with(?:\s+the)?\s+goal\s+(?:of|to))\s+(.+))?$",
@@ -950,7 +881,6 @@ def _focus_command_intent(message: str) -> dict[str, Any] | None:
             confidence=0.96,
             reason="Backend focus interpreter matched a start-focus command.",
         )
-
     return None
 
 
@@ -963,7 +893,6 @@ async def command_interpret(req: CommandInterpretRequest):
     ui_shortcut_intent = _ui_shortcut_intent(message)
     if ui_shortcut_intent is not None:
         return CommandInterpretResponse(**ui_shortcut_intent)
-
     task_completion_intent = _task_completion_intent(message)
     if task_completion_intent is not None:
         return CommandInterpretResponse(**task_completion_intent)
@@ -971,7 +900,6 @@ async def command_interpret(req: CommandInterpretRequest):
     qmeet_guide_intent = _qmeet_guide_intent(message, req.clientContext)
     if qmeet_guide_intent is not None:
         return CommandInterpretResponse(**qmeet_guide_intent)
-
     ad_hoc_prep_intent = _ad_hoc_preparation_focus_intent(message)
     if ad_hoc_prep_intent is not None:
         return CommandInterpretResponse(**ad_hoc_prep_intent)
@@ -983,7 +911,6 @@ async def command_interpret(req: CommandInterpretRequest):
     meeting_wrapup_intent = _meeting_wrapup_intent(message)
     if meeting_wrapup_intent is not None:
         return CommandInterpretResponse(**meeting_wrapup_intent)
-
     visual_intent = _visual_context_intent(message)
     if visual_intent is not None:
         return CommandInterpretResponse(**visual_intent)
@@ -991,7 +918,6 @@ async def command_interpret(req: CommandInterpretRequest):
     focus_intent = _focus_command_intent(message)
     if focus_intent is not None:
         return CommandInterpretResponse(**focus_intent)
-
     orchestrator_intent = await interpret_qmeet_orchestrator(
         message,
         ui_state=req.uiState,
@@ -999,7 +925,6 @@ async def command_interpret(req: CommandInterpretRequest):
     )
     if orchestrator_intent is not None:
         return CommandInterpretResponse(**orchestrator_intent)
-
     try:
         intent = await interpret_command_intent(message)
         return CommandInterpretResponse(**intent)
