@@ -117,6 +117,30 @@ class NativeFocusEndRequest(BaseModel):
         return cleaned
 
 
+class NativeFocusResumeRequest(BaseModel):
+    """Resume the latest canonical historical Focus, optionally by mode."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal[
+        "general",
+        "coding",
+        "meeting",
+        "planning",
+        "research",
+        "personal",
+    ] | None = None
+    sourceTurnId: str = Field(min_length=1, max_length=120)
+
+    @field_validator("sourceTurnId")
+    @classmethod
+    def clean_source_turn_id(cls, value: str) -> str:
+        cleaned = " ".join(value.split()).strip()
+        if not cleaned:
+            raise ValueError("sourceTurnId cannot be blank")
+        return cleaned
+
+
 class NativeFocusVerification(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -148,6 +172,19 @@ class NativeFocusEndVerification(BaseModel):
     terminalStatusMatches: bool = False
     noFocusOpen: bool = False
     terminalEventPersisted: bool = False
+    openFocusIds: list[str] = Field(default_factory=list)
+    details: list[str] = Field(default_factory=list)
+
+
+class NativeFocusResumeVerification(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    historicalFocusFound: bool = False
+    historicalFocusPreserved: bool = False
+    resumedFocusMatches: bool = False
+    exactlyOneFocusOpen: bool = False
+    resumeEventPersisted: bool = False
+    previousFocusesClosed: bool = False
     openFocusIds: list[str] = Field(default_factory=list)
     details: list[str] = Field(default_factory=list)
 
@@ -196,6 +233,22 @@ class NativeFocusEndResult(BaseModel):
     closedFocus: FocusState
     sourceTurnId: str
     verification: NativeFocusEndVerification
+    telemetryRecorded: bool = False
+    message: str
+
+
+class NativeFocusResumeResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ok: bool
+    operation: Literal["resume_focus"] = "resume_focus"
+    outcome: Literal["resumed", "replaced", "reused"]
+    verified: bool
+    activeFocus: FocusState
+    resumedFromFocus: FocusState
+    closedFocusIds: list[str] = Field(default_factory=list)
+    sourceTurnId: str
+    verification: NativeFocusResumeVerification
     telemetryRecorded: bool = False
     message: str
 
@@ -282,6 +335,24 @@ def _empty_health() -> dict[str, object]:
             "lastClosedFocusId": "",
             "lastUpdatedAt": "",
         },
+        "resumeFocus": {
+            "attemptCount": 0,
+            "resumedCount": 0,
+            "replacedCount": 0,
+            "reusedCount": 0,
+            "verifiedCount": 0,
+            "failedCount": 0,
+            "noHistoryCount": 0,
+            "verificationFailedCount": 0,
+            "writeFailedCount": 0,
+            "lastOutcome": "",
+            "lastMode": "",
+            "lastFailureCode": "",
+            "lastSourceTurnId": "",
+            "lastResumedFromFocusId": "",
+            "lastActiveFocusId": "",
+            "lastUpdatedAt": "",
+        },
     }
 
 
@@ -296,7 +367,7 @@ def _read_health_unlocked() -> dict[str, object]:
     if not isinstance(payload, dict):
         return _empty_health()
     baseline = _empty_health()
-    for section_name in ("startFocus", "updateFocus", "endFocus"):
+    for section_name in ("startFocus", "updateFocus", "endFocus", "resumeFocus"):
         baseline_section = baseline.get(section_name)
         incoming_section = payload.get(section_name)
         if isinstance(baseline_section, dict) and isinstance(incoming_section, dict):
@@ -484,6 +555,61 @@ def _record_end_health(
             summary["lastFailureCode"] = failure_code
             summary["lastSourceTurnId"] = source_turn_id
             summary["lastClosedFocusId"] = closed_focus_id
+            summary["lastUpdatedAt"] = _now_iso()
+            _atomic_write_health_unlocked(document)
+        return True
+    except Exception:
+        return False
+
+
+def _record_resume_health(
+    *,
+    outcome: str,
+    verified: bool,
+    source_turn_id: str,
+    mode: str = "",
+    resumed_from_focus_id: str = "",
+    active_focus_id: str = "",
+    failure_code: str = "",
+) -> bool:
+    try:
+        with _HEALTH_LOCK:
+            document = _read_health_unlocked()
+            summary = document.get("resumeFocus")
+            if not isinstance(summary, dict):
+                document = _empty_health()
+                summary = document["resumeFocus"]
+            assert isinstance(summary, dict)
+
+            summary["attemptCount"] = int(summary.get("attemptCount", 0)) + 1
+            count_key = {
+                "resumed": "resumedCount",
+                "replaced": "replacedCount",
+                "reused": "reusedCount",
+            }.get(outcome)
+            if count_key:
+                summary[count_key] = int(summary.get(count_key, 0)) + 1
+            if verified:
+                summary["verifiedCount"] = int(summary.get("verifiedCount", 0)) + 1
+            else:
+                summary["failedCount"] = int(summary.get("failedCount", 0)) + 1
+
+            failure_count_key = {
+                "no_focus_history": "noHistoryCount",
+                "verification_failed": "verificationFailedCount",
+                "write_failed": "writeFailedCount",
+            }.get(failure_code)
+            if failure_count_key:
+                summary[failure_count_key] = int(
+                    summary.get(failure_count_key, 0)
+                ) + 1
+
+            summary["lastOutcome"] = outcome
+            summary["lastMode"] = mode
+            summary["lastFailureCode"] = failure_code
+            summary["lastSourceTurnId"] = source_turn_id
+            summary["lastResumedFromFocusId"] = resumed_from_focus_id
+            summary["lastActiveFocusId"] = active_focus_id
             summary["lastUpdatedAt"] = _now_iso()
             _atomic_write_health_unlocked(document)
         return True
@@ -1661,3 +1787,545 @@ def end_focus_verified(request: NativeFocusEndRequest) -> NativeFocusEndResult:
         telemetryRecorded=telemetry_recorded,
         message=_end_success_message(disposition, closed_state.title),
     )
+
+_RESUMABLE_TERMINAL_TYPES = {
+    FocusEventType.FOCUS_ENDED,
+    FocusEventType.FOCUS_COMPLETED,
+}
+
+_DURABLE_STRING_FIELDS = (
+    "deliverable",
+    "subject",
+)
+_DURABLE_LIST_FIELDS = (
+    "stakeholders",
+    "requirements",
+    "constraints",
+    "preferences",
+    "decisions",
+    "knownFacts",
+    "milestones",
+    "completedMilestones",
+)
+
+
+def _focus_events(events: list[FocusEvent], focus_id: str) -> list[FocusEvent]:
+    return [event for event in events if event.focusId.strip() == focus_id]
+
+
+def _historical_focus_snapshot(
+    events: list[FocusEvent],
+    focus_id: str,
+) -> FocusState:
+    focus_events = _focus_events(events, focus_id)
+    snapshot = focus_store.reduce_events(focus_events)
+
+    # Terminal Focus events intentionally clear the active next action in the
+    # normal canonical projection. Resuming needs the last durable next action
+    # from immediately before that terminal event, while preserving the
+    # historical Focus's inactive/complete status.
+    if (
+        snapshot.status not in {FocusStatus.INACTIVE, FocusStatus.COMPLETE}
+        or snapshot.nextAction.strip()
+    ):
+        return snapshot
+
+    terminal_index = next(
+        (
+            index
+            for index in range(len(focus_events) - 1, -1, -1)
+            if focus_events[index].type in _RESUMABLE_TERMINAL_TYPES
+        ),
+        -1,
+    )
+    if terminal_index <= 0:
+        return snapshot
+
+    preterminal_snapshot = focus_store.reduce_events(
+        focus_events[:terminal_index]
+    )
+    preserved_next_action = preterminal_snapshot.nextAction.strip()
+    if not preserved_next_action:
+        return snapshot
+
+    return snapshot.model_copy(
+        update={"nextAction": preserved_next_action}
+    )
+
+
+def _mode_from_tags(tags: list[str]) -> str:
+    for raw_tag in reversed(tags):
+        normalized = str(raw_tag).strip().casefold()
+        if normalized.startswith("mode:"):
+            return normalized.removeprefix("mode:")
+    return "general"
+
+
+def _latest_resumable_focus(
+    events: list[FocusEvent],
+    *,
+    mode: str = "",
+) -> FocusState | None:
+    seen: set[str] = set()
+    normalized_mode = mode.strip().casefold()
+    for event in reversed(events):
+        if event.type not in _RESUMABLE_TERMINAL_TYPES:
+            continue
+        focus_id = event.focusId.strip()
+        if not focus_id or focus_id in seen:
+            continue
+        seen.add(focus_id)
+        snapshot = _historical_focus_snapshot(events, focus_id)
+        if not snapshot.focusId or not snapshot.title.strip():
+            continue
+        if snapshot.status not in {FocusStatus.INACTIVE, FocusStatus.COMPLETE}:
+            continue
+        if normalized_mode and _mode_from_tags(snapshot.tags) != normalized_mode:
+            continue
+        return snapshot
+    return None
+
+
+def _matching_turn_resume_start(
+    events: list[FocusEvent],
+    source_turn_id: str,
+) -> FocusEvent | None:
+    for event in reversed(events):
+        if (
+            event.type == FocusEventType.FOCUS_STARTED
+            and event.sourceTurnId == source_turn_id
+            and event.source == _NATIVE_LIFECYCLE_SOURCE
+            and str(event.payload.get("nativeOperation", "")).strip()
+            == "resume_focus"
+        ):
+            return event
+    return None
+
+
+def _resume_restoration_events(
+    *,
+    source_state: FocusState,
+    new_focus_id: str,
+    source_turn_id: str,
+) -> list[FocusEvent]:
+    events: list[FocusEvent] = []
+    for field_name in _DURABLE_STRING_FIELDS:
+        value = str(getattr(source_state, field_name, "")).strip()
+        if not value:
+            continue
+        events.append(
+            focus_store._new_event(
+                FocusEventType.FIELD_SET,
+                focus_id=new_focus_id,
+                payload={"field": field_name, "value": value},
+                source_turn_id=source_turn_id,
+                source=_NATIVE_LIFECYCLE_SOURCE,
+            )
+        )
+    for field_name in _DURABLE_LIST_FIELDS:
+        for value in list(getattr(source_state, field_name, []) or []):
+            cleaned = " ".join(str(value).split()).strip()
+            if not cleaned:
+                continue
+            events.append(
+                focus_store._new_event(
+                    FocusEventType.LIST_ITEM_ADDED,
+                    focus_id=new_focus_id,
+                    payload={"field": field_name, "value": cleaned},
+                    source_turn_id=source_turn_id,
+                    source=_NATIVE_LIFECYCLE_SOURCE,
+                )
+            )
+    if source_state.nextAction.strip():
+        events.append(
+            focus_store._new_event(
+                FocusEventType.NEXT_ACTION_SET,
+                focus_id=new_focus_id,
+                payload={"value": source_state.nextAction.strip()},
+                source_turn_id=source_turn_id,
+                source=_NATIVE_LIFECYCLE_SOURCE,
+            )
+        )
+    return events
+
+
+def _resume_state_content_matches(
+    candidate: FocusState,
+    source: FocusState,
+) -> bool:
+    if candidate.title != source.title or candidate.objective != source.objective:
+        return False
+    if list(candidate.tags) != list(source.tags):
+        return False
+    for field_name in _DURABLE_STRING_FIELDS:
+        if str(getattr(candidate, field_name, "")) != str(
+            getattr(source, field_name, "")
+        ):
+            return False
+    for field_name in _DURABLE_LIST_FIELDS:
+        if list(getattr(candidate, field_name, []) or []) != list(
+            getattr(source, field_name, []) or []
+        ):
+            return False
+    return candidate.nextAction == source.nextAction
+
+
+def _verify_resume_postcondition(
+    *,
+    events: list[FocusEvent],
+    expected_focus_id: str,
+    resumed_from: FocusState,
+    resume_event_id: str,
+    restoration_event_ids: list[str],
+    closed_focus_ids: list[str],
+    close_event_ids: list[str],
+) -> NativeFocusResumeVerification:
+    active_state = focus_store.reduce_events(events)
+    open_focus_ids = _open_focus_ids(events)
+    event_ids = {event.id for event in events}
+    start_event = next(
+        (event for event in events if event.id == resume_event_id),
+        None,
+    )
+    historical_state = _historical_focus_snapshot(events, resumed_from.focusId)
+
+    historical_found = bool(resumed_from.focusId and resumed_from.title.strip())
+    historical_preserved = (
+        historical_state.focusId == resumed_from.focusId
+        and historical_state.status == resumed_from.status
+        and _resume_state_content_matches(historical_state, resumed_from)
+    )
+    resumed_matches = (
+        active_state.focusId == expected_focus_id
+        and active_state.status not in {FocusStatus.INACTIVE, FocusStatus.COMPLETE}
+        and _resume_state_content_matches(active_state, resumed_from)
+    )
+    exactly_one_open = open_focus_ids == [expected_focus_id]
+    resume_persisted = (
+        resume_event_id in event_ids
+        and all(event_id in event_ids for event_id in restoration_event_ids)
+        and start_event is not None
+        and str(start_event.payload.get("resumedFromFocusId", "")).strip()
+        == resumed_from.focusId
+    )
+    previous_closed = all(event_id in event_ids for event_id in close_event_ids)
+    previous_closed = previous_closed and all(
+        focus_id not in open_focus_ids for focus_id in closed_focus_ids
+    )
+
+    details: list[str] = []
+    if not historical_found:
+        details.append("No canonical historical Focus was selected for resumption.")
+    if not historical_preserved:
+        details.append("The historical Focus changed during the resume transition.")
+    if not resumed_matches:
+        details.append("The new canonical Focus does not match the historical Focus.")
+    if not exactly_one_open:
+        details.append("Canonical lifecycle history does not contain exactly one open Focus.")
+    if not resume_persisted:
+        details.append("The canonical resume events were not persisted.")
+    if not previous_closed:
+        details.append("One or more previously open Focuses were not closed.")
+
+    return NativeFocusResumeVerification(
+        historicalFocusFound=historical_found,
+        historicalFocusPreserved=historical_preserved,
+        resumedFocusMatches=resumed_matches,
+        exactlyOneFocusOpen=exactly_one_open,
+        resumeEventPersisted=resume_persisted,
+        previousFocusesClosed=previous_closed,
+        openFocusIds=open_focus_ids,
+        details=details,
+    )
+
+
+def _resume_verification_passed(
+    verification: NativeFocusResumeVerification,
+) -> bool:
+    return (
+        verification.historicalFocusFound
+        and verification.historicalFocusPreserved
+        and verification.resumedFocusMatches
+        and verification.exactlyOneFocusOpen
+        and verification.resumeEventPersisted
+        and verification.previousFocusesClosed
+    )
+
+
+def _resume_success_message(outcome: str, title: str) -> str:
+    if outcome == "replaced":
+        return f"Resumed Focus: {title}. The previous active Focus was moved to history."
+    if outcome == "reused":
+        return f"Focus is already resumed: {title}."
+    return f"Resumed Focus: {title}."
+
+
+def resume_focus_verified(
+    request: NativeFocusResumeRequest,
+) -> NativeFocusResumeResult:
+    source_turn_id = request.sourceTurnId.strip()
+    requested_mode = request.mode or ""
+
+    try:
+        with focus_store._STORE_LOCK:
+            document = focus_store._read_log_unlocked()
+            existing_events = list(document.events)
+            existing_resume = _matching_turn_resume_start(
+                existing_events,
+                source_turn_id,
+            )
+            if existing_resume is not None:
+                resumed_from_focus_id = str(
+                    existing_resume.payload.get("resumedFromFocusId", "")
+                ).strip()
+                resumed_from = _historical_focus_snapshot(
+                    existing_events,
+                    resumed_from_focus_id,
+                )
+                closed_focus_ids = [
+                    event.focusId
+                    for event in existing_events
+                    if event.sourceTurnId == source_turn_id
+                    and event.type == FocusEventType.FOCUS_ENDED
+                    and str(event.payload.get("newFocusId", "")).strip()
+                    == existing_resume.focusId
+                ]
+                restoration_ids = [
+                    event.id
+                    for event in existing_events
+                    if event.sourceTurnId == source_turn_id
+                    and event.focusId == existing_resume.focusId
+                    and event.id != existing_resume.id
+                    and event.type
+                    in {
+                        FocusEventType.FIELD_SET,
+                        FocusEventType.LIST_ITEM_ADDED,
+                        FocusEventType.NEXT_ACTION_SET,
+                    }
+                ]
+                close_event_ids = [
+                    event.id
+                    for event in existing_events
+                    if event.sourceTurnId == source_turn_id
+                    and event.type == FocusEventType.FOCUS_ENDED
+                    and event.focusId in closed_focus_ids
+                ]
+                verification = _verify_resume_postcondition(
+                    events=existing_events,
+                    expected_focus_id=existing_resume.focusId,
+                    resumed_from=resumed_from,
+                    resume_event_id=existing_resume.id,
+                    restoration_event_ids=restoration_ids,
+                    closed_focus_ids=closed_focus_ids,
+                    close_event_ids=close_event_ids,
+                )
+                active_state = focus_store.reduce_events(existing_events)
+                if (
+                    not _resume_verification_passed(verification)
+                    or (requested_mode and _mode_from_tags(resumed_from.tags) != requested_mode)
+                ):
+                    _record_resume_health(
+                        outcome="failed",
+                        verified=False,
+                        source_turn_id=source_turn_id,
+                        mode=requested_mode,
+                        resumed_from_focus_id=resumed_from_focus_id,
+                        active_focus_id=active_state.focusId,
+                        failure_code="source_turn_conflict",
+                    )
+                    raise NativeFocusLifecycleError(
+                        "source_turn_conflict",
+                        "This Focus resume turn already has a different or superseded canonical result.",
+                    )
+                telemetry_recorded = _record_resume_health(
+                    outcome="reused",
+                    verified=True,
+                    source_turn_id=source_turn_id,
+                    mode=requested_mode,
+                    resumed_from_focus_id=resumed_from_focus_id,
+                    active_focus_id=active_state.focusId,
+                )
+                return NativeFocusResumeResult(
+                    ok=True,
+                    outcome="reused",
+                    verified=True,
+                    activeFocus=active_state,
+                    resumedFromFocus=resumed_from,
+                    closedFocusIds=closed_focus_ids,
+                    sourceTurnId=source_turn_id,
+                    verification=verification,
+                    telemetryRecorded=telemetry_recorded,
+                    message=_resume_success_message("reused", active_state.title),
+                )
+
+            resumed_from = _latest_resumable_focus(
+                existing_events,
+                mode=requested_mode,
+            )
+            if resumed_from is None:
+                _record_resume_health(
+                    outcome="failed",
+                    verified=False,
+                    source_turn_id=source_turn_id,
+                    mode=requested_mode,
+                    failure_code="no_focus_history",
+                )
+                qualifier = f" {requested_mode}" if requested_mode else ""
+                raise NativeFocusLifecycleError(
+                    "no_focus_history",
+                    f"No canonical historical{qualifier} Focus is available to resume.",
+                    status_code=404,
+                )
+
+            open_focus_ids = _open_focus_ids(existing_events)
+            outcome: Literal["resumed", "replaced", "reused"] = (
+                "replaced" if open_focus_ids else "resumed"
+            )
+            new_focus_id = focus_store._new_focus_id()
+            close_events = [
+                focus_store._new_event(
+                    FocusEventType.FOCUS_ENDED,
+                    focus_id=focus_id,
+                    payload={
+                        "reason": "superseded_by_resumed_focus",
+                        "newFocusId": new_focus_id,
+                        "resumedFromFocusId": resumed_from.focusId,
+                        "nativeLifecycle": True,
+                    },
+                    source_turn_id=source_turn_id,
+                    source=_NATIVE_LIFECYCLE_SOURCE,
+                )
+                for focus_id in open_focus_ids
+            ]
+            resume_event = focus_store._new_event(
+                FocusEventType.FOCUS_STARTED,
+                focus_id=new_focus_id,
+                payload={
+                    "title": resumed_from.title,
+                    "objective": resumed_from.objective,
+                    "tags": list(resumed_from.tags),
+                    "resumedFromFocusId": resumed_from.focusId,
+                    "resumedFromStatus": resumed_from.status.value,
+                    "nativeLifecycle": True,
+                    "nativeOperation": "resume_focus",
+                    "nativeOutcome": outcome,
+                },
+                source_turn_id=source_turn_id,
+                source=_NATIVE_LIFECYCLE_SOURCE,
+            )
+            restoration_events = _resume_restoration_events(
+                source_state=resumed_from,
+                new_focus_id=new_focus_id,
+                source_turn_id=source_turn_id,
+            )
+            candidate_events = [
+                *existing_events,
+                *close_events,
+                resume_event,
+                *restoration_events,
+            ]
+            verification = _verify_resume_postcondition(
+                events=candidate_events,
+                expected_focus_id=new_focus_id,
+                resumed_from=resumed_from,
+                resume_event_id=resume_event.id,
+                restoration_event_ids=[event.id for event in restoration_events],
+                closed_focus_ids=open_focus_ids,
+                close_event_ids=[event.id for event in close_events],
+            )
+            if not _resume_verification_passed(verification):
+                _record_resume_health(
+                    outcome="failed",
+                    verified=False,
+                    source_turn_id=source_turn_id,
+                    mode=requested_mode,
+                    resumed_from_focus_id=resumed_from.focusId,
+                    active_focus_id=new_focus_id,
+                    failure_code="verification_failed",
+                )
+                raise NativeFocusLifecycleError(
+                    "verification_failed",
+                    "The proposed Focus resume did not satisfy canonical postconditions.",
+                )
+
+            document.events.extend([
+                *close_events,
+                resume_event,
+                *restoration_events,
+            ])
+            focus_store._atomic_write_unlocked(document)
+            persisted_events = list(focus_store._read_log_unlocked().events)
+            persisted_verification = _verify_resume_postcondition(
+                events=persisted_events,
+                expected_focus_id=new_focus_id,
+                resumed_from=resumed_from,
+                resume_event_id=resume_event.id,
+                restoration_event_ids=[event.id for event in restoration_events],
+                closed_focus_ids=open_focus_ids,
+                close_event_ids=[event.id for event in close_events],
+            )
+            if not _resume_verification_passed(persisted_verification):
+                _record_resume_health(
+                    outcome="failed",
+                    verified=False,
+                    source_turn_id=source_turn_id,
+                    mode=requested_mode,
+                    resumed_from_focus_id=resumed_from.focusId,
+                    active_focus_id=new_focus_id,
+                    failure_code="verification_failed",
+                )
+                raise NativeFocusLifecycleError(
+                    "verification_failed",
+                    "The Focus resume write completed, but canonical state could not verify it.",
+                )
+            active_state = focus_store.reduce_events(persisted_events)
+    except NativeFocusLifecycleError:
+        raise
+    except focus_store.FocusStoreError as exc:
+        _record_resume_health(
+            outcome="failed",
+            verified=False,
+            source_turn_id=source_turn_id,
+            mode=requested_mode,
+            failure_code="write_failed",
+        )
+        raise NativeFocusLifecycleError(
+            "write_failed",
+            "The canonical Focus store could not persist the resume transition.",
+            status_code=503,
+        ) from exc
+    except Exception as exc:
+        _record_resume_health(
+            outcome="failed",
+            verified=False,
+            source_turn_id=source_turn_id,
+            mode=requested_mode,
+            failure_code="write_failed",
+        )
+        raise NativeFocusLifecycleError(
+            "write_failed",
+            "The canonical Focus resume transition could not be completed.",
+            status_code=503,
+        ) from exc
+
+    telemetry_recorded = _record_resume_health(
+        outcome=outcome,
+        verified=True,
+        source_turn_id=source_turn_id,
+        mode=requested_mode,
+        resumed_from_focus_id=resumed_from.focusId,
+        active_focus_id=active_state.focusId,
+    )
+    return NativeFocusResumeResult(
+        ok=True,
+        outcome=outcome,
+        verified=True,
+        activeFocus=active_state,
+        resumedFromFocus=resumed_from,
+        closedFocusIds=open_focus_ids,
+        sourceTurnId=source_turn_id,
+        verification=persisted_verification,
+        telemetryRecorded=telemetry_recorded,
+        message=_resume_success_message(outcome, active_state.title),
+    )
+

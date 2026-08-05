@@ -6,12 +6,15 @@ from app.focus.lifecycle import (
     NativeFocusEndRequest,
     NativeFocusEndResult,
     NativeFocusLifecycleError,
+    NativeFocusResumeRequest,
+    NativeFocusResumeResult,
     NativeFocusStartRequest,
     NativeFocusStartResult,
     NativeFocusUpdateRequest,
     NativeFocusUpdateResult,
     end_focus_verified,
     get_native_focus_lifecycle_health,
+    resume_focus_verified,
     start_focus_verified,
     update_focus_verified,
 )
@@ -108,6 +111,28 @@ async def end_native_focus(
     return result
 
 
+@router.post("/resume", response_model=NativeFocusResumeResult)
+async def resume_native_focus(
+    request: NativeFocusResumeRequest,
+) -> NativeFocusResumeResult:
+    try:
+        result = resume_focus_verified(request)
+    except NativeFocusLifecycleError as exc:
+        _raise_lifecycle_error(exc)
+
+    if not result.verified:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "verification_failed",
+                "message": "Canonical Focus state did not verify the resume transition.",
+                "verified": False,
+                "successClaimAllowed": False,
+            },
+        )
+    return result
+
+
 @router.post(
     "/semantic-update/interpret",
     response_model=SemanticFocusUpdatePreflightResult,
@@ -139,6 +164,7 @@ async def native_focus_lifecycle_health() -> dict[str, object]:
             "update_focus",
             "end_focus",
             "complete_focus",
+            "resume_focus",
             "semantic_update_interpret",
             "semantic_lifecycle_interpret",
         ],

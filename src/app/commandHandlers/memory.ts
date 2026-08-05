@@ -9,11 +9,13 @@ import { consumeNativeReadSurface } from '../lib/nativeReadSurfaceBridge';
 import {
   applyVerifiedFocusProjection,
   describeNativeFocusEndFailure,
+  describeNativeFocusResumeFailure,
   describeNativeFocusStartFailure,
   describeNativeFocusUpdateFailure,
   endNativeFocusVerified,
   projectVerifiedFocusToActiveSession,
   readVerifiedFocusProjection,
+  resumeNativeFocusVerified,
   startNativeFocusVerified,
   updateNativeFocusVerified,
 } from '../lib/nativeFocusLifecycle';
@@ -175,6 +177,37 @@ export async function handleMemoryCommand(
       return {
         handled: true,
         confirmationContent: describeNativeFocusUpdateFailure(error),
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+  }
+
+  if (commandMatch.command === 'resume-last-focus-session') {
+    const requestedMode = commandMatch.focusSession?.mode;
+
+    try {
+      const result = await resumeNativeFocusVerified({
+        ...(requestedMode ? { mode: requestedMode } : {}),
+      });
+      const activeSession = projectVerifiedFocusToActiveSession(
+        result,
+        requestedMode,
+      );
+
+      applyVerifiedFocusProjection(activeSession);
+      deps.setActivePanel('memory');
+
+      return {
+        handled: true,
+        confirmationContent: result.message,
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    } catch (error) {
+      console.error('Verified native Focus resume failed:', error);
+      deps.setActivePanel('memory');
+      return {
+        handled: true,
+        confirmationContent: describeNativeFocusResumeFailure(error),
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }
