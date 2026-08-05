@@ -8,12 +8,87 @@ import {
 import { consumeNativeReadSurface } from '../lib/nativeReadSurfaceBridge';
 import {
   applyVerifiedFocusProjection,
+  describeNativeFocusEndFailure,
   describeNativeFocusStartFailure,
   describeNativeFocusUpdateFailure,
+  endNativeFocusVerified,
   projectVerifiedFocusToActiveSession,
+  readVerifiedFocusProjection,
   startNativeFocusVerified,
   updateNativeFocusVerified,
 } from '../lib/nativeFocusLifecycle';
+
+type NativeFocusEndCommandEnvelope = {
+  sourceTurnId?: unknown;
+  disposition?: unknown;
+};
+
+function parseNativeFocusEndCommand(payload: string | undefined): {
+  sourceTurnId?: string;
+  disposition: 'ended' | 'completed';
+} {
+  if (!payload?.trim()) return { disposition: 'ended' };
+  try {
+    const parsed = JSON.parse(payload) as NativeFocusEndCommandEnvelope;
+    const sourceTurnId =
+      typeof parsed.sourceTurnId === 'string'
+        ? parsed.sourceTurnId.trim()
+        : '';
+    const disposition =
+      parsed.disposition === 'completed' ? 'completed' : 'ended';
+    return {
+      disposition,
+      ...(sourceTurnId ? { sourceTurnId } : {}),
+    };
+  } catch {
+    return { disposition: 'ended' };
+  }
+}
+
+function hasSavedFocusSummary(
+  activeSession: NonNullable<ReturnType<typeof readVerifiedFocusProjection>>,
+): boolean {
+  return (
+    activeSession.pinnedNoteIds.length > 0 ||
+    Boolean(activeSession.summary?.trim())
+  );
+}
+
+function shouldGuardNativeFocusEnd(
+  activeSession: NonNullable<ReturnType<typeof readVerifiedFocusProjection>>,
+): boolean {
+  if (hasSavedFocusSummary(activeSession)) return false;
+  return (
+    Boolean(activeSession.goal.trim()) ||
+    activeSession.linkedTaskIds.length > 0 ||
+    activeSession.title.trim().toLowerCase() !== 'focus session'
+  );
+}
+
+function describeNativeFocusEndGuard(
+  activeSession: NonNullable<ReturnType<typeof readVerifiedFocusProjection>>,
+  disposition: 'ended' | 'completed',
+): string {
+  const linkedTaskIds = new Set(activeSession.linkedTaskIds);
+  const linkedTasks = readStoredMemoryTasks().filter((task) =>
+    linkedTaskIds.has(task.id),
+  );
+  const openTaskCount = linkedTasks.filter((task) => !task.completedAt).length;
+  const completedTaskCount = linkedTasks.length - openTaskCount;
+  const goalText = activeSession.goal
+    ? ` Goal: ${activeSession.goal}.`
+    : '';
+  const taskText = linkedTasks.length
+    ? ` It has ${linkedTasks.length} linked task${
+        linkedTasks.length === 1 ? '' : 's'
+      } (${openTaskCount} open, ${completedTaskCount} done).`
+    : '';
+  const terminalInstruction =
+    disposition === 'completed'
+      ? 'say "complete Focus anyway" to complete it without saving'
+      : 'say "end Focus anyway" to end it without saving';
+  return `You have an active Focus with no saved summary note: ${activeSession.title}.${goalText}${taskText} Save the Focus summary first, ${terminalInstruction}, or say "cancel" to keep it running.`;
+}
 
 export async function handleMemoryCommand(
   commandMatch: Parameters<typeof handleMemoryCommandCore>[0],
@@ -100,6 +175,64 @@ export async function handleMemoryCommand(
       return {
         handled: true,
         confirmationContent: describeNativeFocusUpdateFailure(error),
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+  }
+
+  if (commandMatch.command === 'end-focus-with-summary') {
+    deps.setActivePanel('memory');
+    return {
+      handled: true,
+      confirmationContent:
+        'I kept the Focus open because saving a summary and ending it still require separate verified receipts. Save the Focus summary first, then end the Focus, or say "end Focus anyway".',
+      shouldSpeakConfirmation: deps.voiceOutputEnabled,
+    };
+  }
+
+  if (commandMatch.command === 'end-focus-session') {
+    const activeSession = readVerifiedFocusProjection();
+    deps.setActivePanel('memory');
+
+    if (!activeSession) {
+      return {
+        handled: true,
+        confirmationContent: 'No active Focus is currently running.',
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+
+    const endCommand = parseNativeFocusEndCommand(commandMatch.payload);
+    const forceEnd = Boolean(commandMatch.focusSession?.forceEnd);
+    if (!forceEnd && shouldGuardNativeFocusEnd(activeSession)) {
+      return {
+        handled: true,
+        confirmationContent: describeNativeFocusEndGuard(
+          activeSession,
+          endCommand.disposition,
+        ),
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+    try {
+      const result = await endNativeFocusVerified({
+        disposition: endCommand.disposition,
+        ...(endCommand.sourceTurnId
+          ? { sourceTurnId: endCommand.sourceTurnId }
+          : {}),
+      });
+      applyVerifiedFocusProjection(null);
+
+      return {
+        handled: true,
+        confirmationContent: result.message,
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    } catch (error) {
+      console.error('Verified native Focus terminal transition failed:', error);
+      return {
+        handled: true,
+        confirmationContent: describeNativeFocusEndFailure(error),
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }

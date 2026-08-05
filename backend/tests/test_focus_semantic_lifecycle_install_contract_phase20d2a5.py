@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
@@ -24,15 +25,33 @@ class SemanticFocusLifecycleInstallContractTests(unittest.TestCase):
         self.assertNotIn("interpretSemanticFocusUpdate(trimmed)", app_text)
         self.assertIn("Semantic lifecycle Focus start", app_text)
         self.assertIn("Semantic lifecycle Focus update", app_text)
+        self.assertIn("Semantic lifecycle Focus end", app_text)
+        self.assertIn("Semantic lifecycle Focus completion", app_text)
 
-    def test_frontend_contract_builds_typed_start_and_update_commands(self) -> None:
+    def test_frontend_contract_builds_typed_lifecycle_commands(self) -> None:
         bridge_text = (
             REPO_ROOT / "src/app/lib/semanticFocusLifecycle.ts"
         ).read_text(encoding="utf-8")
-        self.assertIn("phase20d2a5", bridge_text)
+        backend_text = (
+            REPO_ROOT / "backend/app/focus/semantic_lifecycle_preflight.py"
+        ).read_text(encoding="utf-8")
+        frontend_match = re.search(
+            r"SEMANTIC_FOCUS_LIFECYCLE_BRIDGE_VERSION\s*=\s*['\"]([^'\"]+)['\"]",
+            bridge_text,
+        )
+        backend_match = re.search(
+            r"SEMANTIC_LIFECYCLE_BRIDGE_VERSION\s*=\s*['\"]([^'\"]+)['\"]",
+            backend_text,
+        )
+        self.assertIsNotNone(frontend_match)
+        self.assertIsNotNone(backend_match)
+        assert frontend_match is not None
+        assert backend_match is not None
+        self.assertEqual(frontend_match.group(1), backend_match.group(1))
         self.assertIn("/api/focus/lifecycle/semantic/interpret", bridge_text)
         self.assertIn("command: 'start-focus-session'", bridge_text)
         self.assertIn("command: 'update-focus-session'", bridge_text)
+        self.assertIn("command: 'end-focus-session'", bridge_text)
         self.assertNotIn("/api/chat", bridge_text)
         self.assertNotIn("/api/command/interpret", bridge_text)
 
@@ -45,8 +64,10 @@ class SemanticFocusLifecycleInstallContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("startNativeFocusVerified", memory_text)
         self.assertIn("updateNativeFocusVerified", memory_text)
+        self.assertIn("endNativeFocusVerified", memory_text)
         self.assertIn("/api/focus/lifecycle/start", lifecycle_text)
         self.assertIn("/api/focus/lifecycle/update", lifecycle_text)
+        self.assertIn("/api/focus/lifecycle/end", lifecycle_text)
 
     def test_semantic_classifier_does_not_write_focus_state(self) -> None:
         preflight_text = (
@@ -57,6 +78,7 @@ class SemanticFocusLifecycleInstallContractTests(unittest.TestCase):
             "append_events(",
             "start_focus_verified(",
             "update_focus_verified(",
+            "end_focus_verified(",
             "apply_plan(",
         ]:
             with self.subTest(token=token):

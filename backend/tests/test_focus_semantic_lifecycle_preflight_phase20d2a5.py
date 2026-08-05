@@ -14,6 +14,19 @@ from app.focus.semantic_lifecycle_preflight import (
     semantic_focus_lifecycle_preflight,
 )
 
+def _active_state() -> object:
+    return type(
+        "State",
+        (),
+        {
+            "focusId": "focus-current",
+            "title": "Building the prototype",
+            "objective": "Complete the first working version",
+            "tags": ["mode:general"],
+            "status": "active",
+        },
+    )()
+
 
 class SemanticFocusLifecyclePreflightTests(unittest.IsolatedAsyncioTestCase):
     async def test_natural_current_focus_rename_returns_typed_update(self) -> None:
@@ -26,6 +39,9 @@ class SemanticFocusLifecyclePreflightTests(unittest.IsolatedAsyncioTestCase):
         with patch(
             "app.focus.semantic_lifecycle_preflight._classify_with_model",
             new=AsyncMock(return_value=decision),
+        ), patch(
+            "app.focus.semantic_lifecycle_preflight.get_state",
+            return_value=_active_state(),
         ):
             result = await semantic_focus_lifecycle_preflight(
                 SemanticFocusLifecyclePreflightRequest(

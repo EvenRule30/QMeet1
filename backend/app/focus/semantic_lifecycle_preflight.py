@@ -19,7 +19,7 @@ from app.focus.store import get_state
 
 LOGGER = logging.getLogger("qmeet.focus.semantic_lifecycle_preflight")
 
-SEMANTIC_LIFECYCLE_BRIDGE_VERSION = "phase20d2a5b"
+SEMANTIC_LIFECYCLE_BRIDGE_VERSION = "phase20d2b1"
 _OPEN_FOCUS_STATUSES = {"clarifying", "active", "waiting", "ready"}
 _SUPPORTED_MODES = {
     "general",
@@ -34,6 +34,8 @@ _SUPPORTED_MODES = {
 class SemanticLifecycleIntent(str, Enum):
     UPDATE = "update"
     START = "start"
+    END = "end"
+    COMPLETE = "complete"
     NOT_LIFECYCLE = "not_lifecycle"
     CLARIFY = "clarify"
     CANCELLED = "cancelled"
@@ -56,6 +58,8 @@ class SemanticFocusLifecycleDecision(BaseModel):
         "research",
         "personal",
     ] | None = None
+    forceEnd: bool = False
+    summaryRequested: bool = False
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     reason: str = Field(default="", max_length=600)
 
@@ -67,14 +71,28 @@ class SemanticFocusLifecycleDecision(BaseModel):
         if self.intent == SemanticLifecycleIntent.UPDATE:
             if not self.title and not self.objectiveSpecified and self.mode is None:
                 raise ValueError("An update decision must include at least one field.")
+            self.forceEnd = False
+            self.summaryRequested = False
         elif self.intent == SemanticLifecycleIntent.START:
             if not self.title:
                 raise ValueError("A start decision must include a Focus title.")
+            self.forceEnd = False
+            self.summaryRequested = False
+        elif self.intent in {
+            SemanticLifecycleIntent.END,
+            SemanticLifecycleIntent.COMPLETE,
+        }:
+            self.title = ""
+            self.objective = ""
+            self.objectiveSpecified = False
+            self.mode = None
         else:
             self.title = ""
             self.objective = ""
             self.objectiveSpecified = False
             self.mode = None
+            self.forceEnd = False
+            self.summaryRequested = False
         return self
 
 
@@ -106,8 +124,16 @@ class SemanticFocusLifecyclePreflightResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     ok: bool = True
-    bridgeVersion: Literal["phase20d2a5b"] = SEMANTIC_LIFECYCLE_BRIDGE_VERSION
-    intent: Literal["update", "start", "not_lifecycle", "clarify", "cancelled"]
+    bridgeVersion: Literal["phase20d2b1"] = SEMANTIC_LIFECYCLE_BRIDGE_VERSION
+    intent: Literal[
+        "update",
+        "start",
+        "end",
+        "complete",
+        "not_lifecycle",
+        "clarify",
+        "cancelled",
+    ]
     possibleMutation: bool = False
     title: str = ""
     objective: str = ""
@@ -120,6 +146,8 @@ class SemanticFocusLifecyclePreflightResult(BaseModel):
         "research",
         "personal",
     ] | None = None
+    forceEnd: bool = False
+    summaryRequested: bool = False
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     reason: str = ""
     message: str = ""
@@ -127,11 +155,15 @@ class SemanticFocusLifecyclePreflightResult(BaseModel):
 
 
 _SYSTEM_PROMPT = """
-You are QMeet's narrow semantic authority for two local Focus lifecycle intents:
+You are QMeet's narrow semantic authority for four local Focus lifecycle intents:
 
 1. UPDATE the already-active Focus title/name, objective/goal, or mode.
 2. START a new active Focus, replacing the current one when a different durable
    work context is clearly established.
+3. END the current Focus when the user wants to stop, pause, close, or leave it
+   without claiming the objective was achieved.
+4. COMPLETE the current Focus when the user explicitly says the work, objective,
+   or Focus was finished or successfully completed.
 
 Return exactly one strict SemanticFocusLifecycleDecision. You do not execute any
 mutation and must not produce user-facing success prose.
@@ -140,40 +172,50 @@ Choose intent="update" when the user changes fields on the CURRENT Focus.
 Examples:
 - "rename my focus to designing a treehouse"
 - "call this session treehouse planning"
-- "the work I am doing should be called treehouse construction"
 - "make the goal of this work choose the building materials"
 - "switch this work into planning mode"
 
 Choose intent="start" only when the user deliberately establishes a NEW durable
 work context that should become the active Focus. Examples:
-- "I want to spend some time designing a birdhouse"
 - "let's work on planning my vacation"
 - "my next priority is preparing the quarterly review"
 - "switch my focus to studying for the exam"
 - "I am done with this topic and want to work on the garden"
-- "make building the prototype my main focus"
 
-Important distinction:
-- "call this session X" is UPDATE when a Focus is active.
-- "make X my focus" or "my next priority is X" is START.
-- "switch my focus to X" means START/replace, unless X is explicitly a
-  supported mode and the user says mode.
-- A change of title, goal, or mode is not a replacement.
-- A different project or durable work objective is a replacement.
-- Words such as planning, coding, research, or meeting inside a requested title
-  do not change mode. Set mode only when the user explicitly asks for a mode.
+Choose intent="end" when the user wants to stop or close the current Focus but
+does not claim its objective was achieved. Examples:
+- "end my focus"
+- "stop this session"
+- "close the current focus"
+- "leave focus mode"
+
+Choose intent="complete" only for explicit completion language. Examples:
+- "I completed this focus"
+- "this work is finished"
+- "mark the current focus complete"
+- "we achieved the goal and are done"
+
+Important distinctions:
+- "I am done with this topic and want to work on X" is START/replace, not COMPLETE.
+- "call this session X" is UPDATE.
+- "switch my focus to X" is START/replace unless X is explicitly a mode.
+- Words such as planning, coding, research, or meeting inside a title do not
+  change mode. Set mode only when the user explicitly asks for a mode.
+- Set forceEnd=true only when the user explicitly says anyway, without saving,
+  skip/discard the summary, or equivalent language.
+- Set summaryRequested=true when the user asks to save/write a summary and end
+  in one request. The current verified phase must not execute that compound
+  operation; it will be safely blocked for a separate summary receipt.
 
 Choose intent="not_lifecycle" for:
-- ending, completing, or resuming a Focus
+- resuming a historical Focus
 - asking what the Focus is
 - asking for naming ideas, planning help, or advice
 - ordinary task requests that do not establish a durable active Focus
-- hypothetical questions
-- general chat
+- hypothetical questions or general chat
 
-Choose intent="cancelled" for an explicit negation or cancellation of a Focus
-mutation, such as "don't rename my focus", "don't start a new focus", or
-"cancel that Focus change". Do not add coaching or follow-up suggestions.
+Choose intent="cancelled" for explicit negation or cancellation of a Focus
+mutation, including "don't end my focus" or "cancel that Focus change".
 
 Choose intent="clarify" when a lifecycle mutation is intended but the operation
 or requested value is missing, conflicting, or too ambiguous to execute safely.
@@ -183,7 +225,6 @@ Extraction rules:
 - objectiveSpecified=true only when the user explicitly sets, changes, or clears
   a goal. Use objective="" only for an explicit clear.
 - mode is one of general, coding, meeting, planning, research, or personal.
-- For START, do not invent a goal from the title.
 - Do not infer extra field changes.
 - Confidence covers semantic interpretation only. Deterministic lifecycle code
   executes and verifies the mutation later.
@@ -215,15 +256,80 @@ def _explicit_lifecycle_negation(message: str) -> bool:
     direct_negation = re.search(
         r"\b(?:don't|do not|never)\s+(?:please\s+)?"
         r"(?:start|begin|create|open|rename|retitle|change|update|switch|"
-        r"replace|make|set)\b.{0,80}\b(?:focus|session|goal|objective|mode)\b",
+        r"replace|make|set|end|finish|complete|close|stop|leave)\b.{0,80}"
+        r"\b(?:focus|session|goal|objective|mode|work)\b",
         text,
     )
     cancellation = re.search(
         r"\b(?:cancel|ignore|discard)\s+(?:that|the|this)?\s*"
-        r"(?:focus|session)?\s*(?:change|update|rename|start|replacement)\b",
+        r"(?:focus|session)?\s*(?:change|update|rename|start|replacement|"
+        r"end|completion)\b",
         text,
     )
     return bool(direct_negation or cancellation)
+
+
+def _explicit_summary_end_request(message: str) -> bool:
+    text = _normalized_message(message)
+    if not text:
+        return False
+    return bool(
+        re.search(
+            r"\b(?:end|finish|complete|close|wrap\s+up)\b.{0,70}"
+            r"\b(?:with|and)\b.{0,40}\b(?:summary|recap|note)\b",
+            text,
+        )
+        or re.search(
+            r"\b(?:save|write|make|create)\b.{0,45}\b(?:summary|recap|note)\b"
+            r".{0,55}\b(?:and\s+)?(?:end|finish|complete|close|wrap\s+up)\b",
+            text,
+        )
+    )
+
+
+def _explicit_force_end_signal(message: str) -> bool:
+    text = _normalized_message(message)
+    if not text:
+        return False
+    return bool(
+        re.search(
+            r"\b(?:end|finish|complete|close|stop|discard)\b.{0,60}"
+            r"\b(?:anyway|without\s+(?:saving|a\s+summary|summary|a\s+note|note))\b",
+            text,
+        )
+        or re.search(
+            r"\b(?:skip|discard)\b.{0,35}\b(?:summary|recap|note)\b"
+            r".{0,45}\b(?:end|finish|complete|close|stop)\b",
+            text,
+        )
+    )
+
+
+def _explicit_completion_signal(message: str) -> bool:
+    text = _normalized_message(message)
+    if not text or _explicit_replacement_signal(text):
+        return False
+    patterns = [
+        r"\b(?:mark|set)\b.{0,45}\b(?:focus|session|work)\b.{0,25}\b(?:complete|completed|finished|done)\b",
+        r"\b(?:complete|finish)\s+(?:(?:my|our|the|this|current|active)\s+)?(?:focus|session|work)\b",
+        r"\b(?:i|we)\b.{0,20}\b(?:completed|finished)\b.{0,45}\b(?:focus|session|work|goal|objective)\b",
+        r"\b(?:i(?:'m| am)|we(?:'re| are))\s+done\s+with\s+(?:(?:my|our|the|this|current|active)\s+)?(?:focus|session|work)\b",
+        r"\b(?:focus|session|work|goal|objective)\b.{0,35}\b(?:is|was|are|were)?\s*(?:complete|completed|finished|done)\b",
+        r"\b(?:achieved|finished|completed)\b.{0,35}\b(?:the\s+)?(?:goal|objective)\b",
+    ]
+    return any(re.search(pattern, text) for pattern in patterns)
+
+
+def _explicit_end_signal(message: str) -> bool:
+    text = _normalized_message(message)
+    if not text or _explicit_replacement_signal(text):
+        return False
+    patterns = [
+        r"\b(?:end|stop|close|leave|exit|clear)\b.{0,50}\b(?:focus|session|focus\s+mode|this\s+work|current\s+work)\b",
+        r"\b(?:end|stop|close|leave|exit)\s+(?:it|this|that)\b",
+        r"\b(?:wrap\s+up)\b.{0,40}\b(?:focus|session|this\s+work)\b",
+    ]
+    return any(re.search(pattern, text) for pattern in patterns)
 
 
 def _explicit_mode_request(message: str) -> str | None:
@@ -291,25 +397,43 @@ def _apply_semantic_boundary_guards(
     decision: "SemanticFocusLifecycleDecision",
     message: str,
 ) -> "SemanticFocusLifecycleDecision":
-    """Correct category boundaries without replacing semantic classification."""
+    """Correct high-risk category boundaries without replacing semantic intent."""
 
-    if decision.intent not in {
+    adjusted = decision.model_copy(deep=True)
+    replacement_signal = _explicit_replacement_signal(message)
+    completion_signal = _explicit_completion_signal(message)
+    end_signal = _explicit_end_signal(message)
+
+    if completion_signal and not replacement_signal:
+        return SemanticFocusLifecycleDecision(
+            intent=SemanticLifecycleIntent.COMPLETE,
+            forceEnd=_explicit_force_end_signal(message),
+            confidence=max(adjusted.confidence, 0.95),
+            reason=(
+                f"{adjusted.reason} " if adjusted.reason else ""
+            ) + "Explicit completion language requires the verified complete transition.",
+        )
+
+    if end_signal and not replacement_signal:
+        return SemanticFocusLifecycleDecision(
+            intent=SemanticLifecycleIntent.END,
+            forceEnd=_explicit_force_end_signal(message),
+            confidence=max(adjusted.confidence, 0.95),
+            reason=(
+                f"{adjusted.reason} " if adjusted.reason else ""
+            ) + "Explicit terminal language requires the verified end transition.",
+        )
+
+    if adjusted.intent not in {
         SemanticLifecycleIntent.UPDATE,
         SemanticLifecycleIntent.START,
     }:
-        return decision
+        return adjusted
 
-    adjusted = decision.model_copy(deep=True)
     explicit_mode = _explicit_mode_request(message)
-
-    # Never infer a mode merely because a title contains words such as
-    # "planning" or "research". Preserve mode only for explicit mode language.
     adjusted.mode = explicit_mode
 
-    if (
-        adjusted.intent == SemanticLifecycleIntent.UPDATE
-        and _explicit_replacement_signal(message)
-    ):
+    if adjusted.intent == SemanticLifecycleIntent.UPDATE and replacement_signal:
         if not adjusted.title:
             return SemanticFocusLifecycleDecision(
                 intent=SemanticLifecycleIntent.CLARIFY,
@@ -327,7 +451,7 @@ def _apply_semantic_boundary_guards(
     if (
         adjusted.intent == SemanticLifecycleIntent.START
         and _explicit_current_focus_update_signal(message)
-        and not _explicit_replacement_signal(message)
+        and not replacement_signal
     ):
         adjusted.intent = SemanticLifecycleIntent.UPDATE
         adjusted.reason = (
@@ -377,13 +501,25 @@ def _minimum_start_confidence() -> float:
     return max(0.0, min(value, 1.0))
 
 
+def _minimum_end_confidence() -> float:
+    raw = os.getenv(
+        "QMEET_SEMANTIC_FOCUS_END_MIN_CONFIDENCE",
+        "0.82",
+    ).strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 0.82
+    return max(0.0, min(value, 1.0))
+
+
 def looks_like_semantic_focus_lifecycle_mutation(message: str) -> bool:
     """Conservative safety fallback; never authorizes execution."""
 
     text = " ".join(message.casefold().split())
     if not text:
         return False
-    if re.search(r"\b(?:don't|do not|never|cancel|stop)\b", text):
+    if re.search(r"\b(?:don't|do not|never|cancel)\b", text):
         return False
 
     update_reference = re.search(
@@ -396,7 +532,6 @@ def looks_like_semantic_focus_lifecycle_mutation(message: str) -> bool:
         r"should be|now called|turn .* into)\b",
         text,
     )
-
     explicit_start = re.search(
         r"\b(?:start|begin|create|open|set|make|switch|change|move|turn)\b.{0,50}"
         r"\b(?:focus|focus session|active focus|main focus)\b",
@@ -418,8 +553,19 @@ def looks_like_semantic_focus_lifecycle_mutation(message: str) -> bool:
         r"\b(?:work on|focus on|move to|switch to)\b",
         text,
     )
+    terminal_transition = (
+        _explicit_end_signal(text)
+        or _explicit_completion_signal(text)
+        or _explicit_summary_end_request(text)
+        or _explicit_force_end_signal(text)
+    )
 
-    return bool((update_reference and update_language) or explicit_start or durable_transition)
+    return bool(
+        (update_reference and update_language)
+        or explicit_start
+        or durable_transition
+        or terminal_transition
+    )
 
 
 async def _classify_with_model(message: str) -> SemanticFocusLifecycleDecision:
@@ -486,6 +632,29 @@ def _normalize_decision(
                 ),
             )
 
+    if decision.intent in {
+        SemanticLifecycleIntent.END,
+        SemanticLifecycleIntent.COMPLETE,
+    }:
+        if not has_open_focus:
+            return SemanticFocusLifecycleDecision(
+                intent=SemanticLifecycleIntent.CLARIFY,
+                confidence=decision.confidence,
+                reason=(
+                    "The user requested a terminal Focus transition, but no "
+                    "active canonical Focus exists."
+                ),
+            )
+        if decision.confidence < _minimum_end_confidence():
+            return SemanticFocusLifecycleDecision(
+                intent=SemanticLifecycleIntent.CLARIFY,
+                confidence=decision.confidence,
+                reason=(
+                    "The semantic Focus terminal transition was below the "
+                    "configured execution confidence threshold."
+                ),
+            )
+
     return decision
 
 
@@ -505,6 +674,13 @@ async def classify_semantic_focus_lifecycle(
             intent=SemanticLifecycleIntent.CANCELLED,
             confidence=1.0,
             reason="The user explicitly cancelled or negated a Focus mutation.",
+        )
+
+    if _explicit_summary_end_request(cleaned):
+        return SemanticFocusLifecycleDecision(
+            intent=SemanticLifecycleIntent.CLARIFY,
+            confidence=1.0,
+            reason="summary_end_requires_separate_verified_receipt",
         )
 
     try:
@@ -545,6 +721,8 @@ async def semantic_focus_lifecycle_preflight(
     if decision.intent in {
         SemanticLifecycleIntent.UPDATE,
         SemanticLifecycleIntent.START,
+        SemanticLifecycleIntent.END,
+        SemanticLifecycleIntent.COMPLETE,
     }:
         return SemanticFocusLifecyclePreflightResult(
             intent=decision.intent.value,
@@ -553,6 +731,8 @@ async def semantic_focus_lifecycle_preflight(
             objective=decision.objective,
             objectiveSpecified=decision.objectiveSpecified,
             mode=decision.mode,
+            forceEnd=decision.forceEnd,
+            summaryRequested=decision.summaryRequested,
             confidence=decision.confidence,
             reason=decision.reason,
             sourceTurnId=request.sourceTurnId,
@@ -569,14 +749,24 @@ async def semantic_focus_lifecycle_preflight(
         )
 
     if decision.intent == SemanticLifecycleIntent.CLARIFY:
+        summary_end_blocked = (
+            decision.reason == "summary_end_requires_separate_verified_receipt"
+        )
         return SemanticFocusLifecyclePreflightResult(
             intent="clarify",
             possibleMutation=True,
             confidence=decision.confidence,
             reason=decision.reason,
             message=(
-                "I understood this as a possible Focus change, but I could not "
-                "identify one safe update or new Focus. The Focus was not changed."
+                "I kept the Focus open because saving a summary and ending it "
+                "still require separate verified receipts. Save the Focus "
+                "summary first, then end the Focus, or say end Focus anyway."
+                if summary_end_blocked
+                else (
+                    "I understood this as a possible Focus change, but I could "
+                    "not identify one safe lifecycle operation. The Focus was "
+                    "not changed."
+                )
             ),
             sourceTurnId=request.sourceTurnId,
         )

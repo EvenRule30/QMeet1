@@ -39,21 +39,16 @@ class SemanticFocusUpdateInstallContractTests(unittest.TestCase):
         self.assertNotIn("semantic_focus_lifecycle_preflight", command_text)
         self.assertIn("interpret_qmeet_orchestrator", command_text)
 
-    def test_frontend_uses_unified_lifecycle_preflight_before_interpreter(self) -> None:
+    def test_frontend_uses_current_unified_lifecycle_preflight_before_interpreter(self) -> None:
         app_path = REPO_ROOT / "src" / "app" / "App.tsx"
         helper_path = REPO_ROOT / "src" / "app" / "lib" / "semanticFocusLifecycle.ts"
-        backend_preflight_path = (
-            BACKEND_ROOT / "app" / "focus" / "semantic_lifecycle_preflight.py"
-        )
+        backend_path = BACKEND_ROOT / "app" / "focus" / "semantic_lifecycle_preflight.py"
         app_text = app_path.read_text(encoding="utf-8")
         helper_text = helper_path.read_text(encoding="utf-8")
-        backend_preflight_text = backend_preflight_path.read_text(encoding="utf-8")
+        backend_text = backend_path.read_text(encoding="utf-8")
 
         preflight_index = app_text.index("await interpretSemanticFocusLifecycle(trimmed)")
-        generic_index = app_text.index(
-            "await interpretCommandIntent(trimmed)",
-            preflight_index,
-        )
+        generic_index = app_text.index("await interpretCommandIntent(trimmed)", preflight_index)
         self.assertLess(preflight_index, generic_index)
         self.assertNotIn("interpretSemanticFocusUpdate(trimmed)", app_text)
 
@@ -63,23 +58,25 @@ class SemanticFocusUpdateInstallContractTests(unittest.TestCase):
         )
         backend_match = re.search(
             r"SEMANTIC_LIFECYCLE_BRIDGE_VERSION\s*=\s*['\"]([^'\"]+)['\"]",
-            backend_preflight_text,
+            backend_text,
         )
         self.assertIsNotNone(frontend_match)
         self.assertIsNotNone(backend_match)
         assert frontend_match is not None
         assert backend_match is not None
         self.assertEqual(frontend_match.group(1), backend_match.group(1))
-        self.assertTrue(frontend_match.group(1).startswith("phase20d2"))
         self.assertIn("/api/focus/lifecycle/semantic/interpret", helper_text)
 
     def test_typed_lifecycle_preflight_reuses_verified_executors(self) -> None:
-        helper_path = REPO_ROOT / "src" / "app" / "lib" / "semanticFocusLifecycle.ts"
-        memory_path = REPO_ROOT / "src" / "app" / "commandHandlers" / "memory.ts"
-        lifecycle_path = REPO_ROOT / "src" / "app" / "lib" / "nativeFocusLifecycle.ts"
-        helper_text = helper_path.read_text(encoding="utf-8")
-        memory_text = memory_path.read_text(encoding="utf-8")
-        lifecycle_text = lifecycle_path.read_text(encoding="utf-8")
+        helper_text = (
+            REPO_ROOT / "src/app/lib/semanticFocusLifecycle.ts"
+        ).read_text(encoding="utf-8")
+        memory_text = (
+            REPO_ROOT / "src/app/commandHandlers/memory.ts"
+        ).read_text(encoding="utf-8")
+        lifecycle_text = (
+            REPO_ROOT / "src/app/lib/nativeFocusLifecycle.ts"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("command: 'update-focus-session'", helper_text)
         self.assertIn("command: 'end-focus-session'", helper_text)

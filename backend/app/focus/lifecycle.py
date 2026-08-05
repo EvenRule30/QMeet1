@@ -99,6 +99,24 @@ class NativeFocusUpdateRequest(BaseModel):
         return self
 
 
+class NativeFocusEndRequest(BaseModel):
+    """Verified terminal transition for the current canonical Focus only."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expectedFocusId: str = Field(min_length=1, max_length=120)
+    disposition: Literal["ended", "completed"] = "ended"
+    sourceTurnId: str = Field(min_length=1, max_length=120)
+
+    @field_validator("expectedFocusId", "sourceTurnId")
+    @classmethod
+    def clean_required_text(cls, value: str) -> str:
+        cleaned = " ".join(value.split()).strip()
+        if not cleaned:
+            raise ValueError("value cannot be blank")
+        return cleaned
+
+
 class NativeFocusVerification(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -119,6 +137,17 @@ class NativeFocusUpdateVerification(BaseModel):
     modeMatches: bool = False
     exactlyOneFocusOpen: bool = False
     updateEventsPersisted: bool = False
+    openFocusIds: list[str] = Field(default_factory=list)
+    details: list[str] = Field(default_factory=list)
+
+
+class NativeFocusEndVerification(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    focusIdentityPreserved: bool = False
+    terminalStatusMatches: bool = False
+    noFocusOpen: bool = False
+    terminalEventPersisted: bool = False
     openFocusIds: list[str] = Field(default_factory=list)
     details: list[str] = Field(default_factory=list)
 
@@ -152,6 +181,21 @@ class NativeFocusUpdateResult(BaseModel):
     )
     sourceTurnId: str
     verification: NativeFocusUpdateVerification
+    telemetryRecorded: bool = False
+    message: str
+
+
+class NativeFocusEndResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ok: bool
+    operation: Literal["end_focus"] = "end_focus"
+    outcome: Literal["ended", "completed", "reused"]
+    disposition: Literal["ended", "completed"]
+    verified: bool
+    closedFocus: FocusState
+    sourceTurnId: str
+    verification: NativeFocusEndVerification
     telemetryRecorded: bool = False
     message: str
 
@@ -220,6 +264,24 @@ def _empty_health() -> dict[str, object]:
             "lastChangedFields": [],
             "lastUpdatedAt": "",
         },
+        "endFocus": {
+            "attemptCount": 0,
+            "endedCount": 0,
+            "completedCount": 0,
+            "reusedCount": 0,
+            "verifiedCount": 0,
+            "failedCount": 0,
+            "noActiveFocusCount": 0,
+            "staleFocusCount": 0,
+            "verificationFailedCount": 0,
+            "writeFailedCount": 0,
+            "lastOutcome": "",
+            "lastDisposition": "",
+            "lastFailureCode": "",
+            "lastSourceTurnId": "",
+            "lastClosedFocusId": "",
+            "lastUpdatedAt": "",
+        },
     }
 
 
@@ -234,7 +296,7 @@ def _read_health_unlocked() -> dict[str, object]:
     if not isinstance(payload, dict):
         return _empty_health()
     baseline = _empty_health()
-    for section_name in ("startFocus", "updateFocus"):
+    for section_name in ("startFocus", "updateFocus", "endFocus"):
         baseline_section = baseline.get(section_name)
         incoming_section = payload.get(section_name)
         if isinstance(baseline_section, dict) and isinstance(incoming_section, dict):
@@ -368,6 +430,60 @@ def _record_update_health(
             summary["lastSourceTurnId"] = source_turn_id
             summary["lastActiveFocusId"] = active_focus_id
             summary["lastChangedFields"] = list(changed_fields or [])
+            summary["lastUpdatedAt"] = _now_iso()
+            _atomic_write_health_unlocked(document)
+        return True
+    except Exception:
+        return False
+
+
+def _record_end_health(
+    *,
+    outcome: str,
+    disposition: str,
+    verified: bool,
+    source_turn_id: str,
+    closed_focus_id: str = "",
+    failure_code: str = "",
+) -> bool:
+    try:
+        with _HEALTH_LOCK:
+            document = _read_health_unlocked()
+            summary = document.get("endFocus")
+            if not isinstance(summary, dict):
+                document = _empty_health()
+                summary = document["endFocus"]
+            assert isinstance(summary, dict)
+
+            summary["attemptCount"] = int(summary.get("attemptCount", 0)) + 1
+            count_key = {
+                "ended": "endedCount",
+                "completed": "completedCount",
+                "reused": "reusedCount",
+            }.get(outcome)
+            if count_key:
+                summary[count_key] = int(summary.get(count_key, 0)) + 1
+            if verified:
+                summary["verifiedCount"] = int(summary.get("verifiedCount", 0)) + 1
+            else:
+                summary["failedCount"] = int(summary.get("failedCount", 0)) + 1
+
+            failure_count_key = {
+                "no_active_focus": "noActiveFocusCount",
+                "stale_focus": "staleFocusCount",
+                "verification_failed": "verificationFailedCount",
+                "write_failed": "writeFailedCount",
+            }.get(failure_code)
+            if failure_count_key:
+                summary[failure_count_key] = int(
+                    summary.get(failure_count_key, 0)
+                ) + 1
+
+            summary["lastOutcome"] = outcome
+            summary["lastDisposition"] = disposition
+            summary["lastFailureCode"] = failure_code
+            summary["lastSourceTurnId"] = source_turn_id
+            summary["lastClosedFocusId"] = closed_focus_id
             summary["lastUpdatedAt"] = _now_iso()
             _atomic_write_health_unlocked(document)
         return True
@@ -1221,3 +1337,327 @@ def update_focus_verified(
         ),
     )
 
+
+
+_TERMINAL_EVENT_TYPES = {
+    FocusEventType.FOCUS_ENDED,
+    FocusEventType.FOCUS_COMPLETED,
+}
+
+
+def _end_request_fingerprint(
+    *,
+    expected_focus_id: str,
+    disposition: str,
+) -> str:
+    return json.dumps(
+        {
+            "expectedFocusId": expected_focus_id,
+            "disposition": disposition,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _matching_turn_end_event(
+    events: list[FocusEvent],
+    source_turn_id: str,
+) -> FocusEvent | None:
+    for event in reversed(events):
+        if (
+            event.sourceTurnId == source_turn_id
+            and event.source == _NATIVE_LIFECYCLE_SOURCE
+            and event.type in _TERMINAL_EVENT_TYPES
+            and str(event.payload.get("nativeOperation", "")).strip()
+            == "end_focus"
+        ):
+            return event
+    return None
+
+
+def _verify_end_postcondition(
+    *,
+    events: list[FocusEvent],
+    expected_focus_id: str,
+    disposition: Literal["ended", "completed"],
+    terminal_event_id: str,
+) -> NativeFocusEndVerification:
+    state = focus_store.reduce_events(events)
+    open_focus_ids = _open_focus_ids(events)
+    event_ids = {event.id for event in events}
+    expected_status = (
+        FocusStatus.COMPLETE
+        if disposition == "completed"
+        else FocusStatus.INACTIVE
+    )
+
+    identity_preserved = state.focusId == expected_focus_id
+    terminal_matches = state.status == expected_status
+    no_focus_open = open_focus_ids == []
+    event_persisted = terminal_event_id in event_ids
+
+    details: list[str] = []
+    if not identity_preserved:
+        details.append("Canonical Focus identity changed during the terminal transition.")
+    if not terminal_matches:
+        details.append("Canonical Focus status does not match the requested terminal state.")
+    if not no_focus_open:
+        details.append("Canonical lifecycle history still contains an open Focus.")
+    if not event_persisted:
+        details.append("The canonical terminal Focus event was not persisted.")
+
+    return NativeFocusEndVerification(
+        focusIdentityPreserved=identity_preserved,
+        terminalStatusMatches=terminal_matches,
+        noFocusOpen=no_focus_open,
+        terminalEventPersisted=event_persisted,
+        openFocusIds=open_focus_ids,
+        details=details,
+    )
+
+
+def _end_verification_passed(
+    verification: NativeFocusEndVerification,
+) -> bool:
+    return (
+        verification.focusIdentityPreserved
+        and verification.terminalStatusMatches
+        and verification.noFocusOpen
+        and verification.terminalEventPersisted
+    )
+
+
+def _end_success_message(
+    disposition: Literal["ended", "completed"],
+    title: str,
+    *,
+    reused: bool = False,
+) -> str:
+    if reused:
+        verb = "completed" if disposition == "completed" else "ended"
+        return f"Focus was already {verb}: {title}."
+    if disposition == "completed":
+        return f"Completed Focus: {title}."
+    return f"Ended Focus: {title}."
+
+
+def end_focus_verified(request: NativeFocusEndRequest) -> NativeFocusEndResult:
+    """End or complete one open canonical Focus and authorize success after proof."""
+
+    expected_focus_id = request.expectedFocusId.strip()
+    source_turn_id = request.sourceTurnId.strip()
+    disposition = request.disposition
+    fingerprint = _end_request_fingerprint(
+        expected_focus_id=expected_focus_id,
+        disposition=disposition,
+    )
+
+    try:
+        with focus_store._STORE_LOCK:
+            document = focus_store._read_log_unlocked()
+            existing_events = list(document.events)
+            before_state = focus_store.reduce_events(existing_events)
+            open_focus_ids = _open_focus_ids(existing_events)
+            prior_end_event = _matching_turn_end_event(
+                existing_events,
+                source_turn_id,
+            )
+
+            if prior_end_event is not None:
+                prior_fingerprint = str(
+                    prior_end_event.payload.get("requestFingerprint", "")
+                ).strip()
+                prior_disposition = str(
+                    prior_end_event.payload.get("disposition", "")
+                ).strip()
+                if (
+                    prior_end_event.focusId != expected_focus_id
+                    or prior_fingerprint != fingerprint
+                    or prior_disposition != disposition
+                ):
+                    raise NativeFocusLifecycleError(
+                        "source_turn_conflict",
+                        "This Focus terminal turn already has a different canonical result.",
+                    )
+
+                verification = _verify_end_postcondition(
+                    events=existing_events,
+                    expected_focus_id=expected_focus_id,
+                    disposition=disposition,
+                    terminal_event_id=prior_end_event.id,
+                )
+                if not _end_verification_passed(verification):
+                    raise NativeFocusLifecycleError(
+                        "source_turn_conflict",
+                        "This Focus terminal turn has been superseded by newer canonical state.",
+                    )
+
+                telemetry_recorded = _record_end_health(
+                    outcome="reused",
+                    disposition=disposition,
+                    verified=True,
+                    source_turn_id=source_turn_id,
+                    closed_focus_id=before_state.focusId,
+                )
+                return NativeFocusEndResult(
+                    ok=True,
+                    outcome="reused",
+                    disposition=disposition,
+                    verified=True,
+                    closedFocus=before_state,
+                    sourceTurnId=source_turn_id,
+                    verification=verification,
+                    telemetryRecorded=telemetry_recorded,
+                    message=_end_success_message(
+                        disposition,
+                        before_state.title,
+                        reused=True,
+                    ),
+                )
+
+            if (
+                before_state.status in {FocusStatus.INACTIVE, FocusStatus.COMPLETE}
+                or not before_state.focusId
+                or before_state.focusId not in open_focus_ids
+            ):
+                _record_end_health(
+                    outcome="failed",
+                    disposition=disposition,
+                    verified=False,
+                    source_turn_id=source_turn_id,
+                    closed_focus_id=before_state.focusId,
+                    failure_code="no_active_focus",
+                )
+                raise NativeFocusLifecycleError(
+                    "no_active_focus",
+                    "No canonical Focus is currently open to end.",
+                )
+
+            if before_state.focusId != expected_focus_id:
+                _record_end_health(
+                    outcome="failed",
+                    disposition=disposition,
+                    verified=False,
+                    source_turn_id=source_turn_id,
+                    closed_focus_id=before_state.focusId,
+                    failure_code="stale_focus",
+                )
+                raise NativeFocusLifecycleError(
+                    "stale_focus",
+                    "The displayed Focus no longer matches the canonical open Focus.",
+                )
+
+            event_type = (
+                FocusEventType.FOCUS_COMPLETED
+                if disposition == "completed"
+                else FocusEventType.FOCUS_ENDED
+            )
+            terminal_event = focus_store._new_event(
+                event_type,
+                focus_id=expected_focus_id,
+                payload={
+                    "nativeLifecycle": True,
+                    "nativeOperation": "end_focus",
+                    "disposition": disposition,
+                    "requestFingerprint": fingerprint,
+                },
+                source_turn_id=source_turn_id,
+                source=_NATIVE_LIFECYCLE_SOURCE,
+            )
+
+            candidate_events = [*existing_events, terminal_event]
+            verification = _verify_end_postcondition(
+                events=candidate_events,
+                expected_focus_id=expected_focus_id,
+                disposition=disposition,
+                terminal_event_id=terminal_event.id,
+            )
+            if not _end_verification_passed(verification):
+                _record_end_health(
+                    outcome="failed",
+                    disposition=disposition,
+                    verified=False,
+                    source_turn_id=source_turn_id,
+                    closed_focus_id=before_state.focusId,
+                    failure_code="verification_failed",
+                )
+                raise NativeFocusLifecycleError(
+                    "verification_failed",
+                    "The proposed Focus terminal transition did not satisfy canonical postconditions.",
+                )
+
+            document.events.append(terminal_event)
+            focus_store._atomic_write_unlocked(document)
+            persisted_document = focus_store._read_log_unlocked()
+            persisted_events = list(persisted_document.events)
+            persisted_verification = _verify_end_postcondition(
+                events=persisted_events,
+                expected_focus_id=expected_focus_id,
+                disposition=disposition,
+                terminal_event_id=terminal_event.id,
+            )
+            if not _end_verification_passed(persisted_verification):
+                _record_end_health(
+                    outcome="failed",
+                    disposition=disposition,
+                    verified=False,
+                    source_turn_id=source_turn_id,
+                    closed_focus_id=expected_focus_id,
+                    failure_code="verification_failed",
+                )
+                raise NativeFocusLifecycleError(
+                    "verification_failed",
+                    "The Focus terminal write completed, but canonical state could not verify it.",
+                )
+
+            closed_state = focus_store.reduce_events(persisted_events)
+    except NativeFocusLifecycleError:
+        raise
+    except focus_store.FocusStoreError as exc:
+        _record_end_health(
+            outcome="failed",
+            disposition=disposition,
+            verified=False,
+            source_turn_id=source_turn_id,
+            closed_focus_id=expected_focus_id,
+            failure_code="write_failed",
+        )
+        raise NativeFocusLifecycleError(
+            "write_failed",
+            "The canonical Focus store could not persist the terminal transition.",
+            status_code=503,
+        ) from exc
+    except Exception as exc:
+        _record_end_health(
+            outcome="failed",
+            disposition=disposition,
+            verified=False,
+            source_turn_id=source_turn_id,
+            closed_focus_id=expected_focus_id,
+            failure_code="write_failed",
+        )
+        raise NativeFocusLifecycleError(
+            "write_failed",
+            "The canonical Focus terminal transition could not be completed.",
+            status_code=503,
+        ) from exc
+
+    telemetry_recorded = _record_end_health(
+        outcome=disposition,
+        disposition=disposition,
+        verified=True,
+        source_turn_id=source_turn_id,
+        closed_focus_id=closed_state.focusId,
+    )
+    return NativeFocusEndResult(
+        ok=True,
+        outcome=disposition,
+        disposition=disposition,
+        verified=True,
+        closedFocus=closed_state,
+        sourceTurnId=source_turn_id,
+        verification=persisted_verification,
+        telemetryRecorded=telemetry_recorded,
+        message=_end_success_message(disposition, closed_state.title),
+    )

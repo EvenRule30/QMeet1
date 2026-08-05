@@ -15,11 +15,16 @@ class SemanticLifecycleRoutePrecedenceTests(unittest.TestCase):
         app = APP_PATH.read_text(encoding="utf-8")
 
         self.assertIn(
-            "shouldRouteExactFocusLifecycleThroughSemanticPreflight(parsedCommandMatch)",
+            "shouldRouteExactFocusLifecycleThroughSemanticPreflight(\n"
+            "        parsedCommandMatch,\n"
+            "        trimmed,\n"
+            "      )",
             app,
         )
         self.assertIn(
-            "const commandMatch = deferredExactFocusLifecycleMatch\n      ? null\n      : parsedCommandMatch;",
+            "const commandMatch = deferredSemanticFocusLifecycleMessage\n"
+            "      ? null\n"
+            "      : parsedCommandMatch;",
             app,
         )
 
@@ -28,15 +33,13 @@ class SemanticLifecycleRoutePrecedenceTests(unittest.TestCase):
         )
         defer_position = app.index("const deferredExactFocusLifecycleMatch =")
         execute_position = app.index("if (commandMatch) {", defer_position)
-        semantic_position = app.index(
-            "const semanticFocusLifecycle = await interpretSemanticFocusLifecycle(trimmed);"
-        )
+        semantic_position = app.index("const semanticFocusLifecycle =")
 
         self.assertLess(parse_position, defer_position)
         self.assertLess(defer_position, execute_position)
         self.assertLess(execute_position, semantic_position)
 
-    def test_only_start_and_update_are_deferred(self) -> None:
+    def test_all_locally_mutating_focus_lifecycle_commands_are_deferred(self) -> None:
         bridge = BRIDGE_PATH.read_text(encoding="utf-8")
         helper_match = re.search(
             r"export function shouldRouteExactFocusLifecycleThroughSemanticPreflight\([\s\S]+?\n}\n",
@@ -47,29 +50,42 @@ class SemanticLifecycleRoutePrecedenceTests(unittest.TestCase):
 
         self.assertIn("commandMatch?.command === 'start-focus-session'", helper)
         self.assertIn("commandMatch?.command === 'update-focus-session'", helper)
+        self.assertIn("commandMatch?.command === 'end-focus-session'", helper)
+        self.assertIn("commandMatch?.command === 'end-focus-with-summary'", helper)
+        self.assertIn("commandMatch?.command === 'mark-task-done'", helper)
+        self.assertIn("looksLikeFocusTerminalLanguage(originalMessage)", helper)
         self.assertNotIn("open-memory", helper)
         self.assertNotIn("show-status", helper)
 
     def test_semantic_mismatch_blocks_before_general_interpreter(self) -> None:
         app = APP_PATH.read_text(encoding="utf-8")
-        mismatch_position = app.index("if (deferredExactFocusLifecycleMatch) {")
+        mismatch_position = app.index("if (deferredSemanticFocusLifecycleMessage) {")
         interpreter_position = app.index(
             "const interpretedCommand = await interpretCommandIntent(trimmed);"
         )
 
         self.assertLess(mismatch_position, interpreter_position)
-        self.assertIn(
-            "I detected a possible Focus change, but I could not safely determine whether to update the current Focus or start a new one.",
-            app,
+        self.assertIn("I detected a possible Focus lifecycle change", app)
+
+    def test_direct_terminal_safety_gate_runs_before_all_command_parsers(self) -> None:
+        app = APP_PATH.read_text(encoding="utf-8")
+        self.assertIn("getDirectFocusTerminalCommandMatch", app)
+        direct_position = app.index("const directFocusTerminalCommandMatch =")
+        parse_position = app.index(
+            "const parsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);"
         )
+        interpreter_position = app.index(
+            "const interpretedCommand = await interpretCommandIntent(trimmed);"
+        )
+        self.assertLess(direct_position, parse_position)
+        self.assertLess(direct_position, interpreter_position)
+        self.assertIn("'Direct Focus terminal safety gate'", app)
 
     def test_forced_verified_command_does_not_loop_back_into_preflight(self) -> None:
         app = APP_PATH.read_text(encoding="utf-8")
-        self.assertIn("!forcedCommandMatch &&", app)
-        self.assertIn(
-            "semanticFocusLifecycle.commandMatch,",
-            app,
-        )
+        self.assertIn("!forcedCommandMatch && commandRoute === 'exact'", app)
+        self.assertIn("semanticFocusLifecycle.commandMatch,", app)
+        self.assertIn("directFocusTerminalCommandMatch,", app)
 
 
 if __name__ == "__main__":

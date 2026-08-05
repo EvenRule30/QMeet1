@@ -4,7 +4,7 @@ import type {
   FocusSessionCommandPayload,
 } from '../commands';
 
-export const SEMANTIC_FOCUS_LIFECYCLE_BRIDGE_VERSION = 'phase20d2a5b';
+export const SEMANTIC_FOCUS_LIFECYCLE_BRIDGE_VERSION = 'phase20d2b1';
 
 const SEMANTIC_FOCUS_MODES = new Set([
   'general',
@@ -26,24 +26,106 @@ type SemanticLifecyclePayload = {
   objective?: unknown;
   objectiveSpecified?: unknown;
   mode?: unknown;
+  forceEnd?: unknown;
+  summaryRequested?: unknown;
   confidence?: unknown;
   reason?: unknown;
   message?: unknown;
   sourceTurnId?: unknown;
 };
 
+export function shouldPreflightSemanticFocusLifecycleBeforeCommandRouting(
+  message: string,
+): boolean {
+  return looksLikeFocusTerminalLanguage(message);
+}
+
+/**
+ * Deterministic safety gate for unambiguous Focus-terminal language.
+ *
+ * This is intentionally narrow: it does not replace semantic lifecycle
+ * classification. It only prevents direct Focus completion/end statements
+ * from reaching the generic task parser when the model classifier misses.
+ */
+export function getDirectFocusTerminalCommandMatch(
+  message: string,
+): CommandMatch | null {
+  const text = normalizeText(message).toLowerCase();
+  if (!text) return null;
+
+  if (/\b(?:don't|do not|never|cancel)\b/.test(text)) return null;
+
+  // Compound summary + terminal requests still require two verified receipts.
+  if (
+    /\b(?:save|write|record|add|create)\b.{0,35}\b(?:summary|recap|note)\b/.test(
+      text,
+    )
+  ) {
+    return null;
+  }
+
+  if (!looksLikeFocusTerminalLanguage(text)) return null;
+
+  const disposition = /\b(?:complete|completed|completing|finish|finished|finishing|done)\b/.test(
+    text,
+  )
+    ? 'completed'
+    : 'ended';
+
+  return {
+    command: 'end-focus-session',
+    confirmation:
+      disposition === 'completed' ? 'Completing Focus.' : 'Ending Focus.',
+    payload: JSON.stringify({ disposition }),
+    focusSession: {
+      forceEnd: /\banyway\b/.test(text),
+    },
+  };
+}
+
+function looksLikeFocusTerminalLanguage(message: string): boolean {
+  const text = normalizeText(message).toLowerCase();
+  if (!text) return false;
+
+  const focusTarget =
+    String.raw`(?:(?:my|the|this|our)\s+)?(?:(?:current|active)\s+)?(?:focus(?:\s+session)?|session|work)`;
+  const directFocusTerminalPattern = new RegExp(
+    String.raw`\b(?:end|ended|ending|finish|finished|finishing|complete|completed|completing|close|closed|closing)\s+${focusTarget}\b|` +
+      String.raw`\b(?:done|finished|complete|completed|over)\s+(?:with\s+)?${focusTarget}\b|` +
+      String.raw`\b${focusTarget}\s+(?:is\s+|was\s+|has\s+been\s+|is\s+now\s+)?(?:done|finished|complete|completed|over)\b|` +
+      String.raw`\bmark\s+${focusTarget}\s+(?:as\s+)?(?:done|finished|complete|completed)\b|` +
+      String.raw`\bwrap(?:ped)?\s+up\s+${focusTarget}\b`,
+    'i',
+  );
+
+  return directFocusTerminalPattern.test(text);
+}
+
 export function shouldRouteExactFocusLifecycleThroughSemanticPreflight(
   commandMatch: CommandMatch | null,
+  originalMessage = '',
 ): boolean {
-  return (
+  if (
     commandMatch?.command === 'start-focus-session' ||
-    commandMatch?.command === 'update-focus-session'
+    commandMatch?.command === 'update-focus-session' ||
+    commandMatch?.command === 'end-focus-session' ||
+    commandMatch?.command === 'end-focus-with-summary'
+  ) {
+    return true;
+  }
+
+  // The legacy task parser can interpret phrases such as "I completed this
+  // focus" as a task named "this focus". Defer only those task matches
+  // whose original language clearly targets the Focus/session lifecycle.
+  return (
+    commandMatch?.command === 'mark-task-done' &&
+    looksLikeFocusTerminalLanguage(originalMessage)
   );
 }
 
 export type SemanticFocusLifecyclePreflightOutcome =
   | {
-      kind: 'update' | 'start';
+      kind: 'update' | 'start' | 'end' | 'complete';
       commandMatch: CommandMatch;
       confidence: number;
       reason: string;
@@ -99,7 +181,7 @@ function isSemanticFocusMode(value: unknown): value is SemanticFocusMode {
 
 function looksLikePossibleLifecycleMutation(message: string): boolean {
   const text = message.toLowerCase().replace(/\s+/g, ' ').trim();
-  if (!text || /\b(?:don't|do not|never|cancel|stop)\b/.test(text)) return false;
+  if (!text || /\b(?:don't|do not|never|cancel)\b/.test(text)) return false;
 
   const updateReference =
     /\b(?:focus|session|goal|objective|mode|this work|current work|work i(?:'m| am) doing|what i(?:'m| am) working on)\b/.test(
@@ -124,8 +206,20 @@ function looksLikePossibleLifecycleMutation(message: string): boolean {
     /\b(?:done|finished)\s+with\s+(?:this|that|it).{0,60}\b(?:work on|focus on|move to|switch to)\b/.test(
       text,
     );
+  const terminalTransition =
+    /\b(?:end|stop|close|leave|exit|finish|complete|wrap up|mark)\b.{0,55}\b(?:focus|session|focus mode|this work|current work)\b/.test(
+      text,
+    ) ||
+    /\b(?:focus|session|work|goal|objective)\b.{0,40}\b(?:done|finished|complete|completed|over)\b/.test(
+      text,
+    );
 
-  return (updateReference && updateLanguage) || explicitStart || durableTransition;
+  return (
+    (updateReference && updateLanguage) ||
+    explicitStart ||
+    durableTransition ||
+    terminalTransition
+  );
 }
 
 function parseErrorMessage(payload: unknown): string {
@@ -143,8 +237,27 @@ function parseErrorMessage(payload: unknown): string {
 
 function buildCommandMatch(
   payload: SemanticLifecyclePayload,
-  intent: 'update' | 'start',
+  intent: 'update' | 'start' | 'end' | 'complete',
 ): CommandMatch | null {
+  const sourceTurnId = normalizeText(payload.sourceTurnId);
+
+  if (intent === 'end' || intent === 'complete') {
+    if (payload.summaryRequested === true) return null;
+    const lifecyclePayload = JSON.stringify({
+      sourceTurnId,
+      disposition: intent === 'complete' ? 'completed' : 'ended',
+    });
+    return {
+      command: 'end-focus-session',
+      confirmation:
+        intent === 'complete' ? 'Completing Focus.' : 'Ending Focus.',
+      payload: lifecyclePayload,
+      focusSession: {
+        forceEnd: payload.forceEnd === true,
+      },
+    };
+  }
+
   const focusSession: FocusSessionCommandPayload = {};
   let hasChange = false;
 
@@ -176,7 +289,6 @@ function buildCommandMatch(
   }
 
   if (!hasChange) return null;
-  const sourceTurnId = normalizeText(payload.sourceTurnId);
   return {
     command: 'update-focus-session',
     confirmation: 'Updating Focus.',
@@ -271,7 +383,7 @@ export async function interpretSemanticFocusLifecycle(
       confidence: null,
       reason: 'The semantic Focus lifecycle contract is missing or out of sync.',
       message:
-        'The semantic Focus lifecycle bridge is out of sync, so the Focus was not changed. Restart both QMeet services after installing the complete Phase 20D2A5 files.',
+        'The semantic Focus lifecycle bridge is out of sync, so the Focus was not changed. Restart both QMeet services after installing the complete Phase 20D2B1 files.',
     };
   }
 
@@ -303,7 +415,12 @@ export async function interpretSemanticFocusLifecycle(
     };
   }
 
-  if (payload.intent === 'update' || payload.intent === 'start') {
+  if (
+    payload.intent === 'update' ||
+    payload.intent === 'start' ||
+    payload.intent === 'end' ||
+    payload.intent === 'complete'
+  ) {
     const commandMatch = buildCommandMatch(payload, payload.intent);
     if (commandMatch) {
       return {
@@ -318,7 +435,7 @@ export async function interpretSemanticFocusLifecycle(
       confidence,
       reason: reason || 'The semantic lifecycle result contained no executable fields.',
       message:
-        'I understood this as a Focus change, but no specific safe change was available to execute. The Focus was not changed.',
+        'I understood this as a Focus lifecycle change, but no specific safe operation was available to execute. The Focus was not changed.',
     };
   }
 

@@ -10,4 +10,14 @@ export default defineConfig({
     },
   },
   assetsInclude: ['**/*.svg', '**/*.csv'],
+  server: {
+    watch: {
+      ignored: [
+        '**/backend/**',
+        '**/.git/**',
+        '**/__pycache__/**',
+        '**/*.pyc',
+      ],
+    },
+  },
 })
