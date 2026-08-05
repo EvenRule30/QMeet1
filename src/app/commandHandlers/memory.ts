@@ -1,5 +1,4 @@
 export * from './memoryCore';
-
 import { handleMemoryCommand as handleMemoryCommandCore } from './memoryCore';
 import {
   formatOpenTasksReadout,
@@ -19,6 +18,19 @@ import {
   startNativeFocusVerified,
   updateNativeFocusVerified,
 } from '../lib/nativeFocusLifecycle';
+
+export const NATIVE_FOCUS_LIFECYCLE_OWNERSHIP_VERSION = 'phase20e1';
+
+type MemoryCommandName = Parameters<typeof handleMemoryCommandCore>[0]['command'];
+
+const RETIRED_LEGACY_FOCUS_LIFECYCLE_COMMANDS = new Set<MemoryCommandName>([
+  'start-focus-session',
+  'update-focus-session',
+  'resume-last-focus-session',
+  'end-focus-session',
+  'end-focus-with-summary',
+  'wrap-up-meeting-focus',
+]);
 
 type NativeFocusEndCommandEnvelope = {
   sourceTurnId?: unknown;
@@ -92,6 +104,21 @@ function describeNativeFocusEndGuard(
   return `You have an active Focus with no saved summary note: ${activeSession.title}.${goalText}${taskText} Save the Focus summary first, ${terminalInstruction}, or say "cancel" to keep it running.`;
 }
 
+function describeRetiredLegacyLifecycleBlock(command: MemoryCommandName): string {
+  if (command === 'wrap-up-meeting-focus') {
+    return (
+      'I kept the meeting Focus open because meeting wrap-up still combines summary saving, ' +
+      'follow-up task creation, and Focus completion without one verified transaction. ' +
+      'Save the meeting summary, create follow-up tasks, and complete the Focus as separate verified actions.'
+    );
+  }
+
+  return (
+    'I blocked a retired legacy Focus lifecycle path because it did not reach the verified native executor. ' +
+    'No Focus change was made.'
+  );
+}
+
 export async function handleMemoryCommand(
   commandMatch: Parameters<typeof handleMemoryCommandCore>[0],
   deps: Parameters<typeof handleMemoryCommandCore>[1],
@@ -115,7 +142,6 @@ export async function handleMemoryCommand(
       commandMatch.payload?.trim() ||
       'Focus session';
     const requestedMode = commandMatch.focusSession?.mode;
-
     try {
       const result = await startNativeFocusVerified({
         title: requestedTitle,
@@ -129,7 +155,6 @@ export async function handleMemoryCommand(
 
       applyVerifiedFocusProjection(activeSession);
       deps.setActivePanel('memory');
-
       return {
         handled: true,
         confirmationContent: result.message,
@@ -150,7 +175,6 @@ export async function handleMemoryCommand(
     const hasTitle = typeof payload.title === 'string';
     const hasObjective = typeof payload.goal === 'string';
     const hasMode = typeof payload.mode === 'string';
-
     try {
       const result = await updateNativeFocusVerified({
         ...(hasTitle ? { title: payload.title } : {}),
@@ -162,10 +186,8 @@ export async function handleMemoryCommand(
         result,
         hasMode ? payload.mode : undefined,
       );
-
       applyVerifiedFocusProjection(activeSession);
       deps.setActivePanel('memory');
-
       return {
         handled: true,
         confirmationContent: result.message,
@@ -196,7 +218,6 @@ export async function handleMemoryCommand(
 
       applyVerifiedFocusProjection(activeSession);
       deps.setActivePanel('memory');
-
       return {
         handled: true,
         confirmationContent: result.message,
@@ -234,7 +255,6 @@ export async function handleMemoryCommand(
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }
-
     const endCommand = parseNativeFocusEndCommand(commandMatch.payload);
     const forceEnd = Boolean(commandMatch.focusSession?.forceEnd);
     if (!forceEnd && shouldGuardNativeFocusEnd(activeSession)) {
@@ -255,7 +275,6 @@ export async function handleMemoryCommand(
           : {}),
       });
       applyVerifiedFocusProjection(null);
-
       return {
         handled: true,
         confirmationContent: result.message,
@@ -269,6 +288,21 @@ export async function handleMemoryCommand(
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }
+  }
+
+  if (RETIRED_LEGACY_FOCUS_LIFECYCLE_COMMANDS.has(commandMatch.command)) {
+    console.error(
+      'Retired legacy Focus lifecycle command reached the memoryCore fallback:',
+      commandMatch.command,
+    );
+    deps.setActivePanel('memory');
+    return {
+      handled: true,
+      confirmationContent: describeRetiredLegacyLifecycleBlock(
+        commandMatch.command,
+      ),
+      shouldSpeakConfirmation: deps.voiceOutputEnabled,
+    };
   }
 
   return handleMemoryCommandCore(commandMatch, deps);
