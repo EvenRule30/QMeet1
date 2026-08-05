@@ -508,6 +508,81 @@ def _result_tasks(raw_tasks: list[dict[str, object]]) -> list[NativeFocusTask]:
     return [NativeFocusTask.model_validate(task) for task in raw_tasks]
 
 
+def get_active_focus_linked_task_ids() -> set[str]:
+    """Return task IDs protected by the sole open canonical Focus.
+
+    Compatibility memory writes may still replace ordinary Tasks, but they must not
+    silently delete task records that a verified open Focus receipt still owns.
+    """
+
+    with focus_store._STORE_LOCK:
+        events = list(focus_store._read_log_unlocked().events)
+        open_focus_ids = _open_focus_ids(events)
+        if len(open_focus_ids) != 1:
+            return set()
+        focus_id = open_focus_ids[0]
+        with _RELATIONSHIP_LOCK:
+            document = _read_relationships_unlocked()
+            protected: set[str] = set()
+            for record in _task_relationship_records(document, focus_id):
+                protected.update(_string_list(record.get("taskIds")))
+            return protected
+
+
+def _replace_source_turn_attachment(
+    document: dict[str, object],
+    *,
+    focus_id: str,
+    source_turn_id: str,
+    attachment: dict[str, object],
+) -> dict[str, object]:
+    next_document = json.loads(json.dumps(document))
+    tasks_by_focus = next_document.setdefault("tasksByFocusId", {})
+    if not isinstance(tasks_by_focus, dict):
+        tasks_by_focus = {}
+        next_document["tasksByFocusId"] = tasks_by_focus
+    records = _task_relationship_records(next_document, focus_id)
+    replaced = False
+    next_records: list[dict[str, object]] = []
+    for record in records:
+        if (
+            not replaced
+            and str(record.get("sourceTurnId", "")).strip() == source_turn_id
+        ):
+            next_records.append(attachment)
+            replaced = True
+        else:
+            next_records.append(record)
+    if not replaced:
+        next_records.insert(0, attachment)
+    tasks_by_focus[focus_id] = next_records[:_MAX_RECEIPTS_PER_FOCUS]
+    return next_document
+
+
+def _build_task_attachment(
+    *,
+    focus_id: str,
+    source_turn_id: str,
+    requested_hash: str,
+    tasks: list[dict[str, object]],
+    created_task_ids: list[str],
+    receipt_id: str,
+    linked_at: str,
+) -> dict[str, object]:
+    return {
+        "receiptId": receipt_id,
+        "focusId": focus_id,
+        "tasks": [_task_core(task) for task in tasks],
+        "taskIds": [task["id"] for task in tasks],
+        "createdTaskIds": created_task_ids,
+        "requestedTitlesHash": requested_hash,
+        "taskIdentityHash": _task_identity_hash(tasks),
+        "linkedAt": linked_at,
+        "sourceTurnId": source_turn_id,
+        "source": _TASK_SOURCE,
+    }
+
+
 def link_focus_tasks_verified(
     request: NativeFocusTasksRequest,
 ) -> NativeFocusTasksResult:
@@ -566,16 +641,124 @@ def link_focus_tasks_verified(
                             receipt_id=receipt_id,
                         )
                         if not _verification_passed(verification):
-                            _record_health(
-                                outcome="failed",
+                            repairable_missing_tasks = (
+                                verification.activeFocusMatches
+                                and verification.relationshipPersisted
+                                and verification.sourceTurnUnique
+                                and not verification.tasksPersisted
+                            )
+                            if not repairable_missing_tasks:
+                                _record_health(
+                                    outcome="failed",
+                                    focus_id=focus_id,
+                                    task_ids=task_ids_for_health,
+                                    source_turn_id=source_turn_id,
+                                    failure_code="verification_failed",
+                                )
+                                raise NativeFocusTasksError(
+                                    "verification_failed",
+                                    "The existing Focus task receipt did not verify canonically.",
+                                )
+
+                            selected_tasks, next_memory_tasks, created_task_ids = (
+                                _select_or_create_tasks(memory_before, requested_titles)
+                            )
+                            task_ids_for_health = [
+                                task["id"] for task in selected_tasks
+                            ]
+                            linked_at = _now_iso()
+                            repaired_attachment = _build_task_attachment(
+                                focus_id=focus_id,
+                                source_turn_id=source_turn_id,
+                                requested_hash=requested_hash,
+                                tasks=selected_tasks,
+                                created_task_ids=created_task_ids,
+                                receipt_id=receipt_id,
+                                linked_at=linked_at,
+                            )
+                            try:
+                                memory_store._write_payload_unlocked(
+                                    next_memory_tasks,
+                                    memory_before["recentActions"],
+                                    memory_before["notes"],
+                                    memory_before["activeSession"],
+                                    memory_before["recentFocusSessions"],
+                                    memory_before["visualContext"],
+                                    preserve_active_session=False,
+                                    preserve_recent_focus_sessions=False,
+                                    preserve_visual_context=False,
+                                )
+                                repaired_relationships = _replace_source_turn_attachment(
+                                    relationships_before,
+                                    focus_id=focus_id,
+                                    source_turn_id=source_turn_id,
+                                    attachment=repaired_attachment,
+                                )
+                                _write_relationships_unlocked(repaired_relationships)
+                            except Exception as exc:
+                                try:
+                                    _restore_memory_unlocked(memory_before)
+                                    _write_relationships_unlocked(relationships_before)
+                                except Exception:
+                                    pass
+                                raise NativeFocusTasksError(
+                                    "write_failed",
+                                    "QMeet could not repair the Focus task receipt.",
+                                    status_code=500,
+                                ) from exc
+
+                            verification = _verify_tasks(
+                                focus_id=focus_id,
+                                tasks=selected_tasks,
+                                requested_titles=requested_titles,
+                                source_turn_id=source_turn_id,
+                                receipt_id=receipt_id,
+                            )
+                            if not _verification_passed(verification):
+                                _restore_memory_unlocked(memory_before)
+                                _write_relationships_unlocked(relationships_before)
+                                _record_health(
+                                    outcome="failed",
+                                    focus_id=focus_id,
+                                    task_ids=task_ids_for_health,
+                                    source_turn_id=source_turn_id,
+                                    failure_code="verification_failed",
+                                )
+                                raise NativeFocusTasksError(
+                                    "verification_failed",
+                                    "Canonical state did not verify the repaired Focus task receipt.",
+                                )
+
+                            memory_after = memory_store._read_payload_unlocked()
+                            outcome: Literal["created", "linked"] = (
+                                "created" if created_task_ids else "linked"
+                            )
+                            telemetry = _record_health(
+                                outcome=outcome,
                                 focus_id=focus_id,
                                 task_ids=task_ids_for_health,
                                 source_turn_id=source_turn_id,
-                                failure_code="verification_failed",
+                                verified=True,
                             )
-                            raise NativeFocusTasksError(
-                                "verification_failed",
-                                "The existing Focus task receipt did not verify canonically.",
+                            action = "Restored" if created_task_ids else "Relinked"
+                            return NativeFocusTasksResult(
+                                ok=True,
+                                outcome=outcome,
+                                verified=True,
+                                focusId=focus_id,
+                                focusTitle=focus_state.title,
+                                tasks=_result_tasks(selected_tasks),
+                                memoryTasks=_result_tasks(memory_after["tasks"]),
+                                createdTaskIds=created_task_ids,
+                                receiptId=receipt_id,
+                                linkedAt=linked_at,
+                                sourceTurnId=source_turn_id,
+                                verification=verification,
+                                telemetryRecorded=telemetry,
+                                message=(
+                                    f"{action} {len(selected_tasks)} verified task"
+                                    f"{'s' if len(selected_tasks) != 1 else ''} for {focus_state.title}."
+                                ),
                             )
                         memory_after = memory_store._read_payload_unlocked()
                         telemetry = _record_health(
@@ -615,18 +798,15 @@ def link_focus_tasks_verified(
                             f"{focus_id}:{source_turn_id}:{requested_hash}".encode("utf-8")
                         ).hexdigest()[:24]
                     )
-                    attachment = {
-                        "receiptId": receipt_id,
-                        "focusId": focus_id,
-                        "tasks": [_task_core(task) for task in selected_tasks],
-                        "taskIds": task_ids_for_health,
-                        "createdTaskIds": created_task_ids,
-                        "requestedTitlesHash": requested_hash,
-                        "taskIdentityHash": _task_identity_hash(selected_tasks),
-                        "linkedAt": linked_at,
-                        "sourceTurnId": source_turn_id,
-                        "source": _TASK_SOURCE,
-                    }
+                    attachment = _build_task_attachment(
+                        focus_id=focus_id,
+                        source_turn_id=source_turn_id,
+                        requested_hash=requested_hash,
+                        tasks=selected_tasks,
+                        created_task_ids=created_task_ids,
+                        receipt_id=receipt_id,
+                        linked_at=linked_at,
+                    )
                     try:
                         memory_store._write_payload_unlocked(
                             next_memory_tasks,

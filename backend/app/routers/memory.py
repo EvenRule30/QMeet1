@@ -1,13 +1,10 @@
 from fastapi import APIRouter, HTTPException
 
+from app.focus.tasks import get_active_focus_linked_task_ids
 from app.memory_store import (
     MemoryStoreError,
-    clear_active_session,
-    clear_completed_memory_tasks,
-    clear_memory_context,
     clear_memory_notes,
     clear_recent_actions,
-    clear_recent_focus_sessions,
     clear_visual_context,
     create_memory_note,
     create_memory_task,
@@ -16,7 +13,6 @@ from app.memory_store import (
     delete_memory_note,
     delete_memory_task,
     delete_recent_action,
-    delete_recent_focus_session,
     delete_visual_observation,
     export_memory_context,
     get_active_session,
@@ -28,16 +24,13 @@ from app.memory_store import (
     list_memory_tasks,
     list_recent_actions,
     list_recent_focus_sessions,
-    replace_active_session,
     replace_memory_context,
     replace_memory_notes,
     replace_memory_tasks,
     replace_recent_actions,
-    replace_recent_focus_sessions,
     replace_visual_context,
-    update_active_session,
-    update_visual_context,
     update_memory_task,
+    update_visual_context,
 )
 from app.schemas import (
     ActiveSessionClearResponse,
@@ -79,8 +72,15 @@ from app.schemas import (
     VisualObservationDeleteResponse,
 )
 
-
 router = APIRouter(prefix="/api/memory", tags=["memory"])
+
+# Phase 20G contract: the broad compatibility memory API may carry a Focus
+# projection for reads, but it can no longer authorize or mutate that projection.
+FOCUS_PROJECTION_READ_ONLY = True
+_RETIRED_FOCUS_WRITE_DETAIL = (
+    "This compatibility Focus projection write route is retired. "
+    "Use /api/focus/lifecycle verified native operations instead."
+)
 
 
 def _model_to_dict(model) -> dict:
@@ -93,10 +93,95 @@ def _model_to_dict(model) -> dict:
 
 def _model_fields_set(model) -> set[str]:
     """Return fields explicitly sent by the client for Pydantic v1 or v2."""
-
     if hasattr(model, "model_fields_set"):
         return set(model.model_fields_set)
     return set(getattr(model, "__fields_set__", set()))
+
+
+def _preserve_focus_projection() -> tuple[dict | None, list[dict]]:
+    """Read the current compatibility projection for pass-through preservation.
+
+    Generic memory writes are still allowed to replace Tasks, Notes, Actions, and
+    visual context. Their browser payload is never trusted for activeSession or
+    recentFocusSessions; those fields are copied from the backend's current state.
+    """
+
+    current = get_memory_context()
+    active_session = current.get("activeSession")
+    recent_focus_sessions = current.get("recentFocusSessions")
+    return (
+        active_session if isinstance(active_session, dict) else None,
+        recent_focus_sessions if isinstance(recent_focus_sessions, list) else [],
+    )
+
+
+def _task_id(task: object) -> str:
+    if not isinstance(task, dict):
+        return ""
+    return str(task.get("id", "")).strip()
+
+
+def _preserve_active_focus_linked_tasks(requested_tasks: list[dict]) -> list[dict]:
+    """Protect the canonical identity of tasks owned by the open Focus.
+
+    Browser compatibility writes may complete or reopen a linked task, but they
+    cannot delete it or rewrite the id/title/createdAt tuple verified by the Focus
+    relationship receipt. Ordinary unlinked tasks remain browser-managed.
+    """
+
+    protected_ids = get_active_focus_linked_task_ids()
+    if not protected_ids:
+        return requested_tasks
+
+    current_tasks = list_memory_tasks().get("tasks", [])
+    canonical_by_id = {
+        _task_id(task): task
+        for task in current_tasks
+        if _task_id(task) in protected_ids
+    }
+    next_tasks: list[dict] = []
+    seen: set[str] = set()
+    for task in requested_tasks:
+        task_id = _task_id(task)
+        canonical = canonical_by_id.get(task_id)
+        if canonical is None:
+            next_tasks.append(task)
+            if task_id:
+                seen.add(task_id)
+            continue
+
+        protected_task = dict(canonical)
+        completed_at = task.get("completedAt") if isinstance(task, dict) else None
+        if isinstance(completed_at, str) and completed_at.strip():
+            protected_task["completedAt"] = completed_at.strip()
+        else:
+            protected_task.pop("completedAt", None)
+        next_tasks.append(protected_task)
+        seen.add(task_id)
+
+    for task_id, canonical in canonical_by_id.items():
+        if task_id not in seen:
+            next_tasks.append(dict(canonical))
+    return next_tasks
+
+
+def _protected_focus_task(task_id: str) -> bool:
+    return task_id.strip() in get_active_focus_linked_task_ids()
+
+
+def _retired_focus_task_delete() -> None:
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            "This task is linked to the active verified Focus and cannot be deleted "
+            "through compatibility memory controls. End the Focus first, or keep "
+            "the task and mark it complete."
+        ),
+    )
+
+
+def _retired_focus_projection_write() -> None:
+    raise HTTPException(status_code=409, detail=_RETIRED_FOCUS_WRITE_DETAIL)
 
 
 @router.get("/status", response_model=MemoryStatusResponse)
@@ -129,23 +214,20 @@ async def memory_context():
 async def memory_replace_context(req: MemoryContextReplaceRequest):
     try:
         sent_fields = _model_fields_set(req)
-        recent_focus_sessions = (
-            [_model_to_dict(session) for session in req.recentFocusSessions]
-            if "recentFocusSessions" in sent_fields
-            else None
-        )
+        active_session, recent_focus_sessions = _preserve_focus_projection()
         visual_context = (
             _model_to_dict(req.visualContext)
             if "visualContext" in sent_fields
             else None
         )
-
         return MemoryContextResponse(
             **replace_memory_context(
-                tasks=[_model_to_dict(task) for task in req.tasks],
+                tasks=_preserve_active_focus_linked_tasks(
+                    [_model_to_dict(task) for task in req.tasks]
+                ),
                 recent_actions=[_model_to_dict(action) for action in req.recentActions],
                 notes=[_model_to_dict(note) for note in req.notes],
-                active_session=_model_to_dict(req.activeSession),
+                active_session=active_session,
                 recent_focus_sessions=recent_focus_sessions,
                 visual_context=visual_context,
             )
@@ -175,15 +257,16 @@ async def memory_export_context():
 @router.post("/import", response_model=MemoryContextResponse)
 async def memory_import_context(req: MemoryContextImportRequest):
     try:
+        active_session, recent_focus_sessions = _preserve_focus_projection()
         return MemoryContextResponse(
             **import_memory_context(
-                tasks=[_model_to_dict(task) for task in req.tasks],
+                tasks=_preserve_active_focus_linked_tasks(
+                    [_model_to_dict(task) for task in req.tasks]
+                ),
                 recent_actions=[_model_to_dict(action) for action in req.recentActions],
                 notes=[_model_to_dict(note) for note in req.notes],
-                active_session=_model_to_dict(req.activeSession),
-                recent_focus_sessions=[
-                    _model_to_dict(session) for session in req.recentFocusSessions
-                ],
+                active_session=active_session,
+                recent_focus_sessions=recent_focus_sessions,
                 visual_context=_model_to_dict(req.visualContext),
             )
         )
@@ -198,15 +281,10 @@ async def memory_import_context(req: MemoryContextImportRequest):
 
 @router.post("/clear", response_model=MemoryContextClearResponse)
 async def memory_clear_context():
-    try:
-        return MemoryContextClearResponse(**clear_memory_context())
-    except MemoryStoreError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-    except Exception:
-        raise HTTPException(
-            status_code=500,
-            detail="QMeet could not clear memory context.",
-        )
+    # A broad clear previously erased the compatibility Focus projection as a
+    # side effect. Phase 20G retires that ambiguous write; callers must clear
+    # Notes, Tasks, Actions, or visual context through their scoped endpoints.
+    _retired_focus_projection_write()
 
 
 @router.get("/session", response_model=ActiveSessionResponse)
@@ -223,55 +301,18 @@ async def memory_active_session():
 
 
 @router.put("/session", response_model=ActiveSessionResponse)
-async def memory_replace_active_session(req: ActiveSessionReplaceRequest):
-    try:
-        return ActiveSessionResponse(
-            **replace_active_session(_model_to_dict(req.activeSession))
-        )
-    except MemoryStoreError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except Exception:
-        raise HTTPException(
-            status_code=500,
-            detail="QMeet could not save the active session.",
-        )
+async def memory_replace_active_session(_req: ActiveSessionReplaceRequest):
+    _retired_focus_projection_write()
 
 
 @router.patch("/session", response_model=ActiveSessionResponse)
-async def memory_update_active_session(req: ActiveSessionUpdateRequest):
-    try:
-        sent_fields = _model_fields_set(req)
-        return ActiveSessionResponse(
-            **update_active_session(
-                title=req.title if "title" in sent_fields else None,
-                mode=req.mode if "mode" in sent_fields else None,
-                goal=req.goal if "goal" in sent_fields else None,
-                pinned_note_ids=req.pinnedNoteIds if "pinnedNoteIds" in sent_fields else None,
-                linked_task_ids=req.linkedTaskIds if "linkedTaskIds" in sent_fields else None,
-                summary=req.summary if "summary" in sent_fields else None,
-                update_summary="summary" in sent_fields,
-            )
-        )
-    except MemoryStoreError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except Exception:
-        raise HTTPException(
-            status_code=500,
-            detail="QMeet could not update the active session.",
-        )
+async def memory_update_active_session(_req: ActiveSessionUpdateRequest):
+    _retired_focus_projection_write()
 
 
 @router.delete("/session", response_model=ActiveSessionClearResponse)
 async def memory_clear_active_session():
-    try:
-        return ActiveSessionClearResponse(**clear_active_session())
-    except MemoryStoreError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-    except Exception:
-        raise HTTPException(
-            status_code=500,
-            detail="QMeet could not clear the active session.",
-        )
+    _retired_focus_projection_write()
 
 
 @router.get("/sessions/recent", response_model=RecentFocusSessionsResponse)
@@ -288,49 +329,23 @@ async def memory_recent_focus_sessions():
 
 
 @router.put("/sessions/recent", response_model=RecentFocusSessionsResponse)
-async def memory_replace_recent_focus_sessions(req: RecentFocusSessionsReplaceRequest):
-    try:
-        return RecentFocusSessionsResponse(
-            **replace_recent_focus_sessions(
-                [_model_to_dict(session) for session in req.recentFocusSessions]
-            )
-        )
-    except MemoryStoreError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-    except Exception:
-        raise HTTPException(
-            status_code=500,
-            detail="QMeet could not save recent focus sessions.",
-        )
+async def memory_replace_recent_focus_sessions(
+    _req: RecentFocusSessionsReplaceRequest,
+):
+    _retired_focus_projection_write()
 
 
 @router.post("/sessions/recent/clear", response_model=RecentFocusSessionsClearResponse)
 async def memory_clear_recent_focus_sessions():
-    try:
-        return RecentFocusSessionsClearResponse(**clear_recent_focus_sessions())
-    except MemoryStoreError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-    except Exception:
-        raise HTTPException(
-            status_code=500,
-            detail="QMeet could not clear recent focus sessions.",
-        )
+    _retired_focus_projection_write()
 
 
 @router.delete(
     "/sessions/recent/{session_id}",
     response_model=RecentFocusSessionDeleteResponse,
 )
-async def memory_delete_recent_focus_session(session_id: str):
-    try:
-        return RecentFocusSessionDeleteResponse(**delete_recent_focus_session(session_id))
-    except MemoryStoreError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-    except Exception:
-        raise HTTPException(
-            status_code=500,
-            detail="QMeet could not delete recent focus session.",
-        )
+async def memory_delete_recent_focus_session(_session_id: str):
+    _retired_focus_projection_write()
 
 
 @router.get("/visual", response_model=VisualContextResponse)
@@ -459,8 +474,11 @@ async def memory_tasks():
 @router.put("/tasks", response_model=MemoryTasksResponse)
 async def memory_replace_tasks(req: MemoryTasksReplaceRequest):
     try:
+        requested_tasks = [_model_to_dict(task) for task in req.tasks]
         return MemoryTasksResponse(
-            **replace_memory_tasks([_model_to_dict(task) for task in req.tasks])
+            **replace_memory_tasks(
+                _preserve_active_focus_linked_tasks(requested_tasks)
+            )
         )
     except MemoryStoreError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -487,7 +505,25 @@ async def memory_create_task(req: MemoryTaskCreateRequest):
 @router.post("/tasks/clear-completed", response_model=MemoryClearCompletedResponse)
 async def memory_clear_completed_tasks():
     try:
-        return MemoryClearCompletedResponse(**clear_completed_memory_tasks())
+        current_tasks = list_memory_tasks().get("tasks", [])
+        protected_ids = get_active_focus_linked_task_ids()
+        next_tasks = [
+            task
+            for task in current_tasks
+            if not task.get("completedAt") or _task_id(task) in protected_ids
+        ]
+        removed_count = len(current_tasks) - len(next_tasks)
+        response = replace_memory_tasks(next_tasks)
+        return MemoryClearCompletedResponse(
+            ok=True,
+            provider=response.get("provider", "local-json"),
+            removedCount=removed_count,
+            tasks=response.get("tasks", next_tasks),
+            message=(
+                f"Cleared {removed_count} completed task"
+                f"{'s' if removed_count != 1 else ''}."
+            ),
+        )
     except MemoryStoreError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     except Exception:
@@ -501,6 +537,28 @@ async def memory_clear_completed_tasks():
 async def memory_update_task(task_id: str, req: MemoryTaskUpdateRequest):
     try:
         sent_fields = _model_fields_set(req)
+        if _protected_focus_task(task_id) and "title" in sent_fields:
+            current_task = next(
+                (
+                    task
+                    for task in list_memory_tasks().get("tasks", [])
+                    if _task_id(task) == task_id.strip()
+                ),
+                None,
+            )
+            current_title = (
+                str(current_task.get("title", "")).strip()
+                if isinstance(current_task, dict)
+                else ""
+            )
+            if req.title.strip() and req.title.strip() != current_title:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "The title of a task linked to the active verified Focus "
+                        "cannot be changed through compatibility memory controls."
+                    ),
+                )
         return MemoryTasksResponse(
             **update_memory_task(
                 task_id=task_id,
@@ -509,6 +567,8 @@ async def memory_update_task(task_id: str, req: MemoryTaskUpdateRequest):
                 update_completed_at="completedAt" in sent_fields,
             )
         )
+    except HTTPException:
+        raise
     except MemoryStoreError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception:
@@ -521,7 +581,11 @@ async def memory_update_task(task_id: str, req: MemoryTaskUpdateRequest):
 @router.delete("/tasks/{task_id}", response_model=MemoryTaskDeleteResponse)
 async def memory_delete_task(task_id: str):
     try:
+        if _protected_focus_task(task_id):
+            _retired_focus_task_delete()
         return MemoryTaskDeleteResponse(**delete_memory_task(task_id))
+    except HTTPException:
+        raise
     except MemoryStoreError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except Exception:

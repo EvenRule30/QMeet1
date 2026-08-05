@@ -73,6 +73,10 @@ class NativeCalendarFocusPrepInstallContractPhase20FTests(unittest.TestCase):
         self.assertIn("calendarEventMatchesExpected", self.client)
         self.assertIn("createCalendarPrepSourceTurnId", self.client)
         self.assertIn("stableCalendarFingerprint", self.client)
+        self.assertIn("calendarSourceTurnBelongsToRequest", self.client)
+        self.assertIn("resolvedSourceTurnId", self.client)
+        self.assertIn("_resolve_calendar_source_turn", self.calendar_prep)
+        self.assertIn("_reuse_active_calendar_focus_receipt", self.calendar_prep)
 
     def test_memory_wrapper_owns_calendar_prep_before_quarantine_and_fallback(self) -> None:
         native_position = self.memory.index(
@@ -127,7 +131,9 @@ class NativeCalendarFocusPrepInstallContractPhase20FTests(unittest.TestCase):
         ):
             self.assertIn(operation, self.ownership)
         self.assertIn("readyForLegacyProjectionRetirement", self.ownership)
-        self.assertIn("remainingBrowserOwnedWriteSurfaces=[]", self.ownership)
+        self.assertIn("def _audit_projection_retirement", self.ownership)
+        self.assertIn("remainingBrowserOwnedWriteSurfaces", self.ownership)
+        self.assertIn("remainingSurfaces=remaining", self.ownership)
         self.assertIn('"prepare-calendar-focus"', self.ownership)
         self.assertIn('"/ownership-readiness"', self.router)
         self.assertIn('"ownershipReadiness"', self.router)

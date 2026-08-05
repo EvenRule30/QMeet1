@@ -93,6 +93,23 @@ function createCalendarPrepSourceTurnId(event: CalendarEvent): string {
   return `calendar-focus-${stableCalendarFingerprint(fingerprint)}`;
 }
 
+function calendarSourceTurnBelongsToRequest(
+  resolvedSourceTurnId: string,
+  requestedSourceTurnId: string,
+): boolean {
+  if (resolvedSourceTurnId === requestedSourceTurnId) return true;
+  const cyclePrefix = `${requestedSourceTurnId}-cycle-`;
+  if (!resolvedSourceTurnId.startsWith(cyclePrefix)) return false;
+  const cycleText = resolvedSourceTurnId.slice(cyclePrefix.length);
+  const cycleNumber = Number(cycleText);
+  return (
+    /^\d+$/.test(cycleText) &&
+    Number.isSafeInteger(cycleNumber) &&
+    cycleNumber >= 2 &&
+    String(cycleNumber) === cycleText
+  );
+}
+
 function normalizeCalendarEvent(value: unknown): CalendarEvent | null {
   if (!value || typeof value !== 'object') return null;
   const candidate = value as Record<string, unknown>;
@@ -398,7 +415,14 @@ function validateCalendarPrepPayload(
   const event = normalizeCalendarEvent(payload.event);
   const focusReceipt = payload.focusReceipt;
   const expectedTitles = buildCalendarPrepTaskTitles(expectedEvent);
-  if (!isVerifiedNativeFocusStartResult(focusReceipt, expectedSourceTurnId)) {
+  const resolvedSourceTurnId = normalizeText(payload.sourceTurnId);
+  if (
+    !calendarSourceTurnBelongsToRequest(
+      resolvedSourceTurnId,
+      expectedSourceTurnId,
+    ) ||
+    !isVerifiedNativeFocusStartResult(focusReceipt, resolvedSourceTurnId)
+  ) {
     throw new NativeCalendarFocusPrepClientError(
       'The calendar response did not contain a verified canonical Focus start receipt.',
       'verification_failed',
@@ -408,7 +432,7 @@ function validateCalendarPrepPayload(
     payload.taskReceipt,
     focusReceipt.activeFocus.focusId,
     expectedTitles,
-    expectedSourceTurnId,
+    resolvedSourceTurnId,
   );
   const outcome = payload.outcome;
   const valid =
@@ -416,7 +440,10 @@ function validateCalendarPrepPayload(
     payload.operation === 'prepare_calendar_focus' &&
     (outcome === 'created' || outcome === 'linked' || outcome === 'reused') &&
     payload.verified === true &&
-    normalizeText(payload.sourceTurnId) === expectedSourceTurnId &&
+    calendarSourceTurnBelongsToRequest(
+      resolvedSourceTurnId,
+      expectedSourceTurnId,
+    ) &&
     Boolean(normalizeText(payload.message)) &&
     event !== null &&
     calendarEventMatchesExpected(event, expectedEvent) &&
@@ -447,7 +474,7 @@ function validateCalendarPrepPayload(
     event,
     focusReceipt,
     taskReceipt,
-    sourceTurnId: expectedSourceTurnId,
+    sourceTurnId: resolvedSourceTurnId,
     message: normalizeText(payload.message),
   };
 }

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import re
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -30,9 +33,9 @@ class NativeFocusOwnershipOperation(BaseModel):
 class NativeFocusLegacyProjectionStatus(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    retired: bool = True
-    fallbackBlocked: bool = True
-    ownershipVersion: str = "phase20f"
+    retired: bool
+    fallbackBlocked: bool
+    ownershipVersion: str
     quarantinedCommands: list[str] = Field(default_factory=list)
     remainingBrowserOwnedWriteSurfaces: list[str] = Field(default_factory=list)
 
@@ -64,6 +67,32 @@ _QUARANTINED_COMMANDS = [
     "create-meeting-follow-up-tasks",
     "prepare-calendar-focus",
 ]
+
+_CALENDAR_LEGACY_MARKERS = {
+    "replaceActiveSession": "calendar hook imports the legacy active-session writer",
+    "replaceMemoryTasks": "calendar hook imports the legacy bulk-task writer",
+    "qmeet-calendar-focus-prep-command": "calendar hook still listens for the legacy prep event",
+    "prepareFocusFromNextCalendarEvent": "calendar hook still exposes the browser-owned prep executor",
+    "createCalendarFocusSession": "calendar hook still creates browser-owned Focus identities",
+    "applyCalendarFocusSession": "calendar hook still writes browser Focus storage directly",
+}
+
+_MEMORY_ROUTER_LEGACY_MARKERS = {
+    "**replace_active_session(": "compatibility memory router can replace the Focus projection",
+    "**update_active_session(": "compatibility memory router can patch the Focus projection",
+    "**clear_active_session(": "compatibility memory router can clear the Focus projection",
+    "**replace_recent_focus_sessions(": "compatibility memory router can replace Focus history",
+    "**clear_recent_focus_sessions(": "compatibility memory router can clear Focus history",
+    "**delete_recent_focus_session(": "compatibility memory router can delete Focus history",
+}
+
+
+class _ProjectionAudit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ownershipVersion: str
+    fallbackBlocked: bool
+    remainingSurfaces: list[str] = Field(default_factory=list)
 
 
 def _section(document: dict[str, object], key: str) -> dict[str, object]:
@@ -111,6 +140,97 @@ def _operation(
     )
 
 
+def _repository_root() -> Path:
+    configured = os.getenv("QMEET_REPO_ROOT", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return Path(__file__).resolve().parents[3]
+
+
+def _read_source(root: Path, relative_path: str) -> tuple[str, str | None]:
+    path = root / relative_path
+    try:
+        return path.read_text(encoding="utf-8"), None
+    except OSError as exc:
+        return "", f"{relative_path}: source could not be inspected ({exc.__class__.__name__})"
+
+
+def _audit_projection_retirement() -> _ProjectionAudit:
+    root = _repository_root()
+    remaining: list[str] = []
+
+    calendar_path = "src/app/hooks/useCalendarController.ts"
+    calendar_source, calendar_error = _read_source(root, calendar_path)
+    if calendar_error:
+        remaining.append(calendar_error)
+    else:
+        for marker, description in _CALENDAR_LEGACY_MARKERS.items():
+            if marker in calendar_source:
+                remaining.append(f"{calendar_path}: {description}")
+
+    memory_router_path = "backend/app/routers/memory.py"
+    memory_router_source, memory_router_error = _read_source(root, memory_router_path)
+    if memory_router_error:
+        remaining.append(memory_router_error)
+    else:
+        if "FOCUS_PROJECTION_READ_ONLY = True" not in memory_router_source:
+            remaining.append(
+                f"{memory_router_path}: generic memory writes do not declare the Focus projection read-only"
+            )
+        if "_preserve_focus_projection()" not in memory_router_source:
+            remaining.append(
+                f"{memory_router_path}: generic memory writes do not preserve backend Focus projection fields"
+            )
+        if "status_code=409" not in memory_router_source or (
+            "_retired_focus_projection_write()" not in memory_router_source
+        ):
+            remaining.append(
+                f"{memory_router_path}: direct compatibility Focus writes are not retired with HTTP 409"
+            )
+        for marker, description in _MEMORY_ROUTER_LEGACY_MARKERS.items():
+            if marker in memory_router_source:
+                remaining.append(f"{memory_router_path}: {description}")
+
+    wrapper_path = "src/app/commandHandlers/memory.ts"
+    wrapper_source, wrapper_error = _read_source(root, wrapper_path)
+    ownership_version = "unknown"
+    fallback_blocked = False
+    if wrapper_error:
+        remaining.append(wrapper_error)
+    else:
+        version_match = re.search(
+            r"NATIVE_FOCUS_LIFECYCLE_OWNERSHIP_VERSION\s*=\s*['\"]([^'\"]+)['\"]",
+            wrapper_source,
+        )
+        if version_match:
+            ownership_version = version_match.group(1).strip()
+        else:
+            remaining.append(f"{wrapper_path}: ownership version declaration is missing")
+
+        guard_index = wrapper_source.find(
+            "RETIRED_LEGACY_FOCUS_OWNERSHIP_COMMANDS.has(commandMatch.command)"
+        )
+        fallback_index = wrapper_source.rfind(
+            "return handleMemoryCommandCore(commandMatch, deps)"
+        )
+        commands_present = all(
+            f"'{command}'" in wrapper_source or f'"{command}"' in wrapper_source
+            for command in _QUARANTINED_COMMANDS
+        )
+        fallback_blocked = (
+            guard_index >= 0
+            and fallback_index >= 0
+            and guard_index < fallback_index
+            and commands_present
+        )
+
+    return _ProjectionAudit(
+        ownershipVersion=ownership_version,
+        fallbackBlocked=fallback_blocked,
+        remainingSurfaces=remaining,
+    )
+
+
 def get_native_focus_ownership_readiness() -> NativeFocusOwnershipReadiness:
     lifecycle_health = get_native_focus_lifecycle_health()
     summary_health = get_native_focus_summary_health()
@@ -130,11 +250,27 @@ def get_native_focus_ownership_readiness() -> NativeFocusOwnershipReadiness:
         ),
     ]
 
+    projection_audit = _audit_projection_retirement()
+    legacy_projection = NativeFocusLegacyProjectionStatus(
+        retired=not projection_audit.remainingSurfaces,
+        fallbackBlocked=projection_audit.fallbackBlocked,
+        ownershipVersion=projection_audit.ownershipVersion,
+        quarantinedCommands=list(_QUARANTINED_COMMANDS),
+        remainingBrowserOwnedWriteSurfaces=list(projection_audit.remainingSurfaces),
+    )
+
     blockers = [
         f"{item.operation} has a degraded latest ownership receipt"
         for item in operations
         if item.status == "degraded"
     ]
+    if not legacy_projection.fallbackBlocked:
+        blockers.append("The retired legacy Focus command fallback is not fully blocked")
+    blockers.extend(
+        f"Legacy Focus projection remains writable: {surface}"
+        for surface in legacy_projection.remainingBrowserOwnedWriteSurfaces
+    )
+
     evidence_needed = [
         f"Run and verify {item.operation} at least once"
         for item in operations
@@ -149,11 +285,11 @@ def get_native_focus_ownership_readiness() -> NativeFocusOwnershipReadiness:
     else:
         readiness = "ready"
 
-    legacy_projection = NativeFocusLegacyProjectionStatus(
-        quarantinedCommands=list(_QUARANTINED_COMMANDS),
-        remainingBrowserOwnedWriteSurfaces=[],
+    ready = (
+        readiness == "ready"
+        and legacy_projection.retired
+        and legacy_projection.fallbackBlocked
     )
-    ready = readiness == "ready" and legacy_projection.retired
     return NativeFocusOwnershipReadiness(
         ok=not blockers,
         readiness=readiness,

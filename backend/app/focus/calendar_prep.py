@@ -16,6 +16,7 @@ from app.focus.lifecycle import (
     NativeFocusLifecycleError,
     NativeFocusStartRequest,
     NativeFocusStartResult,
+    NativeFocusVerification,
     start_focus_verified,
 )
 from app.focus.models import FocusEventType, FocusStatus
@@ -375,6 +376,149 @@ def _restore_transaction_unlocked(
     )
 
 
+def _canonical_open_focus_ids(events) -> list[str]:
+    open_by_id: dict[str, bool] = {}
+    order: list[str] = []
+    for event in events:
+        focus_id = event.focusId.strip() or str(event.payload.get("focusId", "")).strip()
+        if not focus_id:
+            continue
+        if focus_id not in order:
+            order.append(focus_id)
+        if event.type in {FocusEventType.FOCUS_STARTED, FocusEventType.LEGACY_IMPORTED}:
+            status = str(event.payload.get("status", FocusStatus.ACTIVE.value)).strip()
+            open_by_id[focus_id] = status not in {
+                FocusStatus.INACTIVE.value,
+                FocusStatus.COMPLETE.value,
+            }
+        elif event.type in {FocusEventType.FOCUS_ENDED, FocusEventType.FOCUS_COMPLETED}:
+            open_by_id[focus_id] = False
+    return [focus_id for focus_id in order if open_by_id.get(focus_id)]
+
+
+def _source_turn_cycle_number(base_source_turn_id: str, candidate: str) -> int | None:
+    if candidate == base_source_turn_id:
+        return 1
+    prefix = f"{base_source_turn_id}-cycle-"
+    if not candidate.startswith(prefix):
+        return None
+    raw_number = candidate[len(prefix):]
+    if not raw_number.isdigit():
+        return None
+    number = int(raw_number)
+    return number if number >= 2 else None
+
+
+def _start_event_matches_calendar_request(event, request: NativeCalendarFocusPrepRequest) -> bool:
+    expected_title = build_calendar_focus_title(request.event)
+    expected_objective = build_calendar_focus_objective(request.event)
+    tags = {str(tag).strip() for tag in event.payload.get("tags", [])}
+    return (
+        str(event.payload.get("title", "")).strip() == expected_title
+        and str(event.payload.get("objective", "")).strip() == expected_objective
+        and f"calendar-event:{request.event.id}" in tags
+    )
+
+
+def _resolve_calendar_source_turn(
+    *,
+    events,
+    request: NativeCalendarFocusPrepRequest,
+) -> tuple[str, object | None]:
+    base_source_turn_id = request.sourceTurnId.strip()
+    matching_starts = []
+    highest_cycle = 0
+    for event in events:
+        if event.type != FocusEventType.FOCUS_STARTED:
+            continue
+        cycle_number = _source_turn_cycle_number(
+            base_source_turn_id,
+            event.sourceTurnId,
+        )
+        if cycle_number is None:
+            continue
+        if not _start_event_matches_calendar_request(event, request):
+            raise NativeCalendarFocusPrepError(
+                "source_turn_conflict",
+                "This calendar preparation key already belongs to different event details.",
+            )
+        matching_starts.append(event)
+        highest_cycle = max(highest_cycle, cycle_number)
+
+    if not matching_starts:
+        return base_source_turn_id, None
+
+    open_focus_ids = set(_canonical_open_focus_ids(events))
+    active_starts = [
+        event for event in matching_starts if event.focusId in open_focus_ids
+    ]
+    if len(active_starts) > 1:
+        raise NativeCalendarFocusPrepError(
+            "verification_failed",
+            "More than one active calendar preparation receipt matched this event.",
+        )
+    if active_starts:
+        active_start = active_starts[0]
+        return active_start.sourceTurnId, active_start
+
+    next_cycle = max(2, highest_cycle + 1)
+    suffix = f"-cycle-{next_cycle}"
+    concrete_source_turn_id = f"{base_source_turn_id[:120 - len(suffix)]}{suffix}"
+    return concrete_source_turn_id, None
+
+
+def _reuse_active_calendar_focus_receipt(
+    *,
+    events,
+    start_event,
+    source_turn_id: str,
+) -> NativeFocusStartResult:
+    active_state = focus_store.reduce_events(events)
+    open_focus_ids = _canonical_open_focus_ids(events)
+    closed_focus_ids = [
+        event.focusId
+        for event in events
+        if event.sourceTurnId == source_turn_id
+        and event.type == FocusEventType.FOCUS_ENDED
+        and str(event.payload.get("newFocusId", "")).strip() == start_event.focusId
+    ]
+    verification = NativeFocusVerification(
+        activeFocusMatches=(
+            active_state.focusId == start_event.focusId
+            and active_state.status not in {FocusStatus.INACTIVE, FocusStatus.COMPLETE}
+        ),
+        exactlyOneFocusOpen=open_focus_ids == [start_event.focusId],
+        startEventPersisted=True,
+        previousFocusesClosed=all(
+            focus_id not in open_focus_ids for focus_id in closed_focus_ids
+        ),
+        openFocusIds=open_focus_ids,
+        details=[],
+    )
+    if not (
+        verification.activeFocusMatches
+        and verification.exactlyOneFocusOpen
+        and verification.startEventPersisted
+        and verification.previousFocusesClosed
+    ):
+        raise NativeCalendarFocusPrepError(
+            "verification_failed",
+            "The active calendar Focus could not be reused canonically.",
+        )
+    return NativeFocusStartResult(
+        ok=True,
+        outcome="reused",
+        verified=True,
+        activeFocus=active_state,
+        previousFocusId=closed_focus_ids[0] if closed_focus_ids else "",
+        closedFocusIds=closed_focus_ids,
+        sourceTurnId=source_turn_id,
+        verification=verification,
+        telemetryRecorded=False,
+        message=f"Focus is active: {active_state.title}.",
+    )
+
+
 def _count_start_events(source_turn_id: str) -> int:
     return sum(
         1
@@ -499,7 +643,8 @@ def _verification_passed(
 def prepare_calendar_focus_verified(
     request: NativeCalendarFocusPrepRequest,
 ) -> NativeCalendarFocusPrepResult:
-    source_turn_id = request.sourceTurnId.strip()
+    requested_source_turn_id = request.sourceTurnId.strip()
+    source_turn_id = requested_source_turn_id
     event = request.event
     task_titles = build_calendar_prep_task_titles(event)
     focus_id_for_health = ""
@@ -525,18 +670,29 @@ def prepare_calendar_focus_verified(
                         json.dumps(_read_relationships_unlocked())
                     )
                     try:
-                        focus_receipt = start_focus_verified(
-                            NativeFocusStartRequest(
-                                title=build_calendar_focus_title(event),
-                                objective=build_calendar_focus_objective(event),
-                                mode="meeting",
-                                tags=[
-                                    "calendar-prep",
-                                    f"calendar-event:{event.id}",
-                                ],
-                                sourceTurnId=source_turn_id,
-                            )
+                        source_turn_id, active_start_event = _resolve_calendar_source_turn(
+                            events=list(focus_before.events),
+                            request=request,
                         )
+                        if active_start_event is not None:
+                            focus_receipt = _reuse_active_calendar_focus_receipt(
+                                events=list(focus_before.events),
+                                start_event=active_start_event,
+                                source_turn_id=source_turn_id,
+                            )
+                        else:
+                            focus_receipt = start_focus_verified(
+                                NativeFocusStartRequest(
+                                    title=build_calendar_focus_title(event),
+                                    objective=build_calendar_focus_objective(event),
+                                    mode="meeting",
+                                    tags=[
+                                        "calendar-prep",
+                                        f"calendar-event:{event.id}",
+                                    ],
+                                    sourceTurnId=source_turn_id,
+                                )
+                            )
                         focus_id_for_health = focus_receipt.activeFocus.focusId
                         task_receipt = link_focus_tasks_verified(
                             NativeFocusTasksRequest(
@@ -587,6 +743,16 @@ def prepare_calendar_focus_verified(
             message = (
                 f"Calendar preparation is already verified for {event.title}; "
                 f"the Focus and {len(task_receipt.tasks)} linked tasks were reused."
+            )
+        elif focus_receipt.outcome == "reused" and task_receipt.outcome == "created":
+            message = (
+                f"Restored {len(task_receipt.tasks)} verified linked tasks for the "
+                f"active meeting-prep Focus for {event.title}."
+            )
+        elif focus_receipt.outcome == "reused" and task_receipt.outcome == "linked":
+            message = (
+                f"Relinked {len(task_receipt.tasks)} existing verified tasks to the "
+                f"active meeting-prep Focus for {event.title}."
             )
         elif outcome == "linked":
             message = (

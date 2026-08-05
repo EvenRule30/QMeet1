@@ -37,7 +37,7 @@ import {
   describeNativeFocusTasksFailure,
 } from '../lib/nativeFocusTasks';
 
-export const NATIVE_FOCUS_LIFECYCLE_OWNERSHIP_VERSION = 'phase20f';
+export const NATIVE_FOCUS_LIFECYCLE_OWNERSHIP_VERSION = 'phase20g';
 
 type MemoryCommandName = Parameters<typeof handleMemoryCommandCore>[0]['command'];
 const RETIRED_LEGACY_FOCUS_OWNERSHIP_COMMANDS = new Set<MemoryCommandName>([
