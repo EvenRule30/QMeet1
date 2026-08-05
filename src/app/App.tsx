@@ -14,7 +14,10 @@ import { OrbState, ActivePanel } from './types';
 import { resetConversation, interpretCommandIntent } from "./api";
 import { parseCommand, type CommandMatch } from './commands';
 import { observeExactLocalRoute } from './lib/focusTurnHeaders';
-import { interpretSemanticFocusUpdate } from './lib/semanticFocusUpdate';
+import {
+  interpretSemanticFocusLifecycle,
+  shouldRouteExactFocusLifecycleThroughSemanticPreflight,
+} from './lib/semanticFocusLifecycle';
 import { getAssistantActivity, getPanelLabel } from './lib/activityUtils';
 import { getDateKeyForCalendarView } from './lib/dateUtils';
 import {
@@ -297,7 +300,16 @@ export default function App() {
 
           setPendingInterpreterCommand(null);
         }
-    const commandMatch = forcedCommandMatch ?? parseCommand(trimmed);
+    const parsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);
+    const deferredExactFocusLifecycleMatch =
+      !forcedCommandMatch &&
+      commandRoute === 'exact' &&
+      shouldRouteExactFocusLifecycleThroughSemanticPreflight(parsedCommandMatch)
+        ? parsedCommandMatch
+        : null;
+    const commandMatch = deferredExactFocusLifecycleMatch
+      ? null
+      : parsedCommandMatch;
 
     if (commandMatch) {
       if (commandRoute === 'exact') {
@@ -643,51 +655,124 @@ export default function App() {
       return;
     }
 
-    const semanticFocusUpdate = await interpretSemanticFocusUpdate(trimmed);
-    if (semanticFocusUpdate.kind === 'update') {
-      setLastInputRoute('Semantic lifecycle Focus update');
-      setLastInterpreterAction('update_focus_session');
-      setLastInterpreterFrontendCommand('apply semantic focus update');
-      setLastInterpreterConfidence(semanticFocusUpdate.confidence);
+    const semanticFocusLifecycle = await interpretSemanticFocusLifecycle(trimmed);
+    if (
+      semanticFocusLifecycle.kind === 'update' ||
+      semanticFocusLifecycle.kind === 'start'
+    ) {
+      const isStart = semanticFocusLifecycle.kind === 'start';
+      setLastInputRoute(
+        isStart
+          ? 'Semantic lifecycle Focus start'
+          : 'Semantic lifecycle Focus update',
+      );
+      setLastInterpreterAction(
+        isStart ? 'start_focus_session' : 'update_focus_session',
+      );
+      setLastInterpreterFrontendCommand(
+        isStart ? 'apply semantic focus start' : 'apply semantic focus update',
+      );
+      setLastInterpreterConfidence(semanticFocusLifecycle.confidence);
       setLastInterpreterReason(
-        semanticFocusUpdate.reason ||
-          'The dedicated lifecycle semantic classifier returned one typed Focus update.',
+        semanticFocusLifecycle.reason ||
+          (isStart
+            ? 'The semantic lifecycle classifier returned one typed Focus start.'
+            : 'The semantic lifecycle classifier returned one typed Focus update.'),
       );
       return handleSend(
-        'apply semantic focus update',
+        isStart ? 'apply semantic focus start' : 'apply semantic focus update',
         visibleUserText,
         'interpreter',
-        semanticFocusUpdate.commandMatch,
+        semanticFocusLifecycle.commandMatch,
       );
     }
 
-    if (
-      semanticFocusUpdate.kind === 'blocked' ||
-      (semanticFocusUpdate.kind === 'unavailable' &&
-        semanticFocusUpdate.possibleUpdate)
-    ) {
+    if (semanticFocusLifecycle.kind === 'acknowledged') {
       finishListening();
       setShowThinkingBubble(false);
       setPendingInterpreterCommand(null);
-      setLastInputRoute('Semantic Focus update blocked safely');
-      setLastLocalCommand('Focus update not executed');
-      setLastInterpreterAction('update_focus_session');
+      setLastInputRoute('Semantic Focus lifecycle cancellation');
+      setLastLocalCommand('Focus lifecycle change cancelled');
+      setLastInterpreterAction('focus_lifecycle_cancelled');
       setLastInterpreterFrontendCommand('None');
-      setLastInterpreterConfidence(semanticFocusUpdate.confidence);
-      setLastInterpreterReason(semanticFocusUpdate.reason);
+      setLastInterpreterConfidence(semanticFocusLifecycle.confidence);
+      setLastInterpreterReason(semanticFocusLifecycle.reason);
 
       if (!chatActive) setChatActive(true);
       const now = Date.now();
       const userMsg = createUserMessage(now, visibleUserText);
       const assistantMsg = createAssistantMessage(
         now,
-        semanticFocusUpdate.message,
+        semanticFocusLifecycle.message,
+      );
+      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      speakAssistantText(assistantMsg.content, {
+        enabled: voiceOutputEnabled,
+      });
+      return;
+    }
+
+    if (
+      semanticFocusLifecycle.kind === 'blocked' ||
+      (semanticFocusLifecycle.kind === 'unavailable' &&
+        (semanticFocusLifecycle.possibleMutation ||
+          Boolean(deferredExactFocusLifecycleMatch)))
+    ) {
+      finishListening();
+      setShowThinkingBubble(false);
+      setPendingInterpreterCommand(null);
+      setLastInputRoute('Semantic Focus lifecycle change blocked safely');
+      setLastLocalCommand('Focus lifecycle change not executed');
+      setLastInterpreterAction('focus_lifecycle_change');
+      setLastInterpreterFrontendCommand('None');
+      setLastInterpreterConfidence(semanticFocusLifecycle.confidence);
+      setLastInterpreterReason(semanticFocusLifecycle.reason);
+
+      if (!chatActive) setChatActive(true);
+      const now = Date.now();
+      const userMsg = createUserMessage(now, visibleUserText);
+      const assistantMsg = createAssistantMessage(
+        now,
+        semanticFocusLifecycle.message,
       );
       setMessages((prev) => [...prev, userMsg, assistantMsg]);
       pushResultToast({
         kind: 'warning',
         title: 'Focus unchanged',
-        detail: semanticFocusUpdate.message,
+        detail: semanticFocusLifecycle.message,
+      });
+      speakAssistantText(assistantMsg.content, {
+        enabled: voiceOutputEnabled,
+      });
+      return;
+    }
+
+    if (deferredExactFocusLifecycleMatch) {
+      finishListening();
+      setShowThinkingBubble(false);
+      setPendingInterpreterCommand(null);
+      setLastInputRoute('Exact Focus lifecycle command blocked by semantic mismatch');
+      setLastLocalCommand('Focus lifecycle change not executed');
+      setLastInterpreterAction('focus_lifecycle_change');
+      setLastInterpreterFrontendCommand('None');
+      setLastInterpreterConfidence(semanticFocusLifecycle.confidence);
+      setLastInterpreterReason(
+        semanticFocusLifecycle.reason ||
+          'The exact parser detected a Focus lifecycle command, but semantic preflight did not confirm whether it was a start or update.',
+      );
+
+      if (!chatActive) setChatActive(true);
+      const now = Date.now();
+      const userMsg = createUserMessage(now, visibleUserText);
+      const assistantMsg = createAssistantMessage(
+        now,
+        'I detected a possible Focus change, but I could not safely determine whether to update the current Focus or start a new one. No Focus change was made.',
+      );
+      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      pushResultToast({
+        kind: 'warning',
+        title: 'Focus unchanged',
+        detail: assistantMsg.content,
       });
       speakAssistantText(assistantMsg.content, {
         enabled: voiceOutputEnabled,
