@@ -1,6 +1,13 @@
 from typing import NoReturn
 
 from fastapi import APIRouter, HTTPException
+from app.focus.calendar_prep import (
+    NativeCalendarFocusPrepError,
+    NativeCalendarFocusPrepRequest,
+    NativeCalendarFocusPrepResult,
+    get_native_calendar_focus_prep_health,
+    prepare_calendar_focus_verified,
+)
 from app.focus.lifecycle import (
     NativeFocusEndRequest,
     NativeFocusEndResult,
@@ -30,6 +37,10 @@ from app.focus.tasks import (
     NativeFocusTasksResult,
     get_native_focus_task_health,
     link_focus_tasks_verified,
+)
+from app.focus.ownership import (
+    NativeFocusOwnershipReadiness,
+    get_native_focus_ownership_readiness,
 )
 from app.focus.semantic_update_preflight import (
     SemanticFocusUpdatePreflightRequest,
@@ -70,6 +81,18 @@ def _raise_summary_error(exc: NativeFocusSummaryError) -> NoReturn:
 
 
 def _raise_tasks_error(exc: NativeFocusTasksError) -> NoReturn:
+    raise HTTPException(
+        status_code=exc.status_code,
+        detail={
+            "code": exc.code,
+            "message": exc.message,
+            "verified": False,
+            "successClaimAllowed": False,
+        },
+    ) from exc
+
+
+def _raise_calendar_prep_error(exc: NativeCalendarFocusPrepError) -> NoReturn:
     raise HTTPException(
         status_code=exc.status_code,
         detail={
@@ -207,6 +230,27 @@ async def link_native_focus_tasks(
     return result
 
 
+@router.post("/calendar-prep", response_model=NativeCalendarFocusPrepResult)
+async def prepare_native_calendar_focus(
+    request: NativeCalendarFocusPrepRequest,
+) -> NativeCalendarFocusPrepResult:
+    try:
+        result = prepare_calendar_focus_verified(request)
+    except NativeCalendarFocusPrepError as exc:
+        _raise_calendar_prep_error(exc)
+    if not result.verified:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "verification_failed",
+                "message": "Canonical state did not verify the combined calendar Focus receipt.",
+                "verified": False,
+                "successClaimAllowed": False,
+            },
+        )
+    return result
+
+
 @router.post(
     "/semantic-update/interpret",
     response_model=SemanticFocusUpdatePreflightResult,
@@ -227,8 +271,17 @@ async def interpret_semantic_focus_lifecycle(
     return await semantic_focus_lifecycle_preflight(request)
 
 
+@router.get(
+    "/ownership-readiness",
+    response_model=NativeFocusOwnershipReadiness,
+)
+async def native_focus_ownership_readiness() -> NativeFocusOwnershipReadiness:
+    return get_native_focus_ownership_readiness()
+
+
 @router.get("/health")
 async def native_focus_lifecycle_health() -> dict[str, object]:
+    ownership_readiness = get_native_focus_ownership_readiness()
     return {
         "ok": True,
         "ownership": "native",
@@ -241,10 +294,13 @@ async def native_focus_lifecycle_health() -> dict[str, object]:
             "resume_focus",
             "save_focus_summary",
             "link_focus_tasks",
+            "prepare_calendar_focus",
             "semantic_update_interpret",
             "semantic_lifecycle_interpret",
         ],
         "health": get_native_focus_lifecycle_health(),
         "summaryHealth": get_native_focus_summary_health(),
         "taskHealth": get_native_focus_task_health(),
+        "calendarPrepHealth": get_native_calendar_focus_prep_health(),
+        "ownershipReadiness": ownership_readiness.model_dump(),
     }

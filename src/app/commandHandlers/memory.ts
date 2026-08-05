@@ -7,6 +7,11 @@ import {
 import { consumeNativeReadSurface } from '../lib/nativeReadSurfaceBridge';
 import type { Note } from '../types';
 import {
+  applyVerifiedCalendarFocusPrepProjection,
+  describeNativeCalendarFocusPrepFailure,
+  prepareNextCalendarFocusVerified,
+} from '../lib/nativeCalendarFocusPrep';
+import {
   applyVerifiedFocusProjection,
   describeNativeFocusEndFailure,
   describeNativeFocusResumeFailure,
@@ -32,7 +37,7 @@ import {
   describeNativeFocusTasksFailure,
 } from '../lib/nativeFocusTasks';
 
-export const NATIVE_FOCUS_LIFECYCLE_OWNERSHIP_VERSION = 'phase20e1';
+export const NATIVE_FOCUS_LIFECYCLE_OWNERSHIP_VERSION = 'phase20f';
 
 type MemoryCommandName = Parameters<typeof handleMemoryCommandCore>[0]['command'];
 const RETIRED_LEGACY_FOCUS_OWNERSHIP_COMMANDS = new Set<MemoryCommandName>([
@@ -45,6 +50,7 @@ const RETIRED_LEGACY_FOCUS_OWNERSHIP_COMMANDS = new Set<MemoryCommandName>([
   'save-focus-summary',
   'focus-to-tasks',
   'create-meeting-follow-up-tasks',
+  'prepare-calendar-focus',
 ]);
 
 type NativeFocusSummaryDeps = Parameters<typeof handleMemoryCommandCore>[1] & {
@@ -236,6 +242,40 @@ export async function handleMemoryCommand(
       return {
         handled: true,
         confirmationContent: describeNativeFocusResumeFailure(error),
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+  }
+
+  if (commandMatch.command === 'prepare-calendar-focus') {
+    deps.setActivePanel('calendar');
+    try {
+      const result = await prepareNextCalendarFocusVerified();
+      try {
+        applyVerifiedCalendarFocusPrepProjection(result);
+      } catch (error) {
+        console.error(
+          'Verified calendar Focus projection could not be refreshed:',
+          error,
+        );
+        return {
+          handled: true,
+          confirmationContent:
+            `${result.message} The canonical combined receipt is saved, but the visible Focus changed before its projection could be refreshed.`,
+          shouldSpeakConfirmation: deps.voiceOutputEnabled,
+        };
+      }
+      deps.setActivePanel('memory');
+      return {
+        handled: true,
+        confirmationContent: result.message,
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    } catch (error) {
+      console.error('Verified native calendar Focus preparation failed:', error);
+      return {
+        handled: true,
+        confirmationContent: describeNativeCalendarFocusPrepFailure(error),
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }
@@ -462,7 +502,7 @@ export async function handleMemoryCommand(
   }
   if (RETIRED_LEGACY_FOCUS_OWNERSHIP_COMMANDS.has(commandMatch.command)) {
     console.error(
-      'Retired legacy Focus lifecycle command reached the memoryCore fallback:',
+      'Retired legacy Focus ownership command reached the memoryCore fallback:',
       commandMatch.command,
     );
     deps.setActivePanel('memory');

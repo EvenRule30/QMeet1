@@ -17,6 +17,11 @@ QUARANTINE_GUARD_PATTERN = re.compile(
     r"\)\s*\)"
 )
 
+OWNERSHIP_VERSION_PATTERN = re.compile(
+    r"export\s+const\s+NATIVE_FOCUS_LIFECYCLE_OWNERSHIP_VERSION\s*=\s*"
+    r"['\"](?P<version>phase20[a-z0-9]+)['\"]\s*;"
+)
+
 
 class FocusLegacyLifecycleQuarantinePhase20E1Tests(unittest.TestCase):
     def setUp(self) -> None:
@@ -52,10 +57,13 @@ class FocusLegacyLifecycleQuarantinePhase20E1Tests(unittest.TestCase):
         return declaration.group("body")
 
     def test_native_lifecycle_ownership_version_is_declared(self) -> None:
-        self.assertIn(
-            "NATIVE_FOCUS_LIFECYCLE_OWNERSHIP_VERSION = 'phase20e1'",
-            self.source,
+        declaration = OWNERSHIP_VERSION_PATTERN.search(self.source)
+        self.assertIsNotNone(
+            declaration,
+            "memory.ts must declare a Phase 20 native Focus ownership version.",
         )
+        assert declaration is not None
+        self.assertTrue(declaration.group("version").startswith("phase20"))
 
     def test_all_legacy_lifecycle_commands_are_quarantined(self) -> None:
         quarantine_set_body = self._quarantine_set_body()
