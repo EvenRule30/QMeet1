@@ -1,7 +1,6 @@
 from typing import NoReturn
 
 from fastapi import APIRouter, HTTPException
-
 from app.focus.lifecycle import (
     NativeFocusEndRequest,
     NativeFocusEndResult,
@@ -25,6 +24,13 @@ from app.focus.summary import (
     get_native_focus_summary_health,
     save_focus_summary_verified,
 )
+from app.focus.tasks import (
+    NativeFocusTasksError,
+    NativeFocusTasksRequest,
+    NativeFocusTasksResult,
+    get_native_focus_task_health,
+    link_focus_tasks_verified,
+)
 from app.focus.semantic_update_preflight import (
     SemanticFocusUpdatePreflightRequest,
     SemanticFocusUpdatePreflightResult,
@@ -35,7 +41,6 @@ from app.focus.semantic_lifecycle_preflight import (
     SemanticFocusLifecyclePreflightResult,
     semantic_focus_lifecycle_preflight,
 )
-
 
 router = APIRouter(prefix="/api/focus/lifecycle", tags=["focus-lifecycle"])
 
@@ -64,6 +69,18 @@ def _raise_summary_error(exc: NativeFocusSummaryError) -> NoReturn:
     ) from exc
 
 
+def _raise_tasks_error(exc: NativeFocusTasksError) -> NoReturn:
+    raise HTTPException(
+        status_code=exc.status_code,
+        detail={
+            "code": exc.code,
+            "message": exc.message,
+            "verified": False,
+            "successClaimAllowed": False,
+        },
+    ) from exc
+
+
 @router.post("/start", response_model=NativeFocusStartResult)
 async def start_native_focus(
     request: NativeFocusStartRequest,
@@ -72,7 +89,6 @@ async def start_native_focus(
         result = start_focus_verified(request)
     except NativeFocusLifecycleError as exc:
         _raise_lifecycle_error(exc)
-
     if not result.verified:
         raise HTTPException(
             status_code=409,
@@ -94,7 +110,6 @@ async def update_native_focus(
         result = update_focus_verified(request)
     except NativeFocusLifecycleError as exc:
         _raise_lifecycle_error(exc)
-
     if not result.verified:
         raise HTTPException(
             status_code=409,
@@ -116,7 +131,6 @@ async def end_native_focus(
         result = end_focus_verified(request)
     except NativeFocusLifecycleError as exc:
         _raise_lifecycle_error(exc)
-
     if not result.verified:
         raise HTTPException(
             status_code=409,
@@ -138,7 +152,6 @@ async def resume_native_focus(
         result = resume_focus_verified(request)
     except NativeFocusLifecycleError as exc:
         _raise_lifecycle_error(exc)
-
     if not result.verified:
         raise HTTPException(
             status_code=409,
@@ -160,13 +173,33 @@ async def save_native_focus_summary(
         result = save_focus_summary_verified(request)
     except NativeFocusSummaryError as exc:
         _raise_summary_error(exc)
-
     if not result.verified:
         raise HTTPException(
             status_code=409,
             detail={
                 "code": "verification_failed",
                 "message": "Canonical state did not verify the Focus summary receipt.",
+                "verified": False,
+                "successClaimAllowed": False,
+            },
+        )
+    return result
+
+
+@router.post("/tasks", response_model=NativeFocusTasksResult)
+async def link_native_focus_tasks(
+    request: NativeFocusTasksRequest,
+) -> NativeFocusTasksResult:
+    try:
+        result = link_focus_tasks_verified(request)
+    except NativeFocusTasksError as exc:
+        _raise_tasks_error(exc)
+    if not result.verified:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "verification_failed",
+                "message": "Canonical state did not verify the Focus task receipt.",
                 "verified": False,
                 "successClaimAllowed": False,
             },
@@ -207,9 +240,11 @@ async def native_focus_lifecycle_health() -> dict[str, object]:
             "complete_focus",
             "resume_focus",
             "save_focus_summary",
+            "link_focus_tasks",
             "semantic_update_interpret",
             "semantic_lifecycle_interpret",
         ],
         "health": get_native_focus_lifecycle_health(),
         "summaryHealth": get_native_focus_summary_health(),
+        "taskHealth": get_native_focus_task_health(),
     }

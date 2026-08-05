@@ -19,17 +19,22 @@ import {
   startNativeFocusVerified,
   updateNativeFocusVerified,
 } from '../lib/nativeFocusLifecycle';
-
 import {
   applyVerifiedFocusSummaryProjection,
   describeNativeFocusSummaryFailure,
   saveNativeFocusSummaryVerified,
 } from '../lib/nativeFocusSummary';
+import {
+  applyVerifiedFocusTaskProjection,
+  buildNativeFocusTaskTitles,
+  buildNativeMeetingFollowUpTaskTitles,
+  createNativeFocusTasksVerified,
+  describeNativeFocusTasksFailure,
+} from '../lib/nativeFocusTasks';
 
 export const NATIVE_FOCUS_LIFECYCLE_OWNERSHIP_VERSION = 'phase20e1';
 
 type MemoryCommandName = Parameters<typeof handleMemoryCommandCore>[0]['command'];
-
 const RETIRED_LEGACY_FOCUS_OWNERSHIP_COMMANDS = new Set<MemoryCommandName>([
   'start-focus-session',
   'update-focus-session',
@@ -38,18 +43,18 @@ const RETIRED_LEGACY_FOCUS_OWNERSHIP_COMMANDS = new Set<MemoryCommandName>([
   'end-focus-with-summary',
   'wrap-up-meeting-focus',
   'save-focus-summary',
+  'focus-to-tasks',
+  'create-meeting-follow-up-tasks',
 ]);
 
 type NativeFocusSummaryDeps = Parameters<typeof handleMemoryCommandCore>[1] & {
   saveNote: (content: string) => Note | null;
   deleteNote: (noteId: string) => Note | null | void;
 };
-
 type NativeFocusEndCommandEnvelope = {
   sourceTurnId?: unknown;
   disposition?: unknown;
 };
-
 function parseNativeFocusEndCommand(payload: string | undefined): {
   sourceTurnId?: string;
   disposition: 'ended' | 'completed';
@@ -71,7 +76,6 @@ function parseNativeFocusEndCommand(payload: string | undefined): {
     return { disposition: 'ended' };
   }
 }
-
 function hasSavedFocusSummary(
   activeSession: NonNullable<ReturnType<typeof readVerifiedFocusProjection>>,
 ): boolean {
@@ -80,7 +84,6 @@ function hasSavedFocusSummary(
     Boolean(activeSession.summary?.trim())
   );
 }
-
 function shouldGuardNativeFocusEnd(
   activeSession: NonNullable<ReturnType<typeof readVerifiedFocusProjection>>,
 ): boolean {
@@ -91,7 +94,6 @@ function shouldGuardNativeFocusEnd(
     activeSession.title.trim().toLowerCase() !== 'focus session'
   );
 }
-
 function describeNativeFocusEndGuard(
   activeSession: NonNullable<ReturnType<typeof readVerifiedFocusProjection>>,
   disposition: 'ended' | 'completed',
@@ -116,7 +118,6 @@ function describeNativeFocusEndGuard(
       : 'say "end Focus anyway" to end it without saving';
   return `You have an active Focus with no saved summary note: ${activeSession.title}.${goalText}${taskText} Save the Focus summary first, ${terminalInstruction}, or say "cancel" to keep it running.`;
 }
-
 function describeRetiredLegacyLifecycleBlock(command: MemoryCommandName): string {
   if (command === 'wrap-up-meeting-focus') {
     return (
@@ -125,13 +126,11 @@ function describeRetiredLegacyLifecycleBlock(command: MemoryCommandName): string
       'Save the meeting summary, create follow-up tasks, and complete the Focus as separate verified actions.'
     );
   }
-
   return (
     'I blocked a retired legacy Focus lifecycle path because it did not reach the verified native executor. ' +
     'No Focus change was made.'
   );
 }
-
 export async function handleMemoryCommand(
   commandMatch: Parameters<typeof handleMemoryCommandCore>[0],
   deps: NativeFocusSummaryDeps,
@@ -148,7 +147,6 @@ export async function handleMemoryCommand(
       shouldSpeakConfirmation: deps.voiceOutputEnabled,
     };
   }
-
   if (commandMatch.command === 'start-focus-session') {
     const requestedTitle =
       commandMatch.focusSession?.title?.trim() ||
@@ -165,7 +163,6 @@ export async function handleMemoryCommand(
         result,
         requestedMode,
       );
-
       applyVerifiedFocusProjection(activeSession);
       deps.setActivePanel('memory');
       return {
@@ -182,7 +179,6 @@ export async function handleMemoryCommand(
       };
     }
   }
-
   if (commandMatch.command === 'update-focus-session') {
     const payload = commandMatch.focusSession ?? {};
     const hasTitle = typeof payload.title === 'string';
@@ -216,7 +212,6 @@ export async function handleMemoryCommand(
       };
     }
   }
-
   if (commandMatch.command === 'resume-last-focus-session') {
     const requestedMode = commandMatch.focusSession?.mode;
 
@@ -228,7 +223,6 @@ export async function handleMemoryCommand(
         result,
         requestedMode,
       );
-
       applyVerifiedFocusProjection(activeSession);
       deps.setActivePanel('memory');
       return {
@@ -247,6 +241,98 @@ export async function handleMemoryCommand(
     }
   }
 
+  if (commandMatch.command === 'focus-to-tasks') {
+    const activeSession = readVerifiedFocusProjection();
+    deps.setActivePanel('memory');
+    if (!activeSession) {
+      return {
+        handled: true,
+        confirmationContent:
+          'No active Focus is currently running. Start a Focus first, then I can create linked tasks.',
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+    const taskTitles = buildNativeFocusTaskTitles(activeSession);
+    try {
+      const result = await createNativeFocusTasksVerified({
+        expectedFocusId: activeSession.id,
+        taskTitles,
+      });
+      try {
+        applyVerifiedFocusTaskProjection(result);
+      } catch (error) {
+        console.error('Verified Focus task projection was stale:', error);
+        return {
+          handled: true,
+          confirmationContent:
+            `${result.message} The canonical receipt is saved, but the visible Focus changed before its task projection could be refreshed.`,
+          shouldSpeakConfirmation: deps.voiceOutputEnabled,
+        };
+      }
+      return {
+        handled: true,
+        confirmationContent: result.message,
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    } catch (error) {
+      console.error('Verified native Focus task linking failed:', error);
+      return {
+        handled: true,
+        confirmationContent: describeNativeFocusTasksFailure(error),
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+  }
+
+
+  if (commandMatch.command === 'create-meeting-follow-up-tasks') {
+    const activeSession = readVerifiedFocusProjection();
+    deps.setActivePanel('memory');
+    if (!activeSession) {
+      return {
+        handled: true,
+        confirmationContent:
+          'No active Focus is currently running. Start or prepare a meeting Focus first, then I can create verified follow-up tasks.',
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+    const taskTitles = buildNativeMeetingFollowUpTaskTitles(activeSession);
+    try {
+      const result = await createNativeFocusTasksVerified({
+        expectedFocusId: activeSession.id,
+        taskTitles,
+      });
+      try {
+        applyVerifiedFocusTaskProjection(result);
+      } catch (error) {
+        console.error(
+          'Verified meeting follow-up task projection was stale:',
+          error,
+        );
+        return {
+          handled: true,
+          confirmationContent:
+            `${result.message} The canonical receipt is saved, but the visible Focus changed before its task projection could be refreshed.`,
+          shouldSpeakConfirmation: deps.voiceOutputEnabled,
+        };
+      }
+      return {
+        handled: true,
+        confirmationContent: result.message,
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    } catch (error) {
+      console.error(
+        'Verified native meeting follow-up task linking failed:',
+        error,
+      );
+      return {
+        handled: true,
+        confirmationContent: describeNativeFocusTasksFailure(error),
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+  }
 
   if (commandMatch.command === 'save-focus-summary') {
     const activeSession = readVerifiedFocusProjection();
@@ -259,7 +345,6 @@ export async function handleMemoryCommand(
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }
-
     const summaryRead = await handleMemoryCommandCore(
       {
         ...commandMatch,
@@ -277,7 +362,6 @@ export async function handleMemoryCommand(
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }
-
     const note = deps.saveNote(summary);
     if (!note) {
       deps.setActivePanel('memory');
@@ -288,7 +372,6 @@ export async function handleMemoryCommand(
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }
-
     let result;
     try {
       result = await saveNativeFocusSummaryVerified({
@@ -305,7 +388,6 @@ export async function handleMemoryCommand(
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }
-
     try {
       applyVerifiedFocusSummaryProjection(result);
     } catch (error) {
@@ -318,7 +400,6 @@ export async function handleMemoryCommand(
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }
-
     deps.setActivePanel('notes');
     return {
       handled: true,
@@ -326,7 +407,6 @@ export async function handleMemoryCommand(
       shouldSpeakConfirmation: deps.voiceOutputEnabled,
     };
   }
-
   if (commandMatch.command === 'end-focus-with-summary') {
     deps.setActivePanel('memory');
     return {
@@ -336,11 +416,9 @@ export async function handleMemoryCommand(
       shouldSpeakConfirmation: deps.voiceOutputEnabled,
     };
   }
-
   if (commandMatch.command === 'end-focus-session') {
     const activeSession = readVerifiedFocusProjection();
     deps.setActivePanel('memory');
-
     if (!activeSession) {
       return {
         handled: true,
@@ -382,7 +460,6 @@ export async function handleMemoryCommand(
       };
     }
   }
-
   if (RETIRED_LEGACY_FOCUS_OWNERSHIP_COMMANDS.has(commandMatch.command)) {
     console.error(
       'Retired legacy Focus lifecycle command reached the memoryCore fallback:',
