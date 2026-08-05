@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import unittest
 
 
@@ -31,13 +32,31 @@ class FocusLegacyLifecycleQuarantinePhase20E1Tests(unittest.TestCase):
             self.assertIn(f"'{command}'", self.source)
 
     def test_quarantine_runs_before_memory_core_fallback(self) -> None:
-        quarantine = self.source.index(
-            "if (RETIRED_LEGACY_FOCUS_LIFECYCLE_COMMANDS.has(commandMatch.command))"
+        quarantine_match = re.search(
+            r"if\s*\(\s*"
+            r"RETIRED_LEGACY_FOCUS_LIFECYCLE_COMMANDS\s*\.\s*has\s*\(\s*"
+            r"commandMatch\s*\.\s*command\s*,?\s*"
+            r"\)\s*\)",
+            self.source,
         )
-        fallback = self.source.rindex(
-            "return handleMemoryCommandCore(commandMatch, deps);"
+        self.assertIsNotNone(
+            quarantine_match,
+            "memory.ts must quarantine RETIRED_LEGACY_FOCUS_LIFECYCLE_COMMANDS "
+            "before calling memoryCore; line wrapping and Prettier formatting are allowed.",
         )
-        self.assertLess(quarantine, fallback)
+
+        fallback_calls = list(
+            re.finditer(
+                r"\bhandleMemoryCommandCore\s*\(\s*commandMatch\s*,\s*deps\s*,?\s*\)",
+                self.source,
+            )
+        )
+        self.assertTrue(
+            fallback_calls,
+            "memory.ts must retain a fallback call to "
+            "handleMemoryCommandCore(commandMatch, deps).",
+        )
+        self.assertLess(quarantine_match.start(), fallback_calls[-1].start())
 
     def test_quarantine_failure_wording_cannot_claim_success(self) -> None:
         self.assertIn("No Focus change was made.", self.source)

@@ -1173,7 +1173,7 @@ function extractFocusSessionIntent(normalized: string): FocusSessionIntent | nul
   const saveSummaryPatterns = [
     /^(?:please\s+)?(?:save|store|remember|write)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session)\s+(?:as|to|in)\s+(?:a\s+)?(?:note|notes|memory|summary)$/i,
     /^(?:please\s+)?(?:save|store|remember|write)\s+(?:a\s+)?(?:summary|recap)\s+(?:of|for)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus\s+session|active\s+session|session)$/i,
-    /^(?:please\s+)?(?:save|store|remember|write)\s+(?:the\s+)?(?:focus|session)\s+(?:summary|recap)(?:\s+(?:as|to|in)\s+(?:a\s+)?(?:note|notes|memory))?$/i,
+    /^(?:please\s+)?(?:save|store|remember|write)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|session)\s+(?:summary|recap)(?:\s+(?:as|to|in)\s+(?:a\s+)?(?:note|notes|memory))?$/i,
     /^(?:please\s+)?(?:save|store|remember)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:session|focus)(?:\s+to\s+memory)?$/i,
   ];
   if (saveSummaryPatterns.some((pattern) => pattern.test(focusText))) {

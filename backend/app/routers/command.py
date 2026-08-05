@@ -593,7 +593,7 @@ def _focus_command_intent(message: str) -> dict[str, Any] | None:
     save_summary_patterns = [
         r"^(?:please\s+)?(?:save|store|remember|write)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session)\s+(?:as|to|in)\s+(?:a\s+)?(?:note|notes|memory|summary)$",
         r"^(?:please\s+)?(?:save|store|remember|write)\s+(?:a\s+)?(?:summary|recap)\s+(?:of|for)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|focus session|active session|session)$",
-        r"^(?:please\s+)?(?:save|store|remember|write)\s+(?:the\s+)?(?:focus|session)\s+(?:summary|recap)(?:\s+(?:as|to|in)\s+(?:a\s+)?(?:note|notes|memory))?$",
+        r"^(?:please\s+)?(?:save|store|remember|write)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:focus|session)\s+(?:summary|recap)(?:\s+(?:as|to|in)\s+(?:a\s+)?(?:note|notes|memory))?$",
         r"^(?:please\s+)?(?:save|store|remember)\s+(?:(?:this|the|my|our|current|active)\s+)*(?:session|focus)(?:\s+to\s+memory)?$",
     ]
     if _first_match(save_summary_patterns, lowered):

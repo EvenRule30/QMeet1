@@ -18,6 +18,13 @@ from app.focus.lifecycle import (
     start_focus_verified,
     update_focus_verified,
 )
+from app.focus.summary import (
+    NativeFocusSummaryError,
+    NativeFocusSummaryRequest,
+    NativeFocusSummaryResult,
+    get_native_focus_summary_health,
+    save_focus_summary_verified,
+)
 from app.focus.semantic_update_preflight import (
     SemanticFocusUpdatePreflightRequest,
     SemanticFocusUpdatePreflightResult,
@@ -34,6 +41,18 @@ router = APIRouter(prefix="/api/focus/lifecycle", tags=["focus-lifecycle"])
 
 
 def _raise_lifecycle_error(exc: NativeFocusLifecycleError) -> NoReturn:
+    raise HTTPException(
+        status_code=exc.status_code,
+        detail={
+            "code": exc.code,
+            "message": exc.message,
+            "verified": False,
+            "successClaimAllowed": False,
+        },
+    ) from exc
+
+
+def _raise_summary_error(exc: NativeFocusSummaryError) -> NoReturn:
     raise HTTPException(
         status_code=exc.status_code,
         detail={
@@ -133,6 +152,28 @@ async def resume_native_focus(
     return result
 
 
+@router.post("/summary", response_model=NativeFocusSummaryResult)
+async def save_native_focus_summary(
+    request: NativeFocusSummaryRequest,
+) -> NativeFocusSummaryResult:
+    try:
+        result = save_focus_summary_verified(request)
+    except NativeFocusSummaryError as exc:
+        _raise_summary_error(exc)
+
+    if not result.verified:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "verification_failed",
+                "message": "Canonical state did not verify the Focus summary receipt.",
+                "verified": False,
+                "successClaimAllowed": False,
+            },
+        )
+    return result
+
+
 @router.post(
     "/semantic-update/interpret",
     response_model=SemanticFocusUpdatePreflightResult,
@@ -165,8 +206,10 @@ async def native_focus_lifecycle_health() -> dict[str, object]:
             "end_focus",
             "complete_focus",
             "resume_focus",
+            "save_focus_summary",
             "semantic_update_interpret",
             "semantic_lifecycle_interpret",
         ],
         "health": get_native_focus_lifecycle_health(),
+        "summaryHealth": get_native_focus_summary_health(),
     }

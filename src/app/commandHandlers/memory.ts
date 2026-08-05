@@ -5,6 +5,7 @@ import {
   readStoredMemoryTasks,
 } from '../lib/memoryReadSurface';
 import { consumeNativeReadSurface } from '../lib/nativeReadSurfaceBridge';
+import type { Note } from '../types';
 import {
   applyVerifiedFocusProjection,
   describeNativeFocusEndFailure,
@@ -19,18 +20,30 @@ import {
   updateNativeFocusVerified,
 } from '../lib/nativeFocusLifecycle';
 
+import {
+  applyVerifiedFocusSummaryProjection,
+  describeNativeFocusSummaryFailure,
+  saveNativeFocusSummaryVerified,
+} from '../lib/nativeFocusSummary';
+
 export const NATIVE_FOCUS_LIFECYCLE_OWNERSHIP_VERSION = 'phase20e1';
 
 type MemoryCommandName = Parameters<typeof handleMemoryCommandCore>[0]['command'];
 
-const RETIRED_LEGACY_FOCUS_LIFECYCLE_COMMANDS = new Set<MemoryCommandName>([
+const RETIRED_LEGACY_FOCUS_OWNERSHIP_COMMANDS = new Set<MemoryCommandName>([
   'start-focus-session',
   'update-focus-session',
   'resume-last-focus-session',
   'end-focus-session',
   'end-focus-with-summary',
   'wrap-up-meeting-focus',
+  'save-focus-summary',
 ]);
+
+type NativeFocusSummaryDeps = Parameters<typeof handleMemoryCommandCore>[1] & {
+  saveNote: (content: string) => Note | null;
+  deleteNote: (noteId: string) => Note | null | void;
+};
 
 type NativeFocusEndCommandEnvelope = {
   sourceTurnId?: unknown;
@@ -121,7 +134,7 @@ function describeRetiredLegacyLifecycleBlock(command: MemoryCommandName): string
 
 export async function handleMemoryCommand(
   commandMatch: Parameters<typeof handleMemoryCommandCore>[0],
-  deps: Parameters<typeof handleMemoryCommandCore>[1],
+  deps: NativeFocusSummaryDeps,
 ): Promise<ReturnType<typeof handleMemoryCommandCore>> {
   const nativeReadSurface =
     commandMatch.command === 'read-memory'
@@ -234,6 +247,86 @@ export async function handleMemoryCommand(
     }
   }
 
+
+  if (commandMatch.command === 'save-focus-summary') {
+    const activeSession = readVerifiedFocusProjection();
+    if (!activeSession) {
+      deps.setActivePanel('memory');
+      return {
+        handled: true,
+        confirmationContent:
+          'No active Focus is currently running. Start a Focus first, then I can save its summary.',
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+
+    const summaryRead = await handleMemoryCommandCore(
+      {
+        ...commandMatch,
+        command: 'summarize-focus-session',
+      },
+      deps,
+    );
+    const summary = summaryRead.confirmationContent?.trim() ?? '';
+    if (!summary || !summaryRead.handled) {
+      deps.setActivePanel('memory');
+      return {
+        handled: true,
+        confirmationContent:
+          'I could not build a Focus summary, so no Note or Focus relationship was changed.',
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+
+    const note = deps.saveNote(summary);
+    if (!note) {
+      deps.setActivePanel('memory');
+      return {
+        handled: true,
+        confirmationContent:
+          'I could not stage the Focus summary Note, so no canonical summary receipt was created.',
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+
+    let result;
+    try {
+      result = await saveNativeFocusSummaryVerified({
+        expectedFocusId: activeSession.id,
+        note,
+      });
+    } catch (error) {
+      deps.deleteNote(note.id);
+      console.error('Verified native Focus summary failed:', error);
+      deps.setActivePanel('memory');
+      return {
+        handled: true,
+        confirmationContent: describeNativeFocusSummaryFailure(error),
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+
+    try {
+      applyVerifiedFocusSummaryProjection(result);
+    } catch (error) {
+      console.error('Verified Focus summary projection was stale:', error);
+      deps.setActivePanel('notes');
+      return {
+        handled: true,
+        confirmationContent:
+          `${result.message} The visible Focus changed before its verified summary relationship could be projected; refresh Memory to reconcile the display.`,
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    }
+
+    deps.setActivePanel('notes');
+    return {
+      handled: true,
+      confirmationContent: result.message,
+      shouldSpeakConfirmation: deps.voiceOutputEnabled,
+    };
+  }
+
   if (commandMatch.command === 'end-focus-with-summary') {
     deps.setActivePanel('memory');
     return {
@@ -290,7 +383,7 @@ export async function handleMemoryCommand(
     }
   }
 
-  if (RETIRED_LEGACY_FOCUS_LIFECYCLE_COMMANDS.has(commandMatch.command)) {
+  if (RETIRED_LEGACY_FOCUS_OWNERSHIP_COMMANDS.has(commandMatch.command)) {
     console.error(
       'Retired legacy Focus lifecycle command reached the memoryCore fallback:',
       commandMatch.command,

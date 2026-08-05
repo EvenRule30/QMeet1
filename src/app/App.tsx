@@ -542,6 +542,8 @@ export default function App() {
             saveMemoryTask,
             markMemoryTaskDone,
             clearCompletedTasks,
+            saveNote,
+            deleteNote,
           });
       const searchCommandResult: SplitCommandResult = notesCommandResult.handled || memoryCommandResult.handled
         ? { handled: false }
