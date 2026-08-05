@@ -9,10 +9,47 @@ ROOT = Path(__file__).resolve().parents[2]
 MEMORY_WRAPPER = ROOT / "src" / "app" / "commandHandlers" / "memory.ts"
 APP_ROOT = ROOT / "src" / "app"
 
+QUARANTINE_GUARD_PATTERN = re.compile(
+    r"if\s*\(\s*"
+    r"(?P<set_name>RETIRED_LEGACY_FOCUS_[A-Z_]*COMMANDS)"
+    r"\s*\.\s*has\s*\(\s*"
+    r"commandMatch\s*\.\s*command\s*,?\s*"
+    r"\)\s*\)"
+)
+
 
 class FocusLegacyLifecycleQuarantinePhase20E1Tests(unittest.TestCase):
     def setUp(self) -> None:
         self.source = MEMORY_WRAPPER.read_text(encoding="utf-8")
+
+    def _quarantine_guard(self) -> re.Match[str]:
+        match = QUARANTINE_GUARD_PATTERN.search(self.source)
+        self.assertIsNotNone(
+            match,
+            "memory.ts must guard retired legacy Focus ownership commands "
+            "before calling memoryCore; identifier changes, line wrapping, and "
+            "Prettier formatting are allowed.",
+        )
+        assert match is not None
+        return match
+
+    def _quarantine_set_body(self) -> str:
+        guard = self._quarantine_guard()
+        set_name = guard.group("set_name")
+        declaration = re.search(
+            rf"const\s+{re.escape(set_name)}\s*=\s*"
+            r"new\s+Set(?:\s*<[^>]+>)?\s*"
+            r"\(\s*\[\s*(?P<body>.*?)\s*\]\s*\)\s*;",
+            self.source,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(
+            declaration,
+            f"memory.ts must declare {set_name} as the Set used by the "
+            "retired-command quarantine guard.",
+        )
+        assert declaration is not None
+        return declaration.group("body")
 
     def test_native_lifecycle_ownership_version_is_declared(self) -> None:
         self.assertIn(
@@ -21,6 +58,7 @@ class FocusLegacyLifecycleQuarantinePhase20E1Tests(unittest.TestCase):
         )
 
     def test_all_legacy_lifecycle_commands_are_quarantined(self) -> None:
+        quarantine_set_body = self._quarantine_set_body()
         for command in (
             "start-focus-session",
             "update-focus-session",
@@ -29,34 +67,33 @@ class FocusLegacyLifecycleQuarantinePhase20E1Tests(unittest.TestCase):
             "end-focus-with-summary",
             "wrap-up-meeting-focus",
         ):
-            self.assertIn(f"'{command}'", self.source)
+            self.assertIn(
+                f"'{command}'",
+                quarantine_set_body,
+                f"{command} must remain in the Set used by the retired legacy "
+                "Focus quarantine guard.",
+            )
 
     def test_quarantine_runs_before_memory_core_fallback(self) -> None:
-        quarantine_match = re.search(
-            r"if\s*\(\s*"
-            r"RETIRED_LEGACY_FOCUS_LIFECYCLE_COMMANDS\s*\.\s*has\s*\(\s*"
-            r"commandMatch\s*\.\s*command\s*,?\s*"
-            r"\)\s*\)",
-            self.source,
-        )
-        self.assertIsNotNone(
-            quarantine_match,
-            "memory.ts must quarantine RETIRED_LEGACY_FOCUS_LIFECYCLE_COMMANDS "
-            "before calling memoryCore; line wrapping and Prettier formatting are allowed.",
-        )
-
+        quarantine = self._quarantine_guard()
         fallback_calls = list(
             re.finditer(
-                r"\bhandleMemoryCommandCore\s*\(\s*commandMatch\s*,\s*deps\s*,?\s*\)",
+                r"\breturn\s+(?:await\s+)?handleMemoryCommandCore\s*"
+                r"\(\s*commandMatch\s*,\s*deps\s*,?\s*\)\s*;",
                 self.source,
             )
         )
         self.assertTrue(
             fallback_calls,
-            "memory.ts must retain a fallback call to "
+            "memory.ts must retain a final fallback return to "
             "handleMemoryCommandCore(commandMatch, deps).",
         )
-        self.assertLess(quarantine_match.start(), fallback_calls[-1].start())
+        self.assertLess(
+            quarantine.start(),
+            fallback_calls[-1].start(),
+            "The retired legacy Focus quarantine must execute before the final "
+            "memoryCore fallback.",
+        )
 
     def test_quarantine_failure_wording_cannot_claim_success(self) -> None:
         self.assertIn("No Focus change was made.", self.source)
