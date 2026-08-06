@@ -15,6 +15,11 @@ import { resetConversation, interpretCommandIntent } from "./api";
 import { parseCommand, type CommandMatch } from './commands';
 import { observeExactLocalRoute } from './lib/focusTurnHeaders';
 import {
+  describeTaskCompletionPreviewTargets,
+  describeUnresolvedTaskCompletionRequest,
+  resolveTaskCompletionPreviewTargets,
+} from './lib/taskCompletionPreview';
+import {
   getDirectFocusTerminalCommandMatch,
   interpretSemanticFocusLifecycle,
   shouldPreflightSemanticFocusLifecycleBeforeCommandRouting,
@@ -148,6 +153,7 @@ export default function App() {
     notes,
     memoryTasks,
     recentActions,
+    activeSession,
     memoryTaskDraft,
     setMemoryTaskDraft,
     memorySyncState,
@@ -444,9 +450,19 @@ export default function App() {
               return;
             }
       if (commandRoute !== 'confirmed' && isDestructiveLocalCommand(commandMatch.command)) {
-        const taskCompletionTarget = commandMatch.command === 'mark-task-done'
+        const isTaskCompletionCommand = commandMatch.command === 'mark-task-done';
+        const taskCompletionTarget = isTaskCompletionCommand
           ? commandMatch.payload?.trim() ?? ''
           : '';
+        const taskCompletionPreviewTargets = isTaskCompletionCommand
+          ? resolveTaskCompletionPreviewTargets(
+              taskCompletionTarget,
+              memoryTasks,
+              activeSession,
+            )
+          : [];
+        const taskCompletionPreviewDescription =
+          describeTaskCompletionPreviewTargets(taskCompletionPreviewTargets);
         const frontendCommand = commandMatch.command === 'delete-calendar-event'
           ? buildCalendarDeleteFrontendCommand(commandMatch.calendarDelete)
           : commandMatch.command === 'mark-task-done' && taskCompletionTarget
@@ -466,10 +482,25 @@ export default function App() {
           ? `I understood that as: ${deleteDescription}. This will delete ${targetDeleteEvent.source === 'google' ? 'Google Calendar' : 'local'} event: ${targetDeleteEvent.time || '—'}: ${targetDeleteEvent.title}. Say "confirm" to run it, or "cancel" to stop.`
           : isCalendarDeleteCommand
             ? `I did not find a calendar event matching ${deleteDescription}.`
-            : `I understood that as: ${frontendCommand}. This changes or deletes local data. Say "confirm" to run it, or "cancel" to stop.`;
+            : isTaskCompletionCommand && !taskCompletionPreviewDescription
+              ? describeUnresolvedTaskCompletionRequest(taskCompletionTarget)
+              : taskCompletionPreviewDescription
+                ? `I understood that as: ${taskCompletionPreviewDescription}. This changes local task data. Say "confirm" to run it, or "cancel" to stop.`
+                : `I understood that as: ${frontendCommand}. This changes or deletes local data. Say "confirm" to run it, or "cancel" to stop.`;
         if (isCalendarDeleteCommand && !targetDeleteEvent) {
           setLastInputRoute('Delete command had no target');
           setLastLocalCommand('No matching calendar event to delete');
+          const assistantMsg = createAssistantMessage(now, confirmationPrompt);
+          setMessages((prev) => [...prev, userMsg, assistantMsg]);
+          speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+          return;
+        }
+        if (isTaskCompletionCommand && !taskCompletionPreviewDescription) {
+          setLastInputRoute('Task completion command had no target');
+          setLastLocalCommand('No matching open task to complete');
+          setLastInterpreterReason(
+            'Task completion reference did not resolve to an open task, so no confirmation was created.',
+          );
           const assistantMsg = createAssistantMessage(now, confirmationPrompt);
           setMessages((prev) => [...prev, userMsg, assistantMsg]);
           speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
@@ -898,7 +929,7 @@ export default function App() {
       setLastInterpreterReason(getInterpreterUnavailableReason(error));
     }
     await sendNormalChat(trimmed, visibleUserText);
-  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveMemoryTask, markMemoryTaskDone, clearCompletedTasks, getMemoryReadout, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, deleteCalendarEventByCriteria, findCalendarEventForDeletion, findCalendarEventForChange, getNextCalendarEventForDeletion, getNextCalendarEventForChange, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, runWebSearch, clearSearchState, searchError, pushResultToast, addRecentAction, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents, sendNormalChat]);
+  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveMemoryTask, memoryTasks, activeSession, markMemoryTaskDone, clearCompletedTasks, getMemoryReadout, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, deleteCalendarEventByCriteria, findCalendarEventForDeletion, findCalendarEventForChange, getNextCalendarEventForDeletion, getNextCalendarEventForChange, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, runWebSearch, clearSearchState, searchError, pushResultToast, addRecentAction, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents, sendNormalChat]);
   const handleOrbClick = useCallback(() => {
     // If QMeet is actively generating/streaming, tapping the orb should cancel
     // that response instead of starting a new listening session.
