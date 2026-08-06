@@ -4,7 +4,6 @@ const MEMORY_TASKS_STORAGE_KEY = 'qmeet-memory-tasks';
 
 function normalizeStoredTask(value: unknown): MemoryTask | null {
   if (!value || typeof value !== 'object') return null;
-
   const task = value as Partial<MemoryTask>;
   if (typeof task.title !== 'string' || !task.title.trim()) return null;
   return {
@@ -22,7 +21,6 @@ function normalizeStoredTask(value: unknown): MemoryTask | null {
       : {}),
   };
 }
-
 export function readStoredMemoryTasks(): MemoryTask[] {
   if (typeof window === 'undefined') return [];
 
@@ -40,7 +38,6 @@ export function readStoredMemoryTasks(): MemoryTask[] {
     return [];
   }
 }
-
 export function formatOpenTasksReadout(tasks: MemoryTask[]): string {
   const openTasks = tasks.filter(
     (task) => !task.completedAt && task.title.trim().length > 0,
@@ -56,7 +53,6 @@ export function formatOpenTasksReadout(tasks: MemoryTask[]): string {
 
   return `Open tasks:\n\n${taskLines.join('\n')}`;
 }
-
 export function formatFocusTaskReadout(
   activeSession: ActiveSession,
   tasks: MemoryTask[],
@@ -69,16 +65,14 @@ export function formatFocusTaskReadout(
   const goalLine = activeSession.goal.trim()
     ? `\nGoal: ${activeSession.goal.trim()}`
     : '';
-
   if (linkedTasks.length === 0) {
     const unrelatedLine = unrelatedOpenCount
-      ? ` You also have ${unrelatedOpenCount} unrelated open task${
+      ? `\n\nYou also have ${unrelatedOpenCount} unrelated open task${
           unrelatedOpenCount === 1 ? '' : 's'
         } in Memory.`
       : '';
     return `No tasks are linked to ${activeSession.title}.${goalLine}${unrelatedLine}`;
   }
-
   const taskLines = linkedTasks.map((task, index) => {
     const status = task.completedAt ? '✓' : '○';
     return `${index + 1}. ${status} ${task.title.trim()}`;
@@ -90,7 +84,6 @@ export function formatFocusTaskReadout(
         unrelatedOpenCount === 1 ? '' : 's'
       } remain in Memory.`
     : '';
-
   return `${linkedTasks.length} task${
     linkedTasks.length === 1 ? '' : 's'
   } linked to ${activeSession.title} (${openCount} open, ${completedCount} done).${goalLine}\n\n${taskLines.join(

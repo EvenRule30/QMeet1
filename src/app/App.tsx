@@ -70,14 +70,12 @@ import {
   type PendingInterpreterCommand,
 } from './lib/commandRouterUtils';
 import './App.css';
-
 type SplitCommandResult = {
   handled: boolean;
   confirmationContent?: string;
   shouldSpeakConfirmation?: boolean;
   confirmationSpeechRate?: number;
 };
-
 export default function App() {
   const [chatActive, setChatActive] = useState(false);
   const [orbState, setOrbState] = useState<OrbState>('idle');
@@ -219,7 +217,6 @@ export default function App() {
       console.error('Reset conversation error:', error);
     }
   }, [cancelActiveResponse, clearMessages, clearResultToasts, finishListening, stopCurrentSpeech]);
-
   const closePanel = useCallback(() => {
     setActivePanel('none');
   }, []);
@@ -235,7 +232,6 @@ export default function App() {
       orbAreaRef.current?.focus();
     }, 0);
   }, [cancelActiveResponse, finishListening, stopCurrentSpeech]);
-
   const openLauncherPanel = useCallback((panel: ActivePanel) => {
     if (panel === 'calendar') {
       setCalendarView('today');
@@ -252,7 +248,6 @@ export default function App() {
 
 
   // Calendar state and Google Calendar actions live in useCalendarController.
-
   const sendNormalChat = useCallback(async (messageText: string, visibleUserText: string) => {
     await sendStreamingChat(messageText, visibleUserText);
   }, [sendStreamingChat]);
@@ -260,7 +255,6 @@ export default function App() {
   const handleSend = useCallback(async (text: string, displayText?: string, commandRoute: CommandRoute = 'exact', forcedCommandMatch?: CommandMatch) => {
     const trimmed = text.trim();
     if (!trimmed) return;
-
     const visibleUserText = (displayText ?? trimmed).trim() || trimmed;
     // Any new input supersedes the response currently being generated.
     // Local commands can return without reaching sendStreamingChat, so the
@@ -279,7 +273,6 @@ export default function App() {
             setLastInterpreterReason(commandToRun.reason || 'User confirmed a pending destructive command.');
             return handleSend(commandToRun.frontendCommand, visibleUserText, 'confirmed');
           }
-
           if (isRejectingPendingCommand(trimmed)) {
             finishListening();
             setShowThinkingBubble(false);
@@ -289,7 +282,6 @@ export default function App() {
             setLastInterpreterReason(`User cancelled pending command: ${pendingInterpreterCommand.frontendCommand}.`);
 
             if (!chatActive) setChatActive(true);
-
             const now = Date.now();
             const userMsg = createUserMessage(now, visibleUserText);
             const assistantMsg = createAssistantMessage(now, 'Cancelled pending command.');
@@ -299,7 +291,6 @@ export default function App() {
             speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
             return;
           }
-
           setPendingInterpreterCommand(null);
         }
     const directFocusTerminalCommandMatch =
@@ -321,12 +312,6 @@ export default function App() {
         directFocusTerminalCommandMatch,
       );
     }
-    const semanticLifecyclePreflightBeforeCommandRouting =
-      !forcedCommandMatch &&
-      commandRoute === 'exact' &&
-      shouldPreflightSemanticFocusLifecycleBeforeCommandRouting(trimmed)
-        ? await interpretSemanticFocusLifecycle(trimmed)
-        : null;
     const parsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);
     const deferredExactFocusLifecycleMatch =
       !forcedCommandMatch &&
@@ -337,13 +322,25 @@ export default function App() {
       )
         ? parsedCommandMatch
         : null;
+    const exactNonLifecycleCommandClaimed =
+      !forcedCommandMatch &&
+      commandRoute === 'exact' &&
+      Boolean(parsedCommandMatch) &&
+      !Boolean(deferredExactFocusLifecycleMatch);
+    const semanticLifecyclePreflightBeforeCommandRouting =
+      !forcedCommandMatch &&
+      commandRoute === 'exact' &&
+      !exactNonLifecycleCommandClaimed &&
+      (Boolean(deferredExactFocusLifecycleMatch) ||
+        shouldPreflightSemanticFocusLifecycleBeforeCommandRouting(trimmed))
+        ? await interpretSemanticFocusLifecycle(trimmed)
+        : null;
     const deferredSemanticFocusLifecycleMessage =
       Boolean(semanticLifecyclePreflightBeforeCommandRouting) ||
       Boolean(deferredExactFocusLifecycleMatch);
     const commandMatch = deferredSemanticFocusLifecycleMessage
       ? null
       : parsedCommandMatch;
-
     if (commandMatch) {
       if (commandRoute === 'exact') {
         const requiresExactConfirmation =
@@ -358,7 +355,6 @@ export default function App() {
           requiresConfirmation: requiresExactConfirmation,
         });
       }
-
       finishListening();
       setShowThinkingBubble(false);
 
@@ -370,7 +366,6 @@ export default function App() {
       const previousLastLocalCommand = lastLocalCommand;
       setLastLocalCommand(commandMatch.command);
       setPendingInterpreterCommand(null);
-
       setLastInputRoute(getLocalCommandRouteLabel(commandRoute));
       if (commandRoute === 'exact') {
         setLastInterpreterAction('Not used');
@@ -379,7 +374,6 @@ export default function App() {
         setLastInterpreterReason('Exact frontend parser matched before the command interpreter was needed.');
       }
       const userMsg = createUserMessage(now, visibleUserText);
-
       if (
         commandRoute !== 'confirmed' &&
         commandMatch.command === 'add-calendar-event' &&
@@ -406,7 +400,6 @@ export default function App() {
           setLastInterpreterConfidence(commandRoute === 'exact' ? 1 : 0.9);
           setLastInterpreterReason('Google Calendar event creation requires confirmation before writing to the real calendar.');
           const assistantMsg = createAssistantMessage(now, confirmationPrompt);
-
           setMessages((prev) => [...prev, userMsg, assistantMsg]);
           speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
           return;
@@ -415,7 +408,6 @@ export default function App() {
       if (commandRoute !== 'confirmed' && commandMatch.command === 'edit-last-event') {
               const targetEditEvent = await findCalendarEventForChange();
               const editDescription = describeCalendarEditPayload(commandMatch.calendarEdit);
-
               if (!targetEditEvent) {
                 setLastInputRoute('Edit command had no target');
                 setLastLocalCommand('No calendar event to edit');
@@ -426,7 +418,6 @@ export default function App() {
                     ? 'I did not find a Google Calendar event to edit for the current view.'
                     : 'I did not find a local calendar event to edit.'
                 );
-
                 setMessages((prev) => [...prev, userMsg, assistantMsg]);
                 speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
                 return;
@@ -434,7 +425,6 @@ export default function App() {
               const frontendCommand = buildCalendarEditFrontendCommand(commandMatch.calendarEdit);
               const sourceLabel = targetEditEvent.source === 'google' ? 'Google Calendar' : 'local';
               const confirmationPrompt = `I understood that as: update ${sourceLabel} event: ${targetEditEvent.time || '—'}: ${targetEditEvent.title}. Changes: ${editDescription}. Say "confirm" to update it, or "cancel" to stop.`;
-
               setPendingInterpreterCommand({
                 originalText: visibleUserText,
                 frontendCommand,
@@ -449,7 +439,6 @@ export default function App() {
               setLastInterpreterConfidence(commandRoute === 'exact' ? 1 : 0.9);
               setLastInterpreterReason('Calendar event editing requires confirmation before changing the calendar.');
               const assistantMsg = createAssistantMessage(now, confirmationPrompt);
-
               setMessages((prev) => [...prev, userMsg, assistantMsg]);
               speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
               return;
@@ -481,9 +470,7 @@ export default function App() {
         if (isCalendarDeleteCommand && !targetDeleteEvent) {
           setLastInputRoute('Delete command had no target');
           setLastLocalCommand('No matching calendar event to delete');
-
           const assistantMsg = createAssistantMessage(now, confirmationPrompt);
-
           setMessages((prev) => [...prev, userMsg, assistantMsg]);
           speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
           return;
@@ -509,7 +496,6 @@ export default function App() {
             : 'Command interpreter mapped the input to a destructive command, so QMeet paused for confirmation.'
         );
         const assistantMsg = createAssistantMessage(now, confirmationPrompt);
-
         setMessages((prev) => [...prev, userMsg, assistantMsg]);
         speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
         return;
@@ -522,7 +508,6 @@ export default function App() {
       let confirmationSpeechRate = speechRate;
       let replaceMessages = false;
       let speechConfirmationContent = getBriefToolSpeech(commandMatch.command, confirmationContent);
-
       const notesCommandResult: SplitCommandResult = handleNotesCommand(commandMatch, {
         voiceOutputEnabled,
         setActivePanel,
@@ -604,7 +589,6 @@ export default function App() {
         if (splitCommandResult.confirmationContent !== undefined) {
           confirmationContent = splitCommandResult.confirmationContent;
         }
-
         if (splitCommandResult.shouldSpeakConfirmation !== undefined) {
           shouldSpeakConfirmation = splitCommandResult.shouldSpeakConfirmation;
         }
@@ -647,9 +631,7 @@ export default function App() {
         return;
       }
       speechConfirmationContent = getBriefToolSpeech(commandMatch.command, confirmationContent);
-
       const confirmationMsg = createAssistantMessage(now, confirmationContent, 'tool');
-
       if (replaceMessages) {
         setMessages([userMsg, confirmationMsg]);
       } else {
@@ -665,7 +647,6 @@ export default function App() {
         );
       }
       pushResultToast(getResultToastForCommand(commandMatch.command, confirmationContent));
-
       speakAssistantText(speechConfirmationContent, {
         enabled: shouldSpeakConfirmation,
         rate: confirmationSpeechRate,
@@ -679,7 +660,6 @@ export default function App() {
       setLastInputRoute('Interpreter command failed to execute');
       setLastLocalCommand('Interpreter unmatched command');
       setLastInterpreterReason('The interpreter returned a frontend command, but the frontend parser could not execute it.');
-
       if (!chatActive) setChatActive(true);
       const now = Date.now();
       const userMsg = createUserMessage(now, visibleUserText);
@@ -689,7 +669,6 @@ export default function App() {
       speakAssistantText(assistantMsg.content);
       return;
     }
-
     const semanticFocusLifecycle =
       semanticLifecyclePreflightBeforeCommandRouting ??
       await interpretSemanticFocusLifecycle(trimmed);
@@ -740,7 +719,6 @@ export default function App() {
         semanticFocusLifecycle.commandMatch,
       );
     }
-
     if (semanticFocusLifecycle.kind === 'acknowledged') {
       finishListening();
       setShowThinkingBubble(false);
@@ -751,7 +729,6 @@ export default function App() {
       setLastInterpreterFrontendCommand('None');
       setLastInterpreterConfidence(semanticFocusLifecycle.confidence);
       setLastInterpreterReason(semanticFocusLifecycle.reason);
-
       if (!chatActive) setChatActive(true);
       const now = Date.now();
       const userMsg = createUserMessage(now, visibleUserText);
@@ -765,7 +742,6 @@ export default function App() {
       });
       return;
     }
-
     if (
       semanticFocusLifecycle.kind === 'blocked' ||
       (semanticFocusLifecycle.kind === 'unavailable' &&
@@ -781,7 +757,6 @@ export default function App() {
       setLastInterpreterFrontendCommand('None');
       setLastInterpreterConfidence(semanticFocusLifecycle.confidence);
       setLastInterpreterReason(semanticFocusLifecycle.reason);
-
       if (!chatActive) setChatActive(true);
       const now = Date.now();
       const userMsg = createUserMessage(now, visibleUserText);
@@ -800,7 +775,6 @@ export default function App() {
       });
       return;
     }
-
     if (deferredSemanticFocusLifecycleMessage) {
       finishListening();
       setShowThinkingBubble(false);
@@ -814,7 +788,6 @@ export default function App() {
         semanticFocusLifecycle.reason ||
           'Focus lifecycle language was detected before command parsing, but semantic preflight did not confirm one safe lifecycle operation.',
       );
-
       if (!chatActive) setChatActive(true);
       const now = Date.now();
       const userMsg = createUserMessage(now, visibleUserText);
@@ -833,7 +806,6 @@ export default function App() {
       });
       return;
     }
-
     try {
       const interpretedCommand = await interpretCommandIntent(trimmed);
       if (
@@ -858,11 +830,9 @@ export default function App() {
         setLastInterpreterConfidence(interpretedCommand.confidence);
         setLastInterpreterReason(interpretedCommand.reason || 'Interpreter mapped fuzzy input to a destructive frontend command.');
         if (!chatActive) setChatActive(true);
-
         const now = Date.now();
         const userMsg = createUserMessage(now, visibleUserText);
         const assistantMsg = createAssistantMessage(now, buildInterpreterDestructivePrompt(interpretedCommand.frontendCommand));
-
         setMessages((prev) => [...prev, userMsg, assistantMsg]);
         speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
         return;
@@ -903,11 +873,9 @@ export default function App() {
           });
         }
         if (!chatActive) setChatActive(true);
-
         const now = Date.now();
         const userMsg = createUserMessage(now, visibleUserText);
         const assistantMsg = createAssistantMessage(now, buildInterpreterClarifyPrompt(interpretedCommand.frontendCommand, destructiveCommand));
-
         setMessages((prev) => [...prev, userMsg, assistantMsg]);
         speakAssistantText(assistantMsg.content);
         return;
@@ -931,7 +899,6 @@ export default function App() {
     }
     await sendNormalChat(trimmed, visibleUserText);
   }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveMemoryTask, markMemoryTaskDone, clearCompletedTasks, getMemoryReadout, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, deleteCalendarEventByCriteria, findCalendarEventForDeletion, findCalendarEventForChange, getNextCalendarEventForDeletion, getNextCalendarEventForChange, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, runWebSearch, clearSearchState, searchError, pushResultToast, addRecentAction, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents, sendNormalChat]);
-
   const handleOrbClick = useCallback(() => {
     // If QMeet is actively generating/streaming, tapping the orb should cancel
     // that response instead of starting a new listening session.
@@ -957,7 +924,6 @@ export default function App() {
       setOrbState('idle');
       return;
     }
-
     if (orbState !== 'idle') {
       return;
     }
@@ -1100,7 +1066,6 @@ export default function App() {
           onClose={closePanel}
         />
       )}
-
       {activePanel === 'status' && (
         <StatusOverlay
           activePanelLabel={activePanelLabel}
@@ -1137,7 +1102,6 @@ export default function App() {
           onClose={closePanel}
         />
       )}
-
       {activePanel === 'memory' && (
         <MemoryOverlay
           memorySyncState={memorySyncState}

@@ -19,18 +19,23 @@ class FocusTerminalPreflightPrecedenceTests(unittest.TestCase):
         )
         self.assertIn("return looksLikeFocusTerminalLanguage(message);", source)
 
-    def test_preflight_occurs_before_parse_command(self) -> None:
+    def test_direct_terminal_gate_precedes_parser_and_generic_preflight(self) -> None:
         source = APP.read_text(encoding="utf-8")
-        preflight_index = source.index(
-            "const semanticLifecyclePreflightBeforeCommandRouting ="
+        direct_terminal_index = source.index(
+            "const directFocusTerminalCommandMatch ="
         )
         parse_index = source.index(
             "const parsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);"
         )
+        preflight_index = source.index(
+            "const semanticLifecyclePreflightBeforeCommandRouting ="
+        )
         destructive_index = source.index(
             "if (commandRoute !== 'confirmed' && isDestructiveLocalCommand"
         )
-        self.assertLess(preflight_index, parse_index)
+
+        self.assertLess(direct_terminal_index, parse_index)
+        self.assertLess(parse_index, preflight_index)
         self.assertLess(preflight_index, destructive_index)
 
     def test_preflight_result_is_cached_and_prevents_exact_execution(self) -> None:
