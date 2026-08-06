@@ -22,6 +22,10 @@ import {
 import { resolveNaturalFocusTaskCompletionTarget } from './lib/naturalTaskCompletion';
 import { reconcileCanonicalFocusProjection } from './lib/canonicalFocusProjection';
 import {
+  recordVerifiedFocusTaskProgress,
+  type FocusTaskProgressResult,
+} from './lib/focusTaskProgress';
+import {
   getDirectFocusTerminalCommandMatch,
   interpretSemanticFocusLifecycle,
   shouldPreflightSemanticFocusLifecycleBeforeCommandRouting,
@@ -599,6 +603,40 @@ export default function App() {
         speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
         return;
       }
+      const confirmedFocusTaskTargets =
+        commandRoute === 'confirmed' &&
+        commandMatch.command === 'mark-task-done' &&
+        routingActiveSession
+          ? resolveTaskCompletionPreviewTargets(
+              commandMatch.payload?.trim() ?? '',
+              memoryTasks,
+              routingActiveSession,
+            ).filter((task) =>
+              routingActiveSession.linkedTaskIds.includes(task.id),
+            )
+          : [];
+      let focusTaskProgressResult: FocusTaskProgressResult | null = null;
+      let focusTaskProgressWarning = '';
+      if (routingActiveSession && confirmedFocusTaskTargets.length > 0) {
+        const completedAt = new Date().toISOString();
+        try {
+          focusTaskProgressResult = await recordVerifiedFocusTaskProgress(
+            routingActiveSession.id,
+            confirmedFocusTaskTargets.map((task) => ({
+              id: task.id,
+              title: task.title,
+              completedAt,
+            })),
+          );
+        } catch (error) {
+          console.warn(
+            'Linked task was completed, but canonical Focus progress could not be verified.',
+            error,
+          );
+          focusTaskProgressWarning =
+            'The task was completed, but canonical Focus progress could not be verified.';
+        }
+      }
       let confirmationContent =
         commandMatch.command === 'close-generic' && activePanel === 'none'
           ? 'No panel is open.'
@@ -728,6 +766,22 @@ export default function App() {
       } else if (commandMatch.command === 'end-chat') {
         await handleEndChat();
         return;
+      }
+      if (
+        commandMatch.command === 'mark-task-done' &&
+        focusTaskProgressResult?.verified
+      ) {
+        const progressDetail = focusTaskProgressResult.allLinkedTasksComplete
+          ? 'Focus progress updated. All linked tasks are complete; review the Focus before completing it.'
+          : focusTaskProgressResult.nextAction
+            ? `Focus progress updated.\n\nNext: ${focusTaskProgressResult.nextAction}`
+            : 'Focus progress updated.';
+        confirmationContent = `${confirmationContent}\n\n${progressDetail}`;
+      } else if (
+        commandMatch.command === 'mark-task-done' &&
+        focusTaskProgressWarning
+      ) {
+        confirmationContent = `${confirmationContent}\n\n${focusTaskProgressWarning}`;
       }
       speechConfirmationContent = getBriefToolSpeech(commandMatch.command, confirmationContent);
       const confirmationMsg = createAssistantMessage(now, confirmationContent, 'tool');

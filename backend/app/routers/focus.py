@@ -48,6 +48,12 @@ from app.focus.store import (
 from app.focus.task_lineage import (
     get_active_focus_lineage_linked_task_ids,
 )
+from app.focus.task_progress import (
+    NativeFocusTaskProgressError,
+    NativeFocusTaskProgressRequest,
+    NativeFocusTaskProgressResult,
+    record_focus_task_progress_verified,
+)
 
 router = APIRouter(prefix="/api/focus", tags=["focus"])
 _SESSION_STARTED_AT = datetime.now().astimezone().isoformat()
@@ -181,6 +187,40 @@ async def focus_state():
         }
     except FocusStoreError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post(
+    "/task-progress",
+    response_model=NativeFocusTaskProgressResult,
+)
+async def focus_task_progress(
+    request: NativeFocusTaskProgressRequest,
+) -> NativeFocusTaskProgressResult:
+    try:
+        result = record_focus_task_progress_verified(request)
+    except NativeFocusTaskProgressError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={
+                "code": exc.code,
+                "message": exc.message,
+                "verified": False,
+                "successClaimAllowed": False,
+            },
+        ) from exc
+    if not result.verified:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "verification_failed",
+                "message": (
+                    "Canonical state did not verify the Focus task progress."
+                ),
+                "verified": False,
+                "successClaimAllowed": False,
+            },
+        )
+    return result
 
 
 @router.get("/events")
