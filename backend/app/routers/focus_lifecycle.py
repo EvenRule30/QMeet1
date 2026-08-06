@@ -1,5 +1,17 @@
 from typing import NoReturn
 
+from app.focus.context_boundary import (
+    classify_focus_context,
+    encode_focus_context_reason,
+)
+from app.focus.context import (
+    NativeFocusContextError,
+    NativeFocusContextRequest,
+    NativeFocusContextResult,
+    add_focus_context_verified,
+    get_native_focus_context_health,
+)
+
 from fastapi import APIRouter, HTTPException
 from app.focus.calendar_prep import (
     NativeCalendarFocusPrepError,
@@ -93,6 +105,18 @@ def _raise_tasks_error(exc: NativeFocusTasksError) -> NoReturn:
 
 
 def _raise_calendar_prep_error(exc: NativeCalendarFocusPrepError) -> NoReturn:
+    raise HTTPException(
+        status_code=exc.status_code,
+        detail={
+            "code": exc.code,
+            "message": exc.message,
+            "verified": False,
+            "successClaimAllowed": False,
+        },
+    ) from exc
+
+
+def _raise_context_error(exc: NativeFocusContextError) -> NoReturn:
     raise HTTPException(
         status_code=exc.status_code,
         detail={
@@ -251,6 +275,27 @@ async def prepare_native_calendar_focus(
     return result
 
 
+@router.post("/context", response_model=NativeFocusContextResult)
+async def add_native_focus_context(
+    request: NativeFocusContextRequest,
+) -> NativeFocusContextResult:
+    try:
+        result = add_focus_context_verified(request)
+    except NativeFocusContextError as exc:
+        _raise_context_error(exc)
+    if not result.verified:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "verification_failed",
+                "message": "Canonical state did not verify the Focus context receipt.",
+                "verified": False,
+                "successClaimAllowed": False,
+            },
+        )
+    return result
+
+
 @router.post(
     "/semantic-update/interpret",
     response_model=SemanticFocusUpdatePreflightResult,
@@ -268,6 +313,15 @@ async def interpret_semantic_focus_update(
 async def interpret_semantic_focus_lifecycle(
     request: SemanticFocusLifecyclePreflightRequest,
 ) -> SemanticFocusLifecyclePreflightResult:
+    context_signal = classify_focus_context(request.message)
+    if context_signal is not None:
+        return SemanticFocusLifecyclePreflightResult(
+            intent="update",
+            possibleMutation=True,
+            confidence=1.0,
+            reason=encode_focus_context_reason(context_signal),
+            sourceTurnId=request.sourceTurnId,
+        )
     return await semantic_focus_lifecycle_preflight(request)
 
 
@@ -297,10 +351,12 @@ async def native_focus_lifecycle_health() -> dict[str, object]:
             "prepare_calendar_focus",
             "semantic_update_interpret",
             "semantic_lifecycle_interpret",
+            "add_focus_context",
         ],
         "health": get_native_focus_lifecycle_health(),
         "summaryHealth": get_native_focus_summary_health(),
         "taskHealth": get_native_focus_task_health(),
         "calendarPrepHealth": get_native_calendar_focus_prep_health(),
+        "contextHealth": get_native_focus_context_health(),
         "ownershipReadiness": ownership_readiness.model_dump(),
     }

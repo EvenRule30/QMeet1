@@ -159,22 +159,27 @@ class FocusProjectionRetirementPhase20GTests(unittest.TestCase):
             self.assertEqual(raised.exception.status_code, 409)
             self.assertIn("verified native operations", str(raised.exception.detail))
 
-    def test_wrapper_declares_phase20g_and_keeps_guided_command_native(self):
+    def test_wrapper_declares_phase20i_and_keeps_native_handlers_before_quarantine(self):
         source = MEMORY_WRAPPER_SOURCE.read_text(encoding="utf-8")
         self.assertIn(
-            "NATIVE_FOCUS_LIFECYCLE_OWNERSHIP_VERSION = 'phase20g'",
+            "NATIVE_FOCUS_LIFECYCLE_OWNERSHIP_VERSION = 'phase20i'",
             source,
         )
-        native_handler = source.index(
+        calendar_handler = source.index(
             "if (commandMatch.command === 'prepare-calendar-focus')"
         )
+        context_executor = source.index("addNativeFocusContextVerified")
         quarantine = source.index(
             "RETIRED_LEGACY_FOCUS_OWNERSHIP_COMMANDS.has(commandMatch.command)"
         )
         fallback = source.rindex("return handleMemoryCommandCore(commandMatch, deps)")
-        self.assertLess(native_handler, quarantine)
+        self.assertLess(calendar_handler, quarantine)
+        self.assertLess(context_executor, quarantine)
         self.assertLess(quarantine, fallback)
-        self.assertIn("confirmationContent: result.message", source[native_handler:quarantine])
+        self.assertIn(
+            "confirmationContent: result.message",
+            source[calendar_handler:quarantine],
+        )
 
 
 if __name__ == "__main__":

@@ -53,9 +53,11 @@ def _write_clean_sources(root: Path) -> None:
     calendar = root / "src/app/hooks/useCalendarController.ts"
     memory_router = root / "backend/app/routers/memory.py"
     wrapper = root / "src/app/commandHandlers/memory.ts"
-    calendar.parent.mkdir(parents=True, exist_ok=True)
-    memory_router.parent.mkdir(parents=True, exist_ok=True)
-    wrapper.parent.mkdir(parents=True, exist_ok=True)
+    context = root / "backend/app/focus/context.py"
+    semantic = root / "src/app/lib/semanticFocusLifecycle.ts"
+
+    for path in (calendar, memory_router, wrapper, context, semantic):
+        path.parent.mkdir(parents=True, exist_ok=True)
 
     calendar.write_text(
         "export function useCalendarController() { return {}; }\n",
@@ -70,12 +72,22 @@ def _write_clean_sources(root: Path) -> None:
     )
     command_literals = "\n".join(f"  '{command}'," for command in COMMANDS)
     wrapper.write_text(
-        "export const NATIVE_FOCUS_LIFECYCLE_OWNERSHIP_VERSION = 'phase20g';\n"
+        "export const NATIVE_FOCUS_LIFECYCLE_OWNERSHIP_VERSION = 'phase20i';\n"
+        "async function contextPath() { return addNativeFocusContextVerified(request); }\n"
         "const RETIRED_LEGACY_FOCUS_OWNERSHIP_COMMANDS = new Set([\n"
         f"{command_literals}\n"
         "]);\n"
         "if (RETIRED_LEGACY_FOCUS_OWNERSHIP_COMMANDS.has(commandMatch.command)) return blocked;\n"
         "return handleMemoryCommandCore(commandMatch, deps);\n",
+        encoding="utf-8",
+    )
+    context.write_text(
+        "def add_focus_context_verified():\n"
+        "    return {'objectivePreserved': True}\n",
+        encoding="utf-8",
+    )
+    semantic.write_text(
+        "const CONTEXT_REASON_PREFIX = 'phase20i-context:';\n",
         encoding="utf-8",
     )
 
@@ -124,6 +136,11 @@ class FocusOwnershipReadinessPhase20GTests(unittest.TestCase):
                 "get_native_calendar_focus_prep_health",
                 return_value={"prepareCalendarFocus": section},
             ),
+            patch.object(
+                ownership,
+                "get_native_focus_context_health",
+                return_value={"addFocusContext": section},
+            ),
         ):
             return ownership.get_native_focus_ownership_readiness()
 
@@ -134,8 +151,10 @@ class FocusOwnershipReadinessPhase20GTests(unittest.TestCase):
         self.assertTrue(result.readyForLegacyProjectionRetirement)
         self.assertTrue(result.legacyProjection.retired)
         self.assertTrue(result.legacyProjection.fallbackBlocked)
-        self.assertEqual(result.legacyProjection.ownershipVersion, "phase20g")
+        self.assertEqual(result.legacyProjection.ownershipVersion, "phase20i")
         self.assertEqual(result.legacyProjection.remainingBrowserOwnedWriteSurfaces, [])
+        self.assertEqual(result.verifiedOperationCount, 8)
+        self.assertEqual(result.requiredOperationCount, 8)
 
     def test_calendar_browser_writer_blocks_readiness(self):
         calendar = self.root / "src/app/hooks/useCalendarController.ts"
@@ -148,7 +167,10 @@ class FocusOwnershipReadinessPhase20GTests(unittest.TestCase):
         self.assertEqual(result.readiness, "blocked")
         self.assertFalse(result.legacyProjection.retired)
         self.assertTrue(
-            any("calendar hook" in item for item in result.legacyProjection.remainingBrowserOwnedWriteSurfaces)
+            any(
+                "calendar hook" in item
+                for item in result.legacyProjection.remainingBrowserOwnedWriteSurfaces
+            )
         )
 
     def test_writable_compatibility_memory_projection_blocks_readiness(self):
@@ -166,7 +188,8 @@ class FocusOwnershipReadinessPhase20GTests(unittest.TestCase):
     def test_missing_fallback_quarantine_blocks_readiness(self):
         wrapper = self.root / "src/app/commandHandlers/memory.ts"
         wrapper.write_text(
-            "export const NATIVE_FOCUS_LIFECYCLE_OWNERSHIP_VERSION = 'phase20g';\n"
+            "export const NATIVE_FOCUS_LIFECYCLE_OWNERSHIP_VERSION = 'phase20i';\n"
+            "async function contextPath() { return addNativeFocusContextVerified(request); }\n"
             "return handleMemoryCommandCore(commandMatch, deps);\n",
             encoding="utf-8",
         )
@@ -183,13 +206,17 @@ class FocusOwnershipReadinessPhase20GTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(result.readiness, "collecting")
         self.assertFalse(result.readyForLegacyProjectionRetirement)
-        self.assertEqual(len(result.evidenceNeeded), 7)
+        self.assertEqual(len(result.evidenceNeeded), 8)
+        self.assertIn(
+            "Run and verify add_focus_context at least once",
+            result.evidenceNeeded,
+        )
 
     def test_failed_receipt_blocks_even_when_sources_are_clean(self):
         result = self._readiness("failed")
         self.assertFalse(result.ok)
         self.assertEqual(result.readiness, "blocked")
-        self.assertGreaterEqual(len(result.blockers), 7)
+        self.assertGreaterEqual(len(result.blockers), 8)
 
 
 if __name__ == "__main__":

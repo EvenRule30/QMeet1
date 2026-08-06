@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.focus.calendar_prep import get_native_calendar_focus_prep_health
+from app.focus.context import get_native_focus_context_health
 from app.focus.lifecycle import get_native_focus_lifecycle_health
 from app.focus.summary import get_native_focus_summary_health
 from app.focus.tasks import get_native_focus_task_health
@@ -223,6 +224,30 @@ def _audit_projection_retirement() -> _ProjectionAudit:
             and guard_index < fallback_index
             and commands_present
         )
+        if "addNativeFocusContextVerified" not in wrapper_source:
+            remaining.append(
+                f"{wrapper_path}: durable Focus context does not use the verified native executor"
+            )
+
+    context_path = "backend/app/focus/context.py"
+    context_source, context_error = _read_source(root, context_path)
+    if context_error:
+        remaining.append(context_error)
+    elif "add_focus_context_verified" not in context_source or (
+        "objectivePreserved" not in context_source
+    ):
+        remaining.append(
+            f"{context_path}: verified context persistence or objective-preservation proof is missing"
+        )
+
+    semantic_path = "src/app/lib/semanticFocusLifecycle.ts"
+    semantic_source, semantic_error = _read_source(root, semantic_path)
+    if semantic_error:
+        remaining.append(semantic_error)
+    elif "phase20i-context:" not in semantic_source:
+        remaining.append(
+            f"{semantic_path}: natural Focus context is not routed through the native context receipt"
+        )
 
     return _ProjectionAudit(
         ownershipVersion=ownership_version,
@@ -236,6 +261,7 @@ def get_native_focus_ownership_readiness() -> NativeFocusOwnershipReadiness:
     summary_health = get_native_focus_summary_health()
     task_health = get_native_focus_task_health()
     calendar_health = get_native_calendar_focus_prep_health()
+    context_health = get_native_focus_context_health()
 
     operations = [
         _operation("start_focus", _section(lifecycle_health, "startFocus")),
@@ -247,6 +273,10 @@ def get_native_focus_ownership_readiness() -> NativeFocusOwnershipReadiness:
         _operation(
             "prepare_calendar_focus",
             _section(calendar_health, "prepareCalendarFocus"),
+        ),
+        _operation(
+            "add_focus_context",
+            _section(context_health, "addFocusContext"),
         ),
     ]
 

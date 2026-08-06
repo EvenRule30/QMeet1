@@ -1,4 +1,4 @@
-import type { MemoryTask } from '../types';
+import type { ActiveSession, MemoryTask } from '../types';
 
 const MEMORY_TASKS_STORAGE_KEY = 'qmeet-memory-tasks';
 
@@ -7,7 +7,6 @@ function normalizeStoredTask(value: unknown): MemoryTask | null {
 
   const task = value as Partial<MemoryTask>;
   if (typeof task.title !== 'string' || !task.title.trim()) return null;
-
   return {
     id:
       typeof task.id === 'string' && task.id.trim()
@@ -56,4 +55,45 @@ export function formatOpenTasksReadout(tasks: MemoryTask[]): string {
   );
 
   return `Open tasks:\n\n${taskLines.join('\n')}`;
+}
+
+export function formatFocusTaskReadout(
+  activeSession: ActiveSession,
+  tasks: MemoryTask[],
+): string {
+  const linkedIds = new Set(activeSession.linkedTaskIds);
+  const linkedTasks = tasks.filter((task) => linkedIds.has(task.id));
+  const unrelatedOpenCount = tasks.filter(
+    (task) => !task.completedAt && !linkedIds.has(task.id),
+  ).length;
+  const goalLine = activeSession.goal.trim()
+    ? `\nGoal: ${activeSession.goal.trim()}`
+    : '';
+
+  if (linkedTasks.length === 0) {
+    const unrelatedLine = unrelatedOpenCount
+      ? ` You also have ${unrelatedOpenCount} unrelated open task${
+          unrelatedOpenCount === 1 ? '' : 's'
+        } in Memory.`
+      : '';
+    return `No tasks are linked to ${activeSession.title}.${goalLine}${unrelatedLine}`;
+  }
+
+  const taskLines = linkedTasks.map((task, index) => {
+    const status = task.completedAt ? '✓' : '○';
+    return `${index + 1}. ${status} ${task.title.trim()}`;
+  });
+  const openCount = linkedTasks.filter((task) => !task.completedAt).length;
+  const completedCount = linkedTasks.length - openCount;
+  const unrelatedLine = unrelatedOpenCount
+    ? `\n\n${unrelatedOpenCount} unrelated open task${
+        unrelatedOpenCount === 1 ? '' : 's'
+      } remain in Memory.`
+    : '';
+
+  return `${linkedTasks.length} task${
+    linkedTasks.length === 1 ? '' : 's'
+  } linked to ${activeSession.title} (${openCount} open, ${completedCount} done).${goalLine}\n\n${taskLines.join(
+    '\n',
+  )}${unrelatedLine}`;
 }

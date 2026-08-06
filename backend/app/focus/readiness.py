@@ -463,7 +463,7 @@ def build_promotion_readiness(
         )
     if route_decisions < MIN_ROUTE_DECISIONS:
         missing_evidence.append(
-            f"Need {MIN_ROUTE_DECISIONS - route_decisions} more guarded route decision"
+            f"Need {MIN_ROUTE_DECISIONS - route_decisions} more guarded planner route decision"
             f"{'s' if MIN_ROUTE_DECISIONS - route_decisions != 1 else ''}."
         )
     if response_attempts < MIN_RESPONSE_GUARDED_ATTEMPTS:
@@ -473,7 +473,7 @@ def build_promotion_readiness(
         )
     if exact_observations < MIN_EXACT_ROUTE_OBSERVATIONS:
         missing_evidence.append(
-            f"Need {MIN_EXACT_ROUTE_OBSERVATIONS - exact_observations} more exact local route observation"
+            f"Need {MIN_EXACT_ROUTE_OBSERVATIONS - exact_observations} more exact local-route observation"
             f"{'s' if MIN_EXACT_ROUTE_OBSERVATIONS - exact_observations != 1 else ''}."
         )
 

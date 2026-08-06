@@ -591,12 +591,12 @@ export function FocusResponseHealth() {
                 <div className="status-card-meta">Manual review only</div>
               </div>
               <div className="status-card">
-                <div className="status-card-title">Guarded Routes</div>
+                <div className="status-card-title">Guarded Planner Routes</div>
                 <div className="status-card-value">
                   {promotionReadiness.currentSamples.routeDecisions} /{' '}
                   {promotionReadiness.sampleRequirements.routeDecisions}
                 </div>
-                <div className="status-card-meta">Current-session decisions</div>
+                <div className="status-card-meta">Planner-routed current-session decisions</div>
               </div>
               <div className="status-card">
                 <div className="status-card-title">Guarded Responses</div>

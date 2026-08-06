@@ -1,11 +1,20 @@
 export * from './memoryCore';
 import { handleMemoryCommand as handleMemoryCommandCore } from './memoryCore';
 import {
+  formatFocusTaskReadout,
   formatOpenTasksReadout,
   readStoredMemoryTasks,
 } from '../lib/memoryReadSurface';
 import { consumeNativeReadSurface } from '../lib/nativeReadSurfaceBridge';
 import type { Note } from '../types';
+import {
+  addNativeFocusContextVerified,
+  appendNativeFocusContextToSummary,
+  applyVerifiedFocusContextProjection,
+  describeNativeFocusContextFailure,
+  readNativeFocusContext,
+  type FocusContextField,
+} from '../lib/nativeFocusContext';
 import {
   applyVerifiedCalendarFocusPrepProjection,
   describeNativeCalendarFocusPrepFailure,
@@ -31,13 +40,13 @@ import {
 } from '../lib/nativeFocusSummary';
 import {
   applyVerifiedFocusTaskProjection,
-  buildNativeFocusTaskTitles,
+  buildContextAwareNativeFocusTaskTitles,
   buildNativeMeetingFollowUpTaskTitles,
   createNativeFocusTasksVerified,
   describeNativeFocusTasksFailure,
 } from '../lib/nativeFocusTasks';
 
-export const NATIVE_FOCUS_LIFECYCLE_OWNERSHIP_VERSION = 'phase20g';
+export const NATIVE_FOCUS_LIFECYCLE_OWNERSHIP_VERSION = 'phase20i';
 
 type MemoryCommandName = Parameters<typeof handleMemoryCommandCore>[0]['command'];
 const RETIRED_LEGACY_FOCUS_OWNERSHIP_COMMANDS = new Set<MemoryCommandName>([
@@ -80,6 +89,54 @@ function parseNativeFocusEndCommand(payload: string | undefined): {
     };
   } catch {
     return { disposition: 'ended' };
+  }
+}
+type NativeFocusContextCommandEnvelope = {
+  sourceTurnId?: unknown;
+  contextField?: unknown;
+  contextValue?: unknown;
+};
+function parseNativeFocusContextCommand(
+  payload: string | undefined,
+): {
+  sourceTurnId?: string;
+  field: FocusContextField;
+  value: string;
+} | null {
+  if (!payload?.trim()) return null;
+  try {
+    const parsed = JSON.parse(payload) as NativeFocusContextCommandEnvelope;
+    const field =
+      typeof parsed.contextField === 'string'
+        ? parsed.contextField.trim()
+        : '';
+    const value =
+      typeof parsed.contextValue === 'string'
+        ? parsed.contextValue.replace(/\s+/g, ' ').trim()
+        : '';
+    const sourceTurnId =
+      typeof parsed.sourceTurnId === 'string'
+        ? parsed.sourceTurnId.trim()
+        : '';
+    if (
+      ![
+        'requirements',
+        'constraints',
+        'preferences',
+        'decisions',
+        'knownFacts',
+      ].includes(field) ||
+      !value
+    ) {
+      return null;
+    }
+    return {
+      field: field as FocusContextField,
+      value,
+      ...(sourceTurnId ? { sourceTurnId } : {}),
+    };
+  } catch {
+    return null;
   }
 }
 function hasSavedFocusSummary(
@@ -145,6 +202,18 @@ export async function handleMemoryCommand(
     commandMatch.command === 'read-memory'
       ? consumeNativeReadSurface()
       : null;
+  if (commandMatch.command === 'read-memory') {
+    const tasks = readStoredMemoryTasks();
+    const activeSession = readVerifiedFocusProjection();
+    deps.setActivePanel('memory');
+    return {
+      handled: true,
+      confirmationContent: activeSession
+        ? formatFocusTaskReadout(activeSession, tasks)
+        : formatOpenTasksReadout(tasks),
+      shouldSpeakConfirmation: deps.voiceOutputEnabled,
+    };
+  }
   if (nativeReadSurface === 'tasks') {
     deps.setActivePanel('memory');
     return {
@@ -186,6 +255,52 @@ export async function handleMemoryCommand(
     }
   }
   if (commandMatch.command === 'update-focus-session') {
+    const contextCommand = parseNativeFocusContextCommand(commandMatch.payload);
+    if (contextCommand) {
+      const activeSession = readVerifiedFocusProjection();
+      deps.setActivePanel('memory');
+      if (!activeSession) {
+        return {
+          handled: true,
+          confirmationContent:
+            'No active Focus is currently running. Start a Focus first, then I can save that detail.',
+          shouldSpeakConfirmation: deps.voiceOutputEnabled,
+        };
+      }
+      try {
+        const result = await addNativeFocusContextVerified({
+          expectedFocusId: activeSession.id,
+          expectedObjective: activeSession.goal,
+          field: contextCommand.field,
+          value: contextCommand.value,
+          sourceTurnId: contextCommand.sourceTurnId,
+        });
+        try {
+          applyVerifiedFocusContextProjection(result);
+        } catch (error) {
+          console.error('Verified Focus context projection was stale:', error);
+          return {
+            handled: true,
+            confirmationContent:
+              `${result.message} The canonical receipt is saved, but the visible Focus changed before its timestamp could be refreshed.`,
+            shouldSpeakConfirmation: deps.voiceOutputEnabled,
+          };
+        }
+        return {
+          handled: true,
+          confirmationContent: result.message,
+          shouldSpeakConfirmation: deps.voiceOutputEnabled,
+        };
+      } catch (error) {
+        console.error('Verified native Focus context failed:', error);
+        return {
+          handled: true,
+          confirmationContent: describeNativeFocusContextFailure(error),
+          shouldSpeakConfirmation: deps.voiceOutputEnabled,
+        };
+      }
+    }
+
     const payload = commandMatch.focusSession ?? {};
     const hasTitle = typeof payload.title === 'string';
     const hasObjective = typeof payload.goal === 'string';
@@ -292,7 +407,7 @@ export async function handleMemoryCommand(
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }
-    const taskTitles = buildNativeFocusTaskTitles(activeSession);
+    const taskTitles = await buildContextAwareNativeFocusTaskTitles(activeSession);
     try {
       const result = await createNativeFocusTasksVerified({
         expectedFocusId: activeSession.id,
@@ -392,7 +507,7 @@ export async function handleMemoryCommand(
       },
       deps,
     );
-    const summary = summaryRead.confirmationContent?.trim() ?? '';
+    let summary = summaryRead.confirmationContent?.trim() ?? '';
     if (!summary || !summaryRead.handled) {
       deps.setActivePanel('memory');
       return {
@@ -401,6 +516,15 @@ export async function handleMemoryCommand(
           'I could not build a Focus summary, so no Note or Focus relationship was changed.',
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
+    }
+    try {
+      const context = await readNativeFocusContext(activeSession.id);
+      summary = appendNativeFocusContextToSummary(summary, context);
+    } catch (error) {
+      console.warn(
+        'Canonical Focus context was unavailable while building the summary; saving the verified base summary:',
+        error,
+      );
     }
     const note = deps.saveNote(summary);
     if (!note) {

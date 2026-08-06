@@ -6,8 +6,14 @@ from unittest.mock import patch
 from app.focus import ownership
 
 
-def health_section(*, attempts: int = 1, verified: int = 1, failed: int = 0,
-                   outcome: str = "verified", failure: str = "") -> dict[str, object]:
+def health_section(
+    *,
+    attempts: int = 1,
+    verified: int = 1,
+    failed: int = 0,
+    outcome: str = "verified",
+    failure: str = "",
+) -> dict[str, object]:
     return {
         "attemptCount": attempts,
         "verifiedCount": verified,
@@ -26,6 +32,7 @@ class NativeFocusOwnershipReadinessPhase20FTests(unittest.TestCase):
         summary: dict[str, object],
         tasks: dict[str, object],
         calendar: dict[str, object],
+        context: dict[str, object],
     ):
         return (
             patch.object(
@@ -48,6 +55,11 @@ class NativeFocusOwnershipReadinessPhase20FTests(unittest.TestCase):
                 "get_native_calendar_focus_prep_health",
                 return_value=calendar,
             ),
+            patch.object(
+                ownership,
+                "get_native_focus_context_health",
+                return_value=context,
+            ),
         )
 
     def test_all_verified_operations_are_ready(self) -> None:
@@ -62,15 +74,22 @@ class NativeFocusOwnershipReadinessPhase20FTests(unittest.TestCase):
             summary={"saveFocusSummary": verified},
             tasks={"linkFocusTasks": verified},
             calendar={"prepareCalendarFocus": verified},
+            context={"addFocusContext": verified},
         )
-        with patches[0], patches[1], patches[2], patches[3]:
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patches[4],
+        ):
             result = ownership.get_native_focus_ownership_readiness()
 
         self.assertTrue(result.ok)
         self.assertEqual(result.readiness, "ready")
         self.assertTrue(result.readyForLegacyProjectionRetirement)
-        self.assertEqual(result.verifiedOperationCount, 7)
-        self.assertEqual(result.requiredOperationCount, 7)
+        self.assertEqual(result.verifiedOperationCount, 8)
+        self.assertEqual(result.requiredOperationCount, 8)
         self.assertEqual(result.blockers, [])
         self.assertEqual(result.evidenceNeeded, [])
         self.assertTrue(result.legacyProjection.retired)
@@ -83,6 +102,10 @@ class NativeFocusOwnershipReadinessPhase20FTests(unittest.TestCase):
             result.legacyProjection.remainingBrowserOwnedWriteSurfaces,
             [],
         )
+        context_operation = next(
+            item for item in result.operations if item.operation == "add_focus_context"
+        )
+        self.assertEqual(context_operation.status, "verified")
 
     def test_unexercised_operation_keeps_readiness_collecting(self) -> None:
         verified = health_section()
@@ -101,8 +124,15 @@ class NativeFocusOwnershipReadinessPhase20FTests(unittest.TestCase):
             summary={"saveFocusSummary": verified},
             tasks={"linkFocusTasks": verified},
             calendar={"prepareCalendarFocus": verified},
+            context={"addFocusContext": verified},
         )
-        with patches[0], patches[1], patches[2], patches[3]:
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patches[4],
+        ):
             result = ownership.get_native_focus_ownership_readiness()
 
         self.assertTrue(result.ok)
@@ -130,8 +160,15 @@ class NativeFocusOwnershipReadinessPhase20FTests(unittest.TestCase):
             summary={"saveFocusSummary": verified},
             tasks={"linkFocusTasks": verified},
             calendar={"prepareCalendarFocus": failed},
+            context={"addFocusContext": verified},
         )
-        with patches[0], patches[1], patches[2], patches[3]:
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patches[4],
+        ):
             result = ownership.get_native_focus_ownership_readiness()
 
         self.assertFalse(result.ok)
@@ -142,7 +179,8 @@ class NativeFocusOwnershipReadinessPhase20FTests(unittest.TestCase):
             result.blockers,
         )
         calendar_operation = next(
-            item for item in result.operations
+            item
+            for item in result.operations
             if item.operation == "prepare_calendar_focus"
         )
         self.assertEqual(calendar_operation.status, "degraded")
@@ -166,8 +204,15 @@ class NativeFocusOwnershipReadinessPhase20FTests(unittest.TestCase):
             summary={"saveFocusSummary": recovered},
             tasks={"linkFocusTasks": recovered},
             calendar={"prepareCalendarFocus": recovered},
+            context={"addFocusContext": recovered},
         )
-        with patches[0], patches[1], patches[2], patches[3]:
+        with (
+            patches[0],
+            patches[1],
+            patches[2],
+            patches[3],
+            patches[4],
+        ):
             result = ownership.get_native_focus_ownership_readiness()
 
         self.assertEqual(result.readiness, "ready")

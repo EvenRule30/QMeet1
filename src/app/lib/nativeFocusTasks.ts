@@ -1,6 +1,10 @@
 import { QMEET_API_BASE_URL } from '../api';
 import type { ActiveSession, MemoryTask } from '../types';
 import {
+  buildNativeFocusContextTaskTitles,
+  readNativeFocusContext,
+} from './nativeFocusContext';
+import {
   applyVerifiedFocusProjection,
   readVerifiedFocusProjection,
 } from './nativeFocusLifecycle';
@@ -336,6 +340,28 @@ export function buildNativeFocusTaskTitles(
   }
 }
 
+
+export async function buildContextAwareNativeFocusTaskTitles(
+  activeSession: ActiveSession,
+): Promise<string[]> {
+  const baseTitles = buildNativeFocusTaskTitles(activeSession);
+  try {
+    const context = await readNativeFocusContext(activeSession.id);
+    const contextTitles = buildNativeFocusContextTaskTitles(context);
+    if (contextTitles.length === 0) return baseTitles;
+    return uniqueTaskTitles([
+      baseTitles[0] ?? `Decide the finished result for ${activeSession.title}`,
+      ...contextTitles,
+      ...baseTitles.slice(1),
+    ]);
+  } catch (error) {
+    console.warn(
+      'Canonical Focus context was unavailable while generating tasks; using the verified Focus objective only:',
+      error,
+    );
+    return baseTitles;
+  }
+}
 
 function getMeetingSubject(activeSession: ActiveSession): string {
   const withoutPrepPrefix = activeSession.title
