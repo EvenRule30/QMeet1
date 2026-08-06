@@ -30,16 +30,27 @@ class FocusCanonicalReadReconciliationPhase20J0Tests(unittest.TestCase):
         self.assertIn("startedAt: state.createdAt.trim()", source)
         self.assertIn("updatedAt: state.updatedAt.trim()", source)
 
-    def test_memory_metadata_is_preserved_only_for_same_focus_id(self) -> None:
+    def test_projection_metadata_is_preserved_only_for_same_focus_id(self) -> None:
         source = self.reconciliation_source
         self.assertIn("if (currentSession?.id === focusId)", source)
         self.assertIn(
             "recentSessions.find((session) => session.id === focusId)",
             source,
         )
-        self.assertIn("linkedTaskIds: exactSource?.linkedTaskIds ?? []", source)
         self.assertIn("pinnedNoteIds: exactSource?.pinnedNoteIds ?? []", source)
-        self.assertNotIn("currentSession?.linkedTaskIds ?? []", source)
+        self.assertIn("exactSource?.summary !== undefined", source)
+        self.assertNotIn("currentSession?.pinnedNoteIds ?? []", source)
+
+    def test_task_links_come_from_canonical_state_response(self) -> None:
+        source = self.reconciliation_source
+        self.assertIn("linkedTaskIds: string[];", source)
+        self.assertIn("!Array.isArray(payload.linkedTaskIds)", source)
+        self.assertIn(
+            "linkedTaskIds: normalizeLinkedTaskIds(canonicalLinkedTaskIds)",
+            source,
+        )
+        self.assertIn("canonicalSnapshot.linkedTaskIds", source)
+        self.assertNotIn("exactSource?.linkedTaskIds", source)
 
     def test_reconciliation_updates_browser_projection_without_legacy_write(self) -> None:
         source = self.reconciliation_source

@@ -36,7 +36,13 @@ export type CanonicalFocusState = {
 type CanonicalFocusStateResponse = {
   ok: boolean;
   state: CanonicalFocusState;
+  linkedTaskIds: string[];
   eventCount: number;
+};
+
+type CanonicalFocusSnapshot = {
+  state: CanonicalFocusState;
+  linkedTaskIds: string[];
 };
 
 type FocusProjectionSource = Pick<
@@ -47,12 +53,26 @@ type FocusProjectionSource = Pick<
   | 'goal'
   | 'startedAt'
   | 'pinnedNoteIds'
-  | 'linkedTaskIds'
   | 'summary'
 >;
 
 function normalizeText(value: string): string {
   return value.replace(/\s+/g, ' ').trim().toLocaleLowerCase();
+}
+
+function normalizeLinkedTaskIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+
+  const linkedTaskIds: string[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    const taskId = typeof item === 'string' ? item.trim() : '';
+    if (!taskId || seen.has(taskId)) continue;
+    linkedTaskIds.push(taskId);
+    seen.add(taskId);
+  }
+
+  return linkedTaskIds;
 }
 
 function isCanonicalFocusOpen(state: CanonicalFocusState): boolean {
@@ -100,6 +120,7 @@ export function buildCanonicalActiveSessionProjection(
   state: CanonicalFocusState,
   currentSession: ActiveSession | null,
   recentSessions: RecentFocusSession[] = [],
+  canonicalLinkedTaskIds: string[] = [],
 ): ActiveSession | null {
   if (!isCanonicalFocusOpen(state)) {
     return null;
@@ -122,7 +143,7 @@ export function buildCanonicalActiveSessionProjection(
     startedAt: state.createdAt.trim() || exactSource?.startedAt || now,
     updatedAt: state.updatedAt.trim() || now,
     pinnedNoteIds: exactSource?.pinnedNoteIds ?? [],
-    linkedTaskIds: exactSource?.linkedTaskIds ?? [],
+    linkedTaskIds: normalizeLinkedTaskIds(canonicalLinkedTaskIds),
     ...(exactSource?.summary !== undefined
       ? { summary: exactSource.summary }
       : {}),
@@ -158,7 +179,7 @@ function applyActiveSessionProjection(activeSession: ActiveSession | null) {
   );
 }
 
-async function readCanonicalFocusState(): Promise<CanonicalFocusState> {
+async function readCanonicalFocusState(): Promise<CanonicalFocusSnapshot> {
   const response = await fetch(`${QMEET_API_BASE_URL}/api/focus/state`, {
     headers: { Accept: 'application/json' },
   });
@@ -170,22 +191,30 @@ async function readCanonicalFocusState(): Promise<CanonicalFocusState> {
   }
 
   const payload = (await response.json()) as CanonicalFocusStateResponse;
-  if (!payload.ok || !payload.state) {
+  if (
+    !payload.ok ||
+    !payload.state ||
+    !Array.isArray(payload.linkedTaskIds)
+  ) {
     throw new Error('Canonical Focus state response was invalid.');
   }
 
-  return payload.state;
+  return {
+    state: payload.state,
+    linkedTaskIds: normalizeLinkedTaskIds(payload.linkedTaskIds),
+  };
 }
 
 export async function reconcileCanonicalFocusProjection(
   currentSession: ActiveSession | null,
   recentSessions: RecentFocusSession[] = [],
 ): Promise<ActiveSession | null> {
-  const canonicalState = await readCanonicalFocusState();
+  const canonicalSnapshot = await readCanonicalFocusState();
   const nextSession = buildCanonicalActiveSessionProjection(
-    canonicalState,
+    canonicalSnapshot.state,
     currentSession,
     recentSessions,
+    canonicalSnapshot.linkedTaskIds,
   );
 
   if (sessionsAreEqual(currentSession, nextSession)) {

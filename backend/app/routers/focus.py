@@ -4,6 +4,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Query
 
+from app import memory_store
 from app.focus.middleware import focus_response_mode, focus_route_mode
 from app.focus.native_read_middleware import (
     NATIVE_WRITE_CONFIRMATION_SCOPE,
@@ -44,6 +45,9 @@ from app.focus.store import (
     response_selection_summary,
     route_selection_summary,
 )
+from app.focus.task_lineage import (
+    get_active_focus_lineage_linked_task_ids,
+)
 
 router = APIRouter(prefix="/api/focus", tags=["focus"])
 _SESSION_STARTED_AT = datetime.now().astimezone().isoformat()
@@ -56,6 +60,36 @@ def _status_message(planner_mode: str) -> str:
     if normalized_mode == "off":
         return "Focus planner is disabled; the legacy focus system remains available."
     return "Focus is running beside the legacy focus system."
+
+
+def _ordered_active_focus_linked_task_ids() -> list[str]:
+    """Return canonical linked IDs in stable Memory task order.
+
+    The verified Focus-task receipt owns membership. Memory contributes only the
+    display order used by task reads and ordinal references such as "first task".
+    """
+
+    linked_task_ids = get_active_focus_lineage_linked_task_ids()
+    if not linked_task_ids:
+        return []
+
+    try:
+        memory_tasks = memory_store.list_memory_tasks().get("tasks", [])
+    except memory_store.MemoryStoreError:
+        return sorted(linked_task_ids)
+
+    ordered_ids: list[str] = []
+    seen: set[str] = set()
+    for task in memory_tasks:
+        if not isinstance(task, dict):
+            continue
+        task_id = str(task.get("id", "")).strip()
+        if task_id in linked_task_ids and task_id not in seen:
+            ordered_ids.append(task_id)
+            seen.add(task_id)
+
+    ordered_ids.extend(sorted(linked_task_ids - seen))
+    return ordered_ids
 
 
 @router.get("/status")
@@ -142,6 +176,7 @@ async def focus_state():
         return {
             "ok": True,
             "state": state.model_dump(mode="json"),
+            "linkedTaskIds": _ordered_active_focus_linked_task_ids(),
             "eventCount": event_count(),
         }
     except FocusStoreError as exc:
