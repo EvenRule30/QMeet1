@@ -13,7 +13,6 @@ BRIDGE_PATH = REPO_ROOT / "src" / "app" / "lib" / "semanticFocusLifecycle.ts"
 class SemanticLifecycleRoutePrecedenceTests(unittest.TestCase):
     def test_exact_focus_lifecycle_commands_are_deferred_to_semantic_preflight(self) -> None:
         app = APP_PATH.read_text(encoding="utf-8")
-
         self.assertIn(
             "shouldRouteExactFocusLifecycleThroughSemanticPreflight(\n"
             "        parsedCommandMatch,\n"
@@ -21,22 +20,30 @@ class SemanticLifecycleRoutePrecedenceTests(unittest.TestCase):
             "      )",
             app,
         )
-        self.assertIn(
-            "const commandMatch = deferredSemanticFocusLifecycleMessage\n"
-            "      ? null\n"
-            "      : parsedCommandMatch;",
+
+        command_selection = re.search(
+            r"const commandMatch\s*=\s*deferredSemanticFocusLifecycleMessage\s*"
+            r"\?\s*null\s*:\s*([^;]+);",
             app,
         )
+        self.assertIsNotNone(command_selection)
+        selected_command_sources = (
+            command_selection.group(1) if command_selection else ""
+        )
+        self.assertIn("parsedCommandMatch", selected_command_sources)
 
         parse_position = app.index(
             "const parsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);"
         )
         defer_position = app.index("const deferredExactFocusLifecycleMatch =")
+        command_selection_position = (
+            command_selection.start() if command_selection else -1
+        )
         execute_position = app.index("if (commandMatch) {", defer_position)
         semantic_position = app.index("const semanticFocusLifecycle =")
-
         self.assertLess(parse_position, defer_position)
-        self.assertLess(defer_position, execute_position)
+        self.assertLess(defer_position, command_selection_position)
+        self.assertLess(command_selection_position, execute_position)
         self.assertLess(execute_position, semantic_position)
 
     def test_all_locally_mutating_focus_lifecycle_commands_are_deferred(self) -> None:
@@ -47,9 +54,9 @@ class SemanticLifecycleRoutePrecedenceTests(unittest.TestCase):
         )
         self.assertIsNotNone(helper_match)
         helper = helper_match.group(0) if helper_match else ""
-
         self.assertIn("commandMatch?.command === 'start-focus-session'", helper)
         self.assertIn("commandMatch?.command === 'update-focus-session'", helper)
+        self.assertIn("commandMatch?.command === 'resume-last-focus-session'", helper)
         self.assertIn("commandMatch?.command === 'end-focus-session'", helper)
         self.assertIn("commandMatch?.command === 'end-focus-with-summary'", helper)
         self.assertIn("commandMatch?.command === 'mark-task-done'", helper)

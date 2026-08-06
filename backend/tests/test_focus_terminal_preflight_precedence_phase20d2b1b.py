@@ -19,13 +19,16 @@ class FocusTerminalPreflightPrecedenceTests(unittest.TestCase):
         )
         self.assertIn("return looksLikeFocusTerminalLanguage(message);", source)
 
-    def test_direct_terminal_gate_precedes_parser_and_generic_preflight(self) -> None:
+    def test_direct_terminal_gate_precedes_all_task_routing_and_preflight(self) -> None:
         source = APP.read_text(encoding="utf-8")
         direct_terminal_index = source.index(
             "const directFocusTerminalCommandMatch ="
         )
         parse_index = source.index(
             "const parsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);"
+        )
+        natural_completion_index = source.index(
+            "const naturalTaskCompletionTarget ="
         )
         preflight_index = source.index(
             "const semanticLifecyclePreflightBeforeCommandRouting ="
@@ -35,10 +38,11 @@ class FocusTerminalPreflightPrecedenceTests(unittest.TestCase):
         )
 
         self.assertLess(direct_terminal_index, parse_index)
-        self.assertLess(parse_index, preflight_index)
+        self.assertLess(parse_index, natural_completion_index)
+        self.assertLess(natural_completion_index, preflight_index)
         self.assertLess(preflight_index, destructive_index)
 
-    def test_preflight_result_is_cached_and_prevents_exact_execution(self) -> None:
+    def test_preflight_result_is_cached_and_prevents_lifecycle_exact_execution(self) -> None:
         source = APP.read_text(encoding="utf-8")
         self.assertIn(
             "semanticLifecyclePreflightBeforeCommandRouting ??\n      await interpretSemanticFocusLifecycle(trimmed)",
@@ -52,9 +56,13 @@ class FocusTerminalPreflightPrecedenceTests(unittest.TestCase):
                 r"Boolean\(deferredExactFocusLifecycleMatch\);"
             ),
         )
-        self.assertIn(
-            "const commandMatch = deferredSemanticFocusLifecycleMessage\n      ? null\n      : parsedCommandMatch;",
+        self.assertRegex(
             source,
+            re.compile(
+                r"const commandMatch\s*=\s*deferredSemanticFocusLifecycleMessage\s*"
+                r"\? null\s*:\s*parsedCommandMatch\s*\?\?\s*"
+                r"naturalTaskCompletionCommandMatch;"
+            ),
         )
 
     def test_direct_focus_completion_cannot_fall_into_interpreter(self) -> None:

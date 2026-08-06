@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { Orb } from './components/Orb';
 import { TopStatusBar } from './components/TopStatusBar';
 import { ChatPanel } from './components/ChatPanel';
@@ -19,6 +19,8 @@ import {
   describeUnresolvedTaskCompletionRequest,
   resolveTaskCompletionPreviewTargets,
 } from './lib/taskCompletionPreview';
+import { resolveNaturalFocusTaskCompletionTarget } from './lib/naturalTaskCompletion';
+import { reconcileCanonicalFocusProjection } from './lib/canonicalFocusProjection';
 import {
   getDirectFocusTerminalCommandMatch,
   interpretSemanticFocusLifecycle,
@@ -153,6 +155,7 @@ export default function App() {
     notes,
     memoryTasks,
     recentActions,
+    recentFocusSessions,
     activeSession,
     memoryTaskDraft,
     setMemoryTaskDraft,
@@ -186,6 +189,25 @@ export default function App() {
     searchQuery,
     searchResult,
   });
+  const reconcileFocusProjection = useCallback(async () => {
+    try {
+      return await reconcileCanonicalFocusProjection(
+        activeSession,
+        recentFocusSessions,
+      );
+    } catch (error) {
+      console.warn(
+        'Canonical Focus projection reconciliation failed; preserving the current projection.',
+        error,
+      );
+      return activeSession;
+    }
+  }, [activeSession, recentFocusSessions]);
+
+  useEffect(() => {
+    void reconcileFocusProjection();
+  }, [reconcileFocusProjection]);
+
   const [lastHeardTranscript, setLastHeardTranscript] = useState('');
   const [lastNormalizedTranscript, setLastNormalizedTranscript] = useState('');
   const [lastLocalCommand, setLastLocalCommand] = useState('None');
@@ -299,6 +321,10 @@ export default function App() {
           }
           setPendingInterpreterCommand(null);
         }
+    const routingActiveSession =
+      !forcedCommandMatch && commandRoute === 'exact'
+        ? await reconcileFocusProjection()
+        : activeSession;
     const directFocusTerminalCommandMatch =
       !forcedCommandMatch && commandRoute === 'exact'
         ? getDirectFocusTerminalCommandMatch(trimmed)
@@ -319,6 +345,24 @@ export default function App() {
       );
     }
     const parsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);
+    const naturalTaskCompletionTarget =
+      !forcedCommandMatch &&
+      commandRoute === 'exact' &&
+      !parsedCommandMatch
+        ? resolveNaturalFocusTaskCompletionTarget(
+            trimmed,
+            memoryTasks,
+            routingActiveSession,
+          )
+        : null;
+    const naturalTaskCompletionCommandMatch: CommandMatch | null =
+      naturalTaskCompletionTarget
+        ? {
+            command: 'mark-task-done',
+            confirmation: 'Marked task done.',
+            payload: naturalTaskCompletionTarget.title,
+          }
+        : null;
     const deferredExactFocusLifecycleMatch =
       !forcedCommandMatch &&
       commandRoute === 'exact' &&
@@ -331,22 +375,34 @@ export default function App() {
     const exactNonLifecycleCommandClaimed =
       !forcedCommandMatch &&
       commandRoute === 'exact' &&
-      Boolean(parsedCommandMatch) &&
+      (Boolean(parsedCommandMatch) ||
+        Boolean(naturalTaskCompletionCommandMatch)) &&
       !Boolean(deferredExactFocusLifecycleMatch);
+    const exactResumeLifecyclePreflight =
+      deferredExactFocusLifecycleMatch?.command === 'resume-last-focus-session'
+        ? {
+            kind: 'resume' as const,
+            commandMatch: deferredExactFocusLifecycleMatch,
+            confidence: 1,
+            reason:
+              'An exact resume command passed deterministic lifecycle preflight before the verified native resume executor.',
+          }
+        : null;
     const semanticLifecyclePreflightBeforeCommandRouting =
       !forcedCommandMatch &&
       commandRoute === 'exact' &&
       !exactNonLifecycleCommandClaimed &&
       (Boolean(deferredExactFocusLifecycleMatch) ||
         shouldPreflightSemanticFocusLifecycleBeforeCommandRouting(trimmed))
-        ? await interpretSemanticFocusLifecycle(trimmed)
+        ? exactResumeLifecyclePreflight ??
+          await interpretSemanticFocusLifecycle(trimmed)
         : null;
     const deferredSemanticFocusLifecycleMessage =
       Boolean(semanticLifecyclePreflightBeforeCommandRouting) ||
       Boolean(deferredExactFocusLifecycleMatch);
     const commandMatch = deferredSemanticFocusLifecycleMessage
       ? null
-      : parsedCommandMatch;
+      : parsedCommandMatch ?? naturalTaskCompletionCommandMatch;
     if (commandMatch) {
       if (commandRoute === 'exact') {
         const requiresExactConfirmation =
@@ -372,12 +428,20 @@ export default function App() {
       const previousLastLocalCommand = lastLocalCommand;
       setLastLocalCommand(commandMatch.command);
       setPendingInterpreterCommand(null);
-      setLastInputRoute(getLocalCommandRouteLabel(commandRoute));
+      setLastInputRoute(
+        naturalTaskCompletionTarget && commandRoute === 'exact'
+          ? 'Natural Focus task completion'
+          : getLocalCommandRouteLabel(commandRoute),
+      );
       if (commandRoute === 'exact') {
         setLastInterpreterAction('Not used');
         setLastInterpreterFrontendCommand('None');
         setLastInterpreterConfidence(null);
-        setLastInterpreterReason('Exact frontend parser matched before the command interpreter was needed.');
+        setLastInterpreterReason(
+          naturalTaskCompletionTarget
+            ? 'Natural completed-work language matched one open task linked to the active Focus before semantic or fuzzy interpretation.'
+            : 'Exact frontend parser matched before the command interpreter was needed.',
+        );
       }
       const userMsg = createUserMessage(now, visibleUserText);
       if (
@@ -506,26 +570,30 @@ export default function App() {
           speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
           return;
         }
+        const destructiveConfirmationReason = naturalTaskCompletionTarget
+          ? 'Natural completed-work language matched one open task linked to the active Focus, so QMeet paused for confirmation.'
+          : commandRoute === 'exact'
+            ? 'Exact frontend parser matched a destructive command, so QMeet paused for confirmation.'
+            : 'Command interpreter mapped the input to a destructive command, so QMeet paused for confirmation.';
         setPendingInterpreterCommand({
           originalText: visibleUserText,
           frontendCommand,
           action: commandMatch.command,
           confidence: commandRoute === 'exact' ? 1 : 0.9,
-          reason:
-            commandRoute === 'exact'
-              ? 'Exact frontend parser matched a destructive command, so QMeet paused for confirmation.'
-              : 'Command interpreter mapped the input to a destructive command, so QMeet paused for confirmation.',
+          reason: destructiveConfirmationReason,
         });
-        setLastInputRoute(commandRoute === 'exact' ? 'Exact command needs safety confirmation' : 'Fuzzy interpreter needs safety confirmation');
+        setLastInputRoute(
+          naturalTaskCompletionTarget
+            ? 'Natural Focus task completion needs safety confirmation'
+            : commandRoute === 'exact'
+              ? 'Exact command needs safety confirmation'
+              : 'Fuzzy interpreter needs safety confirmation',
+        );
         setLastLocalCommand('Pending destructive command');
         setLastInterpreterAction(commandRoute === 'exact' ? 'Not used' : commandMatch.command);
         setLastInterpreterFrontendCommand(frontendCommand);
         setLastInterpreterConfidence(commandRoute === 'exact' ? 1 : 0.9);
-        setLastInterpreterReason(
-          commandRoute === 'exact'
-            ? 'Exact frontend parser matched a destructive command, so QMeet paused for confirmation.'
-            : 'Command interpreter mapped the input to a destructive command, so QMeet paused for confirmation.'
-        );
+        setLastInterpreterReason(destructiveConfirmationReason);
         const assistantMsg = createAssistantMessage(now, confirmationPrompt);
         setMessages((prev) => [...prev, userMsg, assistantMsg]);
         speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
@@ -706,6 +774,7 @@ export default function App() {
     if (
       semanticFocusLifecycle.kind === 'update' ||
       semanticFocusLifecycle.kind === 'start' ||
+      semanticFocusLifecycle.kind === 'resume' ||
       semanticFocusLifecycle.kind === 'end' ||
       semanticFocusLifecycle.kind === 'complete'
     ) {
@@ -721,6 +790,12 @@ export default function App() {
           action: 'start_focus_session',
           frontendCommand: 'apply semantic focus start',
           reason: 'The semantic lifecycle classifier returned one typed Focus start.',
+        },
+        resume: {
+          route: 'Deterministic semantic lifecycle Focus resume',
+          action: 'resume_focus_session',
+          frontendCommand: 'apply verified focus resume',
+          reason: 'The exact resume command passed deterministic lifecycle preflight.',
         },
         end: {
           route: 'Semantic lifecycle Focus end',
@@ -929,7 +1004,7 @@ export default function App() {
       setLastInterpreterReason(getInterpreterUnavailableReason(error));
     }
     await sendNormalChat(trimmed, visibleUserText);
-  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveMemoryTask, memoryTasks, activeSession, markMemoryTaskDone, clearCompletedTasks, getMemoryReadout, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, deleteCalendarEventByCriteria, findCalendarEventForDeletion, findCalendarEventForChange, getNextCalendarEventForDeletion, getNextCalendarEventForChange, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, runWebSearch, clearSearchState, searchError, pushResultToast, addRecentAction, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents, sendNormalChat]);
+  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveMemoryTask, memoryTasks, activeSession, reconcileFocusProjection, markMemoryTaskDone, clearCompletedTasks, getMemoryReadout, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, deleteCalendarEventByCriteria, findCalendarEventForDeletion, findCalendarEventForChange, getNextCalendarEventForDeletion, getNextCalendarEventForChange, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, runWebSearch, clearSearchState, searchError, pushResultToast, addRecentAction, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents, sendNormalChat]);
   const handleOrbClick = useCallback(() => {
     // If QMeet is actively generating/streaming, tapping the orb should cancel
     // that response instead of starting a new listening session.
