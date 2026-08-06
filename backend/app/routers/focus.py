@@ -19,6 +19,7 @@ from app.focus.models import (
     PlanPreviewRequest,
     ToolResultRequest,
 )
+from app.focus.ownership import get_native_focus_ownership_readiness
 from app.focus.planner import (
     DEFAULT_MODEL,
     focus_mode,
@@ -44,7 +45,6 @@ from app.focus.store import (
     route_selection_summary,
 )
 
-
 router = APIRouter(prefix="/api/focus", tags=["focus"])
 _SESSION_STARTED_AT = datetime.now().astimezone().isoformat()
 
@@ -68,7 +68,6 @@ async def focus_status():
     native_write_mode = native_write_route_mode()
     native_write_enabled = native_write_routes_enabled()
     is_planner_enabled = planner_enabled()
-
     response_selection = response_selection_summary()
     route_selection = route_selection_summary()
     exact_route_observation = exact_route_observation_summary()
@@ -81,6 +80,9 @@ async def focus_status():
     session_exact_route_observation = exact_route_observation_summary(
         since_created_at=_SESSION_STARTED_AT,
     )
+    ownership_readiness = (
+        get_native_focus_ownership_readiness().model_dump(mode="json")
+    )
     promotion_readiness = build_promotion_readiness(
         response_selection=session_response_selection,
         route_selection=session_route_selection,
@@ -89,6 +91,7 @@ async def focus_status():
         response_mode=response_mode,
         route_mode=route_mode,
         planner_enabled=is_planner_enabled,
+        ownership_readiness=ownership_readiness,
     )
     promotion_readiness["lastSuccessfulValidation"] = (
         update_last_successful_validation(
@@ -100,7 +103,6 @@ async def focus_status():
             planner_enabled=is_planner_enabled,
         )
     )
-
     return {
         "ok": True,
         "mode": planner_mode,
@@ -121,6 +123,7 @@ async def focus_status():
         "responseSelection": response_selection,
         "routeSelection": route_selection,
         "exactRouteObservation": exact_route_observation,
+        "ownershipReadiness": ownership_readiness,
         "promotionReadiness": promotion_readiness,
         "currentSession": {
             "startedAt": _SESSION_STARTED_AT,

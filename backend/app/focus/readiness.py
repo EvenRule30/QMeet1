@@ -35,6 +35,21 @@ def _rate(summary: Mapping[str, Any], key: str) -> float:
         return 0.0
 
 
+def _text(summary: Mapping[str, Any], key: str) -> str:
+    return str(summary.get(key, "") or "").strip()
+
+
+def _string_list(summary: Mapping[str, Any], key: str) -> list[str]:
+    value = summary.get(key)
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _mapping(value: object) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
 def _normalized_mode(value: str) -> str:
     return value.strip().casefold()
 
@@ -54,13 +69,11 @@ def _readiness_recommendation(*, status: str, planner_mode: str) -> str:
             "Current-session evidence supports continued active-mode operation with "
             "guarded routing and response safeguards."
         )
-
     if planner_mode == "off":
         return (
             "Enable the planner in shadow mode with guarded routing and response modes "
             "before collecting promotion evidence."
         )
-
     if status == "blocked":
         return "Keep the planner in shadow mode and resolve the blocking evidence."
     if status == "collecting":
@@ -85,7 +98,6 @@ def _display_metadata(*, status: str, planner_mode: str) -> dict[str, str]:
             "evidenceLabel": "Health evidence still needed",
             "automaticActionLabel": "Automatic mode changes",
         }
-
     if planner_mode == "off":
         return {
             "stage": "planner_setup",
@@ -95,7 +107,6 @@ def _display_metadata(*, status: str, planner_mode: str) -> dict[str, str]:
             "evidenceLabel": "Setup and evidence still needed",
             "automaticActionLabel": "Automatic mode changes",
         }
-
     status_label = {
         "ready": "Ready for review",
         "collecting": "Collecting",
@@ -111,6 +122,101 @@ def _display_metadata(*, status: str, planner_mode: str) -> dict[str, str]:
     }
 
 
+def _build_ownership_gate(
+    ownership_readiness: Mapping[str, Any] | None,
+) -> dict[str, object]:
+    """Translate native Focus ownership health into a planner promotion gate.
+
+    A missing snapshot is tolerated only for older direct callers and tests. The
+    production status route always supplies a snapshot, making the gate required.
+    Historical failure counters are intentionally not consulted here: the native
+    ownership evaluator already decides readiness from the latest receipt outcome.
+    """
+
+    if ownership_readiness is None:
+        return {
+            "required": False,
+            "status": "not_evaluated",
+            "ready": True,
+            "ownership": "unknown",
+            "verifiedOperationCount": 0,
+            "requiredOperationCount": 0,
+            "ownershipVersion": "unknown",
+            "legacyProjectionRetired": False,
+            "fallbackBlocked": False,
+            "blockers": [],
+            "evidenceNeeded": [],
+        }
+
+    legacy_projection = _mapping(ownership_readiness.get("legacyProjection"))
+    ownership = _text(ownership_readiness, "ownership") or "unknown"
+    upstream_status = _normalized_mode(_text(ownership_readiness, "readiness"))
+    upstream_blockers = _string_list(ownership_readiness, "blockers")
+    upstream_evidence = _string_list(ownership_readiness, "evidenceNeeded")
+    legacy_retired = bool(legacy_projection.get("retired"))
+    fallback_blocked = bool(legacy_projection.get("fallbackBlocked"))
+    ownership_version = _text(legacy_projection, "ownershipVersion") or "unknown"
+    verified_operations = _integer(ownership_readiness, "verifiedOperationCount")
+    required_operations = _integer(ownership_readiness, "requiredOperationCount")
+    explicitly_ready = bool(
+        ownership_readiness.get("readyForLegacyProjectionRetirement")
+    )
+
+    blockers = list(upstream_blockers)
+    evidence_needed = list(upstream_evidence)
+
+    if ownership != "backend-native":
+        blockers.append("Focus ownership is not backend-native.")
+    if not legacy_retired:
+        blockers.append("Legacy Focus projections are not physically retired.")
+    if not fallback_blocked:
+        blockers.append("The retired legacy Focus fallback is not fully blocked.")
+    if required_operations <= 0:
+        evidence_needed.append("Native Focus ownership operations are not declared.")
+    elif verified_operations < required_operations and not upstream_evidence:
+        evidence_needed.append(
+            "Verify every native Focus ownership operation before planner promotion."
+        )
+
+    structural_ready = (
+        ownership == "backend-native"
+        and legacy_retired
+        and fallback_blocked
+        and required_operations > 0
+        and verified_operations >= required_operations
+        and explicitly_ready
+    )
+
+    if upstream_status == "blocked" or blockers:
+        status = "blocked"
+    elif upstream_status == "collecting" or evidence_needed or not structural_ready:
+        status = "collecting"
+    elif upstream_status == "ready" and structural_ready:
+        status = "ready"
+    else:
+        status = "collecting"
+        evidence_needed.append("Confirm the latest native Focus ownership readiness state.")
+
+    # Preserve ordering while preventing duplicate messages from upstream and the
+    # structural checks above.
+    blockers = list(dict.fromkeys(blockers))
+    evidence_needed = list(dict.fromkeys(evidence_needed))
+
+    return {
+        "required": True,
+        "status": status,
+        "ready": status == "ready",
+        "ownership": ownership,
+        "verifiedOperationCount": verified_operations,
+        "requiredOperationCount": required_operations,
+        "ownershipVersion": ownership_version,
+        "legacyProjectionRetired": legacy_retired,
+        "fallbackBlocked": fallback_blocked,
+        "blockers": blockers,
+        "evidenceNeeded": evidence_needed,
+    }
+
+
 def validation_history_path() -> Path:
     configured = os.getenv("QMEET_FOCUS_VALIDATION_PATH", "").strip()
     return Path(configured).expanduser() if configured else _DEFAULT_VALIDATION_HISTORY_PATH
@@ -119,7 +225,6 @@ def validation_history_path() -> Path:
 def _validated_history_record(value: object) -> dict[str, object] | None:
     if not isinstance(value, dict):
         return None
-
     required_strings = (
         "kind",
         "plannerMode",
@@ -129,7 +234,6 @@ def _validated_history_record(value: object) -> dict[str, object] | None:
     for key in required_strings:
         if not isinstance(value.get(key), str) or not str(value[key]).strip():
             return None
-
     result: dict[str, object] = {
         "kind": str(value["kind"]),
         "plannerMode": str(value["plannerMode"]),
@@ -141,6 +245,24 @@ def _validated_history_record(value: object) -> dict[str, object] | None:
         "routeHealthyRate": _rate(value, "routeHealthyRate"),
         "responseHealthyRate": _rate(value, "responseHealthyRate"),
     }
+    optional_strings = ("ownershipGateStatus", "ownershipVersion")
+    for key in optional_strings:
+        if isinstance(value.get(key), str) and str(value[key]).strip():
+            result[key] = str(value[key])
+    optional_integers = (
+        "ownershipVerifiedOperationCount",
+        "ownershipRequiredOperationCount",
+    )
+    for key in optional_integers:
+        if key in value:
+            result[key] = _integer(value, key)
+    optional_booleans = (
+        "legacyProjectionRetired",
+        "ownershipFallbackBlocked",
+    )
+    for key in optional_booleans:
+        if isinstance(value.get(key), bool):
+            result[key] = bool(value[key])
     return result
 
 
@@ -177,13 +299,16 @@ def update_last_successful_validation(
     target = history_path or validation_history_path()
     with _VALIDATION_HISTORY_LOCK:
         existing = load_last_successful_validation(history_path=target)
-
         normalized_planner_mode = _normalized_mode(planner_mode)
         normalized_response_mode = _normalized_mode(response_mode)
         normalized_route_mode = _normalized_mode(route_mode)
+        ownership_gate = _mapping(readiness.get("ownershipGate"))
+        ownership_required = bool(ownership_gate.get("required"))
+        ownership_ready = bool(ownership_gate.get("ready"))
         ready = bool(readiness.get("ready"))
         can_record = (
             ready
+            and (not ownership_required or ownership_ready)
             and planner_enabled
             and normalized_planner_mode in {"shadow", "active"}
             and normalized_response_mode == "guarded"
@@ -192,14 +317,12 @@ def update_last_successful_validation(
         )
         if not can_record:
             return existing
-
         if (
             existing
             and existing.get("sessionStartedAt") == session_started_at
             and existing.get("plannerMode") == normalized_planner_mode
         ):
             return existing
-
         samples = readiness.get("currentSamples")
         sample_values = samples if isinstance(samples, Mapping) else {}
         record: dict[str, object] = {
@@ -223,7 +346,27 @@ def update_last_successful_validation(
             "routeHealthyRate": _rate(sample_values, "routeHealthyRate"),
             "responseHealthyRate": _rate(sample_values, "responseHealthyRate"),
         }
-
+        if ownership_required:
+            record.update(
+                {
+                    "ownershipGateStatus": _text(ownership_gate, "status"),
+                    "ownershipVersion": _text(ownership_gate, "ownershipVersion"),
+                    "ownershipVerifiedOperationCount": _integer(
+                        ownership_gate,
+                        "verifiedOperationCount",
+                    ),
+                    "ownershipRequiredOperationCount": _integer(
+                        ownership_gate,
+                        "requiredOperationCount",
+                    ),
+                    "legacyProjectionRetired": bool(
+                        ownership_gate.get("legacyProjectionRetired")
+                    ),
+                    "ownershipFallbackBlocked": bool(
+                        ownership_gate.get("fallbackBlocked")
+                    ),
+                }
+            )
         temporary_path = target.with_name(f"{target.name}.tmp")
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -238,7 +381,6 @@ def update_last_successful_validation(
             except OSError:
                 pass
             return existing
-
         return record
 
 
@@ -251,12 +393,14 @@ def build_promotion_readiness(
     response_mode: str,
     route_mode: str,
     planner_enabled: bool,
+    ownership_readiness: Mapping[str, Any] | None = None,
 ) -> dict[str, object]:
     """Evaluate current-session evidence for promotion or active validation.
 
     This function is advisory only. It never changes environment variables or
     runtime modes. The thresholds are intentionally modest for the prototype,
-    but they still require evidence from all three routing surfaces.
+    but they still require evidence from all three routing surfaces plus the
+    production-supplied native Focus ownership gate.
     """
 
     normalized_planner_mode = _normalized_mode(planner_mode)
@@ -265,7 +409,6 @@ def build_promotion_readiness(
     route_decisions = _integer(route_selection, "decisionCount")
     response_attempts = _integer(response_selection, "guardedAttemptCount")
     exact_observations = _integer(exact_route_observation, "observationCount")
-
     route_healthy_rate = _rate(route_selection, "healthyDecisionRate")
     response_healthy_rate = _rate(response_selection, "healthyDecisionRate")
 
@@ -273,18 +416,15 @@ def build_promotion_readiness(
     missing_evidence: list[str] = []
     if not planner_enabled or normalized_planner_mode == "off":
         blockers.append("Focus planner is disabled.")
-
     if normalized_response_mode != "guarded":
         blockers.append("Visible response mode is not guarded.")
     if normalized_route_mode != "guarded":
         blockers.append("Planner route mode is not guarded.")
-
     response_system_failures = _integer(response_selection, "systemFailureCount")
     response_unknown = _integer(response_selection, "unknownFallbackCount")
     route_system_failures = _integer(route_selection, "systemFailureCount")
     route_unknown = _integer(route_selection, "unknownFallbackCount")
     exact_unknown = _integer(exact_route_observation, "unknownCount")
-
     if response_system_failures:
         blockers.append(
             f"Current session has {response_system_failures} response system failure"
@@ -310,7 +450,6 @@ def build_promotion_readiness(
             f"Current session has {exact_unknown} unclassified exact route"
             f"{'s' if exact_unknown != 1 else ''}."
         )
-
     if route_decisions >= MIN_ROUTE_DECISIONS and route_healthy_rate < MIN_HEALTHY_RATE:
         blockers.append(
             f"Healthy guarded routing is {route_healthy_rate:.1%}, below {MIN_HEALTHY_RATE:.0%}."
@@ -322,7 +461,6 @@ def build_promotion_readiness(
         blockers.append(
             f"Healthy guarded responses are {response_healthy_rate:.1%}, below {MIN_HEALTHY_RATE:.0%}."
         )
-
     if route_decisions < MIN_ROUTE_DECISIONS:
         missing_evidence.append(
             f"Need {MIN_ROUTE_DECISIONS - route_decisions} more guarded route decision"
@@ -339,6 +477,30 @@ def build_promotion_readiness(
             f"{'s' if MIN_EXACT_ROUTE_OBSERVATIONS - exact_observations != 1 else ''}."
         )
 
+    ownership_gate = _build_ownership_gate(ownership_readiness)
+    if bool(ownership_gate.get("required")):
+        ownership_blockers = ownership_gate.get("blockers")
+        if isinstance(ownership_blockers, list):
+            blockers.extend(
+                f"Focus ownership gate: {item}"
+                for item in ownership_blockers
+                if str(item).strip()
+            )
+        ownership_evidence = ownership_gate.get("evidenceNeeded")
+        if isinstance(ownership_evidence, list):
+            missing_evidence.extend(
+                f"Focus ownership gate: {item}"
+                for item in ownership_evidence
+                if str(item).strip()
+            )
+        gate_status = str(ownership_gate.get("status", "collecting"))
+        if gate_status == "blocked" and not ownership_blockers:
+            blockers.append("Focus ownership gate is blocked.")
+        elif gate_status == "collecting" and not ownership_evidence:
+            missing_evidence.append("Focus ownership gate still needs verified evidence.")
+
+    blockers = list(dict.fromkeys(blockers))
+    missing_evidence = list(dict.fromkeys(missing_evidence))
     if blockers:
         status = "blocked"
     elif missing_evidence:
@@ -354,7 +516,6 @@ def build_promotion_readiness(
         status=status,
         planner_mode=normalized_planner_mode,
     )
-
     return {
         "status": status,
         "ready": status == "ready",
@@ -363,6 +524,7 @@ def build_promotion_readiness(
         "recommendation": recommendation,
         "blockers": blockers,
         "missingEvidence": missing_evidence,
+        "ownershipGate": ownership_gate,
         **display,
         "sampleRequirements": {
             "routeDecisions": MIN_ROUTE_DECISIONS,
