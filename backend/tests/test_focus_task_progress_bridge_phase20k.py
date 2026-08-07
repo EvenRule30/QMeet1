@@ -249,6 +249,39 @@ class BridgeHarness:
             if isinstance(record, dict)
         ]
 
+        hygiene_module = types.ModuleType("app.focus.context_hygiene")
+
+        def duplicate_values_to_remove(values, *, preferred=None):
+            del preferred
+            seen: set[str] = set()
+            removals: list[str] = []
+            for value in values:
+                cleaned = " ".join(str(value or "").split()).strip()
+                key = cleaned.casefold()
+                if not cleaned:
+                    continue
+                if key in seen:
+                    removals.append(cleaned)
+                else:
+                    seen.add(key)
+            return removals
+
+        def equivalent_values_to_remove(values, preferred):
+            preferred_key = " ".join(
+                str(preferred or "").split()
+            ).strip().casefold()
+            return [
+                " ".join(str(value or "").split()).strip()
+                for value in values
+                if " ".join(str(value or "").split()).strip()
+                and " ".join(str(value or "").split()).strip().casefold()
+                == preferred_key
+                and " ".join(str(value or "").split()).strip() != preferred
+            ]
+
+        hygiene_module.duplicate_values_to_remove = duplicate_values_to_remove
+        hygiene_module.equivalent_values_to_remove = equivalent_values_to_remove
+
         app_module = types.ModuleType("app")
         app_module.memory_store = memory_module
         focus_package = types.ModuleType("app.focus")
@@ -269,6 +302,7 @@ class BridgeHarness:
                 "app.focus.store": store_module,
                 "app.focus.summary": summary_module,
                 "app.focus.models": models_module,
+                "app.focus.context_hygiene": hygiene_module,
                 "app.focus.task_lineage": lineage_module,
                 module_name: module,
             },

@@ -10,6 +10,11 @@ from app import memory_store
 from app.focus import store as focus_store
 from app.focus import summary as relationship_store
 from app.focus.models import FocusEvent, FocusEventType, FocusState, FocusStatus
+
+from app.focus.context_hygiene import (
+    duplicate_values_to_remove,
+    equivalent_values_to_remove,
+)
 from app.focus.task_lineage import (
     _focus_lineage_ids,
     _string_list,
@@ -305,6 +310,51 @@ def _event_task_ids(events: list[FocusEvent]) -> list[str]:
     ]
 
 
+def _hygiene_removal_events(
+    *,
+    focus_id: str,
+    source_turn_id: str,
+    focus_state: FocusState,
+    canonical_task_titles: list[str],
+) -> list[FocusEvent]:
+    removal_pairs: list[tuple[str, str]] = []
+    protected_titles = {
+        title.casefold()
+        for title in canonical_task_titles
+        if title
+    }
+
+    for canonical_title in canonical_task_titles:
+        for value in equivalent_values_to_remove(
+            focus_state.completedMilestones,
+            canonical_title,
+        ):
+            if value.casefold() not in protected_titles:
+                removal_pairs.append(("completedMilestones", value))
+
+    known_facts = list(getattr(focus_state, "knownFacts", []))
+    for value in duplicate_values_to_remove(known_facts):
+        removal_pairs.append(("knownFacts", value))
+
+    events: list[FocusEvent] = []
+    seen: set[tuple[str, str]] = set()
+    for field, value in removal_pairs:
+        key = (field, value.casefold())
+        if not value or key in seen:
+            continue
+        seen.add(key)
+        events.append(
+            focus_store._new_event(
+                FocusEventType.LIST_ITEM_REMOVED,
+                focus_id=focus_id,
+                payload={"field": field, "value": value},
+                source_turn_id=source_turn_id,
+                source=_PROGRESS_SOURCE,
+            )
+        )
+    return events
+
+
 def _build_progress_events(
     *,
     focus_id: str,
@@ -312,8 +362,15 @@ def _build_progress_events(
     source_turn_id: str,
     focus_state: FocusState,
     next_action: str,
+    canonical_task_titles: list[str],
 ) -> list[FocusEvent]:
-    events = [
+    events = _hygiene_removal_events(
+        focus_id=focus_id,
+        source_turn_id=source_turn_id,
+        focus_state=focus_state,
+        canonical_task_titles=canonical_task_titles,
+    )
+    events.extend(
         focus_store._new_event(
             FocusEventType.MILESTONE_COMPLETED,
             focus_id=focus_id,
@@ -326,7 +383,7 @@ def _build_progress_events(
             source=_PROGRESS_SOURCE,
         )
         for target in targets
-    ]
+    )
     if focus_state.pendingAction is not None:
         # MILESTONE_COMPLETED already preserves WAITING. Do not replace the
         # pending action or its canonical next step.
@@ -613,12 +670,19 @@ def record_focus_task_progress_verified(
                     if remaining
                     else "Review the completed Focus tasks and complete the Focus when ready."
                 )
+                canonical_task_titles = [
+                    _normalize_text(snapshots_by_id[task_id].get("title", ""))
+                    for task_id in linked_task_ids
+                    if task_id in snapshots_by_id
+                    and _normalize_text(snapshots_by_id[task_id].get("title", ""))
+                ]
                 progress_events = _build_progress_events(
                     focus_id=focus_id,
                     targets=targets,
                     source_turn_id=source_turn_id,
                     focus_state=focus_state,
                     next_action=next_action,
+                    canonical_task_titles=canonical_task_titles,
                 )
                 try:
                     focus_document.events.extend(progress_events)

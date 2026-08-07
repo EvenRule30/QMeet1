@@ -11,7 +11,6 @@ export type FocusContextField =
   | 'preferences'
   | 'decisions'
   | 'knownFacts';
-
 export type NativeFocusContextState = {
   focusId: string;
   title: string;
@@ -31,7 +30,6 @@ type NativeFocusContextVerification = {
   contextPersisted?: unknown;
   sourceTurnUnique?: unknown;
 };
-
 type NativeFocusContextPayload = {
   ok?: unknown;
   operation?: unknown;
@@ -41,13 +39,13 @@ type NativeFocusContextPayload = {
   focusTitle?: unknown;
   field?: unknown;
   value?: unknown;
+  canonicalValue?: unknown;
   sourceTurnId?: unknown;
   updatedAt?: unknown;
   focusContext?: unknown;
   verification?: unknown;
   message?: unknown;
 };
-
 export type VerifiedNativeFocusContextResult = {
   ok: true;
   operation: 'add_focus_context';
@@ -57,6 +55,7 @@ export type VerifiedNativeFocusContextResult = {
   focusTitle: string;
   field: FocusContextField;
   value: string;
+  canonicalValue: string;
   sourceTurnId: string;
   updatedAt: string;
   focusContext: NativeFocusContextState;
@@ -65,7 +64,6 @@ export type VerifiedNativeFocusContextResult = {
 
 export class NativeFocusContextClientError extends Error {
   code: string;
-
   constructor(message: string, code = 'native_focus_context_failed') {
     super(message);
     this.name = 'NativeFocusContextClientError';
@@ -84,14 +82,12 @@ const CONTEXT_FIELDS = new Set<FocusContextField>([
 function normalizeText(value: unknown): string {
   return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
 }
-
 function normalizeStringList(value: unknown): string[] | null {
   if (!Array.isArray(value)) return null;
   const items = value.map(normalizeText);
   if (items.some((item) => !item)) return null;
   return items;
 }
-
 function normalizeContextState(value: unknown): NativeFocusContextState | null {
   if (!value || typeof value !== 'object') return null;
   const envelope = value as Record<string, unknown>;
@@ -135,12 +131,10 @@ function normalizeContextState(value: unknown): NativeFocusContextState | null {
     updatedAt,
   };
 }
-
 function containsExact(values: string[], target: string): boolean {
   const expected = target.toLocaleLowerCase();
   return values.some((value) => value.toLocaleLowerCase() === expected);
 }
-
 function parseErrorPayload(payload: unknown): { code: string; message: string } {
   if (!payload || typeof payload !== 'object') {
     return {
@@ -163,14 +157,12 @@ function parseErrorPayload(payload: unknown): { code: string; message: string } 
     message: normalizeText(record.message) || 'The Focus context request failed.',
   };
 }
-
 function createSourceTurnId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return `focus-context-${crypto.randomUUID()}`;
   }
   return `focus-context-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
-
 export async function addNativeFocusContextVerified(input: {
   expectedFocusId: string;
   expectedObjective: string;
@@ -194,7 +186,6 @@ export async function addNativeFocusContextVerified(input: {
     );
   }
   const sourceTurnId = normalizeText(input.sourceTurnId) || createSourceTurnId();
-
   let response: Response;
   try {
     response = await fetch(`${QMEET_API_BASE_URL}/api/focus/lifecycle/context`, {
@@ -220,7 +211,6 @@ export async function addNativeFocusContextVerified(input: {
       'endpoint_unavailable',
     );
   }
-
   let rawPayload: unknown = null;
   try {
     rawPayload = await response.json();
@@ -237,19 +227,18 @@ export async function addNativeFocusContextVerified(input: {
       'invalid_response',
     );
   }
-
   const payload = rawPayload as NativeFocusContextPayload;
   const verification = payload.verification as NativeFocusContextVerification | null;
   const focusContext = normalizeContextState(payload.focusContext);
   const outcome = payload.outcome;
   const field = normalizeText(payload.field) as FocusContextField;
   const resultValue = normalizeText(payload.value);
+  const canonicalValue = normalizeText(payload.canonicalValue);
   const resultFocusId = normalizeText(payload.focusId);
   const resultSourceTurnId = normalizeText(payload.sourceTurnId);
   const updatedAt = normalizeText(payload.updatedAt);
   const message = normalizeText(payload.message);
   const contextValues = focusContext?.[input.field];
-
   const valid =
     payload.ok === true &&
     payload.operation === 'add_focus_context' &&
@@ -258,6 +247,7 @@ export async function addNativeFocusContextVerified(input: {
     resultFocusId === expectedFocusId &&
     field === input.field &&
     resultValue === value &&
+    Boolean(canonicalValue) &&
     resultSourceTurnId === sourceTurnId &&
     Boolean(updatedAt) &&
     Boolean(message) &&
@@ -265,19 +255,17 @@ export async function addNativeFocusContextVerified(input: {
     focusContext.focusId === expectedFocusId &&
     focusContext.objective === expectedObjective &&
     Array.isArray(contextValues) &&
-    containsExact(contextValues, value) &&
+    containsExact(contextValues, canonicalValue) &&
     verification?.activeFocusMatches === true &&
     verification.objectivePreserved === true &&
     verification.contextPersisted === true &&
     verification.sourceTurnUnique === true;
-
   if (!valid || !focusContext || (outcome !== 'added' && outcome !== 'reused')) {
     throw new NativeFocusContextClientError(
-      'The canonical response did not prove that the exact Focus context was persisted without replacing the objective.',
+      'The canonical response did not prove that the canonical Focus context item was persisted without replacing the objective.',
       'verification_failed',
     );
   }
-
   return {
     ok: true,
     operation: 'add_focus_context',
@@ -287,13 +275,13 @@ export async function addNativeFocusContextVerified(input: {
     focusTitle: normalizeText(payload.focusTitle),
     field,
     value: resultValue,
+    canonicalValue,
     sourceTurnId: resultSourceTurnId,
     updatedAt,
     focusContext,
     message,
   };
 }
-
 export function applyVerifiedFocusContextProjection(
   result: VerifiedNativeFocusContextResult,
 ): ActiveSession {
@@ -317,7 +305,6 @@ export function applyVerifiedFocusContextProjection(
   applyVerifiedFocusProjection(next);
   return next;
 }
-
 export async function readNativeFocusContext(
   expectedFocusId: string,
 ): Promise<NativeFocusContextState> {
@@ -360,12 +347,10 @@ export async function readNativeFocusContext(
   }
   return context;
 }
-
 function section(label: string, values: string[]): string {
   if (values.length === 0) return '';
   return `${label}:\n${values.map((value) => `• ${value}`).join('\n')}`;
 }
-
 export function appendNativeFocusContextToSummary(
   summary: string,
   context: NativeFocusContextState,
@@ -380,7 +365,6 @@ export function appendNativeFocusContextToSummary(
   if (sections.length === 0) return summary.trim();
   return `${summary.trim()}\n\nFocus context:\n\n${sections.join('\n\n')}`;
 }
-
 export function buildNativeFocusContextTaskTitles(
   context: NativeFocusContextState,
 ): string[] {
@@ -402,7 +386,6 @@ export function buildNativeFocusContextTaskTitles(
   }
   return titles;
 }
-
 export function describeNativeFocusContextFailure(error: unknown): string {
   const detail =
     error instanceof Error && error.message.trim()

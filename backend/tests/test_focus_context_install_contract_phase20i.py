@@ -21,7 +21,10 @@ class FocusContextInstallContractPhase20ITests(unittest.TestCase):
             "I have three days available",
             "Keep the total cost under $1,000",
         ):
-            self.assertIn(marker, (self.root / "backend/tests/test_focus_context_boundary_phase20i.py").read_text(encoding="utf-8"))
+            self.assertIn(
+                marker,
+                (self.root / "backend/tests/test_focus_context_boundary_phase20i.py").read_text(encoding="utf-8"),
+            )
         self.assertIn("classify_focus_context", self.boundary)
         self.assertIn("phase20i-context", self.boundary)
 
@@ -39,11 +42,13 @@ class FocusContextInstallContractPhase20ITests(unittest.TestCase):
         self.assertIn("sourceTurnUnique", self.context)
         self.assertIn("focusContext", self.context)
 
-    def test_frontend_independently_checks_exact_context_and_objective(self) -> None:
+    def test_frontend_independently_checks_canonical_context_and_objective(self) -> None:
         self.assertIn("focusContext.objective === expectedObjective", self.client)
         self.assertIn("envelope.state", self.client)
         self.assertIn("/api/focus/state", self.client)
-        self.assertIn("containsExact(contextValues, value)", self.client)
+        self.assertIn("resultValue === value", self.client)
+        self.assertIn("canonicalValue", self.client)
+        self.assertIn("containsExact(contextValues, canonicalValue)", self.client)
         self.assertIn("verification.objectivePreserved === true", self.client)
         self.assertIn("verification.contextPersisted === true", self.client)
 

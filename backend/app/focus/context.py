@@ -11,7 +11,14 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.focus.context_hygiene import (
+    duplicate_values_to_remove,
+    find_semantic_match,
+    question_answered_by_context,
+    semantically_equivalent,
+)
 from app.focus.models import (
+    FocusEventType,
     FocusField,
     FocusOperation,
     FocusOperationKind,
@@ -43,6 +50,20 @@ _FIELD_ENUM = {
     "preferences": FocusField.PREFERENCES,
     "decisions": FocusField.DECISIONS,
     "knownFacts": FocusField.KNOWN_FACTS,
+}
+_HYGIENE_FIELDS = {
+    "requirements": FocusField.REQUIREMENTS,
+    "constraints": FocusField.CONSTRAINTS,
+    "preferences": FocusField.PREFERENCES,
+    "decisions": FocusField.DECISIONS,
+    "knownFacts": FocusField.KNOWN_FACTS,
+}
+_MAX_HYGIENE_REMOVALS = 14
+_CONTEXT_SOURCE = "native-focus-context"
+_CONTEXT_NEUTRAL_RESPONSE_EVENT_TYPES = {
+    FocusEventType.RESPONSE_CANDIDATE,
+    FocusEventType.RESPONSE_SELECTION,
+    FocusEventType.ASSISTANT_REPLIED,
 }
 
 _HEALTH_LOCK = RLock()
@@ -123,7 +144,6 @@ def _atomic_write_health_unlocked(document: dict[str, object]) -> None:
             temporary_path.unlink(missing_ok=True)
 
 
-
 class NativeFocusContextRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -179,6 +199,7 @@ class NativeFocusContextResult(BaseModel):
     focusTitle: str
     field: FocusContextField
     value: str
+    canonicalValue: str
     sourceTurnId: str
     updatedAt: str
     focusContext: NativeFocusContextSnapshot
@@ -247,12 +268,6 @@ def reset_native_focus_context_health() -> dict[str, object]:
         return document
 
 
-
-def _contains(values: list[str], target: str) -> bool:
-    expected = target.casefold()
-    return any(value.casefold() == expected for value in values)
-
-
 def _snapshot(state: FocusState) -> NativeFocusContextSnapshot:
     if state.status not in _OPEN_STATUSES:
         raise NativeFocusContextError(
@@ -273,7 +288,14 @@ def _snapshot(state: FocusState) -> NativeFocusContextSnapshot:
     )
 
 
-def _message(field: FocusContextField, value: str, title: str, outcome: str) -> str:
+def _message(
+    field: FocusContextField,
+    value: str,
+    title: str,
+    outcome: str,
+    *,
+    question_resolved: bool,
+) -> str:
     labels = {
         "requirements": "requirement",
         "constraints": "constraint",
@@ -282,7 +304,10 @@ def _message(field: FocusContextField, value: str, title: str, outcome: str) -> 
         "knownFacts": "Focus detail",
     }
     verb = "Kept" if outcome == "reused" else "Added"
-    return f'{verb} {labels[field]} for {title}: {value}.'
+    message = f"{verb} {labels[field]} for {title}: {value}."
+    if question_resolved:
+        message = f"{message} Answered the current Focus question."
+    return message
 
 
 def _verified_result(
@@ -291,6 +316,8 @@ def _verified_result(
     state: FocusState,
     source_turn_id: str,
     outcome: Literal["added", "reused"],
+    canonical_value: str,
+    question_resolved: bool = False,
 ) -> NativeFocusContextResult:
     return NativeFocusContextResult(
         outcome=outcome,
@@ -298,6 +325,7 @@ def _verified_result(
         focusTitle=state.title,
         field=request.field,
         value=request.value,
+        canonicalValue=canonical_value,
         sourceTurnId=source_turn_id,
         updatedAt=state.updatedAt,
         focusContext=_snapshot(state),
@@ -307,8 +335,106 @@ def _verified_result(
             contextPersisted=True,
             sourceTurnUnique=True,
         ),
-        message=_message(request.field, request.value, state.title, outcome),
+        message=_message(
+            request.field,
+            request.value,
+            state.title,
+            outcome,
+            question_resolved=question_resolved,
+        ),
     )
+
+
+def _hygiene_operations(
+    state: FocusState,
+    *,
+    preferred_field: FocusContextField,
+    preferred_value: str,
+) -> list[FocusOperation]:
+    removal_pairs: list[tuple[FocusField, str]] = []
+    for field_name, field_enum in _HYGIENE_FIELDS.items():
+        values = list(getattr(state, field_name, []))
+        if field_name == preferred_field:
+            removals = duplicate_values_to_remove(
+                values,
+                preferred=preferred_value,
+            )
+        else:
+            removals = duplicate_values_to_remove(values)
+        for duplicate in removals:
+            removal_pairs.append((field_enum, duplicate))
+
+    operations: list[FocusOperation] = []
+    seen: set[tuple[str, str]] = set()
+    for field_enum, duplicate in removal_pairs:
+        key = (field_enum.value, duplicate.casefold())
+        if not duplicate or key in seen:
+            continue
+        seen.add(key)
+        operations.append(
+            FocusOperation(
+                kind=FocusOperationKind.REMOVE_LIST_ITEM,
+                field=field_enum,
+                value=duplicate,
+                confidence=1.0,
+                reason="Canonical semantic duplicate cleanup.",
+            )
+        )
+        if len(operations) >= _MAX_HYGIENE_REMOVALS:
+            break
+    return operations
+
+
+def _context_turn_group_is_exclusive(
+    events: list,
+    *,
+    focus_id: str,
+) -> bool:
+    """Verify mutation ownership without treating response telemetry as a conflict.
+
+    ``apply_turn_plan`` appends response-candidate telemetry under the same
+    ``sourceTurnId`` using a dedicated response source. Later guarded-response
+    bookkeeping can append response-selection and assistant-reply events as
+    well. Those derived events do not own or mutate the Focus operation and
+    therefore must not invalidate native context source-turn exclusivity.
+
+    Any other event in the turn group must belong to this context operation
+    and to the expected Focus.
+    """
+    for event in events:
+        event_type = getattr(event, "type", None)
+        event_focus_id = str(getattr(event, "focusId", "") or "").strip()
+        if event_type in _CONTEXT_NEUTRAL_RESPONSE_EVENT_TYPES:
+            if event_focus_id and event_focus_id != focus_id:
+                return False
+            continue
+        if (
+            getattr(event, "source", _CONTEXT_SOURCE) != _CONTEXT_SOURCE
+            or event_focus_id != focus_id
+        ):
+            return False
+    return True
+
+
+def _matching_context_events(
+    events: list,
+    *,
+    focus_id: str,
+    field: FocusContextField,
+    value: str,
+) -> list:
+    return [
+        event
+        for event in events
+        if getattr(event, "type", FocusEventType.LIST_ITEM_ADDED)
+        == FocusEventType.LIST_ITEM_ADDED
+        and event.focusId == focus_id
+        and str(event.payload.get("field", "")) == field
+        and semantically_equivalent(
+            str(event.payload.get("value", "")),
+            value,
+        )
+    ]
 
 
 def add_focus_context_verified(
@@ -317,13 +443,25 @@ def add_focus_context_verified(
     source_turn_id = request.sourceTurnId or f"focus-context-{uuid4().hex}"
     current = get_state()
     if current.focusId != request.expectedFocusId or current.status not in _OPEN_STATUSES:
-        _health("failed", "stale_focus", source_turn_id=source_turn_id, active_focus_id=current.focusId, field=request.field)
+        _health(
+            "failed",
+            "stale_focus",
+            source_turn_id=source_turn_id,
+            active_focus_id=current.focusId,
+            field=request.field,
+        )
         raise NativeFocusContextError(
             "stale_focus",
             "The expected canonical Focus is not the active Focus.",
         )
     if current.objective != request.expectedObjective:
-        _health("failed", "stale_objective", source_turn_id=source_turn_id, active_focus_id=current.focusId, field=request.field)
+        _health(
+            "failed",
+            "stale_objective",
+            source_turn_id=source_turn_id,
+            active_focus_id=current.focusId,
+            field=request.field,
+        )
         raise NativeFocusContextError(
             "stale_objective",
             "The canonical Focus objective changed before this context could be attached.",
@@ -334,58 +472,104 @@ def add_focus_context_verified(
     ]
     field_values = list(getattr(current, request.field))
     if existing_turn_events:
-        matching_context_events = [
-            event
-            for event in existing_turn_events
-            if event.focusId == current.focusId
-            and str(event.payload.get("field", "")) == request.field
-            and str(event.payload.get("value", "")).casefold()
-            == request.value.casefold()
-        ]
-        if len(matching_context_events) != 1 or not _contains(
-            field_values,
-            request.value,
+        matching_context_events = _matching_context_events(
+            existing_turn_events,
+            focus_id=current.focusId,
+            field=request.field,
+            value=request.value,
+        )
+        group_is_exclusive = _context_turn_group_is_exclusive(
+            existing_turn_events,
+            focus_id=current.focusId,
+        )
+        canonical_match = find_semantic_match(field_values, request.value)
+        if (
+            len(matching_context_events) != 1
+            or canonical_match is None
+            or not group_is_exclusive
         ):
-            _health("failed", "source_turn_conflict", source_turn_id=source_turn_id, active_focus_id=current.focusId, field=request.field)
+            _health(
+                "failed",
+                "source_turn_conflict",
+                source_turn_id=source_turn_id,
+                active_focus_id=current.focusId,
+                field=request.field,
+            )
             raise NativeFocusContextError(
                 "source_turn_conflict",
                 "This source turn is already attached to a different canonical Focus change.",
             )
-        _health("reused", source_turn_id=source_turn_id, active_focus_id=current.focusId, field=request.field)
+        _health(
+            "reused",
+            source_turn_id=source_turn_id,
+            active_focus_id=current.focusId,
+            field=request.field,
+        )
         return _verified_result(
             request=request,
             state=current,
             source_turn_id=source_turn_id,
             outcome="reused",
+            canonical_value=canonical_match,
         )
 
-    already_present = _contains(field_values, request.value)
+    semantic_match = find_semantic_match(field_values, request.value)
+    canonical_value = semantic_match or request.value
+    already_present = semantic_match is not None
+    question_should_clear = (
+        getattr(current, "pendingAction", None) is None
+        and question_answered_by_context(
+            getattr(current, "pendingQuestion", None),
+            field=request.field,
+            value=request.value,
+        )
+    )
+
+    operations = _hygiene_operations(
+        current,
+        preferred_field=request.field,
+        preferred_value=canonical_value,
+    )
+    operations.append(
+        FocusOperation(
+            kind=FocusOperationKind.ADD_LIST_ITEM,
+            field=_FIELD_ENUM[request.field],
+            value=canonical_value,
+            confidence=1.0,
+            reason="Explicit user-supplied durable Focus context.",
+        )
+    )
+    if question_should_clear:
+        operations.append(
+            FocusOperation(
+                kind=FocusOperationKind.CLEAR_PENDING_QUESTION,
+                confidence=1.0,
+                reason="The durable user context answered the current Focus question.",
+            )
+        )
+
     plan = TurnPlan(
         route=TurnRoute.FOCUS_ACTION,
-        focusOperations=[
-            FocusOperation(
-                kind=FocusOperationKind.ADD_LIST_ITEM,
-                field=_FIELD_ENUM[request.field],
-                value=request.value,
-                confidence=1.0,
-                reason="Explicit user-supplied durable Focus context.",
-            )
-        ],
+        focusOperations=operations,
         responseIntent=ResponseIntent(
             acknowledge="",
             answerDirectly=False,
             attachToFocus=True,
         ),
         confidence=1.0,
-        reason="Verified native Focus context accumulation.",
+        reason="Verified native Focus context accumulation with canonical hygiene.",
     )
     updated = apply_turn_plan(
         plan,
         message=request.value,
         turn_id=source_turn_id,
-        source="native-focus-context",
+        source=_CONTEXT_SOURCE,
     )
-    persisted = _contains(list(getattr(updated, request.field)), request.value)
+
+    persisted = any(
+        item.casefold() == canonical_value.casefold()
+        for item in list(getattr(updated, request.field))
+    )
     active_matches = (
         updated.focusId == request.expectedFocusId and updated.status in _OPEN_STATUSES
     )
@@ -393,26 +577,62 @@ def add_focus_context_verified(
     turn_events = [
         event for event in list_events(limit=1000) if event.sourceTurnId == source_turn_id
     ]
-    context_events = [
-        event
-        for event in turn_events
-        if event.focusId == request.expectedFocusId
-        and str(event.payload.get("field", "")) == request.field
-        and str(event.payload.get("value", "")).casefold() == request.value.casefold()
-    ]
-    source_unique = len(context_events) == 1
-    if not (active_matches and objective_preserved and persisted and source_unique):
-        _health("failed", "verification_failed", source_turn_id=source_turn_id, active_focus_id=updated.focusId, field=request.field)
+    context_events = _matching_context_events(
+        turn_events,
+        focus_id=request.expectedFocusId,
+        field=request.field,
+        value=canonical_value,
+    )
+    source_unique = (
+        len(context_events) == 1
+        and _context_turn_group_is_exclusive(
+            turn_events,
+            focus_id=request.expectedFocusId,
+        )
+    )
+    if question_should_clear:
+        question_state_valid = getattr(updated, "pendingQuestion", None) is None
+    else:
+        question_state_valid = (
+            getattr(updated, "pendingQuestion", None)
+            == getattr(current, "pendingQuestion", None)
+            and getattr(updated, "pendingAction", None)
+            == getattr(current, "pendingAction", None)
+            and getattr(updated, "nextAction", "")
+            == getattr(current, "nextAction", "")
+        )
+
+    if not (
+        active_matches
+        and objective_preserved
+        and persisted
+        and source_unique
+        and question_state_valid
+    ):
+        _health(
+            "failed",
+            "verification_failed",
+            source_turn_id=source_turn_id,
+            active_focus_id=updated.focusId,
+            field=request.field,
+        )
         raise NativeFocusContextError(
             "verification_failed",
-            "Canonical Focus state did not verify the exact context item without replacing the objective.",
+            "Canonical Focus state did not verify the context item, objective, and question continuity.",
         )
 
     outcome: Literal["added", "reused"] = "reused" if already_present else "added"
-    _health(outcome, source_turn_id=source_turn_id, active_focus_id=updated.focusId, field=request.field)
+    _health(
+        outcome,
+        source_turn_id=source_turn_id,
+        active_focus_id=updated.focusId,
+        field=request.field,
+    )
     return _verified_result(
         request=request,
         state=updated,
         source_turn_id=source_turn_id,
         outcome=outcome,
+        canonical_value=canonical_value,
+        question_resolved=question_should_clear,
     )
