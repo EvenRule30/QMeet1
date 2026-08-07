@@ -177,6 +177,14 @@ export function resolveTaskCompletionPreviewTargets(
   const candidateTasks = orderedOpenTasksForCompletion(tasks, activeSession);
   if (candidateTasks.length === 0) return [];
 
+  const normalizedPayload = normalizeTaskLookup(payload ?? '');
+  const exactTitleMatch = normalizedPayload
+    ? candidateTasks.find(
+        (task) => normalizeTaskLookup(task.title) === normalizedPayload,
+      )
+    : undefined;
+  if (exactTitleMatch) return [exactTitleMatch];
+
   const spec = parseTaskCompletionSpec(payload);
   let selectedTasks: MemoryTask[] = [];
 

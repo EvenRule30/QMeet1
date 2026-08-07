@@ -68,7 +68,6 @@ function expandRecentActionsList(content: string): string {
         .split(/\s*;\s*/)
         .map(compactRecentActionPreview)
         .filter(Boolean);
-
       if (items.length < 2) {
         return `${prefix}${label} ${compactRecentActionPreview(rawBody)}`;
       }
@@ -90,7 +89,7 @@ function normalizeAssistantText(content: string): string {
     )
     .replace(STRUCTURED_SECTION_PATTERN, '\n\n$1')
     .replace(/\s+(-\s+)/g, '\n$1')
-    .replace(/\s+(\d+[.)]\s+)/g, '\n$1')
+    .replace(/\s+([1-9]\d?[.)]\s+)/g, '\n$1')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
@@ -106,7 +105,6 @@ function renderInlineText(text: string): ReactNode[] {
     if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
       return <strong key={`${part}-${index}`}>{part.slice(2, -2)}</strong>;
     }
-
     if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
       return <code key={`${part}-${index}`}>{part.slice(1, -1)}</code>;
     }
@@ -217,7 +215,6 @@ function parseFormattedBlocks(content: string): TextBlock[] {
     if (numberedMatch) {
       flushParagraph(blocks, paragraphLines);
       flushBullets();
-
       const numberedValue = Number.parseInt(numberedMatch[1], 10);
       if (
         numberedItems.length > 0 &&
@@ -302,7 +299,6 @@ function FormattedMessageContent({ content }: { content: string }) {
         if (block.type === 'bullet') {
           return <MessageListBlock blockIndex={index} items={block.items} />;
         }
-
         if (block.type === 'numbered') {
           return <MessageListBlock blockIndex={index} items={block.items} ordered />;
         }
@@ -334,7 +330,6 @@ function MessageFormattingStyles() {
         gap: 0.42rem;
         min-width: 0;
       }
-
       .message-formatted-content .message-text,
       .message-formatted-content .message-heading {
         margin: 0;
@@ -353,7 +348,6 @@ function MessageFormattingStyles() {
         padding: 0.52rem 0.62rem;
         line-height: 1.45;
       }
-
       .message-callout strong {
         margin-right: 0.2rem;
       }
@@ -373,7 +367,6 @@ function MessageFormattingStyles() {
         align-items: start;
         min-width: 0;
       }
-
       .message-list-marker {
         color: rgba(178, 232, 255, 0.9);
         font-weight: 800;
@@ -386,7 +379,6 @@ function MessageFormattingStyles() {
         line-height: 1.48;
         min-width: 0;
       }
-
       .message-list-text code,
       .message-formatted-content .message-text code,
       .message-callout code {
@@ -397,7 +389,6 @@ function MessageFormattingStyles() {
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
         font-size: 0.94em;
       }
-
       .message-code {
         margin: 0.1rem 0 0.12rem;
         border: 1px solid rgba(114, 178, 255, 0.18);
@@ -451,7 +442,6 @@ export function ChatPanel({ messages, orbState, activity }: ChatPanelProps) {
           const isAssistant = msg.role === 'assistant';
           const isToolMessage = isAssistant && variant !== 'normal';
           const timeText = formatMessageTime(msg.timestamp);
-
           return (
             <div
               className={`message message-${msg.role} message-${variant}`}
@@ -460,7 +450,6 @@ export function ChatPanel({ messages, orbState, activity }: ChatPanelProps) {
               {isAssistant && (
                 <div className="message-avatar">{isToolMessage ? '✓' : 'Q'}</div>
               )}
-
               <div className="message-bubble">
                 {isToolMessage && (
                   <p className="message-tool-label">{getToolLabel(msg)}</p>

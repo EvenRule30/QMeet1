@@ -17,7 +17,6 @@ interface ActiveFocusSessionSnapshot {
   goal?: string;
   summary?: string | null;
 }
-
 const ACTIVE_SESSION_STORAGE_KEYS = [
   'qmeet-active-session-live',
   'qmeet-active-session',
@@ -35,7 +34,6 @@ function parseStoredSession(value: string | null): ActiveFocusSessionSnapshot | 
     return null;
   }
 }
-
 function normalizeSessionSnapshot(value: unknown): ActiveFocusSessionSnapshot | null {
   if (!value || typeof value !== 'object') {
     return null;
@@ -54,11 +52,9 @@ function normalizeSessionSnapshot(value: unknown): ActiveFocusSessionSnapshot | 
   if ('activeSession' in maybeWrapped) {
     return normalizeSessionSnapshot(maybeWrapped.activeSession);
   }
-
   if ('session' in maybeWrapped) {
     return normalizeSessionSnapshot(maybeWrapped.session);
   }
-
   const title = typeof maybeWrapped.title === 'string' ? maybeWrapped.title.trim() : '';
   const goal = typeof maybeWrapped.goal === 'string' ? maybeWrapped.goal.trim() : '';
   const mode = typeof maybeWrapped.mode === 'string' ? maybeWrapped.mode.trim() : '';
@@ -68,7 +64,6 @@ function normalizeSessionSnapshot(value: unknown): ActiveFocusSessionSnapshot | 
   if (!title && !goal && !mode && !id) {
     return null;
   }
-
   return {
     id,
     title,
@@ -89,7 +84,6 @@ function readStoredFocusSession(): ActiveFocusSessionSnapshot | null {
       return sessionValue;
     }
   }
-
   for (const key of ACTIVE_SESSION_STORAGE_KEYS) {
     const localValue = parseStoredSession(window.localStorage.getItem(key));
     if (localValue) {
@@ -107,7 +101,6 @@ function formatMode(mode?: string): string {
 
   return mode.charAt(0).toUpperCase() + mode.slice(1).toLowerCase();
 }
-
 function formatFocusLabel(session: ActiveFocusSessionSnapshot): string {
   const mode = formatMode(session.mode);
   const title = session.title?.trim();
@@ -134,14 +127,12 @@ function formatFocusLabel(session: ActiveFocusSessionSnapshot): string {
 
 function dispatchPromptCommand(command: string): void {
   if (typeof window === 'undefined') return;
-
   window.dispatchEvent(
     new CustomEvent('qmeet-prompt-command', {
       detail: { command },
     }),
   );
 }
-
 function FocusStatusStyles() {
   return (
     <style>{`
@@ -160,7 +151,6 @@ function FocusStatusStyles() {
         font: inherit;
         transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease, transform 160ms ease;
       }
-
       .status-focus-chip:hover,
       .status-focus-chip:focus-visible {
         border-color: rgba(103, 232, 249, 0.42);
@@ -169,7 +159,6 @@ function FocusStatusStyles() {
         transform: translateY(-1px);
         outline: none;
       }
-
       .status-focus-dot {
         width: 0.42rem;
         height: 0.42rem;
@@ -187,7 +176,6 @@ function FocusStatusStyles() {
         letter-spacing: 0.04em;
         text-transform: none;
       }
-
       @media (max-width: 720px) {
         .status-focus-chip {
           max-width: 38vw;
@@ -213,7 +201,6 @@ function formatFocusTitle(session: ActiveFocusSessionSnapshot): string {
   if (mode) {
     lines.push(`Mode: ${mode}`);
   }
-
   if (session.goal) {
     lines.push(`Goal: ${session.goal}`);
   }
@@ -230,7 +217,6 @@ export function TopStatusBar({ orbState, chatActive, onEnd, backendStatus, activ
   const [activeFocusSession, setActiveFocusSession] = useState<ActiveFocusSessionSnapshot | null>(() =>
     readStoredFocusSession()
   );
-
   useEffect(() => {
     const ticker = setInterval(() => setTime(new Date()), 1000);
 
@@ -249,7 +235,6 @@ export function TopStatusBar({ orbState, chatActive, onEnd, backendStatus, activ
     const handleFocusState = (event: Event) => {
       const detail = (event as CustomEvent<unknown>).detail;
       const nextSession = normalizeSessionSnapshot(detail);
-
       if (nextSession || detail === null) {
         setActiveFocusSession(nextSession);
         return;
@@ -266,7 +251,6 @@ export function TopStatusBar({ orbState, chatActive, onEnd, backendStatus, activ
     const handleFocusCommand = () => {
       window.setTimeout(refreshFocusFromStorage, 0);
     };
-
     const handleStorage = (event: StorageEvent) => {
       if (event.key && ACTIVE_SESSION_STORAGE_KEYS.includes(event.key)) {
         refreshFocusFromStorage();
@@ -278,7 +262,6 @@ export function TopStatusBar({ orbState, chatActive, onEnd, backendStatus, activ
     window.addEventListener('storage', handleStorage);
 
     refreshFocusFromStorage();
-
     return () => {
       window.removeEventListener('qmeet-active-session-state', handleFocusState as EventListener);
       window.removeEventListener('qmeet-active-session-command', handleFocusCommand as EventListener);
@@ -293,12 +276,10 @@ export function TopStatusBar({ orbState, chatActive, onEnd, backendStatus, activ
     speaking: 'Responding',
     error: 'Error',
   };
-
   const isConnected = backendStatus !== null;
   const statusText = isConnected
     ? `${backendStatus.provider} / ${backendStatus.model}`
     : 'Disconnected';
-
   return (
     <div className="status-bar">
       <FocusStatusStyles />
@@ -333,13 +314,12 @@ export function TopStatusBar({ orbState, chatActive, onEnd, backendStatus, activ
           </>
         )}
       </div>
-
       <div className="status-right">
         <span className="status-time">
           {time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
         </span>
         {chatActive && (
-          <button className="end-btn" onClick={onEnd} aria-label="End conversation">
+          <button className="end-btn" onClick={onEnd} aria-label="Close conversation">
             <svg
               viewBox="0 0 24 24"
               fill="none"
@@ -351,7 +331,7 @@ export function TopStatusBar({ orbState, chatActive, onEnd, backendStatus, activ
               <line x1="18" y1="6" x2="6" y2="18" />
               <line x1="6" y1="6" x2="18" y2="18" />
             </svg>
-            End
+            Close chat
           </button>
         )}
         <div className={`connection-indicator ${isConnected ? 'connected' : 'disconnected'}`}>

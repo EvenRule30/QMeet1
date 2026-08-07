@@ -20,7 +20,7 @@ class FocusTaskCompletionConfirmationPreviewPhase20I9Tests(unittest.TestCase):
         )
         self.assertIn("taskCompletionTarget,", self.app_source)
         self.assertIn("memoryTasks,", self.app_source)
-        self.assertIn("activeSession,", self.app_source)
+        self.assertIn("routingActiveSession,", self.app_source)
         self.assertIn(
             "describeTaskCompletionPreviewTargets(taskCompletionPreviewTargets)",
             self.app_source,
@@ -46,7 +46,15 @@ class FocusTaskCompletionConfirmationPreviewPhase20I9Tests(unittest.TestCase):
             self.app_source,
         )
         self.assertIn(
-            "return handleSend(commandToRun.frontendCommand, visibleUserText, 'confirmed');",
+            "const resolvedTaskTargets = pendingTaskCompletionTargetsRef.current;",
+            self.app_source,
+        )
+        self.assertIn(
+            "const confirmedTaskCommandMatch: CommandMatch | undefined =",
+            self.app_source,
+        )
+        self.assertIn(
+            "confirmedTaskCommandMatch,\n              resolvedTaskTargets",
             self.app_source,
         )
 

@@ -7,7 +7,7 @@ type ScoredTask = {
   matchedTokenCount: number;
 };
 
-const COMPLETION_OPENING = /^(?:i|we)(?:\s+(?:have|had)|['’]ve)?\s+(?:already\s+|just\s+)?(?:checked|verified|confirmed|found|chose|chosen|picked|selected|decided|determined|wrote|written|drafted|created|made|used|incorporated|added|scheduled|booked|reviewed|compared|researched|identified|set|planned|outlined|prepared|handled|fixed|resolved|sent|submitted|called|contacted|emailed|updated|tested|ran|built|implemented|finished|completed|did|got\s+through)\b/i;
+const COMPLETION_OPENING = /^(?:i|we)(?:\s+(?:have|had)|['’]ve)?\s+(?:already\s+|just\s+)?(?:checked|verified|confirmed|found|chose|chosen|picked|selected|decided|determined|wrote|written|drafted|created|made|used|incorporated|added|scheduled|booked|reviewed|tailored|adapted|customized|customised|adjusted|compared|researched|identified|set|planned|outlined|prepared|handled|fixed|resolved|sent|submitted|called|contacted|emailed|updated|tested|ran|built|implemented|finished|completed|did|got\s+through)\b/i;
 
 const STOP_WORDS = new Set([
   'a',
@@ -62,6 +62,7 @@ const LOW_VALUE_TOKENS = new Set(['focus', 'plan', 'task', 'work']);
 
 const TOKEN_ALIASES: Record<string, string> = {
   checked: 'check',
+  did: 'do',
   checking: 'check',
   verifies: 'check',
   verified: 'check',
@@ -116,6 +117,16 @@ const TOKEN_ALIASES: Record<string, string> = {
   incorporated: 'use',
   incorporating: 'use',
   reviewed: 'review',
+  tailored: 'tailor',
+  tailoring: 'tailor',
+  adapted: 'tailor',
+  adapting: 'tailor',
+  customized: 'tailor',
+  customizing: 'tailor',
+  customised: 'tailor',
+  customising: 'tailor',
+  adjusted: 'tailor',
+  adjusting: 'tailor',
   reviewing: 'review',
   compared: 'compare',
   comparing: 'compare',

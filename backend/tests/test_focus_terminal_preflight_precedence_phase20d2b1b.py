@@ -44,8 +44,10 @@ class FocusTerminalPreflightPrecedenceTests(unittest.TestCase):
 
     def test_preflight_result_is_cached_and_prevents_lifecycle_exact_execution(self) -> None:
         source = APP.read_text(encoding="utf-8")
+
         self.assertIn(
-            "semanticLifecyclePreflightBeforeCommandRouting ??\n      await interpretSemanticFocusLifecycle(trimmed)",
+            "semanticLifecyclePreflightBeforeCommandRouting ??\n"
+            "      await interpretSemanticFocusLifecycle(trimmed)",
             source,
         )
         self.assertRegex(
@@ -56,23 +58,47 @@ class FocusTerminalPreflightPrecedenceTests(unittest.TestCase):
                 r"Boolean\(deferredExactFocusLifecycleMatch\);"
             ),
         )
+
+        command_match_index = source.index(
+            "const commandMatch = deferredSemanticFocusLifecycleMessage"
+        )
+        deferred_null_index = source.index("? null", command_match_index)
+        task_refinement_index = source.index(
+            "parsedCommandMatch?.command === 'mark-task-done'",
+            deferred_null_index,
+        )
+        safe_fallback_index = source.index(
+            "parsedCommandMatch ?? naturalTaskCompletionCommandMatch",
+            task_refinement_index,
+        )
+        execution_index = source.index("if (commandMatch)", safe_fallback_index)
+
+        # The lifecycle deferral branch must remain the first decision in
+        # command selection. Phase 20O may refine a safe mark-task-done match
+        # afterward, but no exact or natural task command may bypass deferral.
+        self.assertLess(command_match_index, deferred_null_index)
+        self.assertLess(deferred_null_index, task_refinement_index)
+        self.assertLess(task_refinement_index, safe_fallback_index)
+        self.assertLess(safe_fallback_index, execution_index)
+
         self.assertRegex(
             source,
             re.compile(
                 r"const commandMatch\s*=\s*deferredSemanticFocusLifecycleMessage\s*"
-                r"\? null\s*:\s*parsedCommandMatch\s*\?\?\s*"
-                r"naturalTaskCompletionCommandMatch;"
+                r"\? null\s*:"
             ),
         )
 
     def test_direct_focus_completion_cannot_fall_into_interpreter(self) -> None:
         source = APP.read_text(encoding="utf-8")
         semantic_index = source.index(
-            "const semanticFocusLifecycle =\n      semanticLifecyclePreflightBeforeCommandRouting"
+            "const semanticFocusLifecycle =\n"
+            "      semanticLifecyclePreflightBeforeCommandRouting"
         )
         interpreter_index = source.index(
             "const interpretedCommand = await interpretCommandIntent(trimmed);"
         )
+
         self.assertLess(semantic_index, interpreter_index)
         self.assertIn("if (deferredSemanticFocusLifecycleMessage)", source)
 

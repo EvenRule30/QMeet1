@@ -20,7 +20,12 @@ import {
   resolveTaskCompletionPreviewTargets,
 } from './lib/taskCompletionPreview';
 import { resolveNaturalFocusTaskCompletionTarget } from './lib/naturalTaskCompletion';
+import {
+  completeConfirmedTaskTargets,
+  type ConfirmedTaskTarget,
+} from './lib/confirmedTaskCompletion';
 import { reconcileCanonicalFocusProjection } from './lib/canonicalFocusProjection';
+import { applyVerifiedFocusProjection } from './lib/nativeFocusLifecycle';
 import {
   recordVerifiedFocusTaskProgress,
   type FocusTaskProgressResult,
@@ -221,6 +226,7 @@ export default function App() {
   const [lastInterpreterConfidence, setLastInterpreterConfidence] = useState<number | null>(null);
   const [lastInterpreterReason, setLastInterpreterReason] = useState('No interpreter request has run yet.');
   const [pendingInterpreterCommand, setPendingInterpreterCommand] = useState<PendingInterpreterCommand | null>(null);
+  const pendingTaskCompletionTargetsRef = useRef<ConfirmedTaskTarget[]>([]);
   const orbAreaRef = useRef<HTMLDivElement | null>(null);
   const {
     listeningTranscript,
@@ -240,6 +246,7 @@ export default function App() {
     setShowThinkingBubble(false);
     setActivePanel('none');
     setPendingInterpreterCommand(null);
+    pendingTaskCompletionTargetsRef.current = [];
     clearResultToasts();
     setChatActive(false);
     clearMessages();
@@ -284,7 +291,7 @@ export default function App() {
     await sendStreamingChat(messageText, visibleUserText);
   }, [sendStreamingChat]);
 
-  const handleSend = useCallback(async (text: string, displayText?: string, commandRoute: CommandRoute = 'exact', forcedCommandMatch?: CommandMatch) => {
+  const handleSend = useCallback(async (text: string, displayText?: string, commandRoute: CommandRoute = 'exact', forcedCommandMatch?: CommandMatch, confirmedTaskTargets: ConfirmedTaskTarget[] = []) => {
     const trimmed = text.trim();
     if (!trimmed) return;
     const visibleUserText = (displayText ?? trimmed).trim() || trimmed;
@@ -297,18 +304,38 @@ export default function App() {
     if (pendingInterpreterCommand) {
           if (isConfirmingPendingCommand(trimmed)) {
             const commandToRun = pendingInterpreterCommand;
+            const resolvedTaskTargets = pendingTaskCompletionTargetsRef.current;
             setPendingInterpreterCommand(null);
+            pendingTaskCompletionTargetsRef.current = [];
             setLastInputRoute('Confirmed fuzzy interpreter command');
             setLastInterpreterAction(commandToRun.action);
             setLastInterpreterFrontendCommand(commandToRun.frontendCommand);
             setLastInterpreterConfidence(commandToRun.confidence);
             setLastInterpreterReason(commandToRun.reason || 'User confirmed a pending destructive command.');
-            return handleSend(commandToRun.frontendCommand, visibleUserText, 'confirmed');
+            const confirmedTaskCommandMatch: CommandMatch | undefined =
+              commandToRun.action === 'mark-task-done' &&
+              resolvedTaskTargets.length > 0
+                ? {
+                    command: 'mark-task-done',
+                    confirmation: 'Marked task done.',
+                    payload: resolvedTaskTargets
+                      .map((task) => task.title)
+                      .join('; '),
+                  }
+                : undefined;
+            return handleSend(
+              commandToRun.frontendCommand,
+              visibleUserText,
+              'confirmed',
+              confirmedTaskCommandMatch,
+              resolvedTaskTargets,
+            );
           }
           if (isRejectingPendingCommand(trimmed)) {
             finishListening();
             setShowThinkingBubble(false);
             setPendingInterpreterCommand(null);
+            pendingTaskCompletionTargetsRef.current = [];
             setLastInputRoute('Cancelled pending command');
             setLastLocalCommand('Pending command cancelled');
             setLastInterpreterReason(`User cancelled pending command: ${pendingInterpreterCommand.frontendCommand}.`);
@@ -324,6 +351,7 @@ export default function App() {
             return;
           }
           setPendingInterpreterCommand(null);
+          pendingTaskCompletionTargetsRef.current = [];
         }
     const routingActiveSession =
       !forcedCommandMatch && commandRoute === 'exact'
@@ -349,10 +377,12 @@ export default function App() {
       );
     }
     const parsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);
+    const naturalTaskCompletionEligible =
+      !parsedCommandMatch || parsedCommandMatch.command === 'mark-task-done';
     const naturalTaskCompletionTarget =
       !forcedCommandMatch &&
       commandRoute === 'exact' &&
-      !parsedCommandMatch
+      naturalTaskCompletionEligible
         ? resolveNaturalFocusTaskCompletionTarget(
             trimmed,
             memoryTasks,
@@ -406,7 +436,10 @@ export default function App() {
       Boolean(deferredExactFocusLifecycleMatch);
     const commandMatch = deferredSemanticFocusLifecycleMessage
       ? null
-      : parsedCommandMatch ?? naturalTaskCompletionCommandMatch;
+      : naturalTaskCompletionCommandMatch &&
+          parsedCommandMatch?.command === 'mark-task-done'
+        ? naturalTaskCompletionCommandMatch
+        : parsedCommandMatch ?? naturalTaskCompletionCommandMatch;
     if (commandMatch) {
       if (commandRoute === 'exact') {
         const requiresExactConfirmation =
@@ -432,6 +465,9 @@ export default function App() {
       const previousLastLocalCommand = lastLocalCommand;
       setLastLocalCommand(commandMatch.command);
       setPendingInterpreterCommand(null);
+      if (commandRoute !== 'confirmed') {
+        pendingTaskCompletionTargetsRef.current = [];
+      }
       setLastInputRoute(
         naturalTaskCompletionTarget && commandRoute === 'exact'
           ? 'Natural Focus task completion'
@@ -460,6 +496,7 @@ export default function App() {
         if (targetTitle) {
           const frontendCommand = `add event ${targetView} at ${targetTime} called ${targetTitle}`;
           const confirmationPrompt = `I understood that as: create a Google Calendar event ${targetView} at ${targetTime}: ${targetTitle}. Say "confirm" to create it, or "cancel" to stop.`;
+          pendingTaskCompletionTargetsRef.current = [];
           setPendingInterpreterCommand({
             originalText: visibleUserText,
             frontendCommand,
@@ -499,6 +536,7 @@ export default function App() {
               const frontendCommand = buildCalendarEditFrontendCommand(commandMatch.calendarEdit);
               const sourceLabel = targetEditEvent.source === 'google' ? 'Google Calendar' : 'local';
               const confirmationPrompt = `I understood that as: update ${sourceLabel} event: ${targetEditEvent.time || '—'}: ${targetEditEvent.title}. Changes: ${editDescription}. Say "confirm" to update it, or "cancel" to stop.`;
+              pendingTaskCompletionTargetsRef.current = [];
               setPendingInterpreterCommand({
                 originalText: visibleUserText,
                 frontendCommand,
@@ -526,7 +564,7 @@ export default function App() {
           ? resolveTaskCompletionPreviewTargets(
               taskCompletionTarget,
               memoryTasks,
-              activeSession,
+              routingActiveSession,
             )
           : [];
         const taskCompletionPreviewDescription =
@@ -579,6 +617,12 @@ export default function App() {
           : commandRoute === 'exact'
             ? 'Exact frontend parser matched a destructive command, so QMeet paused for confirmation.'
             : 'Command interpreter mapped the input to a destructive command, so QMeet paused for confirmation.';
+        pendingTaskCompletionTargetsRef.current = isTaskCompletionCommand
+          ? taskCompletionPreviewTargets.map((task) => ({
+              id: task.id,
+              title: task.title,
+            }))
+          : [];
         setPendingInterpreterCommand({
           originalText: visibleUserText,
           frontendCommand,
@@ -603,20 +647,58 @@ export default function App() {
         speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
         return;
       }
+      const immutableConfirmedTaskTargets =
+        commandRoute === 'confirmed' &&
+        commandMatch.command === 'mark-task-done' &&
+        confirmedTaskTargets.length > 0
+          ? confirmedTaskTargets
+              .map((target) =>
+                memoryTasks.find(
+                  (task) =>
+                    task.id === target.id &&
+                    !task.completedAt &&
+                    task.title.trim() === target.title.trim(),
+                ),
+              )
+              .filter((task): task is (typeof memoryTasks)[number] => Boolean(task))
+          : [];
+      if (
+        commandRoute === 'confirmed' &&
+        commandMatch.command === 'mark-task-done' &&
+        confirmedTaskTargets.length > 0 &&
+        immutableConfirmedTaskTargets.length !== confirmedTaskTargets.length
+      ) {
+        finishListening();
+        setShowThinkingBubble(false);
+        setLastInputRoute('Confirmed task identity changed');
+        setLastLocalCommand('Confirmed task completion not executed');
+        setLastInterpreterReason(
+          'The task identity changed after confirmation was requested, so QMeet refused to re-resolve a different task.',
+        );
+        const assistantMsg = createAssistantMessage(
+          now,
+          'The task changed or is no longer open, so I did not complete a different task. Please ask me to complete it again.',
+        );
+        setMessages((prev) => [...prev, userMsg, assistantMsg]);
+        speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+        return;
+      }
       const confirmedFocusTaskTargets =
         commandRoute === 'confirmed' &&
         commandMatch.command === 'mark-task-done' &&
         routingActiveSession
-          ? resolveTaskCompletionPreviewTargets(
-              commandMatch.payload?.trim() ?? '',
-              memoryTasks,
-              routingActiveSession,
+          ? (immutableConfirmedTaskTargets.length > 0
+              ? immutableConfirmedTaskTargets
+              : resolveTaskCompletionPreviewTargets(
+                  commandMatch.payload?.trim() ?? '',
+                  memoryTasks,
+                  routingActiveSession,
+                )
             ).filter((task) =>
               routingActiveSession.linkedTaskIds.includes(task.id),
             )
           : [];
       let focusTaskProgressResult: FocusTaskProgressResult | null = null;
-      let focusTaskProgressWarning = '';
       if (routingActiveSession && confirmedFocusTaskTargets.length > 0) {
         const completedAt = new Date().toISOString();
         try {
@@ -630,11 +712,28 @@ export default function App() {
           );
         } catch (error) {
           console.warn(
-            'Linked task was completed, but canonical Focus progress could not be verified.',
+            'Linked Focus task completion was not committed because canonical progress could not be verified.',
             error,
           );
-          focusTaskProgressWarning =
-            'The task was completed, but canonical Focus progress could not be verified.';
+          finishListening();
+          setShowThinkingBubble(false);
+          setLastInputRoute('Linked Focus task completion not committed');
+          setLastLocalCommand('Confirmed Focus task completion not executed');
+          setLastInterpreterReason(
+            'Canonical Focus task progress did not verify, so the confirmed linked task was left open locally.',
+          );
+          const assistantMsg = createAssistantMessage(
+            now,
+            'I could not verify the linked Focus task completion, so no task was changed. Make sure the QMeet backend is running and try again.',
+          );
+          setMessages((prev) => [...prev, userMsg, assistantMsg]);
+          pushResultToast({
+            kind: 'warning',
+            title: 'Task unchanged',
+            detail: 'Canonical Focus progress could not be verified.',
+          });
+          speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+          return;
         }
       }
       let confirmationContent =
@@ -645,6 +744,37 @@ export default function App() {
       let confirmationSpeechRate = speechRate;
       let replaceMessages = false;
       let speechConfirmationContent = getBriefToolSpeech(commandMatch.command, confirmationContent);
+      const verifiedCompletedAtByTaskId = new Map(
+        (focusTaskProgressResult?.tasks ?? []).map((task) => [
+          task.id,
+          task.completedAt,
+        ]),
+      );
+      const confirmedTaskCompletionResult =
+        commandRoute === 'confirmed' &&
+        commandMatch.command === 'mark-task-done' &&
+        confirmedTaskTargets.length > 0
+          ? completeConfirmedTaskTargets(
+              memoryTasks,
+              confirmedTaskTargets,
+              verifiedCompletedAtByTaskId,
+            )
+          : null;
+      const confirmedTaskCommandResult: SplitCommandResult =
+        confirmedTaskCompletionResult?.ok
+          ? {
+              handled: true,
+              confirmationContent:
+                confirmedTaskCompletionResult.completedTasks.length === 1
+                  ? `Marked task done:
+- ${confirmedTaskCompletionResult.completedTasks[0].title}`
+                  : `Marked ${confirmedTaskCompletionResult.completedTasks.length} tasks done:
+${confirmedTaskCompletionResult.completedTasks
+                      .map((task, index) => `${index + 1}. ${task.title}`)
+                      .join('\n')}`,
+              shouldSpeakConfirmation: voiceOutputEnabled,
+            }
+          : { handled: false };
       const notesCommandResult: SplitCommandResult = handleNotesCommand(commandMatch, {
         voiceOutputEnabled,
         setActivePanel,
@@ -656,7 +786,9 @@ export default function App() {
       });
       const memoryCommandResult: SplitCommandResult = notesCommandResult.handled
         ? { handled: false }
-        : await handleMemoryCommand(commandMatch, {
+        : confirmedTaskCommandResult.handled
+          ? confirmedTaskCommandResult
+          : await handleMemoryCommand(commandMatch, {
             voiceOutputEnabled,
             setActivePanel,
             closePanel,
@@ -777,11 +909,6 @@ export default function App() {
             ? `Focus progress updated.\n\nNext: ${focusTaskProgressResult.nextAction}`
             : 'Focus progress updated.';
         confirmationContent = `${confirmationContent}\n\n${progressDetail}`;
-      } else if (
-        commandMatch.command === 'mark-task-done' &&
-        focusTaskProgressWarning
-      ) {
-        confirmationContent = `${confirmationContent}\n\n${focusTaskProgressWarning}`;
       }
       speechConfirmationContent = getBriefToolSpeech(commandMatch.command, confirmationContent);
       const confirmationMsg = createAssistantMessage(now, confirmationContent, 'tool');
@@ -976,6 +1103,7 @@ export default function App() {
       ) {
         finishListening();
         setShowThinkingBubble(false);
+        pendingTaskCompletionTargetsRef.current = [];
         setPendingInterpreterCommand({
           originalText: visibleUserText,
           frontendCommand: interpretedCommand.frontendCommand,
@@ -1024,6 +1152,7 @@ export default function App() {
         setLastInterpreterReason(interpretedCommand.reason || 'Interpreter confidence was below the automatic execution threshold.');
         const destructiveCommand = isDestructiveInterpreterCommand(interpretedCommand.frontendCommand);
         if (destructiveCommand) {
+          pendingTaskCompletionTargetsRef.current = [];
           setPendingInterpreterCommand({
             originalText: visibleUserText,
             frontendCommand: interpretedCommand.frontendCommand,
@@ -1059,6 +1188,38 @@ export default function App() {
     }
     await sendNormalChat(trimmed, visibleUserText);
   }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveMemoryTask, memoryTasks, activeSession, reconcileFocusProjection, markMemoryTaskDone, clearCompletedTasks, getMemoryReadout, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, deleteCalendarEventByCriteria, findCalendarEventForDeletion, findCalendarEventForChange, getNextCalendarEventForDeletion, getNextCalendarEventForChange, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, runWebSearch, clearSearchState, searchError, pushResultToast, addRecentAction, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents, sendNormalChat]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const handleLegacyFocusEndRequest = (event: Event) => {
+      const detail = (event as CustomEvent<{ action?: unknown }>).detail;
+      if (detail?.action !== 'end') return;
+
+      // MemoryOverlay still clears the legacy local projection before it emits
+      // this UI-intent event. Restore the verified projection captured by App
+      // before routing so readVerifiedFocusProjection() cannot observe a false
+      // "no active Focus" state during the native terminal guard. handleSend
+      // immediately reconciles this projection against canonical /api/focus/state.
+      if (activeSession) {
+        applyVerifiedFocusProjection(activeSession);
+      }
+      setActivePanel('none');
+      void handleSend('end focus anyway', 'End focus');
+    };
+
+    window.addEventListener(
+      'qmeet-active-session-command',
+      handleLegacyFocusEndRequest as EventListener,
+    );
+    return () => {
+      window.removeEventListener(
+        'qmeet-active-session-command',
+        handleLegacyFocusEndRequest as EventListener,
+      );
+    };
+  }, [activeSession, handleSend]);
+
   const handleOrbClick = useCallback(() => {
     // If QMeet is actively generating/streaming, tapping the orb should cancel
     // that response instead of starting a new listening session.

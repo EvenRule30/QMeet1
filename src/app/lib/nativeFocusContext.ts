@@ -16,6 +16,7 @@ export type NativeFocusContextState = {
   title: string;
   objective: string;
   status: 'clarifying' | 'active' | 'waiting' | 'ready';
+  stakeholders?: string[];
   requirements: string[];
   constraints: string[];
   preferences: string[];
@@ -99,6 +100,7 @@ function normalizeContextState(value: unknown): NativeFocusContextState | null {
   const title = normalizeText(record.title);
   const objective = normalizeText(record.objective);
   const status = record.status;
+  const stakeholders = normalizeStringList(record.stakeholders) ?? [];
   const requirements = normalizeStringList(record.requirements);
   const constraints = normalizeStringList(record.constraints);
   const preferences = normalizeStringList(record.preferences);
@@ -123,6 +125,7 @@ function normalizeContextState(value: unknown): NativeFocusContextState | null {
     title,
     objective,
     status: status as NativeFocusContextState['status'],
+    stakeholders,
     requirements,
     constraints,
     preferences,
@@ -356,6 +359,7 @@ export function appendNativeFocusContextToSummary(
   context: NativeFocusContextState,
 ): string {
   const sections = [
+    section('Stakeholders', context.stakeholders ?? []),
     section('Requirements', context.requirements),
     section('Constraints', context.constraints),
     section('Preferences', context.preferences),
@@ -365,26 +369,68 @@ export function appendNativeFocusContextToSummary(
   if (sections.length === 0) return summary.trim();
   return `${summary.trim()}\n\nFocus context:\n\n${sections.join('\n\n')}`;
 }
+function compactContextTaskSubject(value: string, fallback: string): string {
+  const cleaned = normalizeText(value);
+  if (!cleaned) return fallback;
+  return cleaned.length > 96 ? `${cleaned.slice(0, 93).trim()}...` : cleaned;
+}
+
+function uniqueContextTaskTitles(titles: string[]): string[] {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const title of titles) {
+    const cleaned = normalizeText(title);
+    if (!cleaned) continue;
+    const key = cleaned.toLocaleLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(cleaned);
+  }
+  return unique;
+}
+
 export function buildNativeFocusContextTaskTitles(
   context: NativeFocusContextState,
 ): string[] {
-  const titles: string[] = [];
-  for (const value of context.constraints) {
-    titles.push(`Check the plan against this constraint: ${value}`);
+  const target = compactContextTaskSubject(context.objective, 'the Focus result');
+  const groups: string[][] = [
+    context.constraints.map(
+      (value) => `Check the plan against this constraint: ${value}`,
+    ),
+    context.requirements.map(
+      (value) => `Make sure the result includes: ${value}`,
+    ),
+    (context.stakeholders ?? []).map(
+      (value) => `Tailor the result to the Focus audience: ${value}`,
+    ),
+    context.decisions.map(
+      (value) => `Carry out the decision: ${value}`,
+    ),
+    context.preferences.map(
+      (value) => `Find an option that matches this preference: ${value}`,
+    ),
+    context.knownFacts.map(
+      (value) => `Use this known detail in the plan: ${value}`,
+    ),
+  ];
+
+  const selected: string[] = [];
+  // Prefer breadth across canonical context types before taking a second item
+  // from one category. This keeps the five-task Focus list useful rather than
+  // mechanically creating a task for every stored context value.
+  for (let itemIndex = 0; selected.length < 3; itemIndex += 1) {
+    let addedAtThisDepth = false;
+    for (const group of groups) {
+      const candidate = group[itemIndex];
+      if (!candidate) continue;
+      selected.push(candidate);
+      addedAtThisDepth = true;
+      if (selected.length >= 3) break;
+    }
+    if (!addedAtThisDepth) break;
   }
-  for (const value of context.requirements) {
-    titles.push(`Make sure the result includes: ${value}`);
-  }
-  for (const value of context.preferences) {
-    titles.push(`Find an option that matches this preference: ${value}`);
-  }
-  for (const value of context.knownFacts) {
-    titles.push(`Use this known detail in the plan: ${value}`);
-  }
-  for (const value of context.decisions) {
-    titles.push(`Carry out the decision: ${value}`);
-  }
-  return titles;
+
+  return uniqueContextTaskTitles(selected).slice(0, 3);
 }
 export function describeNativeFocusContextFailure(error: unknown): string {
   const detail =
