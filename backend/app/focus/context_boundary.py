@@ -33,7 +33,6 @@ def _has_explicit_lifecycle_language(message: str) -> bool:
     text = _normalized(message)
     if not text:
         return False
-
     if re.search(
         r"\b(?:start|begin|create|open|resume|restart|end|stop|finish|complete|"
         r"rename|retitle|replace|switch|move|change|update|set|clear|remove|make)\b"
@@ -96,10 +95,57 @@ def _availability_value(message: str) -> str:
     return ""
 
 
+def _referential_constraint_replacement(message: str) -> str:
+    """Return a clearly constraint-like replacement from a terse correction.
+
+    Phase 20W1 keeps this deliberately narrow. Referential wording such as
+    ``make that Thursday`` is only treated as durable constraint context when
+    the replacement itself is an unmistakable date/time or money value. This
+    prevents generic corrections such as ``make that blue`` from guessing a
+    Focus field or superseding unrelated context.
+    """
+
+    text = _clean(message)
+    match = re.match(
+        r"^(?:(?:actually|instead|rather|correction|correcting)\b[\s,:-]*)?"
+        r"(?:change|make|update|revise)\s+that(?:\s+to)?\s+(.+)$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return ""
+
+    replacement = _clean(match.group(1))
+    normalized = replacement.casefold()
+    if not normalized:
+        return ""
+
+    date_or_time = re.search(
+        r"\b(?:today|tomorrow|tonight|"
+        r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+        r"january|february|march|april|may|june|july|august|september|"
+        r"october|november|december)\b|"
+        r"\b\d{4}-\d{1,2}-\d{1,2}\b|"
+        r"\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b|"
+        r"\b\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)\b",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    money = re.search(
+        r"(?:[$£€]\s*\d)|"
+        r"\b\d+(?:[.,]\d+)?\s*(?:dollars?|usd|eur|euros?|gbp|pounds?)\b",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    return replacement if date_or_time or money else ""
+
+
 def _looks_like_constraint(message: str) -> bool:
     text = _normalized(message)
     if not text:
         return False
+    if _referential_constraint_replacement(message):
+        return True
     return bool(
         re.search(
             r"\b(?:under|below|within|at most|no more than|less than|maximum|max|"
@@ -132,6 +178,11 @@ def _requirement_value(message: str) -> str:
         r"^(?:it|this|the\s+result|the\s+plan)\s+(?:needs|has)\s+to\s+(.+)$",
         r"^(?:a|one)\s+requirement\s+is\s+(.+)$",
         r"^(?:we|i)\s+need\s+(?:it|this|the\s+result|the\s+plan)\s+to\s+(.+)$",
+        # Phase 20W2: an active-Focus work requirement such as
+        # "I need to practice behavioral questions" is durable context, not a
+        # request to rename the Focus. Explicit lifecycle wording is rejected
+        # earlier by _has_explicit_lifecycle_language().
+        r"^(?:we|i)\s+need\s+to\s+(.+)$",
         r"^must\s+(.+)$",
     ]
     for pattern in patterns:
@@ -152,7 +203,6 @@ def classify_focus_context(message: str) -> FocusContextSignal | None:
     cleaned = _clean(message)
     if not cleaned or _has_explicit_lifecycle_language(cleaned):
         return None
-
     decision = _decision_value(cleaned)
     if decision:
         return FocusContextSignal("decisions", decision)
@@ -168,12 +218,17 @@ def classify_focus_context(message: str) -> FocusContextSignal | None:
     preference = _preference_value(cleaned)
     if preference:
         return FocusContextSignal("preferences", preference)
-
     if _looks_like_constraint(cleaned):
         return FocusContextSignal("constraints", cleaned)
 
     fact_patterns = [
-        r"^(?:the|our|my)\s+(?:trip|project|meeting|deadline|date|schedule|budget)\s+(?:is|has|starts|ends)\s+.+$",
+        # Phase 20W2: common work-context nouns that users naturally answer
+        # coaching questions with. These are durable facts, not lifecycle edits.
+        r"^(?:the|our|my)\s+(?:trip|project|meeting|presentation|interview|review|deadline|date|schedule|budget|audience|client|role|position)\s+(?:is|has|starts|ends|includes|involves)\s+.+$",
+        # Short pronoun answers are common after a Focus coaching question:
+        # "it's with three people" / "it's for a product role". Preserve the
+        # user's wording so question-answer matching can use the semantic tokens.
+        r"^(?:it\s+is|it's)\s+(?:with|for)\s+.+$",
         r"^(?:we|i)\s+already\s+have\s+.+$",
         r"^(?:the|our|my)\s+dates?\s+(?:are|is)\s+.+$",
     ]
