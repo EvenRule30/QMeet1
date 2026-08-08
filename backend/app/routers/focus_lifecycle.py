@@ -11,7 +11,6 @@ from app.focus.context import (
     add_focus_context_verified,
     get_native_focus_context_health,
 )
-
 from fastapi import APIRouter, HTTPException
 from app.focus.calendar_prep import (
     NativeCalendarFocusPrepError,
@@ -35,6 +34,9 @@ from app.focus.lifecycle import (
     resume_focus_verified,
     start_focus_verified,
     update_focus_verified,
+)
+from app.focus.pending_question_resolution import (
+    resolve_pending_question_after_verified_update,
 )
 from app.focus.summary import (
     NativeFocusSummaryError,
@@ -155,6 +157,7 @@ async def update_native_focus(
 ) -> NativeFocusUpdateResult:
     try:
         result = update_focus_verified(request)
+        result = resolve_pending_question_after_verified_update(request, result)
     except NativeFocusLifecycleError as exc:
         _raise_lifecycle_error(exc)
     if not result.verified:

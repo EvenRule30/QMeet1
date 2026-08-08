@@ -71,13 +71,13 @@ class FocusContextHygienePhase20LTests(unittest.TestCase):
             ],
         )
 
-    def test_generic_success_question_accepts_preference_not_availability_fact(self) -> None:
+    def test_generic_success_question_requires_explicit_outcome_language(self) -> None:
         question = PendingQuestion(
             target="follow_up",
             question="What would make this trip a real success for you?",
             askedAt="2026-08-06T15:11:56-07:00",
         )
-        self.assertTrue(
+        self.assertFalse(
             question_answered_by_context(
                 question,
                 field="preferences",
@@ -112,7 +112,7 @@ class FocusContextHygienePhase20LTests(unittest.TestCase):
         self.assertIn("Boolean(canonicalValue)", client)
         self.assertIn("containsExact(contextValues, canonicalValue)", client)
 
-    def test_verified_context_reuses_semantic_fact_and_clears_answered_question(self) -> None:
+    def test_verified_context_reuses_semantic_fact_and_only_clears_explicit_answer(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             focus_file = Path(temp_dir) / "focus.json"
             health_file = Path(temp_dir) / "context-health.json"
@@ -171,7 +171,7 @@ class FocusContextHygienePhase20LTests(unittest.TestCase):
                     source="phase20l-test",
                 )
 
-                result = add_focus_context_verified(
+                preference = add_focus_context_verified(
                     NativeFocusContextRequest(
                         expectedFocusId=started.focusId,
                         expectedObjective=started.objective,
@@ -181,17 +181,40 @@ class FocusContextHygienePhase20LTests(unittest.TestCase):
                     )
                 )
                 state = store.get_state()
-
-                self.assertTrue(result.verified)
+                self.assertTrue(preference.verified)
                 self.assertEqual(state.objective, started.objective)
                 self.assertEqual(state.preferences, ["somewhere warm"])
                 self.assertEqual(state.knownFacts, ["A warm destination was found."])
+                self.assertIsNotNone(state.pendingQuestion)
+                self.assertEqual(
+                    state.pendingQuestion.question,
+                    "What would make this trip a real success for you?",
+                )
+                self.assertNotIn(
+                    "Answered the current Focus question",
+                    preference.message,
+                )
+
+                explicit_answer = add_focus_context_verified(
+                    NativeFocusContextRequest(
+                        expectedFocusId=started.focusId,
+                        expectedObjective=started.objective,
+                        field="knownFacts",
+                        value="A successful trip means relaxing on the beach",
+                        sourceTurnId="phase20l-explicit-answer",
+                    )
+                )
+                state = store.get_state()
+                self.assertTrue(explicit_answer.verified)
                 self.assertIsNone(state.pendingQuestion)
                 self.assertNotEqual(
                     state.nextAction,
                     "What would make this trip a real success for you?",
                 )
-                self.assertIn("Answered the current Focus question", result.message)
+                self.assertIn(
+                    "Answered the current Focus question",
+                    explicit_answer.message,
+                )
 
                 reused = add_focus_context_verified(
                     NativeFocusContextRequest(
@@ -212,9 +235,11 @@ class FocusContextHygienePhase20LTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     store.get_state().knownFacts,
-                    ["A warm destination was found."],
+                    [
+                        "A warm destination was found.",
+                        "A successful trip means relaxing on the beach",
+                    ],
                 )
-
                 retried = add_focus_context_verified(
                     NativeFocusContextRequest(
                         expectedFocusId=started.focusId,

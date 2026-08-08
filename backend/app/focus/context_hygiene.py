@@ -437,6 +437,27 @@ def _question_is_generic_outcome(question: str) -> bool:
     return bool(tokens & _GENERIC_OUTCOME_WORDS)
 
 
+def question_answered_by_focus_update(
+    pending_question: PendingQuestion | None,
+    *,
+    field: Literal["objective", "title", "mode"],
+    value: str,
+) -> bool:
+    """Return whether an explicit lifecycle update resolves the pending question.
+
+    Phase 20W3 keeps this deliberately narrow. A non-empty objective update is
+    authoritative for a generic success/outcome question. Title and mode edits
+    never clear coaching questions, and specific questions remain owned by their
+    normal context-answer path.
+    """
+    if pending_question is None or field != "objective":
+        return False
+    if not _clean_text(value):
+        return False
+    question = _clean_text(pending_question.question)
+    return bool(question) and _question_is_generic_outcome(question)
+
+
 def question_answered_by_context(
     pending_question: PendingQuestion | None,
     *,
@@ -461,7 +482,11 @@ def question_answered_by_context(
         return True
 
     if _question_is_generic_outcome(question):
-        return field in {"requirements", "preferences", "decisions"}
+        # Phase 20W3: field type is not evidence that the user answered a
+        # success/outcome question. Only explicit outcome language above, or a
+        # verified objective update via question_answered_by_focus_update(), may
+        # clear this generic coaching question.
+        return False
     question_tokens = set(semantic_tokens(question)) - _QUESTION_WORDS
     if not question_tokens:
         return False
