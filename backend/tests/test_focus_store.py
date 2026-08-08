@@ -6,7 +6,6 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-
 from app.focus.models import (
     FocusEventType,
     FocusField,
@@ -45,7 +44,6 @@ from app.focus.store import (
     seed_from_legacy,
 )
 
-
 class FocusStoreTests(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary_directory = tempfile.TemporaryDirectory()
@@ -57,11 +55,9 @@ class FocusStoreTests(unittest.TestCase):
         )
         self._environment_patch.start()
         reset_store()
-
     def tearDown(self) -> None:
         self._environment_patch.stop()
         self._temporary_directory.cleanup()
-
     def test_start_focus_and_apply_structured_updates(self) -> None:
         plan = TurnPlan(
             route=TurnRoute.FOCUS_ACTION,
@@ -89,14 +85,12 @@ class FocusStoreTests(unittest.TestCase):
             confidence=0.97,
             reason="The user started a concrete purchasing focus.",
         )
-
         state = apply_turn_plan(
             plan,
             message="Help me buy a machine-learning laptop under $4,000.",
             turn_id="turn-start-focus",
             source="unit-test",
         )
-
         self.assertTrue(state.focusId.startswith("focus-"))
         self.assertEqual(state.title, "Choose a machine-learning laptop")
         self.assertEqual(
@@ -109,7 +103,6 @@ class FocusStoreTests(unittest.TestCase):
         self.assertIsNotNone(state.pendingQuestion)
         self.assertEqual(state.pendingQuestion.target, "brandPreference")
         self.assertEqual(state.lastTurnId, "turn-start-focus")
-
     def test_duplicate_turn_id_is_idempotent(self) -> None:
         plan = TurnPlan(
             route=TurnRoute.FOCUS_ACTION,
@@ -127,7 +120,6 @@ class FocusStoreTests(unittest.TestCase):
             ],
             confidence=0.9,
         )
-
         first_state = apply_turn_plan(
             plan,
             message="Help me sell my motorcycle.",
@@ -142,11 +134,9 @@ class FocusStoreTests(unittest.TestCase):
             turn_id="turn-idempotent",
             source="unit-test",
         )
-
         self.assertEqual(event_count(), count_after_first_apply)
         self.assertEqual(first_state.model_dump(), second_state.model_dump())
         self.assertEqual(second_state.milestones.count("Draft the listing"), 1)
-
     def test_tool_result_records_knowledge_and_restores_prior_status(self) -> None:
         plan = TurnPlan(
             route=TurnRoute.TOOL,
@@ -165,7 +155,6 @@ class FocusStoreTests(unittest.TestCase):
             ],
             confidence=0.95,
         )
-
         waiting_state = apply_turn_plan(
             plan,
             message="Compare reputable machine-learning laptops.",
@@ -176,7 +165,6 @@ class FocusStoreTests(unittest.TestCase):
         self.assertEqual(waiting_state.status, FocusStatus.WAITING)
         self.assertIsNotNone(waiting_state.pendingAction)
         self.assertEqual(waiting_state.pendingAction.kind, ToolName.SEARCH.value)
-
         completed_state = record_tool_result(
             tool=ToolName.SEARCH,
             success=True,
@@ -185,7 +173,6 @@ class FocusStoreTests(unittest.TestCase):
             source_turn_id="turn-search",
             source="unit-test",
         )
-
         self.assertEqual(completed_state.status, FocusStatus.CLARIFYING)
         self.assertIsNone(completed_state.pendingAction)
         self.assertIn(
@@ -197,7 +184,6 @@ class FocusStoreTests(unittest.TestCase):
             completed_state.completedMilestones,
         )
         self.assertEqual(get_state().model_dump(), completed_state.model_dump())
-
     def test_legacy_import_persists_generated_focus_id(self) -> None:
         state = seed_from_legacy(
             LegacyFocusSeed(
@@ -210,7 +196,6 @@ class FocusStoreTests(unittest.TestCase):
         events = list_events()
         self.assertEqual(len(events), 1)
         imported = events[0]
-
         self.assertEqual(imported.type, FocusEventType.LEGACY_IMPORTED)
         self.assertTrue(imported.focusId.startswith("focus-"))
         self.assertEqual(imported.payload["focusId"], imported.focusId)
@@ -220,7 +205,6 @@ class FocusStoreTests(unittest.TestCase):
         replay_two = reduce_events(events)
         self.assertEqual(replay_one.model_dump(), replay_two.model_dump())
         self.assertEqual(replay_one.focusId, imported.focusId)
-
     def test_end_then_start_uses_distinct_focus_ids(self) -> None:
         old_state = apply_turn_plan(
             TurnPlan(
@@ -238,7 +222,6 @@ class FocusStoreTests(unittest.TestCase):
             source="unit-test",
         )
         old_focus_id = old_state.focusId
-
         new_state = apply_turn_plan(
             TurnPlan(
                 route=TurnRoute.FOCUS_ACTION,
@@ -261,7 +244,6 @@ class FocusStoreTests(unittest.TestCase):
             turn_id="turn-switch-focus",
             source="unit-test",
         )
-
         switch_events = [
             event
             for event in list_events()
@@ -273,7 +255,6 @@ class FocusStoreTests(unittest.TestCase):
             for event in switch_events
             if event.type == FocusEventType.FOCUS_ENDED
         ]
-
         self.assertEqual(len(ended_events), 1)
         self.assertNotEqual(new_state.focusId, old_focus_id)
         self.assertEqual(
@@ -292,7 +273,6 @@ class FocusStoreTests(unittest.TestCase):
             by_type[FocusEventType.TOOL_REQUESTED].focusId,
             new_state.focusId,
         )
-
     def test_starting_new_focus_implicitly_ends_open_focus(self) -> None:
         old_state = apply_turn_plan(
             TurnPlan(
@@ -310,7 +290,6 @@ class FocusStoreTests(unittest.TestCase):
             source="unit-test",
         )
         old_focus_id = old_state.focusId
-
         new_state = apply_turn_plan(
             TurnPlan(
                 route=TurnRoute.FOCUS_ACTION,
@@ -330,7 +309,6 @@ class FocusStoreTests(unittest.TestCase):
             turn_id="turn-new-focus-without-explicit-end",
             source="unit-test",
         )
-
         switch_events = [
             event
             for event in list_events()
@@ -347,7 +325,6 @@ class FocusStoreTests(unittest.TestCase):
             for event in switch_events
             if event.type == FocusEventType.FOCUS_STARTED
         )
-
         self.assertNotEqual(new_state.focusId, old_focus_id)
         self.assertEqual(ended_event.focusId, old_focus_id)
         self.assertEqual(ended_event.payload["newFocusId"], new_state.focusId)
@@ -357,7 +334,6 @@ class FocusStoreTests(unittest.TestCase):
             event_types.index(FocusEventType.FOCUS_STARTED),
         )
         self.assertIsNotNone(new_state.pendingQuestion)
-
     def test_response_question_is_persisted_when_operation_is_missing(self) -> None:
         state = apply_turn_plan(
             TurnPlan(
@@ -380,13 +356,11 @@ class FocusStoreTests(unittest.TestCase):
             turn_id="turn-follow-up-question",
             source="unit-test",
         )
-
         question_events = [
             event
             for event in list_events()
             if event.type == FocusEventType.QUESTION_SET
         ]
-
         self.assertEqual(len(question_events), 1)
         self.assertEqual(question_events[0].focusId, state.focusId)
         self.assertEqual(question_events[0].payload["target"], "follow_up")
@@ -396,7 +370,6 @@ class FocusStoreTests(unittest.TestCase):
             "What are the main goals for this next phase?",
         )
         self.assertEqual(state.status, FocusStatus.CLARIFYING)
-
     def test_explicit_pending_question_is_not_duplicated(self) -> None:
         apply_turn_plan(
             TurnPlan(
@@ -422,7 +395,6 @@ class FocusStoreTests(unittest.TestCase):
             turn_id="turn-explicit-question",
             source="unit-test",
         )
-
         question_events = [
             event
             for event in list_events()
@@ -430,7 +402,6 @@ class FocusStoreTests(unittest.TestCase):
         ]
         self.assertEqual(len(question_events), 1)
         self.assertEqual(question_events[0].payload["target"], "priority")
-
 
     def test_one_off_tool_result_is_logged_without_active_focus(self) -> None:
         apply_turn_plan(
@@ -448,7 +419,6 @@ class FocusStoreTests(unittest.TestCase):
             turn_id="turn-one-off-search",
             source="unit-test",
         )
-
         state = record_tool_result(
             tool=ToolName.SEARCH,
             success=True,
@@ -463,7 +433,6 @@ class FocusStoreTests(unittest.TestCase):
             for event in list_events()
             if event.sourceTurnId == "turn-one-off-search"
         ]
-
         self.assertEqual(
             [event.type for event in turn_events],
             [
@@ -474,9 +443,6 @@ class FocusStoreTests(unittest.TestCase):
         )
         self.assertEqual(turn_events[-1].focusId, "")
         self.assertEqual(state.status, FocusStatus.INACTIVE)
-
-
-
 
     def test_transient_search_policy_suppresses_erroneous_focus_start(self) -> None:
         original_state = apply_turn_plan(
@@ -494,7 +460,6 @@ class FocusStoreTests(unittest.TestCase):
             turn_id="turn-car-before-bad-search-plan",
             source="unit-test",
         )
-
         state_after_bad_plan = apply_turn_plan(
             TurnPlan(
                 route=TurnRoute.TOOL,
@@ -521,13 +486,11 @@ class FocusStoreTests(unittest.TestCase):
             turn_id="turn-bad-search-plan",
             source="search-request-shadow",
         )
-
         turn_events = [
             event
             for event in list_events()
             if event.sourceTurnId == "turn-bad-search-plan"
         ]
-
         self.assertEqual(
             [event.type for event in turn_events],
             [
@@ -547,7 +510,6 @@ class FocusStoreTests(unittest.TestCase):
         )
         self.assertEqual(state_after_bad_plan.model_dump(), original_state.model_dump())
 
-
     def test_transient_search_does_not_mutate_unrelated_active_focus(self) -> None:
         original_state = apply_turn_plan(
             TurnPlan(
@@ -564,7 +526,6 @@ class FocusStoreTests(unittest.TestCase):
             turn_id="turn-car-before-transient-search",
             source="unit-test",
         )
-
         apply_turn_plan(
             TurnPlan(
                 route=TurnRoute.TOOL,
@@ -580,7 +541,6 @@ class FocusStoreTests(unittest.TestCase):
             turn_id="turn-transient-dog-search",
             source="search-request-shadow",
         )
-
         completed_state = record_tool_result(
             tool=ToolName.SEARCH,
             success=True,
@@ -594,7 +554,6 @@ class FocusStoreTests(unittest.TestCase):
             for event in list_events()
             if event.sourceTurnId == "turn-transient-dog-search"
         ]
-
         self.assertEqual(
             [event.type for event in turn_events],
             [
@@ -606,7 +565,6 @@ class FocusStoreTests(unittest.TestCase):
         self.assertTrue(all(event.focusId == "" for event in turn_events))
         self.assertFalse(turn_events[1].payload["attachToFocus"])
         self.assertEqual(completed_state.model_dump(), original_state.model_dump())
-
     def test_attached_search_updates_current_focus(self) -> None:
         focus_state = apply_turn_plan(
             TurnPlan(
@@ -623,7 +581,6 @@ class FocusStoreTests(unittest.TestCase):
             turn_id="turn-laptop-focus",
             source="unit-test",
         )
-
         waiting_state = apply_turn_plan(
             TurnPlan(
                 route=TurnRoute.TOOL,
@@ -639,7 +596,6 @@ class FocusStoreTests(unittest.TestCase):
             turn_id="turn-attached-laptop-search",
             source="search-request-shadow",
         )
-
         self.assertEqual(waiting_state.focusId, focus_state.focusId)
         self.assertEqual(waiting_state.status, FocusStatus.WAITING)
         self.assertIsNotNone(waiting_state.pendingAction)
@@ -651,7 +607,6 @@ class FocusStoreTests(unittest.TestCase):
             source_turn_id="turn-attached-laptop-search",
             source="unit-test",
         )
-
         turn_events = [
             event
             for event in list_events()
@@ -674,7 +629,6 @@ class FocusStoreTests(unittest.TestCase):
             "Current RTX laptop search completed.",
             completed_state.completedMilestones,
         )
-
     def test_late_tool_result_cannot_mutate_replacement_focus(self) -> None:
         first_state = apply_turn_plan(
             TurnPlan(
@@ -699,7 +653,6 @@ class FocusStoreTests(unittest.TestCase):
             source="unit-test",
         )
         old_focus_id = first_state.focusId
-
         replacement_state = apply_turn_plan(
             TurnPlan(
                 route=TurnRoute.FOCUS_ACTION,
@@ -715,7 +668,6 @@ class FocusStoreTests(unittest.TestCase):
             turn_id="turn-replacement-focus",
             source="unit-test",
         )
-
         completed_state = record_tool_result(
             tool=ToolName.SEARCH,
             success=True,
@@ -730,7 +682,6 @@ class FocusStoreTests(unittest.TestCase):
             if event.type == FocusEventType.TOOL_COMPLETED
             and event.sourceTurnId == "turn-old-focus-search"
         )
-
         self.assertEqual(late_event.focusId, old_focus_id)
         self.assertEqual(completed_state.focusId, replacement_state.focusId)
         self.assertEqual(completed_state.title, "Plan QMeet")
@@ -742,7 +693,6 @@ class FocusStoreTests(unittest.TestCase):
             "The old laptop search completed late.",
             completed_state.knownFacts,
         )
-
 
     def test_command_side_transient_tool_does_not_touch_focus_metadata(self) -> None:
         active_state = apply_turn_plan(
@@ -761,7 +711,6 @@ class FocusStoreTests(unittest.TestCase):
             source="unit-test",
         )
         before = active_state.model_dump()
-
         after = apply_turn_plan(
             TurnPlan(
                 route=TurnRoute.TOOL,
@@ -778,9 +727,7 @@ class FocusStoreTests(unittest.TestCase):
             turn_id="turn-command-transient",
             source="command-interpret-shadow",
         )
-
         self.assertEqual(after.model_dump(), before)
-
         turn_events = [
             event
             for event in list_events()
@@ -798,7 +745,6 @@ class FocusStoreTests(unittest.TestCase):
         self.assertTrue(policy["transientTool"])
         self.assertTrue(policy["transientSearch"])
 
-
     def test_attached_search_restores_legacy_clarifying_status(self) -> None:
         legacy_state = seed_from_legacy(
             LegacyFocusSeed(
@@ -808,7 +754,6 @@ class FocusStoreTests(unittest.TestCase):
                 status=FocusStatus.CLARIFYING,
             )
         )
-
         waiting_state = apply_turn_plan(
             TurnPlan(
                 route=TurnRoute.TOOL,
@@ -824,7 +769,6 @@ class FocusStoreTests(unittest.TestCase):
             turn_id="turn-car-search-status",
             source="search-request-shadow",
         )
-
         self.assertEqual(waiting_state.status, FocusStatus.WAITING)
 
         completed_state = record_tool_result(
@@ -837,7 +781,6 @@ class FocusStoreTests(unittest.TestCase):
             source_turn_id="turn-car-search-status",
             source="unit-test",
         )
-
         self.assertEqual(completed_state.focusId, legacy_state.focusId)
         self.assertEqual(completed_state.status, FocusStatus.CLARIFYING)
         self.assertEqual(
@@ -849,9 +792,6 @@ class FocusStoreTests(unittest.TestCase):
             completed_state.knownFacts,
         )
         self.assertEqual(completed_state.completedMilestones, [])
-
-
-
     def test_legacy_pending_question_is_not_imported_as_milestone(self) -> None:
         state = seed_from_legacy(
             LegacyFocusSeed(
@@ -868,14 +808,12 @@ class FocusStoreTests(unittest.TestCase):
                 status=FocusStatus.CLARIFYING,
             )
         )
-
         self.assertIsNotNone(state.pendingQuestion)
         self.assertEqual(
             state.pendingQuestion.target,
             "starting_symptom",
         )
         self.assertEqual(state.milestones, [])
-
     def test_old_legacy_question_milestone_is_repaired_on_replay(self) -> None:
         state = seed_from_legacy(
             LegacyFocusSeed(
@@ -888,7 +826,6 @@ class FocusStoreTests(unittest.TestCase):
                 updatedAt="2026-07-23T11:27:44-07:00",
             )
         )
-
         self.assertIsNotNone(state.pendingQuestion)
         self.assertEqual(
             state.pendingQuestion.target,
@@ -899,7 +836,6 @@ class FocusStoreTests(unittest.TestCase):
             "What happens when you try to start the car—clicking or cranking?",
         )
         self.assertEqual(state.milestones, [])
-
     def test_legacy_loader_maps_open_question_to_pending_question(self) -> None:
         session = {
             "id": "legacy-car-focus",
@@ -921,10 +857,16 @@ class FocusStoreTests(unittest.TestCase):
                 "updatedAt": "2026-07-23T11:27:44-07:00",
             }
         }
-
-        with patch(
-            "app.focus.legacy._call_optional",
-            side_effect=[session, context_payload],
+        with (
+            patch.dict(
+                os.environ,
+                {"QMEET_ENABLE_LEGACY_FOCUS_BOOTSTRAP": "1"},
+                clear=False,
+            ),
+            patch(
+                "app.focus.legacy._call_optional",
+                side_effect=[session, context_payload],
+            ),
         ):
             seed = load_legacy_focus_seed()
 
@@ -935,9 +877,6 @@ class FocusStoreTests(unittest.TestCase):
             "What happens when you try to start the car?",
         )
         self.assertEqual(seed.milestones, [])
-
-
-
     def test_pending_question_becomes_canonical_next_action(self) -> None:
         state = apply_turn_plan(
             TurnPlan(
@@ -962,14 +901,12 @@ class FocusStoreTests(unittest.TestCase):
             turn_id="turn-question-next-action",
             source="unit-test",
         )
-
         self.assertIsNotNone(state.pendingQuestion)
         self.assertEqual(
             state.nextAction,
             "Do the dashboard lights dim when you try to start the car?",
         )
         self.assertEqual(state.status, FocusStatus.CLARIFYING)
-
     def test_answered_question_is_replaced_as_next_action(self) -> None:
         initial = apply_turn_plan(
             TurnPlan(
@@ -995,7 +932,6 @@ class FocusStoreTests(unittest.TestCase):
             initial.nextAction,
             "What happens when you try to start the car?",
         )
-
         updated = apply_turn_plan(
             TurnPlan(
                 route=TurnRoute.RESPOND,
@@ -1025,7 +961,6 @@ class FocusStoreTests(unittest.TestCase):
             turn_id="turn-answer-and-next-question",
             source="unit-test",
         )
-
         self.assertIsNotNone(updated.pendingQuestion)
         self.assertEqual(
             updated.pendingQuestion.question,
@@ -1039,7 +974,6 @@ class FocusStoreTests(unittest.TestCase):
             updated.nextAction,
             "What happens when you try to start the car?",
         )
-
 
     def test_calendar_selector_rejects_clear_claim_with_event_evidence(
         self,
@@ -1090,7 +1024,6 @@ class FocusStoreTests(unittest.TestCase):
         )
         self.assertIsNotNone(candidate)
         assert candidate is not None
-
         document = _read_log_unlocked()
         stored = next(
             event
@@ -1099,7 +1032,6 @@ class FocusStoreTests(unittest.TestCase):
         )
         stored.payload["text"] = "The calendar is clear today."
         _atomic_write_unlocked(document)
-
         decision = guarded_tool_response_decision_for_turn(
             turn_id,
             tool=ToolName.CALENDAR_READ,
@@ -1112,7 +1044,6 @@ class FocusStoreTests(unittest.TestCase):
 
     def test_response_selection_summary_starts_empty(self) -> None:
         summary = response_selection_summary()
-
         self.assertEqual(summary["decisionCount"], 0)
         self.assertEqual(summary["takeoverCount"], 0)
         self.assertEqual(summary["fallbackCount"], 0)
@@ -1137,7 +1068,6 @@ class FocusStoreTests(unittest.TestCase):
             },
         )
         self.assertIsNone(summary["latestDecision"])
-
     def test_guard_summaries_can_filter_to_current_session_window(self) -> None:
         record_response_selection(
             source_turn_id="turn-window-old-response",
@@ -1165,7 +1095,6 @@ class FocusStoreTests(unittest.TestCase):
             legacy_route_class="tasks_read",
             response_source="focus-route-guarded",
         )
-
         document = _read_log_unlocked()
         for event in document.events:
             if event.sourceTurnId in {
@@ -1179,7 +1108,6 @@ class FocusStoreTests(unittest.TestCase):
             }:
                 event.createdAt = "2026-07-29T14:00:00+00:00"
         _atomic_write_unlocked(document)
-
         cutoff = "2026-07-29T12:00:00+00:00"
         response_summary = response_selection_summary(
             since_created_at=cutoff,
@@ -1187,7 +1115,6 @@ class FocusStoreTests(unittest.TestCase):
         route_summary = route_selection_summary(
             since_created_at=cutoff,
         )
-
         self.assertEqual(response_summary["decisionCount"], 1)
         self.assertEqual(response_summary["expectedFallbackCount"], 1)
         self.assertEqual(response_summary["systemFailureCount"], 0)
@@ -1196,7 +1123,6 @@ class FocusStoreTests(unittest.TestCase):
             "turn-window-current-response",
         )
         self.assertEqual(response_summary["windowStart"], cutoff)
-
         self.assertEqual(route_summary["decisionCount"], 1)
         self.assertEqual(route_summary["takeoverCount"], 1)
         self.assertEqual(route_summary["safetyFallbackCount"], 0)
@@ -1205,7 +1131,6 @@ class FocusStoreTests(unittest.TestCase):
             "turn-window-current-route",
         )
         self.assertEqual(route_summary["windowStart"], cutoff)
-
     def test_response_selection_summary_counts_guarded_decisions(self) -> None:
         apply_turn_plan(
             TurnPlan(
@@ -1222,7 +1147,6 @@ class FocusStoreTests(unittest.TestCase):
             turn_id="turn-summary-start",
             source="unit-test",
         )
-
         apply_turn_plan(
             TurnPlan(
                 route=TurnRoute.RESPOND,
@@ -1243,7 +1167,6 @@ class FocusStoreTests(unittest.TestCase):
             source="focus-visible-response",
             transport="sse",
         )
-
         apply_turn_plan(
             TurnPlan(
                 route=TurnRoute.RESPOND,
@@ -1265,9 +1188,7 @@ class FocusStoreTests(unittest.TestCase):
             transport="sse",
             fallback_reason="not_attached_to_focus",
         )
-
         summary = response_selection_summary()
-
         self.assertEqual(summary["decisionCount"], 2)
         self.assertEqual(summary["takeoverCount"], 1)
         self.assertEqual(summary["fallbackCount"], 1)
@@ -1315,7 +1236,6 @@ class FocusStoreTests(unittest.TestCase):
             "expected",
         )
         self.assertTrue(summary["latestDecision"]["healthy"])
-
     def test_response_selection_summary_counts_tool_takeover(self) -> None:
         apply_turn_plan(
             TurnPlan(
@@ -1338,7 +1258,6 @@ class FocusStoreTests(unittest.TestCase):
             source="focus-tool-visible-response",
             transport="search-json",
         )
-
         summary = response_selection_summary()
 
         self.assertEqual(summary["decisionCount"], 1)
@@ -1349,7 +1268,6 @@ class FocusStoreTests(unittest.TestCase):
             summary["latestDecision"]["responseSource"],
             "focus-tool-visible-response",
         )
-
     def test_response_selection_summary_separates_safety_and_failures(
         self,
     ) -> None:
@@ -1368,7 +1286,6 @@ class FocusStoreTests(unittest.TestCase):
             turn_id="turn-category-start",
             source="unit-test",
         )
-
         record_assistant_reply(
             text="Safe legacy fallback.",
             source_turn_id="turn-category-safety",
@@ -1388,9 +1305,7 @@ class FocusStoreTests(unittest.TestCase):
             source="chat-visible-response",
             fallback_reason="unexpected_guard",
         )
-
         summary = response_selection_summary()
-
         self.assertEqual(summary["decisionCount"], 3)
         self.assertEqual(summary["takeoverCount"], 0)
         self.assertEqual(summary["guardedAttemptCount"], 3)
@@ -1427,7 +1342,6 @@ class FocusStoreTests(unittest.TestCase):
             "unknown",
         )
         self.assertFalse(summary["latestDecision"]["healthy"])
-
     def test_response_selection_summary_counts_tool_fallback_without_reply(
         self,
     ) -> None:
@@ -1440,7 +1354,6 @@ class FocusStoreTests(unittest.TestCase):
         )
 
         summary = response_selection_summary()
-
         self.assertEqual(summary["decisionCount"], 1)
         self.assertEqual(summary["expectedFallbackCount"], 1)
         self.assertEqual(
@@ -1451,7 +1364,6 @@ class FocusStoreTests(unittest.TestCase):
             summary["latestDecision"]["responseSource"],
             "calendar-legacy-readout",
         )
-
     def test_response_selection_summary_uses_latest_decision_per_turn(
         self,
     ) -> None:
@@ -1495,7 +1407,6 @@ class FocusStoreTests(unittest.TestCase):
             source_turn_id="turn-dedupe-decision",
             source="focus-visible-response",
         )
-
         summary = response_selection_summary()
 
         self.assertEqual(summary["decisionCount"], 1)
@@ -1506,9 +1417,6 @@ class FocusStoreTests(unittest.TestCase):
             summary["latestDecision"]["outcome"],
             "takeover",
         )
-
-
-
     def test_guarded_route_selector_accepts_safe_search_agreement(self) -> None:
         turn_id = "turn-route-search"
         apply_turn_plan(
@@ -1528,7 +1436,6 @@ class FocusStoreTests(unittest.TestCase):
             turn_id=turn_id,
             source="unit-test",
         )
-
         decision = guarded_route_decision_for_turn(
             turn_id,
             {
@@ -1540,12 +1447,10 @@ class FocusStoreTests(unittest.TestCase):
             },
             minimum_confidence=0.9,
         )
-
         self.assertTrue(decision.eligible)
         self.assertEqual(decision.routeClass, "search")
         self.assertEqual(decision.focusRouteClass, "search")
         self.assertEqual(decision.legacyRouteClass, "search")
-
     def test_guarded_route_selector_accepts_notes_and_tasks_reads(self) -> None:
         cases = [
             (
@@ -1561,7 +1466,6 @@ class FocusStoreTests(unittest.TestCase):
                 "tasks_read",
             ),
         ]
-
         for turn_id, tool, action, route_class in cases:
             with self.subTest(route_class=route_class):
                 apply_turn_plan(
@@ -1580,7 +1484,6 @@ class FocusStoreTests(unittest.TestCase):
                     turn_id=turn_id,
                     source="command-interpret-shadow",
                 )
-
                 decision = guarded_route_decision_for_turn(
                     turn_id,
                     {
@@ -1595,7 +1498,6 @@ class FocusStoreTests(unittest.TestCase):
                 self.assertEqual(decision.routeClass, route_class)
                 self.assertEqual(decision.focusRouteClass, route_class)
                 self.assertEqual(decision.legacyRouteClass, route_class)
-
                 turn_events = [
                     event for event in list_events()
                     if event.sourceTurnId == turn_id
@@ -1607,7 +1509,6 @@ class FocusStoreTests(unittest.TestCase):
                 self.assertTrue(
                     turn_events[0].payload["executionPolicy"]["routeOnlyTool"]
                 )
-
     def test_memory_write_marker_is_route_only_and_non_mutating(self) -> None:
         turn_id = "turn-route-task-complete"
         apply_turn_plan(
@@ -1638,7 +1539,6 @@ class FocusStoreTests(unittest.TestCase):
             turn_id=turn_id,
             source="command-interpret-shadow",
         )
-
         turn_events = [
             event for event in list_events()
             if event.sourceTurnId == turn_id
@@ -1651,7 +1551,6 @@ class FocusStoreTests(unittest.TestCase):
         self.assertTrue(policy["transientTool"])
         self.assertTrue(policy["routeOnlyTool"])
         self.assertEqual(policy["suppressedFocusOperationCount"], 1)
-
     def test_guarded_route_selector_accepts_visual_read_agreement(self) -> None:
         turn_id = "turn-route-visual-history"
         apply_turn_plan(
@@ -1671,7 +1570,6 @@ class FocusStoreTests(unittest.TestCase):
             turn_id=turn_id,
             source="command-interpret-shadow",
         )
-
         decision = guarded_route_decision_for_turn(
             turn_id,
             {
@@ -1683,12 +1581,10 @@ class FocusStoreTests(unittest.TestCase):
             },
             minimum_confidence=0.9,
         )
-
         self.assertTrue(decision.eligible)
         self.assertEqual(decision.routeClass, "visual_read")
         self.assertEqual(decision.focusRouteClass, "visual_read")
         self.assertEqual(decision.legacyRouteClass, "visual_read")
-
         turn_events = [
             event
             for event in list_events()
@@ -1701,7 +1597,6 @@ class FocusStoreTests(unittest.TestCase):
         self.assertTrue(
             turn_events[0].payload["executionPolicy"]["routeOnlyTool"]
         )
-
     def test_visual_write_marker_is_route_only_and_non_mutating(self) -> None:
         turn_id = "turn-route-visual-delete"
         apply_turn_plan(
@@ -1733,7 +1628,6 @@ class FocusStoreTests(unittest.TestCase):
             turn_id=turn_id,
             source="command-interpret-shadow",
         )
-
         turn_events = [
             event
             for event in list_events()
@@ -1747,7 +1641,6 @@ class FocusStoreTests(unittest.TestCase):
         self.assertTrue(policy["transientTool"])
         self.assertTrue(policy["routeOnlyTool"])
         self.assertEqual(policy["suppressedFocusOperationCount"], 1)
-
     def test_guarded_route_selector_rejects_disagreement_and_writes(self) -> None:
         turn_id = "turn-route-disagreement"
         apply_turn_plan(
@@ -1759,7 +1652,6 @@ class FocusStoreTests(unittest.TestCase):
             turn_id=turn_id,
             source="unit-test",
         )
-
         disagreement = guarded_route_decision_for_turn(
             turn_id,
             {
@@ -1770,7 +1662,6 @@ class FocusStoreTests(unittest.TestCase):
         )
         self.assertFalse(disagreement.eligible)
         self.assertEqual(disagreement.fallbackReason, "route_disagreement")
-
         write_block = guarded_route_decision_for_turn(
             turn_id,
             {
@@ -1784,7 +1675,6 @@ class FocusStoreTests(unittest.TestCase):
             write_block.fallbackReason,
             "confirmation_gated_legacy_route",
         )
-
         protected_visual_mutation = guarded_route_decision_for_turn(
             turn_id,
             {
@@ -1798,7 +1688,6 @@ class FocusStoreTests(unittest.TestCase):
             protected_visual_mutation.fallbackReason,
             "protected_legacy_route",
         )
-
         protected_task_mutation = guarded_route_decision_for_turn(
             turn_id,
             {
@@ -1812,7 +1701,6 @@ class FocusStoreTests(unittest.TestCase):
             protected_task_mutation.fallbackReason,
             "protected_legacy_route",
         )
-
     def test_guarded_route_selector_enforces_confidence(self) -> None:
         turn_id = "turn-route-low-confidence"
         apply_turn_plan(
@@ -1824,7 +1712,6 @@ class FocusStoreTests(unittest.TestCase):
             turn_id=turn_id,
             source="unit-test",
         )
-
         decision = guarded_route_decision_for_turn(
             turn_id,
             {
@@ -1840,7 +1727,6 @@ class FocusStoreTests(unittest.TestCase):
             decision.fallbackReason,
             "planner_below_confidence_threshold",
         )
-
     def test_route_selection_summary_separates_expected_and_safety(self) -> None:
         record_route_selection(
             source_turn_id="turn-route-takeover",
@@ -1877,9 +1763,7 @@ class FocusStoreTests(unittest.TestCase):
             legacy_intent="command",
             legacy_action="prepare_search",
         )
-
         summary = route_selection_summary()
-
         self.assertEqual(summary["decisionCount"], 3)
         self.assertEqual(summary["takeoverCount"], 1)
         self.assertEqual(summary["fallbackCount"], 2)
@@ -1893,7 +1777,6 @@ class FocusStoreTests(unittest.TestCase):
             summary["latestDecision"]["reason"],
             "route_disagreement",
         )
-
     def test_route_selection_telemetry_does_not_mutate_focus(self) -> None:
         apply_turn_plan(
             TurnPlan(
@@ -1912,7 +1795,6 @@ class FocusStoreTests(unittest.TestCase):
             source="unit-test",
         )
         before = get_state()
-
         after = record_route_selection(
             source_turn_id="turn-route-state",
             outcome="fallback",
@@ -1923,7 +1805,6 @@ class FocusStoreTests(unittest.TestCase):
         )
 
         self.assertEqual(after, before)
-
 
 class FocusStoreExactRouteObservationTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -1936,11 +1817,9 @@ class FocusStoreExactRouteObservationTests(unittest.TestCase):
         )
         self._environment_patch.start()
         reset_store()
-
     def tearDown(self) -> None:
         self._environment_patch.stop()
         self._temporary_directory.cleanup()
-
     def test_exact_route_observation_is_idempotent_and_does_not_mutate_focus(self) -> None:
         active_state = apply_turn_plan(
             TurnPlan(
@@ -1959,7 +1838,6 @@ class FocusStoreExactRouteObservationTests(unittest.TestCase):
             source="unit-test",
         )
         before = active_state.model_dump()
-
         first = record_exact_route_observation(
             command="read-notes",
             source_turn_id="turn-exact-read-notes",
@@ -1971,11 +1849,9 @@ class FocusStoreExactRouteObservationTests(unittest.TestCase):
             source_turn_id="turn-exact-read-notes",
             requires_confirmation=False,
         )
-
         self.assertEqual(first.model_dump(), before)
         self.assertEqual(second.model_dump(), before)
         self.assertEqual(event_count(), count_after_first)
-
         exact_event = next(
             event
             for event in list_events()
@@ -1986,7 +1862,6 @@ class FocusStoreExactRouteObservationTests(unittest.TestCase):
         self.assertEqual(exact_event.payload["routeClass"], "notes_read")
         self.assertEqual(exact_event.payload["category"], "read")
         self.assertFalse(exact_event.payload["requiresConfirmation"])
-
     def test_exact_route_summary_keeps_local_routes_out_of_guarded_metrics(self) -> None:
         observations = [
             ("read-notes", False),
@@ -2003,9 +1878,7 @@ class FocusStoreExactRouteObservationTests(unittest.TestCase):
                 source_turn_id=f"turn-exact-{index}",
                 requires_confirmation=requires_confirmation,
             )
-
         summary = exact_route_observation_summary()
-
         self.assertEqual(summary["observationCount"], 7)
         self.assertEqual(summary["readCount"], 1)
         self.assertEqual(summary["mutationCount"], 1)
@@ -2023,7 +1896,6 @@ class FocusStoreExactRouteObservationTests(unittest.TestCase):
             summary["latestObservation"]["command"],
             "clear-chat",
         )
-
         self.assertEqual(route_selection_summary()["decisionCount"], 0)
         self.assertEqual(response_selection_summary()["decisionCount"], 0)
 
@@ -2036,7 +1908,6 @@ class FocusStoreExactRouteObservationTests(unittest.TestCase):
             command="read-calendar",
             source_turn_id="turn-exact-in-window",
         )
-
         document = _read_log_unlocked()
         exact_events = [
             event
@@ -2047,7 +1918,6 @@ class FocusStoreExactRouteObservationTests(unittest.TestCase):
         exact_events[1].createdAt = "2099-01-01T00:00:00+00:00"
         _atomic_write_unlocked(document)
         cutoff = "2050-01-01T00:00:00+00:00"
-
         session_summary = exact_route_observation_summary(
             since_created_at=cutoff,
         )
@@ -2060,7 +1930,6 @@ class FocusStoreExactRouteObservationTests(unittest.TestCase):
         )
         self.assertEqual(session_summary["windowStart"], cutoff)
 
-
 class FocusStoreFocusRecallRoutingTests(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary_directory = tempfile.TemporaryDirectory()
@@ -2072,11 +1941,9 @@ class FocusStoreFocusRecallRoutingTests(unittest.TestCase):
         )
         self._environment_patch.start()
         reset_store()
-
     def tearDown(self) -> None:
         self._environment_patch.stop()
         self._temporary_directory.cleanup()
-
     def test_focus_recall_is_route_only_and_guarded(self) -> None:
         turn_id = "turn-focus-recall-route"
         plan = TurnPlan(
@@ -2095,7 +1962,6 @@ class FocusStoreFocusRecallRoutingTests(unittest.TestCase):
             ),
             confidence=0.99,
         )
-
         before = get_state()
         after = apply_turn_plan(
             plan,
@@ -2104,7 +1970,6 @@ class FocusStoreFocusRecallRoutingTests(unittest.TestCase):
             source="command-interpret-shadow",
         )
         self.assertEqual(after, before)
-
         turn_events = [
             event for event in list_events()
             if event.sourceTurnId == turn_id
@@ -2116,7 +1981,6 @@ class FocusStoreFocusRecallRoutingTests(unittest.TestCase):
         execution_policy = turn_events[0].payload["executionPolicy"]
         self.assertTrue(execution_policy["transientTool"])
         self.assertTrue(execution_policy["routeOnlyTool"])
-
         decision = guarded_route_decision_for_turn(
             turn_id,
             {
@@ -2132,7 +1996,6 @@ class FocusStoreFocusRecallRoutingTests(unittest.TestCase):
         self.assertEqual(decision.routeClass, "focus_read")
         self.assertEqual(decision.focusRouteClass, "focus_read")
         self.assertEqual(decision.legacyRouteClass, "focus_read")
-
     def test_focus_recall_legacy_actions_share_one_route_class(self) -> None:
         actions = [
             "read_focus_session",
@@ -2171,6 +2034,5 @@ class FocusStoreFocusRecallRoutingTests(unittest.TestCase):
             )
             self.assertTrue(decision.eligible, action)
             self.assertEqual(decision.routeClass, "focus_read")
-
 if __name__ == "__main__":
     unittest.main()
