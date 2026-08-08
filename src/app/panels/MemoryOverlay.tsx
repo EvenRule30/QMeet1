@@ -5,7 +5,6 @@ import {
   useEffect,
   useState,
 } from 'react';
-
 import type {
   ActiveSession,
   MemoryTask,
@@ -16,8 +15,6 @@ import type {
 import type { ResultToast } from '../lib/toastUtils';
 import { formatMemoryTime } from '../lib/memoryUtils';
 import {
-  clearRecentFocusSessions,
-  deleteRecentFocusSessionById,
   getRecentFocusSessions,
   clearVisualContext,
   deleteVisualObservationById,
@@ -25,7 +22,6 @@ import {
 } from '../api';
 
 type MemorySyncState = 'local' | 'syncing' | 'synced' | 'error';
-
 type ToastInput = Omit<ResultToast, 'id' | 'createdAt'> | null;
 
 type ActiveSessionCommandEventDetail = {
@@ -56,6 +52,9 @@ type MemoryOverlayProps = {
   memoryTasks: MemoryTask[];
   onExportMemory: () => void;
   onImportMemoryFile: (event: ChangeEvent<HTMLInputElement>) => void;
+  // Retained in the component contract while App/useMemoryContext are cleaned up
+  // separately. Phase 20U intentionally does not expose these legacy broad-reset
+  // callbacks in the UI because they can imply canonical Focus deletion.
   onClearAllMemory: () => void;
   onResetTasksOnly: () => void;
   onResetNotesOnly: () => void;
@@ -72,14 +71,11 @@ type MemoryOverlayProps = {
 
 const ACTIVE_SESSION_STORAGE_KEY = 'qmeet-active-session';
 const ACTIVE_SESSION_SESSION_STORAGE_KEY = 'qmeet-active-session-live';
-const RECENT_FOCUS_SESSIONS_STORAGE_KEY = 'qmeet-recent-focus-sessions';
 const VISUAL_CONTEXT_STORAGE_KEY = 'qmeet-visual-context';
 const ACTIVE_SESSION_COMMAND_EVENT = 'qmeet-active-session-command';
 const ACTIVE_SESSION_STATE_EVENT = 'qmeet-active-session-state';
 const QMEET_PROMPT_COMMAND_EVENT = 'qmeet-prompt-command';
 const VISUAL_CONTEXT_STATE_EVENT = 'qmeet-visual-context-state';
-const RECENT_FOCUS_SESSIONS_STATE_EVENT = 'qmeet-recent-focus-sessions-state';
-const MEMORY_OVERLAY_FOCUS_MARKER = 'phase15a-v1-visual-focus-fusion';
 
 function normalizeActiveSession(value: unknown): ActiveSession | null {
   if (!value || typeof value !== 'object') return null;
@@ -129,7 +125,6 @@ function normalizeActiveSession(value: unknown): ActiveSession | null {
         : {}),
   };
 }
-
 
 function normalizeRecentFocusSession(value: unknown): RecentFocusSession | null {
   if (!value || typeof value !== 'object') return null;
@@ -191,7 +186,6 @@ function normalizeRecentFocusSessions(value: unknown): RecentFocusSession[] {
     .filter((session): session is RecentFocusSession => Boolean(session));
 }
 
-
 function createEmptyVisualContext(): VisualContext {
   return {
     enabled: false,
@@ -200,7 +194,9 @@ function createEmptyVisualContext(): VisualContext {
   };
 }
 
-function isVisualContextSource(value: unknown): value is VisualObservation['source'] {
+function isVisualContextSource(
+  value: unknown,
+): value is VisualObservation['source'] {
   return value === 'camera' || value === 'screen' || value === 'manual';
 }
 
@@ -268,7 +264,6 @@ function getVisualObservationMeta(observation: VisualObservation) {
   if (typeof observation.confidence === 'number') {
     pieces.push(`${Math.round(observation.confidence * 100)}% confidence`);
   }
-
   if (observation.relatedFocusId) {
     pieces.push('linked to focus');
   }
@@ -321,27 +316,6 @@ function dispatchActiveSessionState(activeSession: ActiveSession | null) {
   );
 }
 
-function dispatchRecentFocusSessionsState(
-  recentFocusSessions: RecentFocusSession[],
-) {
-  if (typeof window === 'undefined') return;
-
-  try {
-    window.localStorage.setItem(
-      RECENT_FOCUS_SESSIONS_STORAGE_KEY,
-      JSON.stringify(recentFocusSessions),
-    );
-  } catch (error) {
-    console.error('Failed to write recent focus sessions fallback:', error);
-  }
-
-  window.dispatchEvent(
-    new CustomEvent(RECENT_FOCUS_SESSIONS_STATE_EVENT, {
-      detail: { recentFocusSessions },
-    }),
-  );
-}
-
 function dispatchVisualContextState(visualContext: VisualContext) {
   if (typeof window === 'undefined') return;
 
@@ -378,14 +352,19 @@ function formatSessionMode(mode: ActiveSession['mode']) {
 
 function getFocusAgeLabel(activeSession: ActiveSession | null) {
   if (!activeSession) return 'No focus';
+
   const startedAt = new Date(activeSession.startedAt).getTime();
   if (!Number.isFinite(startedAt)) return 'Active';
+
   const minutes = Math.max(0, Math.round((Date.now() - startedAt) / 60000));
   if (minutes < 1) return 'Just started';
   if (minutes < 60) return `${minutes}m active`;
+
   const hours = Math.floor(minutes / 60);
   const remainingMinutes = minutes % 60;
-  return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m active` : `${hours}h active`;
+  return remainingMinutes > 0
+    ? `${hours}h ${remainingMinutes}m active`
+    : `${hours}h active`;
 }
 
 function MemoryOverlayStyles() {
@@ -456,10 +435,7 @@ function MemoryOverlayStyles() {
         line-height: 1.4;
       }
 
-      .memory-action-item {
-        min-width: 0;
-      }
-
+      .memory-action-item,
       .memory-task-copy {
         min-width: 0;
       }
@@ -472,7 +448,6 @@ function MemoryOverlayStyles() {
     `}</style>
   );
 }
-
 
 function formatSessionRange(session: RecentFocusSession) {
   return `${formatMemoryTime(session.startedAt)} → ${formatMemoryTime(
@@ -493,14 +468,12 @@ function getRecentFocusSessionMeta(session: RecentFocusSession) {
       `${linkedTaskCount} linked task${linkedTaskCount === 1 ? '' : 's'}`,
     );
   }
-
   if (pinnedNoteCount > 0 || session.summaryNoteId) {
     pieces.push('summary saved');
   }
 
   return pieces.join(' · ');
 }
-
 
 type FocusNudge = {
   id: string;
@@ -535,7 +508,8 @@ function buildFocusNudges(
       {
         id: 'start-focus',
         title: 'Start with a focus session',
-        detail: 'Set the current work context so QMeet can connect chat, tasks, and notes.',
+        detail:
+          'Set the current work context so QMeet can connect chat, tasks, and notes.',
         command: 'start a focus session for …',
         actionLabel: 'Start focus',
       },
@@ -552,7 +526,8 @@ function buildFocusNudges(
     nudges.push({
       id: 'set-goal',
       title: 'Add a goal',
-      detail: 'A goal makes focus-aware chat, summaries, and next steps more useful.',
+      detail:
+        'A goal makes focus-aware chat, summaries, and next steps more useful.',
       command: 'set my goal to …',
       actionLabel: 'Set goal',
     });
@@ -598,7 +573,8 @@ function buildFocusNudges(
     nudges.push({
       id: 'save-progress-note',
       title: 'Save a progress note',
-      detail: 'This focus has been active for a while and has not pinned a summary note yet.',
+      detail:
+        'This focus has been active for a while and has not pinned a summary note yet.',
       command: 'save this focus as a note',
       actionLabel: 'Save note',
     });
@@ -608,7 +584,8 @@ function buildFocusNudges(
     nudges.push({
       id: 'keep-going',
       title: 'Keep momentum',
-      detail: 'Your focus has a goal and linked context. Ask QMeet for the next step when you are ready.',
+      detail:
+        'Your focus has a goal and linked context. Ask QMeet for the next step when you are ready.',
       command: 'what should I do next for this focus',
       actionLabel: 'Ask QMeet',
     });
@@ -639,13 +616,11 @@ function resolveNudgeCommand(nudge: FocusNudge): string | null {
   if (nudge.command.includes('…')) {
     return promptForNudgeValue(nudge);
   }
-
   return nudge.command;
 }
 
 function dispatchPromptCommand(command: string) {
   if (typeof window === 'undefined') return;
-
   window.dispatchEvent(
     new CustomEvent<PromptCommandEventDetail>(QMEET_PROMPT_COMMAND_EVENT, {
       detail: { command },
@@ -690,10 +665,8 @@ export function MemoryOverlay({
   memoryTasks,
   onExportMemory,
   onImportMemoryFile,
-  onClearAllMemory,
   onResetTasksOnly,
   onResetNotesOnly,
-  onResetRecentContextOnly,
   onSaveMemoryTaskDraft,
   markMemoryTaskDoneById,
   deleteMemoryTask,
@@ -716,6 +689,7 @@ export function MemoryOverlay({
   const [visualContextMessage, setVisualContextMessage] = useState(
     'Loading visual context...',
   );
+
   const openTasks = memoryTasks.filter((task) => !task.completedAt);
   const completedTasks = memoryTasks.filter((task) => task.completedAt);
   const focusNudges = buildFocusNudges(activeSession, memoryTasks);
@@ -734,11 +708,11 @@ export function MemoryOverlay({
         response.message || 'Recent focus sessions loaded.',
       );
     } catch (error) {
-      const message =
+      setRecentFocusSessionMessage(
         error instanceof Error
           ? error.message
-          : 'Recent focus sessions unavailable.';
-      setRecentFocusSessionMessage(message);
+          : 'Recent focus sessions unavailable.',
+      );
     }
   }, []);
 
@@ -748,9 +722,9 @@ export function MemoryOverlay({
       setVisualContext(normalizeVisualContext(response.visualContext));
       setVisualContextMessage(response.message || 'Visual context loaded.');
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : 'Visual context unavailable.';
-      setVisualContextMessage(message);
+      setVisualContextMessage(
+        error instanceof Error ? error.message : 'Visual context unavailable.',
+      );
     }
   }, []);
 
@@ -760,13 +734,11 @@ export function MemoryOverlay({
     const refreshStoredSession = () => {
       setActiveSession(readStoredActiveSession());
     };
-
     const handleActiveSessionState = (event: Event) => {
       const detail = (event as CustomEvent<ActiveSessionStateEventDetail>)
         .detail;
       setActiveSession(normalizeActiveSession(detail?.activeSession ?? null));
     };
-
     const handleStorage = (event: StorageEvent) => {
       if (event.key === ACTIVE_SESSION_STORAGE_KEY) {
         refreshStoredSession();
@@ -775,7 +747,6 @@ export function MemoryOverlay({
 
     window.addEventListener(ACTIVE_SESSION_STATE_EVENT, handleActiveSessionState);
     window.addEventListener('storage', handleStorage);
-
     const intervalId = window.setInterval(refreshStoredSession, 750);
 
     return () => {
@@ -800,76 +771,20 @@ export function MemoryOverlay({
     if (typeof window === 'undefined') return;
 
     const handleVisualContextState = (event: Event) => {
-      const detail = (event as CustomEvent<VisualContextStateEventDetail>).detail;
+      const detail = (event as CustomEvent<VisualContextStateEventDetail>)
+        .detail;
       setVisualContext(normalizeVisualContext(detail?.visualContext));
       setVisualContextMessage('Visual context updated.');
     };
 
     window.addEventListener(VISUAL_CONTEXT_STATE_EVENT, handleVisualContextState);
     return () => {
-      window.removeEventListener(VISUAL_CONTEXT_STATE_EVENT, handleVisualContextState);
+      window.removeEventListener(
+        VISUAL_CONTEXT_STATE_EVENT,
+        handleVisualContextState,
+      );
     };
   }, []);
-
-  const handleDeleteRecentFocusSession = async (sessionId: string) => {
-    try {
-      await deleteRecentFocusSessionById(sessionId);
-      setRecentFocusSessions((prev) => {
-        const nextSessions = prev.filter((session) => session.id !== sessionId);
-        dispatchRecentFocusSessionsState(nextSessions);
-        return nextSessions;
-      });
-      pushResultToast({
-        kind: 'warning',
-        title: 'Focus history removed',
-        detail: 'Removed one recent focus session.',
-      });
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : 'Could not remove focus session.';
-      pushResultToast({
-        kind: 'error',
-        title: 'History delete failed',
-        detail: message,
-      });
-    }
-  };
-
-  const handleClearRecentFocusSessions = async () => {
-    const confirmed = window.confirm('Clear recent focus session history?');
-    if (!confirmed) return;
-
-    try {
-      const response = await clearRecentFocusSessions();
-      const nextSessions = normalizeRecentFocusSessions(
-        response.recentFocusSessions ?? [],
-      );
-      setRecentFocusSessions(nextSessions);
-      dispatchRecentFocusSessionsState(nextSessions);
-      setRecentFocusSessionMessage(
-        response.message || 'Recent focus sessions cleared.',
-      );
-      pushResultToast({
-        kind: 'warning',
-        title: 'Focus history cleared',
-        detail:
-          response.removedCount > 0
-            ? `${response.removedCount} session${
-                response.removedCount === 1 ? '' : 's'
-              } removed.`
-            : 'No recent focus sessions to clear.',
-      });
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : 'Could not clear focus history.';
-      pushResultToast({
-        kind: 'error',
-        title: 'History clear failed',
-        detail: message,
-      });
-    }
-  };
-
 
   const handleDeleteVisualObservation = async (observationId: string) => {
     try {
@@ -883,12 +798,11 @@ export function MemoryOverlay({
         detail: 'Removed one visual observation.',
       });
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : 'Could not remove observation.';
       pushResultToast({
         kind: 'error',
         title: 'Visual delete failed',
-        detail: message,
+        detail:
+          error instanceof Error ? error.message : 'Could not remove observation.',
       });
     }
   };
@@ -903,26 +817,22 @@ export function MemoryOverlay({
       setVisualContext(nextVisualContext);
       dispatchVisualContextState(nextVisualContext);
       setVisualContextMessage(response.message || 'Visual context cleared.');
+      const removedCount =
+        response.removedVisualObservationCount ?? response.removedCount ?? 0;
       pushResultToast({
         kind: 'warning',
         title: 'Visual context cleared',
         detail:
-          response.removedVisualObservationCount || response.removedCount
-            ? `${response.removedVisualObservationCount ?? response.removedCount} observation${
-                (response.removedVisualObservationCount ?? response.removedCount) ===
-                1
-                  ? ''
-                  : 's'
-              } removed.`
+          removedCount > 0
+            ? `${removedCount} observation${removedCount === 1 ? '' : 's'} removed.`
             : 'No visual observations to clear.',
       });
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : 'Could not clear visual context.';
       pushResultToast({
         kind: 'error',
         title: 'Visual clear failed',
-        detail: message,
+        detail:
+          error instanceof Error ? error.message : 'Could not clear visual context.',
       });
     }
   };
@@ -932,16 +842,15 @@ export function MemoryOverlay({
       <MemoryOverlayStyles />
       <div className="panel-content memory-panel">
         <div className="panel-header">Memory</div>
-
         <div className="panel-body memory-panel-body">
           <div className="memory-hero">
             <div>
               <div className="memory-kicker">Backend Memory</div>
               <div className="memory-title">
-                Focus, tasks, notes, visuals, and recent work context sync to FastAPI with browser fallback.
+                Focus, tasks, notes, visuals, and recent work context sync to
+                FastAPI with browser fallback.
               </div>
             </div>
-
             <div className={`memory-chip memory-sync-${memorySyncState}`}>
               {memorySyncState === 'synced'
                 ? 'Synced'
@@ -966,7 +875,9 @@ export function MemoryOverlay({
             </div>
             <div className="memory-stat-card">
               <div className="memory-stat-label">Sessions</div>
-              <div className="memory-stat-value">{recentFocusSessions.length} recent</div>
+              <div className="memory-stat-value">
+                {recentFocusSessions.length} recent
+              </div>
             </div>
             <div className="memory-stat-card">
               <div className="memory-stat-label">Visuals</div>
@@ -986,7 +897,8 @@ export function MemoryOverlay({
                       {activeSession.title}
                     </div>
                     <div className="memory-task-meta">
-                      {formatSessionMode(activeSession.mode)} mode · {getFocusAgeLabel(activeSession)} · Started{' '}
+                      {formatSessionMode(activeSession.mode)} mode ·{' '}
+                      {getFocusAgeLabel(activeSession)} · Started{' '}
                       {formatMemoryTime(activeSession.startedAt)}
                     </div>
                     <p className="panel-section-text memory-focus-goal">
@@ -1049,26 +961,34 @@ export function MemoryOverlay({
                         End with summary
                       </button>
                     </div>
+
                     {focusLinkedVisualObservations.length > 0 && (
                       <div className="memory-list">
-                        {focusLinkedVisualObservations.slice(0, 3).map((observation) => (
-                          <div className="memory-action-item" key={observation.id}>
-                            <div className="memory-task-copy">
-                              <div className="memory-action-title">
-                                Linked {formatVisualSource(observation.source)} visual
+                        {focusLinkedVisualObservations
+                          .slice(0, 3)
+                          .map((observation) => (
+                            <div
+                              className="memory-action-item"
+                              key={observation.id}
+                            >
+                              <div className="memory-task-copy">
+                                <div className="memory-action-title">
+                                  Linked {formatVisualSource(observation.source)}{' '}
+                                  visual
+                                </div>
+                                <div className="memory-task-meta">
+                                  {getVisualObservationMeta(observation)}
+                                </div>
+                                <p className="panel-section-text">
+                                  {observation.summary}
+                                </p>
                               </div>
-                              <div className="memory-task-meta">
-                                {getVisualObservationMeta(observation)}
-                              </div>
-                              <p className="panel-section-text">
-                                {observation.summary}
-                              </p>
                             </div>
-                          </div>
-                        ))}
+                          ))}
                       </div>
                     )}
                   </div>
+
                   <div className="memory-task-actions">
                     <button
                       className="memory-task-delete-btn"
@@ -1087,14 +1007,20 @@ export function MemoryOverlay({
               </div>
             ) : (
               <p className="panel-section-text">
-                No active focus. Say “start a focus for my Java class” or “I am working on the UI cleanup” and I will use it as background context.
+                No active focus. Say “start a focus for my Java class” or “I am
+                working on the UI cleanup” and I will use it as background
+                context.
               </p>
             )}
           </div>
 
-
           <div className="panel-section memory-sync-section">
             <div className="panel-section-title">Recent Focus Sessions</div>
+            <div className="memory-control-note">
+              Focus history is read-only in Memory. End or complete the current
+              Focus through the verified Focus lifecycle; historical sessions
+              are retained for recall, resume, and audit continuity.
+            </div>
             {recentFocusSessions.length === 0 ? (
               <p className="panel-section-text">
                 {recentFocusSessionMessage ||
@@ -1118,32 +1044,11 @@ export function MemoryOverlay({
                         {formatSessionRange(session)}
                       </div>
                     </div>
-                    <div className="memory-task-actions">
-                      <button
-                        className="memory-task-delete-btn"
-                        type="button"
-                        onClick={() => handleDeleteRecentFocusSession(session.id)}
-                      >
-                        Remove
-                      </button>
-                    </div>
                   </div>
                 ))}
               </div>
             )}
-            {recentFocusSessions.length > 0 && (
-              <div className="panel-action-row">
-                <button
-                  className="panel-action-btn panel-action-btn-danger"
-                  type="button"
-                  onClick={handleClearRecentFocusSessions}
-                >
-                  Clear Recent Sessions
-                </button>
-              </div>
-            )}
           </div>
-
 
           <div className="panel-section memory-sync-section">
             <div className="panel-section-title">Visual Context</div>
@@ -1175,28 +1080,34 @@ export function MemoryOverlay({
 
             {visualContext.recentObservations.length > 0 && (
               <div className="memory-list">
-                {visualContext.recentObservations.slice(0, 4).map((observation) => (
-                  <div className="memory-action-item" key={observation.id}>
-                    <div className="memory-task-copy">
-                      <div className="memory-action-title">
-                        {formatVisualSource(observation.source)} observation
+                {visualContext.recentObservations
+                  .slice(0, 4)
+                  .map((observation) => (
+                    <div className="memory-action-item" key={observation.id}>
+                      <div className="memory-task-copy">
+                        <div className="memory-action-title">
+                          {formatVisualSource(observation.source)} observation
+                        </div>
+                        <div className="memory-task-meta">
+                          {getVisualObservationMeta(observation)}
+                        </div>
+                        <p className="panel-section-text">
+                          {observation.summary}
+                        </p>
                       </div>
-                      <div className="memory-task-meta">
-                        {getVisualObservationMeta(observation)}
+                      <div className="memory-task-actions">
+                        <button
+                          className="memory-task-delete-btn"
+                          type="button"
+                          onClick={() =>
+                            handleDeleteVisualObservation(observation.id)
+                          }
+                        >
+                          Remove
+                        </button>
                       </div>
-                      <p className="panel-section-text">{observation.summary}</p>
                     </div>
-                    <div className="memory-task-actions">
-                      <button
-                        className="memory-task-delete-btn"
-                        type="button"
-                        onClick={() => handleDeleteVisualObservation(observation.id)}
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  ))}
               </div>
             )}
 
@@ -1204,7 +1115,10 @@ export function MemoryOverlay({
               <button
                 className="panel-action-btn panel-action-btn-danger"
                 type="button"
-                disabled={visualContext.recentObservations.length === 0 && !visualContext.enabled}
+                disabled={
+                  visualContext.recentObservations.length === 0 &&
+                  !visualContext.enabled
+                }
                 onClick={handleClearVisualContext}
               >
                 Clear Visual
@@ -1246,9 +1160,17 @@ export function MemoryOverlay({
           <div className="panel-section">
             <div className="panel-section-title">Memory Controls</div>
             <p className="panel-section-text">
-              Export/import memory, or clear specific categories. Clear Context removes active focus, recent focus sessions, visual context, and hidden recent actions.
+              Export or import Memory, or reset supported mutable categories.
+              Active Focus and Focus history are managed by the verified Focus
+              lifecycle and are never cleared from this panel.
             </p>
-
+            {activeSession && (
+              <div className="memory-control-note">
+                Task and note resets are disabled while a Focus is active so a
+                broad Memory reset cannot silently undermine linked Focus state.
+                End or complete the Focus first if you want a clean test reset.
+              </div>
+            )}
             <input
               ref={memoryImportInputRef}
               type="file"
@@ -1256,7 +1178,6 @@ export function MemoryOverlay({
               style={{ display: 'none' }}
               onChange={onImportMemoryFile}
             />
-
             <div className="panel-action-row">
               <button
                 className="panel-action-btn"
@@ -1272,19 +1193,12 @@ export function MemoryOverlay({
               >
                 Import JSON
               </button>
-              <button
-                className="panel-action-btn panel-action-btn-danger"
-                type="button"
-                onClick={onClearAllMemory}
-              >
-                Clear All
-              </button>
             </div>
-
             <div className="panel-action-row">
               <button
                 className="panel-action-btn panel-action-btn-danger"
                 type="button"
+                disabled={Boolean(activeSession)}
                 onClick={onResetTasksOnly}
               >
                 Reset Tasks
@@ -1292,16 +1206,10 @@ export function MemoryOverlay({
               <button
                 className="panel-action-btn panel-action-btn-danger"
                 type="button"
+                disabled={Boolean(activeSession)}
                 onClick={onResetNotesOnly}
               >
                 Reset Notes
-              </button>
-              <button
-                className="panel-action-btn panel-action-btn-danger"
-                type="button"
-                onClick={onResetRecentContextOnly}
-              >
-                Clear Context
               </button>
             </div>
           </div>
@@ -1355,7 +1263,10 @@ export function MemoryOverlay({
                         onClick={() => {
                           const completedTask = markMemoryTaskDoneById(task.id);
                           if (completedTask) {
-                            addRecentAction('Completed task', completedTask.title);
+                            addRecentAction(
+                              'Completed task',
+                              completedTask.title,
+                            );
                             pushResultToast({
                               kind: 'success',
                               title: 'Task complete',
@@ -1444,7 +1355,6 @@ export function MemoryOverlay({
                   </div>
                 ))}
               </div>
-
               <div className="panel-action-row">
                 <button
                   className="panel-action-btn panel-action-btn-danger"
@@ -1470,7 +1380,10 @@ export function MemoryOverlay({
           <div className="panel-section">
             <div className="panel-section-title">Supported Commands</div>
             <p className="panel-section-text">
-              Start naturally: “I am working on my Java class.” Then ask “what should I do next?” or “what do you need to know?” Use “open memory” to manage focus, tasks, notes, recent sessions, and visual context.
+              Start naturally: “I am working on my Java class.” Then ask “what
+              should I do next?” or “what do you need to know?” Use “open
+              memory” to manage focus, tasks, notes, read-only Focus history,
+              and visual context.
             </p>
           </div>
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Any, Callable
 
@@ -8,6 +9,9 @@ from app.focus.models import (
     LegacyFocusSeed,
     PendingQuestion,
 )
+
+
+LEGACY_FOCUS_BOOTSTRAP_ENV = "QMEET_ENABLE_LEGACY_FOCUS_BOOTSTRAP"
 
 
 def _clean(value: object, limit: int = 500) -> str:
@@ -19,7 +23,6 @@ def _clean(value: object, limit: int = 500) -> str:
 def _clean_list(value: object, limit: int = 30) -> list[str]:
     if not isinstance(value, list):
         return []
-
     result: list[str] = []
     seen: set[str] = set()
 
@@ -49,9 +52,26 @@ def _call_optional(module_name: str, function_name: str) -> Any:
         return None
 
 
+def _legacy_focus_bootstrap_enabled() -> bool:
+    """Allow legacy import only for an explicit one-time migration run.
+
+    Phase 20G retired the compatibility Focus projection as an ownership source.
+    Runtime planner turns therefore must not re-seed canonical Focus from stale
+    Memory/work-context data after an intentional end or completion. The old
+    importer remains available only when an operator explicitly opts into a
+    migration with QMEET_ENABLE_LEGACY_FOCUS_BOOTSTRAP=1.
+    """
+
+    return os.getenv(LEGACY_FOCUS_BOOTSTRAP_ENV, "").strip().casefold() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def _status_from_stage(stage: str) -> FocusStatus:
     normalized = stage.casefold().strip()
-
     if normalized == "complete":
         return FocusStatus.COMPLETE
     if normalized == "ready":
@@ -69,7 +89,6 @@ def _pending_question_from_context(
     asked_at: str,
 ) -> PendingQuestion | None:
     raw_pending = context.get("pendingQuestion")
-
     if isinstance(raw_pending, dict):
         question = _clean(raw_pending.get("question"), 320)
         if question:
@@ -84,7 +103,6 @@ def _pending_question_from_context(
                     or asked_at
                 ),
             )
-
     open_questions = _clean_list(context.get("openQuestions"), 20)
     if not open_questions:
         return None
@@ -97,16 +115,21 @@ def _pending_question_from_context(
 
 
 def load_legacy_focus_seed() -> LegacyFocusSeed | None:
-    """Read the current legacy focus without making it a dependency of Focus.
+    """Read a legacy Focus seed only during an explicit migration run.
 
-    Imports are deliberately optional so the new architecture can remain usable
-    while the old work-context module is being simplified or removed.
+    Normal runtime ownership is canonical and backend-native. Returning ``None``
+    by default makes existing planner calls to ``seed_from_legacy`` harmless while
+    preserving the importer for controlled migration/debug scenarios.
     """
 
-    session = _call_optional("app.memory_store", "get_active_session")
-    if not isinstance(session, dict):
+    if not _legacy_focus_bootstrap_enabled():
         return None
 
+    session_payload = _call_optional("app.memory_store", "get_active_session")
+    if not isinstance(session_payload, dict):
+        return None
+    nested_session = session_payload.get("activeSession")
+    session = nested_session if isinstance(nested_session, dict) else session_payload
     context_payload = _call_optional(
         "app.work_context",
         "get_background_work_context",
@@ -125,7 +148,6 @@ def load_legacy_focus_seed() -> LegacyFocusSeed | None:
     )
     if not title:
         return None
-
     objective = (
         _clean(context.get("objective"), 500)
         or _clean(session.get("goal"), 500)
@@ -140,14 +162,12 @@ def load_legacy_focus_seed() -> LegacyFocusSeed | None:
         60,
     )
     tags = [value for value in (focus_type, mode) if value]
-
     created_at = _clean(session.get("startedAt"), 80)
     updated_at = _clean(context.get("updatedAt"), 80)
     if not created_at:
         created_at = datetime.now().astimezone().isoformat()
     if not updated_at:
         updated_at = created_at
-
     return LegacyFocusSeed(
         focusId=_clean(session.get("id"), 160),
         title=title,
