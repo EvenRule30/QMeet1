@@ -136,6 +136,46 @@ _POLARITY_WORDS = {
     "without",
 }
 
+# Phase 20W: semantic duplicates and semantic corrections are different.
+# A changed number/date must not be called a duplicate, but explicit correction
+# language may supersede one earlier value that occupies the same context slot.
+_CORRECTION_PATTERN = re.compile(
+    r"(?:^|\b)(?:actually|instead|rather|correction|correcting|"
+    r"change that|changed that|make that|update that|revise that|"
+    r"I meant|we meant|scratch that)(?:\b|$)",
+    re.IGNORECASE,
+)
+_REFERENTIAL_CORRECTION_PATTERN = re.compile(
+    r"\b(?:change|make|update|revise)\s+that\b|\b(?:instead|rather)\b",
+    re.IGNORECASE,
+)
+
+_CONTEXT_SLOT_TOKENS: dict[str, set[str]] = {
+    "budget": {
+        "budget",
+        "cost",
+        "costs",
+        "dollar",
+        "money",
+        "price",
+        "pricing",
+        "spend",
+        "spending",
+    },
+    "deadline": {
+        "cutoff",
+        "deadline",
+        "due",
+        "finish",
+        "ready",
+    },
+    "availability": {
+        "availability",
+        "available",
+        "free",
+        "unavailable",
+    },
+}
 
 
 def _clean_text(value: object) -> str:
@@ -193,6 +233,66 @@ def _polarity_tokens(tokens: Iterable[str]) -> set[str]:
     return {token for token in tokens if token in _POLARITY_WORDS}
 
 
+def _context_slots(value: object) -> set[str]:
+    tokens = set(semantic_tokens(value))
+    slots: set[str] = set()
+    for slot, slot_tokens in _CONTEXT_SLOT_TOKENS.items():
+        if tokens & slot_tokens:
+            slots.add(slot)
+    return slots
+
+
+def _looks_like_correction(value: object) -> bool:
+    return bool(_CORRECTION_PATTERN.search(_clean_text(value)))
+
+
+def _referential_correction(value: object) -> bool:
+    return bool(_REFERENTIAL_CORRECTION_PATTERN.search(_clean_text(value)))
+
+
+def superseded_values_to_remove(
+    values: Iterable[str],
+    preferred: str,
+) -> list[str]:
+    """Return prior context values explicitly superseded by ``preferred``.
+
+    This is deliberately narrower than semantic duplicate detection. Different
+    numeric/date values remain distinct unless the incoming wording clearly
+    signals a correction. We then remove only one safe predecessor:
+
+    - the sole existing value in the same semantic slot (budget/deadline/etc.),
+      or
+    - the most recent value for an explicit referential correction such as
+      ``make that Thursday``.
+
+    Ambiguous corrections across multiple same-slot values are preserved rather
+    than guessed.
+    """
+
+    cleaned_preferred = _clean_text(preferred)
+    items = [_clean_text(value) for value in values if _clean_text(value)]
+    if not cleaned_preferred or not items or not _looks_like_correction(cleaned_preferred):
+        return []
+
+    preferred_slots = _context_slots(cleaned_preferred)
+    if preferred_slots:
+        same_slot = [
+            item
+            for item in items
+            if _context_slots(item) & preferred_slots
+            and not semantically_equivalent(item, cleaned_preferred)
+        ]
+        if len(same_slot) == 1:
+            return same_slot
+
+    if _referential_correction(cleaned_preferred):
+        latest = items[-1]
+        if not semantically_equivalent(latest, cleaned_preferred):
+            return [latest]
+
+    return []
+
+
 def semantic_similarity(left: object, right: object) -> float:
     left_text = _clean_text(left)
     right_text = _clean_text(right)
@@ -205,7 +305,6 @@ def semantic_similarity(left: object, right: object) -> float:
     right_tokens = set(semantic_tokens(right_text))
     if not left_tokens or not right_tokens:
         return 0.0
-
     left_numbers = _numeric_tokens(left_tokens)
     right_numbers = _numeric_tokens(right_tokens)
     if (left_numbers or right_numbers) and left_numbers != right_numbers:
@@ -215,7 +314,6 @@ def semantic_similarity(left: object, right: object) -> float:
     right_polarity = _polarity_tokens(right_tokens)
     if left_polarity and right_polarity and left_polarity != right_polarity:
         return 0.0
-
     intersection = len(left_tokens & right_tokens)
     minimum = min(len(left_tokens), len(right_tokens))
     union = len(left_tokens | right_tokens)
@@ -244,7 +342,6 @@ def find_semantic_match(values: Iterable[str], candidate: str) -> str | None:
     for item in items:
         if item.casefold() == cleaned_candidate.casefold():
             return item
-
     best_item: str | None = None
     best_score = 0.0
     for item in items:
@@ -304,7 +401,19 @@ def duplicate_values_to_remove(
                 kept_once = True
                 continue
             removals.append(value)
-    return removals
+
+    if preferred:
+        removals.extend(superseded_values_to_remove(items, preferred))
+
+    unique_removals: list[str] = []
+    seen: set[str] = set()
+    for value in removals:
+        key = value.casefold()
+        if not value or key in seen:
+            continue
+        seen.add(key)
+        unique_removals.append(value)
+    return unique_removals
 
 
 def equivalent_values_to_remove(
@@ -340,7 +449,6 @@ def question_answered_by_context(
     answer_tokens = set(semantic_tokens(value))
     if not answer_tokens:
         return False
-
     question = _clean_text(pending_question.question)
     if not question:
         return False
@@ -354,7 +462,6 @@ def question_answered_by_context(
 
     if _question_is_generic_outcome(question):
         return field in {"requirements", "preferences", "decisions"}
-
     question_tokens = set(semantic_tokens(question)) - _QUESTION_WORDS
     if not question_tokens:
         return False
@@ -364,7 +471,6 @@ def question_answered_by_context(
             answer_tokens & {"budget", "cost", "money", "price", "dollar"}
             or _numeric_tokens(answer_tokens)
         )
-
     if question_tokens & {"day", "date", "time", "available", "availability"}:
         return field in {"knownFacts", "constraints", "decisions"} and bool(
             answer_tokens & {"day", "date", "time", "available", "availability"}
