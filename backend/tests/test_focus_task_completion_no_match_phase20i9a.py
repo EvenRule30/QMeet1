@@ -42,7 +42,11 @@ class FocusTaskCompletionNoMatchPhase20I9ATests(unittest.TestCase):
 
     def test_no_match_records_that_no_open_task_was_resolved(self) -> None:
         self.assertIn(
-            "setLastInputRoute('Task completion command had no target')",
+            "setTrackedInputRoute('Task completion command had no target'",
+            self.app_source,
+        )
+        self.assertIn(
+            "setLastInputRoute(route);",
             self.app_source,
         )
         self.assertIn(

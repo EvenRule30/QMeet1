@@ -23,6 +23,11 @@ import {
   sendConversationLaneMessage,
 } from './lib/conversationLane';
 import {
+  observeAgentShadowTurn,
+  reportAgentShadowLegacyRoute,
+  shouldGuardInferredSemanticFocusMutationWithShadow,
+} from './lib/agentShadowObserver';
+import {
   describeTaskCompletionPreviewTargets,
   describeUnresolvedTaskCompletionRequest,
   resolveTaskCompletionPreviewTargets,
@@ -323,6 +328,52 @@ export default function App() {
     const visibleUserText = (displayText ?? trimmed).trim() || trimmed;
     const continuationUserTextForTool =
       (continuationUserText ?? visibleUserText).trim() || visibleUserText;
+    const shadowTurn = commandRoute === 'exact' && !forcedCommandMatch
+      ? observeAgentShadowTurn({
+          userMessage: visibleUserText,
+          recentMessages: messages,
+          activePanel,
+          chatActive,
+          calendarView,
+          googleCalendarConnected: Boolean(googleCalendarStatus?.connected),
+          googleCalendarWriteEnabled: Boolean(googleCalendarStatus?.writeEnabled),
+          pendingCommand: pendingInterpreterCommand
+            ? {
+                originalText: pendingInterpreterCommand.originalText,
+                action: pendingInterpreterCommand.action,
+                frontendCommand: pendingInterpreterCommand.frontendCommand,
+              }
+            : null,
+          frontendFocusProjection: activeSession
+            ? {
+                id: activeSession.id,
+                title: activeSession.title,
+                goal: activeSession.goal,
+                mode: activeSession.mode,
+              }
+            : null,
+        })
+      : null;
+    let shadowRouteSequence = 0;
+    const setTrackedInputRoute = (
+      route: string,
+      action = '',
+      frontendCommand = '',
+      owner?: 'general_chat' | 'calendar' | 'search' | 'memory' | 'tasks' | 'notes' | 'focus' | 'device_ui' | 'visual' | 'other',
+      disposition?: 'conversation' | 'tool' | 'clarify',
+    ) => {
+      setLastInputRoute(route);
+      if (!shadowTurn) return;
+      shadowRouteSequence += 1;
+      void reportAgentShadowLegacyRoute(shadowTurn, {
+        route,
+        owner,
+        action,
+        frontendCommand,
+        disposition,
+        sequence: shadowRouteSequence,
+      });
+    };
     // Any new input supersedes the response currently being generated.
     // Local commands can return without reaching the conversation lane, so
     // any existing response must be cancelled before command routing begins.
@@ -338,7 +389,11 @@ export default function App() {
             const resolvedTaskTargets = pendingTaskCompletionTargetsRef.current;
             setPendingInterpreterCommand(null);
             pendingTaskCompletionTargetsRef.current = [];
-            setLastInputRoute('Confirmed fuzzy interpreter command');
+            setTrackedInputRoute(
+              'Confirmed fuzzy interpreter command',
+              commandToRun.action,
+              commandToRun.frontendCommand,
+            );
             setLastInterpreterAction(commandToRun.action);
             setLastInterpreterFrontendCommand(commandToRun.frontendCommand);
             setLastInterpreterConfidence(commandToRun.confidence);
@@ -368,7 +423,11 @@ export default function App() {
             setShowThinkingBubble(false);
             setPendingInterpreterCommand(null);
             pendingTaskCompletionTargetsRef.current = [];
-            setLastInputRoute('Cancelled pending command');
+            setTrackedInputRoute(
+              'Cancelled pending command',
+              pendingInterpreterCommand.action,
+              pendingInterpreterCommand.frontendCommand,
+            );
             setLastLocalCommand('Pending command cancelled');
             setLastInterpreterReason(`User cancelled pending command: ${pendingInterpreterCommand.frontendCommand}.`);
 
@@ -394,7 +453,7 @@ export default function App() {
         ? getDirectFocusTerminalCommandMatch(trimmed)
         : null;
     if (directFocusTerminalCommandMatch) {
-      setLastInputRoute('Direct Focus terminal safety gate');
+      setTrackedInputRoute('Direct Focus terminal safety gate');
       setLastInterpreterAction('focus_terminal_transition');
       setLastInterpreterFrontendCommand('apply verified focus terminal transition');
       setLastInterpreterConfidence(1);
@@ -500,10 +559,11 @@ export default function App() {
       if (commandRoute !== 'confirmed') {
         pendingTaskCompletionTargetsRef.current = [];
       }
-      setLastInputRoute(
+      setTrackedInputRoute(
         naturalTaskCompletionTarget && commandRoute === 'exact'
           ? 'Natural Focus task completion'
           : getLocalCommandRouteLabel(commandRoute),
+        commandMatch.command,
       );
       if (commandRoute === 'exact') {
         setLastInterpreterAction('Not used');
@@ -536,7 +596,7 @@ export default function App() {
             confidence: commandRoute === 'exact' ? 1 : 0.9,
             reason: 'Google Calendar event creation requires confirmation before writing to the real calendar.',
           });
-          setLastInputRoute(commandRoute === 'exact' ? 'Exact Google Calendar write needs confirmation' : 'Fuzzy Google Calendar write needs confirmation');
+          setTrackedInputRoute(commandRoute === 'exact' ? 'Exact Google Calendar write needs confirmation' : 'Fuzzy Google Calendar write needs confirmation');
           setLastLocalCommand('Pending Google Calendar write');
           setLastInterpreterAction(commandRoute === 'exact' ? 'Not used' : commandMatch.command);
           setLastInterpreterFrontendCommand(frontendCommand);
@@ -552,7 +612,7 @@ export default function App() {
               const targetEditEvent = await findCalendarEventForChange();
               const editDescription = describeCalendarEditPayload(commandMatch.calendarEdit);
               if (!targetEditEvent) {
-                setLastInputRoute('Edit command had no target');
+                setTrackedInputRoute('Edit command had no target', commandMatch.command);
                 setLastLocalCommand('No calendar event to edit');
 
                 const assistantMsg = createAssistantMessage(
@@ -576,7 +636,7 @@ export default function App() {
                 confidence: commandRoute === 'exact' ? 1 : 0.9,
                 reason: 'Calendar event editing requires confirmation before changing the calendar.',
               });
-              setLastInputRoute(commandRoute === 'exact' ? 'Exact Google Calendar edit needs confirmation' : 'Fuzzy Google Calendar edit needs confirmation');
+              setTrackedInputRoute(commandRoute === 'exact' ? 'Exact Google Calendar edit needs confirmation' : 'Fuzzy Google Calendar edit needs confirmation');
               setLastLocalCommand('Pending calendar edit');
               setLastInterpreterAction(commandRoute === 'exact' ? 'Not used' : commandMatch.command);
               setLastInterpreterFrontendCommand(frontendCommand);
@@ -626,7 +686,7 @@ export default function App() {
                 ? `I understood that as: ${taskCompletionPreviewDescription}. This changes local task data. Say "confirm" to run it, or "cancel" to stop.`
                 : `I understood that as: ${frontendCommand}. This changes or deletes local data. Say "confirm" to run it, or "cancel" to stop.`;
         if (isCalendarDeleteCommand && !targetDeleteEvent) {
-          setLastInputRoute('Delete command had no target');
+          setTrackedInputRoute('Delete command had no target', commandMatch.command, frontendCommand);
           setLastLocalCommand('No matching calendar event to delete');
           const assistantMsg = createAssistantMessage(now, confirmationPrompt);
           setMessages((prev) => [...prev, userMsg, assistantMsg]);
@@ -634,7 +694,7 @@ export default function App() {
           return;
         }
         if (isTaskCompletionCommand && !taskCompletionPreviewDescription) {
-          setLastInputRoute('Task completion command had no target');
+          setTrackedInputRoute('Task completion command had no target', commandMatch.command, frontendCommand);
           setLastLocalCommand('No matching open task to complete');
           setLastInterpreterReason(
             'Task completion reference did not resolve to an open task, so no confirmation was created.',
@@ -662,7 +722,7 @@ export default function App() {
           confidence: commandRoute === 'exact' ? 1 : 0.9,
           reason: destructiveConfirmationReason,
         });
-        setLastInputRoute(
+        setTrackedInputRoute(
           naturalTaskCompletionTarget
             ? 'Natural Focus task completion needs safety confirmation'
             : commandRoute === 'exact'
@@ -702,7 +762,7 @@ export default function App() {
       ) {
         finishListening();
         setShowThinkingBubble(false);
-        setLastInputRoute('Confirmed task identity changed');
+        setTrackedInputRoute('Confirmed task identity changed');
         setLastLocalCommand('Confirmed task completion not executed');
         setLastInterpreterReason(
           'The task identity changed after confirmation was requested, so QMeet refused to re-resolve a different task.',
@@ -749,7 +809,7 @@ export default function App() {
           );
           finishListening();
           setShowThinkingBubble(false);
-          setLastInputRoute('Linked Focus task completion not committed');
+          setTrackedInputRoute('Linked Focus task completion not committed');
           setLastLocalCommand('Confirmed Focus task completion not executed');
           setLastInterpreterReason(
             'Canonical Focus task progress did not verify, so the confirmed linked task was left open locally.',
@@ -980,7 +1040,7 @@ ${confirmedTaskCompletionResult.completedTasks
     if (displayText) {
       finishListening();
       setShowThinkingBubble(false);
-      setLastInputRoute('Interpreter command failed to execute');
+      setTrackedInputRoute('Interpreter command failed to execute');
       setLastLocalCommand('Interpreter unmatched command');
       setLastInterpreterReason('The interpreter returned a frontend command, but the frontend parser could not execute it.');
       if (!chatActive) setChatActive(true);
@@ -995,6 +1055,33 @@ ${confirmedTaskCompletionResult.completedTasks
     const semanticFocusLifecycle =
       semanticLifecyclePreflightBeforeCommandRouting ??
       await interpretSemanticFocusLifecycle(trimmed);
+    const inferredFocusMutationGuard =
+      await shouldGuardInferredSemanticFocusMutationWithShadow({
+        shadowTurn,
+        userMessage: trimmed,
+        semanticKind: semanticFocusLifecycle.kind,
+        mutationChangesTitle:
+          semanticFocusLifecycle.kind === 'update' &&
+          Boolean(semanticFocusLifecycle.commandMatch.focusSession?.title),
+        activeFocusId: routingActiveSession?.id ?? null,
+      });
+    if (inferredFocusMutationGuard.guarded) {
+      setPendingInterpreterCommand(null);
+      setTrackedInputRoute(
+        'Deterministic active-Focus mutation safety gate',
+        'focus.help',
+        '',
+        'focus',
+        'conversation',
+      );
+      setLastLocalCommand('No Focus mutation');
+      setLastInterpreterAction('focus_help');
+      setLastInterpreterFrontendCommand('None');
+      setLastInterpreterConfidence(null);
+      setLastInterpreterReason(inferredFocusMutationGuard.reason);
+      await sendNormalChat(trimmed, visibleUserText);
+      return;
+    }
     if (
       semanticFocusLifecycle.kind === 'update' ||
       semanticFocusLifecycle.kind === 'start' ||
@@ -1035,7 +1122,7 @@ ${confirmedTaskCompletionResult.completedTasks
         },
       } as const;
       const route = routeByKind[semanticFocusLifecycle.kind];
-      setLastInputRoute(route.route);
+      setTrackedInputRoute(route.route);
       setLastInterpreterAction(route.action);
       setLastInterpreterFrontendCommand(route.frontendCommand);
       setLastInterpreterConfidence(semanticFocusLifecycle.confidence);
@@ -1053,7 +1140,7 @@ ${confirmedTaskCompletionResult.completedTasks
       finishListening();
       setShowThinkingBubble(false);
       setPendingInterpreterCommand(null);
-      setLastInputRoute('Semantic Focus lifecycle cancellation');
+      setTrackedInputRoute('Semantic Focus lifecycle cancellation');
       setLastLocalCommand('Focus lifecycle change cancelled');
       setLastInterpreterAction('focus_lifecycle_cancelled');
       setLastInterpreterFrontendCommand('None');
@@ -1081,7 +1168,7 @@ ${confirmedTaskCompletionResult.completedTasks
       finishListening();
       setShowThinkingBubble(false);
       setPendingInterpreterCommand(null);
-      setLastInputRoute('Semantic Focus lifecycle change blocked safely');
+      setTrackedInputRoute('Semantic Focus lifecycle change blocked safely');
       setLastLocalCommand('Focus lifecycle change not executed');
       setLastInterpreterAction('focus_lifecycle_change');
       setLastInterpreterFrontendCommand('None');
@@ -1109,7 +1196,7 @@ ${confirmedTaskCompletionResult.completedTasks
       finishListening();
       setShowThinkingBubble(false);
       setPendingInterpreterCommand(null);
-      setLastInputRoute('Focus lifecycle command blocked by semantic mismatch');
+      setTrackedInputRoute('Focus lifecycle command blocked by semantic mismatch');
       setLastLocalCommand('Focus lifecycle change not executed');
       setLastInterpreterAction('focus_lifecycle_change');
       setLastInterpreterFrontendCommand('None');
@@ -1154,7 +1241,11 @@ ${confirmedTaskCompletionResult.completedTasks
           confidence: interpretedCommand.confidence,
           reason: interpretedCommand.reason || 'Interpreter mapped fuzzy input to a destructive frontend command.',
         });
-        setLastInputRoute('Fuzzy interpreter needs safety confirmation');
+        setTrackedInputRoute(
+          'Fuzzy interpreter needs safety confirmation',
+          interpretedCommand.action,
+          interpretedCommand.frontendCommand,
+        );
         setLastLocalCommand('Pending destructive command');
         setLastInterpreterAction(interpretedCommand.action);
         setLastInterpreterFrontendCommand(interpretedCommand.frontendCommand);
@@ -1173,7 +1264,11 @@ ${confirmedTaskCompletionResult.completedTasks
         interpretedCommand.frontendCommand &&
         interpretedCommand.confidence >= COMMAND_INTERPRETER_EXECUTE_THRESHOLD
       ) {
-        setLastInputRoute('Fuzzy interpreter command');
+        setTrackedInputRoute(
+          'Fuzzy interpreter command',
+          interpretedCommand.action,
+          interpretedCommand.frontendCommand,
+        );
         setLastInterpreterAction(interpretedCommand.action);
         setLastInterpreterFrontendCommand(interpretedCommand.frontendCommand);
         setLastInterpreterConfidence(interpretedCommand.confidence);
@@ -1187,7 +1282,11 @@ ${confirmedTaskCompletionResult.completedTasks
       ) {
         finishListening();
         setShowThinkingBubble(false);
-        setLastInputRoute('Interpreter needs confirmation');
+        setTrackedInputRoute(
+          'Interpreter needs confirmation',
+          interpretedCommand.action,
+          interpretedCommand.frontendCommand,
+        );
         setLastLocalCommand('Interpreter clarification');
         setLastInterpreterAction(interpretedCommand.action);
         setLastInterpreterFrontendCommand(interpretedCommand.frontendCommand);
@@ -1213,7 +1312,7 @@ ${confirmedTaskCompletionResult.completedTasks
         return;
       }
       setPendingInterpreterCommand(null);
-      setLastInputRoute('Normal chat');
+      setTrackedInputRoute('Normal chat');
       setLastLocalCommand('No local command');
       setLastInterpreterAction(interpretedCommand.action || 'none');
       setLastInterpreterFrontendCommand(interpretedCommand.frontendCommand || 'None');
@@ -1222,7 +1321,7 @@ ${confirmedTaskCompletionResult.completedTasks
     } catch (error) {
       console.warn('Command interpreter unavailable, falling back to chat:', error);
       setPendingInterpreterCommand(null);
-      setLastInputRoute('Interpreter unavailable → normal chat');
+      setTrackedInputRoute('Interpreter unavailable → normal chat');
       setLastLocalCommand('No local command');
       setLastInterpreterAction('Error');
       setLastInterpreterFrontendCommand('None');

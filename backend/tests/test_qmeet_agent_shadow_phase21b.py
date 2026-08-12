@@ -69,7 +69,7 @@ class AgentShadowPhase21BTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.decision.turnOwner, "calendar")
         self.assertFalse(result.decision.focusRelevant)
         self.assertEqual(result.decision.disposition, "tool")
-        self.assertEqual(result.decision.proposedAction, "calendar.create_event")
+        self.assertEqual(result.decision.proposedAction, "add-calendar-event")
 
     async def test_active_focus_does_not_own_general_knowledge_turn(self):
         result = await self._decide("why is the sky blue?")
@@ -86,14 +86,14 @@ class AgentShadowPhase21BTests(unittest.IsolatedAsyncioTestCase):
         result = await self._decide("search for reviews of the Framework Laptop")
         self.assertEqual(result.decision.turnOwner, "search")
         self.assertFalse(result.decision.focusRelevant)
-        self.assertEqual(result.decision.proposedAction, "search.run")
+        self.assertEqual(result.decision.proposedAction, "run-search")
 
     async def test_explicit_focus_goal_update_is_focus_owned_tool_work(self):
         result = await self._decide("goal: I want to clearly show the progress of my app")
         self.assertEqual(result.decision.turnOwner, "focus")
         self.assertTrue(result.decision.focusRelevant)
         self.assertEqual(result.decision.disposition, "tool")
-        self.assertEqual(result.decision.proposedAction, "focus.update_goal")
+        self.assertEqual(result.decision.proposedAction, "update-focus-session")
 
     async def test_substantive_help_continuation_is_focus_conversation_not_mutation(self):
         recent = [

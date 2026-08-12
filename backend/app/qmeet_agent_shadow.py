@@ -43,6 +43,119 @@ DEFAULT_MODEL = (
 
 AGENT_SHADOW_SCHEMA_VERSION = "phase21b-v1"
 
+ACTION_VOCABULARY_VERSION = "canonical-local-command-v1"
+
+CANONICAL_TOOL_ACTIONS_BY_OWNER: dict[str, tuple[str, ...]] = {
+    "focus": (
+        "start-focus-session",
+        "update-focus-session",
+        "read-focus-session",
+        "end-focus-session",
+        "focus-to-tasks",
+        "summarize-focus-session",
+        "save-focus-summary",
+        "end-focus-with-summary",
+        "read-last-focus-session",
+        "read-focus-history",
+        "resume-last-focus-session",
+        "recap-focus-activity",
+        "enhanced-focus-recap",
+        "prepare-calendar-focus",
+        "create-meeting-follow-up-tasks",
+        "wrap-up-meeting-focus",
+        "link-visual-to-focus",
+        "read-focus-visuals",
+    ),
+    "calendar": (
+        "open-calendar",
+        "add-calendar-event",
+        "read-calendar",
+        "refresh-calendar",
+        "edit-last-event",
+        "delete-calendar-event",
+        "delete-last-event",
+        "clear-calendar",
+        "show-today",
+        "show-tomorrow",
+        "close-calendar",
+    ),
+    "search": ("open-search", "run-search", "clear-search", "close-search"),
+    "memory": ("open-memory", "close-memory", "read-memory"),
+    "tasks": ("remember-task", "mark-task-done", "delete-last-task", "clear-done-tasks", "read-memory"),
+    "notes": ("open-notes", "new-note", "save-note", "read-notes", "delete-last-note", "close-notes", "clear-notes"),
+    "device_ui": (
+        "help",
+        "identity",
+        "open-menu",
+        "close-menu",
+        "open-settings",
+        "close-settings",
+        "go-home",
+        "show-status",
+        "close-status",
+        "hide-status",
+        "voice-output-on",
+        "voice-output-off",
+        "voice-output-toggle",
+        "voice-slower",
+        "voice-faster",
+        "voice-normal",
+        "stop-speaking",
+        "what-did-you-hear",
+        "cancel-action",
+        "clear-chat",
+        "end-chat",
+        "close-generic",
+    ),
+    "visual": (
+        "create-visual-observation",
+        "read-visual-context",
+        "read-last-visual-observation",
+        "read-visual-history",
+        "summarize-visual-context",
+        "link-visual-to-focus",
+        "read-focus-visuals",
+        "clear-visual-context",
+        "delete-last-visual-observation",
+    ),
+}
+
+CANONICAL_TOOL_ACTIONS = {
+    action
+    for actions in CANONICAL_TOOL_ACTIONS_BY_OWNER.values()
+    for action in actions
+}
+
+ACTION_ALIASES = {
+    "focus.start": "start-focus-session",
+    "start-focus": "start-focus-session",
+    "focus.read": "read-focus-session",
+    "read-focus": "read-focus-session",
+    "read-current-focus": "read-focus-session",
+    "focus.update-goal": "update-focus-session",
+    "focus.update-context": "update-focus-session",
+    "set-focus-goal": "update-focus-session",
+    "focus.end": "end-focus-session",
+    "focus.complete": "end-focus-session",
+    "focus.resume": "resume-last-focus-session",
+    "search.run": "run-search",
+    "search.open": "open-search",
+    "calendar.read": "read-calendar",
+    "calendar.create-event": "add-calendar-event",
+    "calendar.update-event": "edit-last-event",
+    "calendar.delete-event": "delete-calendar-event",
+    "memory.open": "open-memory",
+    "memory.read": "read-memory",
+    "tasks.read": "read-memory",
+    "tasks.create": "remember-task",
+    "tasks.complete": "mark-task-done",
+    "tasks.clear-completed": "clear-done-tasks",
+    "notes.open": "open-notes",
+    "notes.read": "read-notes",
+    "notes.save": "save-note",
+    "notes.delete": "delete-last-note",
+}
+
 AGENT_SHADOW_SYSTEM_PROMPT = """
 You are the Phase 21B shadow decision layer for QMeet, an AI-first tablet assistant.
 
@@ -74,7 +187,13 @@ Disposition:
 - tool: a deterministic capability should execute or read authoritative state.
 - clarify: one clarification is genuinely required before safe/useful execution.
 
-Proposed action is semantic shadow metadata only. It is NOT executable and must never be treated as proof that anything changed.
+Proposed action is shadow metadata only. It is NOT executable and must never be treated as proof that anything changed.
+
+Canonical action vocabulary:
+- If disposition=tool, proposedAction MUST be one exact action id from capabilityContract. Do not invent aliases such as focus.read, read_current_focus, calendar.create_event, or custom compound action names.
+- If disposition=conversation, proposedAction MUST be focus.help for Focus-owned work or conversation.respond otherwise.
+- If disposition=clarify, proposedAction MUST be none.
+- proposedCapability identifies the owning capability; proposedAction identifies the exact canonical action contract.
 
 Current prototype constraint: Calendar event creation currently understands today/tomorrow reliably; do not treat unsupported farther-day wording as a Focus-routing issue.
 
@@ -97,57 +216,50 @@ GLOBAL_CAPABILITY_CONTRACT = [
     {
         "owner": "general_chat",
         "authority": "read-only conversation",
-        "actions": ["conversation.respond"],
+        "conversationActions": ["conversation.respond"],
     },
     {
         "owner": "focus",
         "authority": "canonical verified Focus backend",
-        "actions": [
-            "focus.start",
-            "focus.read",
-            "focus.update_goal",
-            "focus.update_context",
-            "focus.end",
-            "focus.resume",
-            "focus.help",
-        ],
+        "actions": list(CANONICAL_TOOL_ACTIONS_BY_OWNER["focus"]),
+        "conversationActions": ["focus.help"],
         "rule": "Active Focus is context, not universal ownership.",
     },
     {
         "owner": "calendar",
         "authority": "deterministic Calendar handlers / verified Google Calendar writes",
-        "actions": ["calendar.read", "calendar.create_event", "calendar.update_event", "calendar.delete_event"],
+        "actions": list(CANONICAL_TOOL_ACTIONS_BY_OWNER["calendar"]),
         "constraint": "Current natural event-date support is primarily today/tomorrow.",
     },
     {
         "owner": "search",
         "authority": "deterministic search capability",
-        "actions": ["search.run", "search.open"],
+        "actions": list(CANONICAL_TOOL_ACTIONS_BY_OWNER["search"]),
     },
     {
         "owner": "memory",
         "authority": "deterministic Memory state",
-        "actions": ["memory.open", "memory.read"],
+        "actions": list(CANONICAL_TOOL_ACTIONS_BY_OWNER["memory"]),
     },
     {
         "owner": "tasks",
         "authority": "deterministic task handlers plus canonical Focus lineage when linked",
-        "actions": ["tasks.read", "tasks.create", "tasks.complete", "tasks.clear_completed"],
+        "actions": list(CANONICAL_TOOL_ACTIONS_BY_OWNER["tasks"]),
     },
     {
         "owner": "notes",
         "authority": "deterministic note handlers",
-        "actions": ["notes.open", "notes.read", "notes.save", "notes.delete"],
+        "actions": list(CANONICAL_TOOL_ACTIONS_BY_OWNER["notes"]),
     },
     {
         "owner": "device_ui",
         "authority": "deterministic frontend/device handlers",
-        "actions": ["ui.navigate", "voice.control"],
+        "actions": list(CANONICAL_TOOL_ACTIONS_BY_OWNER["device_ui"]),
     },
     {
         "owner": "visual",
         "authority": "deterministic camera/visual-context handlers",
-        "actions": ["visual.open_camera", "visual.read_context", "visual.link_to_focus"],
+        "actions": list(CANONICAL_TOOL_ACTIONS_BY_OWNER["visual"]),
     },
 ]
 
@@ -172,6 +284,7 @@ class LegacyRouteObservation(BaseModel):
     action: str = Field(default="", max_length=160)
     frontendCommand: str = Field(default="", max_length=600)
     disposition: Disposition | None = None
+    sequence: int = Field(default=0, ge=0, le=1000)
 
 
 class AgentShadowRequest(BaseModel):
@@ -225,6 +338,24 @@ class AgentShadowResponse(BaseModel):
     schemaVersion: str = AGENT_SHADOW_SCHEMA_VERSION
     turnId: str
     decision: AgentShadowDecision
+    comparison: AgentShadowComparison
+
+
+class AgentShadowCompareRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    turnId: str = Field(min_length=1, max_length=200)
+    legacyObservation: LegacyRouteObservation
+
+
+class AgentShadowCompareResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ok: bool = True
+    mode: Literal["shadow"] = "shadow"
+    schemaVersion: str = AGENT_SHADOW_SCHEMA_VERSION
+    turnId: str
+    foundDecision: bool
     comparison: AgentShadowComparison
 
 
@@ -311,6 +442,43 @@ def _recent_focus_continuation(request: AgentShadowRequest, focus: dict[str, Any
     return bool(_tokens(recent_text) & _tokens(focus_text))
 
 
+def _recent_focus_work_reply(request: AgentShadowRequest, focus: dict[str, Any] | None) -> bool:
+    if not focus:
+        return False
+    message = _normalize(request.userMessage)
+    if not message or len(message.split()) > 10:
+        return False
+    if re.fullmatch(r"(?:hi|hello|hey|hello there|hey there|good morning|good afternoon|good evening)[.!?]*", message):
+        return False
+    if re.search(
+        r"\b(?:calendar|appointment|schedule|search|look up|memory|task|tasks|note|notes|unmute|mute|voice|camera)\b",
+        message,
+    ):
+        return False
+    recent_assistant_messages = [
+        item.content
+        for item in request.recentConversation[-8:]
+        if item.role == "assistant"
+    ][-3:]
+    recent_assistant = " ".join(recent_assistant_messages)
+    if not recent_assistant:
+        return False
+    focus_text = " ".join(
+        str(focus.get(key) or "")
+        for key in ("title", "objective", "deliverable", "subject")
+    )
+    if not (_tokens(recent_assistant) & _tokens(focus_text)):
+        return False
+    prompt_like = bool(
+        "?" in recent_assistant
+        or re.search(
+            r"\b(?:would you like|which|what|where|start with|for example|choose|section|points|outline|features|milestones|challenges|next steps)\b",
+            recent_assistant.casefold(),
+        )
+    )
+    return prompt_like
+
+
 def _focus_is_relevant(request: AgentShadowRequest, focus: dict[str, Any] | None) -> bool:
     message = request.userMessage
     normalized = _normalize(message)
@@ -318,7 +486,11 @@ def _focus_is_relevant(request: AgentShadowRequest, focus: dict[str, Any] | None
         return False
     if re.search(r"\b(?:my|our|this|that|current|active)\s+(?:focus|goal)\b|\bfocus session\b", normalized):
         return True
-    return _focus_overlap(message, focus) or _recent_focus_continuation(request, focus)
+    return (
+        _focus_overlap(message, focus)
+        or _recent_focus_continuation(request, focus)
+        or _recent_focus_work_reply(request, focus)
+    )
 
 
 def _decision(
@@ -477,7 +649,7 @@ def _fallback_shadow_decision(
             arguments={"request": request.userMessage},
         )
 
-    if _recent_focus_continuation(request, focus) or (
+    if _recent_focus_continuation(request, focus) or _recent_focus_work_reply(request, focus) or (
         focus_relevant and re.search(r"\b(?:help|outline|points|draft|write|ideas|structure|practice|improve)\b", text)
     ):
         return _decision(
@@ -524,6 +696,49 @@ def _fallback_shadow_decision(
     )
 
 
+
+def _action_token(value: str) -> str:
+    return re.sub(r"-+", "-", value.strip().casefold().replace("_", "-"))
+
+
+def canonical_action_id(value: str) -> str | None:
+    token = _action_token(value)
+    if not token or token == "none":
+        return None
+    if token in CANONICAL_TOOL_ACTIONS:
+        return token
+    return ACTION_ALIASES.get(token)
+
+
+def normalize_shadow_decision(decision: AgentShadowDecision) -> AgentShadowDecision:
+    if decision.disposition == "conversation":
+        expected_action = "focus.help" if decision.turnOwner == "focus" else "conversation.respond"
+        expected_capability = "focus" if decision.turnOwner == "focus" else "none"
+        return decision.model_copy(
+            update={
+                "proposedCapability": expected_capability,
+                "proposedAction": expected_action,
+            }
+        )
+
+    if decision.disposition == "clarify":
+        return decision.model_copy(update={"proposedAction": "none"})
+
+    canonical = canonical_action_id(decision.proposedAction)
+    if canonical is not None:
+        return decision.model_copy(update={"proposedAction": canonical})
+
+    arguments = dict(decision.proposedArguments)
+    raw_action = decision.proposedAction.strip()
+    if raw_action and raw_action.casefold() != "none":
+        arguments.setdefault("shadowRawProposedAction", raw_action)
+    return decision.model_copy(
+        update={
+            "proposedAction": "none",
+            "proposedArguments": arguments,
+        }
+    )
+
 def _json_object_from_text(text: str) -> dict[str, Any] | None:
     stripped = text.strip()
     if not stripped:
@@ -547,7 +762,7 @@ def _json_object_from_text(text: str) -> dict[str, Any] | None:
 
 def _sanitize_model_decision(value: dict[str, Any]) -> AgentShadowDecision | None:
     try:
-        return AgentShadowDecision.model_validate(value)
+        return normalize_shadow_decision(AgentShadowDecision.model_validate(value))
     except Exception:
         return None
 
@@ -595,6 +810,59 @@ async def _generate_model_decision(
         return None
 
 
+def _infer_legacy_owner(observation: LegacyRouteObservation) -> TurnOwner | None:
+    if observation.owner is not None:
+        return observation.owner
+    joined = " ".join(
+        part for part in (observation.route, observation.action, observation.frontendCommand) if part
+    ).casefold()
+    if "normal chat" in joined or "conversation" in joined:
+        return "general_chat"
+    if "calendar" in joined or "event" in joined or "appointment" in joined:
+        return "calendar"
+    if "search" in joined or "review" in joined or "look-up" in joined or "lookup" in joined:
+        return "search"
+    if "task" in joined or "todo" in joined or "to-do" in joined:
+        return "tasks"
+    if "note" in joined:
+        return "notes"
+    if "memory" in joined:
+        return "memory"
+    if "focus" in joined or "goal" in joined:
+        return "focus"
+    if "camera" in joined or "visual" in joined:
+        return "visual"
+    if any(token in joined for token in ("voice", "mute", "unmute", "panel", "menu", "launcher", "go home", "status")):
+        return "device_ui"
+    return None
+
+
+def _infer_legacy_disposition(observation: LegacyRouteObservation) -> Disposition | None:
+    if observation.disposition is not None:
+        return observation.disposition
+    route = observation.route.casefold()
+    joined = " ".join((observation.route, observation.action, observation.frontendCommand)).casefold()
+    if "normal chat" in route or "conversation" in route:
+        return "conversation"
+    if any(token in route for token in ("needs confirmation", "blocked", "no target", "clarification", "cancellation", "failed to execute")):
+        return "clarify"
+    owner = _infer_legacy_owner(observation)
+    if owner is not None and owner != "general_chat":
+        return "tool"
+    if joined:
+        return "conversation"
+    return None
+
+
+def normalize_legacy_observation(observation: LegacyRouteObservation) -> LegacyRouteObservation:
+    return observation.model_copy(
+        update={
+            "owner": _infer_legacy_owner(observation),
+            "disposition": _infer_legacy_disposition(observation),
+        }
+    )
+
+
 def compare_shadow_to_legacy(
     decision: AgentShadowDecision,
     observation: LegacyRouteObservation | None,
@@ -607,10 +875,19 @@ def compare_shadow_to_legacy(
         None if observation.disposition is None else observation.disposition == decision.disposition
     )
     action_agreement = None
-    if observation.action.strip():
-        shadow_leaf = decision.proposedAction.split(".")[-1].replace("_", "-")
-        legacy_action = observation.action.strip().casefold().replace("_", "-")
-        action_agreement = shadow_leaf in legacy_action or legacy_action in shadow_leaf
+    if (
+        decision.disposition == "tool"
+        and observation.disposition == "tool"
+        and observation.action.strip()
+    ):
+        shadow_action = canonical_action_id(decision.proposedAction)
+        legacy_action = canonical_action_id(observation.action)
+        if shadow_action is None:
+            action_agreement = False
+        elif legacy_action is None:
+            action_agreement = _action_token(decision.proposedAction) == _action_token(observation.action)
+        else:
+            action_agreement = shadow_action == legacy_action
 
     disagreements: list[str] = []
     if owner_agreement is False:
@@ -653,6 +930,7 @@ def _append_telemetry(
     path.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "recordType": "decision",
         "schemaVersion": AGENT_SHADOW_SCHEMA_VERSION,
         "mode": "shadow",
         "turnId": turn_id,
@@ -668,39 +946,277 @@ def _append_telemetry(
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def shadow_status() -> dict[str, Any]:
+def _read_decision_record(turn_id: str) -> dict[str, Any] | None:
     path = _telemetry_path()
-    count = 0
-    compared = 0
-    disagreements = 0
-    owner_disagreements = 0
-    if path.exists():
-        with path.open("r", encoding="utf-8") as handle:
-            for raw_line in handle:
-                line = raw_line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                count += 1
-                comparison = record.get("comparison") or {}
-                if comparison.get("compared"):
-                    compared += 1
-                if comparison.get("disagreementSummary"):
-                    disagreements += 1
-                if comparison.get("ownerAgreement") is False:
-                    owner_disagreements += 1
+    if not path.exists():
+        return None
+    with path.open("r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            record_type = record.get("recordType") or "decision"
+            if record_type == "decision" and record.get("turnId") == turn_id:
+                return record
+    return None
+
+
+def _append_late_comparison(
+    *,
+    turn_id: str,
+    decision: AgentShadowDecision,
+    observation: LegacyRouteObservation,
+    comparison: AgentShadowComparison,
+) -> None:
+    path = _telemetry_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "recordType": "comparison",
+        "schemaVersion": AGENT_SHADOW_SCHEMA_VERSION,
+        "mode": "shadow",
+        "turnId": turn_id,
+        "sequence": observation.sequence,
+        "decision": decision.model_dump(),
+        "legacyObservation": observation.model_dump(),
+        "comparison": comparison.model_dump(),
+    }
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def compare_agent_shadow_turn(request: AgentShadowCompareRequest) -> AgentShadowCompareResponse:
+    record = _read_decision_record(request.turnId)
+    if record is None:
+        return AgentShadowCompareResponse(
+            turnId=request.turnId,
+            foundDecision=False,
+            comparison=AgentShadowComparison(compared=False),
+        )
+    try:
+        decision = AgentShadowDecision.model_validate(record.get("decision") or {})
+    except Exception:
+        return AgentShadowCompareResponse(
+            turnId=request.turnId,
+            foundDecision=False,
+            comparison=AgentShadowComparison(compared=False),
+        )
+    observation = normalize_legacy_observation(request.legacyObservation)
+    comparison = compare_shadow_to_legacy(decision, observation)
+    _append_late_comparison(
+        turn_id=request.turnId,
+        decision=decision,
+        observation=observation,
+        comparison=comparison,
+    )
+    return AgentShadowCompareResponse(
+        turnId=request.turnId,
+        foundDecision=True,
+        comparison=comparison,
+    )
+
+
+def _load_shadow_telemetry() -> tuple[
+    list[str],
+    dict[str, dict[str, Any]],
+    dict[str, tuple[int, LegacyRouteObservation, AgentShadowComparison]],
+    int,
+]:
+    path = _telemetry_path()
+    decision_order: list[str] = []
+    decisions: dict[str, dict[str, Any]] = {}
+    comparison_by_turn: dict[str, tuple[int, LegacyRouteObservation, AgentShadowComparison]] = {}
+    comparison_event_count = 0
+    if not path.exists():
+        return decision_order, decisions, comparison_by_turn, comparison_event_count
+
+    with path.open("r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            record_type = record.get("recordType") or "decision"
+            turn_id = str(record.get("turnId") or "")
+            if not turn_id:
+                continue
+
+            if record_type == "decision":
+                if turn_id not in decisions:
+                    decision_order.append(turn_id)
+                decisions[turn_id] = record
+                comparison_raw = record.get("comparison") or {}
+                observation_raw = record.get("legacyObservation") or {}
+                if comparison_raw.get("compared") and observation_raw:
+                    try:
+                        observation = LegacyRouteObservation.model_validate(observation_raw)
+                        comparison = AgentShadowComparison.model_validate(comparison_raw)
+                    except Exception:
+                        continue
+                    comparison_by_turn[turn_id] = (0, observation, comparison)
+                continue
+
+            if record_type != "comparison":
+                continue
+
+            comparison_event_count += 1
+            try:
+                observation = LegacyRouteObservation.model_validate(record.get("legacyObservation") or {})
+                comparison = AgentShadowComparison.model_validate(record.get("comparison") or {})
+            except Exception:
+                continue
+            sequence = int(record.get("sequence") or observation.sequence or 0)
+            existing = comparison_by_turn.get(turn_id)
+            if existing is None or sequence >= existing[0]:
+                comparison_by_turn[turn_id] = (sequence, observation, comparison)
+
+    for turn_id, comparison_record in list(comparison_by_turn.items()):
+        decision_record = decisions.get(turn_id) or {}
+        try:
+            decision = normalize_shadow_decision(
+                AgentShadowDecision.model_validate(decision_record.get("decision") or {})
+            )
+        except Exception:
+            continue
+        sequence, observation, _stored_comparison = comparison_record
+        normalized_observation = normalize_legacy_observation(observation)
+        comparison_by_turn[turn_id] = (
+            sequence,
+            normalized_observation,
+            compare_shadow_to_legacy(decision, normalized_observation),
+        )
+
+    return decision_order, decisions, comparison_by_turn, comparison_event_count
+
+
+def _is_focus_replacement_risk(
+    decision_record: dict[str, Any],
+    comparison_record: tuple[int, LegacyRouteObservation, AgentShadowComparison] | None,
+) -> bool:
+    if comparison_record is None:
+        return False
+    if not str(decision_record.get("activeFocusId") or "").strip():
+        return False
+
+    _, observation, _ = comparison_record
+    joined = " ".join(
+        part
+        for part in (observation.route, observation.action, observation.frontendCommand)
+        if part
+    ).casefold()
+    legacy_started_focus = (
+        "focus start" in joined
+        or "start_focus" in joined
+        or "start-focus" in joined
+        or "start focus" in joined
+    )
+    if not legacy_started_focus:
+        return False
+
+    try:
+        decision = normalize_shadow_decision(
+            AgentShadowDecision.model_validate(decision_record.get("decision") or {})
+        )
+    except Exception:
+        return False
+    return not (
+        decision.turnOwner == "focus"
+        and decision.disposition == "tool"
+        and decision.proposedAction == "start-focus-session"
+    )
+
+
+def shadow_recent(*, limit: int = 20, disagreements_only: bool = False) -> dict[str, Any]:
+    bounded_limit = max(1, min(int(limit), 50))
+    decision_order, decisions, comparison_by_turn, _ = _load_shadow_telemetry()
+    items: list[dict[str, Any]] = []
+
+    for turn_id in reversed(decision_order):
+        decision_record = decisions.get(turn_id) or {}
+        comparison_record = comparison_by_turn.get(turn_id)
+        comparison = comparison_record[2] if comparison_record is not None else None
+        if disagreements_only and not (comparison and comparison.disagreementSummary):
+            continue
+
+        legacy_observation = comparison_record[1] if comparison_record is not None else None
+        normalized_decision_payload = decision_record.get("decision") or {}
+        try:
+            normalized_decision_payload = normalize_shadow_decision(
+                AgentShadowDecision.model_validate(normalized_decision_payload)
+            ).model_dump()
+        except Exception:
+            pass
+
+        items.append(
+            {
+                "timestamp": str(decision_record.get("timestamp") or ""),
+                "turnId": turn_id,
+                "userMessage": str(decision_record.get("userMessage") or ""),
+                "activeFocusId": decision_record.get("activeFocusId"),
+                "activeFocusTitle": decision_record.get("activeFocusTitle"),
+                "decision": normalized_decision_payload,
+                "compared": bool(comparison and comparison.compared),
+                "comparisonSequence": comparison_record[0] if comparison_record is not None else None,
+                "legacyObservation": legacy_observation.model_dump() if legacy_observation else None,
+                "comparison": comparison.model_dump() if comparison else None,
+                "focusReplacementRisk": _is_focus_replacement_risk(
+                    decision_record,
+                    comparison_record,
+                ),
+            }
+        )
+        if len(items) >= bounded_limit:
+            break
+
     return {
         "ok": True,
         "mode": "shadow",
         "schemaVersion": AGENT_SHADOW_SCHEMA_VERSION,
+        "actionVocabularyVersion": ACTION_VOCABULARY_VERSION,
+        "count": len(items),
+        "limit": bounded_limit,
+        "disagreementsOnly": disagreements_only,
+        "items": items,
+    }
+
+
+def shadow_status() -> dict[str, Any]:
+    path = _telemetry_path()
+    decision_order, decisions, comparison_by_turn, comparison_event_count = _load_shadow_telemetry()
+    comparisons = [comparison for _, _, comparison in comparison_by_turn.values()]
+    compared = sum(1 for comparison in comparisons if comparison.compared)
+    disagreements = sum(1 for comparison in comparisons if comparison.disagreementSummary)
+    owner_disagreements = sum(1 for comparison in comparisons if comparison.ownerAgreement is False)
+    disposition_disagreements = sum(1 for comparison in comparisons if comparison.dispositionAgreement is False)
+    action_disagreements = sum(1 for comparison in comparisons if comparison.actionAgreement is False)
+    focus_replacement_risks = sum(
+        1
+        for turn_id, decision_record in decisions.items()
+        if _is_focus_replacement_risk(decision_record, comparison_by_turn.get(turn_id))
+    )
+    return {
+        "ok": True,
+        "mode": "shadow",
+        "schemaVersion": AGENT_SHADOW_SCHEMA_VERSION,
+        "actionVocabularyVersion": ACTION_VOCABULARY_VERSION,
         "model": DEFAULT_MODEL,
-        "eventCount": count,
+        "eventCount": len(decision_order),
         "comparedCount": compared,
+        "uncomparedCount": max(0, len(decision_order) - compared),
+        "comparisonEventCount": comparison_event_count,
         "disagreementCount": disagreements,
         "ownerDisagreementCount": owner_disagreements,
+        "dispositionDisagreementCount": disposition_disagreements,
+        "actionDisagreementCount": action_disagreements,
+        "focusReplacementRiskCount": focus_replacement_risks,
         "path": str(path),
     }
 
@@ -708,7 +1224,9 @@ def shadow_status() -> dict[str, Any]:
 async def decide_agent_shadow(request: AgentShadowRequest) -> AgentShadowResponse:
     focus = active_focus_snapshot()
     model_decision = await _generate_model_decision(request, focus)
-    decision = model_decision or _fallback_shadow_decision(request, focus)
+    decision = normalize_shadow_decision(
+        model_decision or _fallback_shadow_decision(request, focus)
+    )
     comparison = compare_shadow_to_legacy(decision, request.legacyObservation)
     turn_id = f"shadow-{uuid4().hex}"
     _append_telemetry(
