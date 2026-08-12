@@ -9,6 +9,7 @@ from app.agent import (
     sse_event,
     stream_reply,
 )
+from app.conversation_lane import ConversationLaneRequest, stream_conversation_lane
 from app.schemas import ChatRequest, ChatResponse
 from app.work_context import (
     WorkContextError,
@@ -17,6 +18,7 @@ from app.work_context import (
     prepare_background_chat_message,
     record_background_assistant_reply,
 )
+
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
@@ -88,6 +90,41 @@ async def chat_stream(req: ChatRequest):
             yield sse_event(
                 "error",
                 {"message": "QMeet backend hit an unexpected streaming error."},
+            )
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/chat/conversation/stream")
+async def conversation_stream(req: ConversationLaneRequest):
+    """Read-only visible conversation lane after deterministic routing.
+
+    This route intentionally does not call the legacy background Focus wrapper.
+    Its path also remains outside the Focus/background middleware observation
+    allowlists, so a turn already classified as conversation cannot gain a
+    second visible Focus owner here.
+    """
+
+    async def event_generator():
+        try:
+            yield sse_event("start", {"ok": True})
+            async for chunk in stream_conversation_lane(req):
+                yield sse_event("chunk", {"text": chunk})
+            yield sse_event("done", {"ok": True})
+        except AgentUserFacingError as exc:
+            yield sse_event("error", {"message": str(exc)})
+        except Exception:
+            yield sse_event(
+                "error",
+                {"message": "QMeet backend hit an unexpected conversation streaming error."},
             )
 
     return StreamingResponse(

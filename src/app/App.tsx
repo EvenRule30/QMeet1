@@ -15,6 +15,14 @@ import { resetConversation, interpretCommandIntent } from "./api";
 import { parseCommand, type CommandMatch } from './commands';
 import { observeExactLocalRoute } from './lib/focusTurnHeaders';
 import {
+  cancelActiveToolContinuation,
+  continueAfterVerifiedToolUpdate,
+} from './lib/toolContinuation';
+import {
+  cancelActiveConversationLane,
+  sendConversationLaneMessage,
+} from './lib/conversationLane';
+import {
   describeTaskCompletionPreviewTargets,
   describeUnresolvedTaskCompletionRequest,
   resolveTaskCompletionPreviewTargets,
@@ -95,6 +103,7 @@ type SplitCommandResult = {
 export default function App() {
   const [chatActive, setChatActive] = useState(false);
   const [orbState, setOrbState] = useState<OrbState>('idle');
+  const [conversationResponseActive, setConversationResponseActive] = useState(false);
   const backendStatus = useBackendStatus();
   const [activePanel, setActivePanel] = useState<ActivePanel>('none');
   const {
@@ -112,7 +121,6 @@ export default function App() {
     setShowThinkingBubble,
     responseActive,
     cancelActiveResponse,
-    sendStreamingChat,
     clearMessages,
   } = useChatStreamController({
     setOrbState,
@@ -242,6 +250,9 @@ export default function App() {
   const handleEndChat = useCallback(async () => {
     stopCurrentSpeech();
     cancelActiveResponse();
+    cancelActiveToolContinuation();
+    cancelActiveConversationLane();
+    setConversationResponseActive(false);
     finishListening();
     setShowThinkingBubble(false);
     setActivePanel('none');
@@ -263,6 +274,9 @@ export default function App() {
   const goHome = useCallback(() => {
     stopCurrentSpeech();
     cancelActiveResponse();
+    cancelActiveToolContinuation();
+    cancelActiveConversationLane();
+    setConversationResponseActive(false);
     finishListening();
     setShowThinkingBubble(false);
     setActivePanel('none');
@@ -288,18 +302,35 @@ export default function App() {
 
   // Calendar state and Google Calendar actions live in useCalendarController.
   const sendNormalChat = useCallback(async (messageText: string, visibleUserText: string) => {
-    await sendStreamingChat(messageText, visibleUserText);
-  }, [sendStreamingChat]);
+    await sendConversationLaneMessage({
+      userMessage: messageText,
+      visibleUserText,
+      recentMessages: messages,
+      activePanel,
+      voiceOutputEnabled,
+      setMessages,
+      setShowThinkingBubble,
+      setOrbState,
+      setChatActive,
+      setConversationResponseActive,
+      speakAssistantText,
+    });
+  }, [activePanel, messages, speakAssistantText, voiceOutputEnabled]);
 
-  const handleSend = useCallback(async (text: string, displayText?: string, commandRoute: CommandRoute = 'exact', forcedCommandMatch?: CommandMatch, confirmedTaskTargets: ConfirmedTaskTarget[] = []) => {
+  const handleSend = useCallback(async (text: string, displayText?: string, commandRoute: CommandRoute = 'exact', forcedCommandMatch?: CommandMatch, confirmedTaskTargets: ConfirmedTaskTarget[] = [], continuationUserText?: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
     const visibleUserText = (displayText ?? trimmed).trim() || trimmed;
+    const continuationUserTextForTool =
+      (continuationUserText ?? visibleUserText).trim() || visibleUserText;
     // Any new input supersedes the response currently being generated.
-    // Local commands can return without reaching sendStreamingChat, so the
-    // existing stream must be cancelled before command routing begins.
+    // Local commands can return without reaching the conversation lane, so
+    // any existing response must be cancelled before command routing begins.
     stopCurrentSpeech();
     cancelActiveResponse();
+    cancelActiveToolContinuation();
+    cancelActiveConversationLane();
+    setConversationResponseActive(false);
     setOrbState('thinking');
     if (pendingInterpreterCommand) {
           if (isConfirmingPendingCommand(trimmed)) {
@@ -329,6 +360,7 @@ export default function App() {
               'confirmed',
               confirmedTaskCommandMatch,
               resolvedTaskTargets,
+              commandToRun.originalText,
             );
           }
           if (isRejectingPendingCommand(trimmed)) {
@@ -931,7 +963,18 @@ ${confirmedTaskCompletionResult.completedTasks
         enabled: shouldSpeakConfirmation,
         rate: confirmationSpeechRate,
       });
-
+      await continueAfterVerifiedToolUpdate({
+        userMessage: continuationUserTextForTool,
+        command: commandMatch.command,
+        toolResult: confirmationContent,
+        recentMessages: messages,
+        activePanel,
+        voiceOutputEnabled,
+        setMessages,
+        setShowThinkingBubble,
+        setOrbState,
+        speakAssistantText,
+      });
       return;
     }
     if (displayText) {
@@ -1187,15 +1230,13 @@ ${confirmedTaskCompletionResult.completedTasks
       setLastInterpreterReason(getInterpreterUnavailableReason(error));
     }
     await sendNormalChat(trimmed, visibleUserText);
-  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveMemoryTask, memoryTasks, activeSession, reconcileFocusProjection, markMemoryTaskDone, clearCompletedTasks, getMemoryReadout, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, deleteCalendarEventByCriteria, findCalendarEventForDeletion, findCalendarEventForChange, getNextCalendarEventForDeletion, getNextCalendarEventForChange, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, runWebSearch, clearSearchState, searchError, pushResultToast, addRecentAction, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents, sendNormalChat]);
-
+  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveMemoryTask, memoryTasks, activeSession, reconcileFocusProjection, markMemoryTaskDone, clearCompletedTasks, getMemoryReadout, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, deleteCalendarEventByCriteria, findCalendarEventForDeletion, findCalendarEventForChange, getNextCalendarEventForDeletion, getNextCalendarEventForChange, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, runWebSearch, clearSearchState, searchError, pushResultToast, addRecentAction, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents, messages, sendNormalChat]);
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
     const handleLegacyFocusEndRequest = (event: Event) => {
       const detail = (event as CustomEvent<{ action?: unknown }>).detail;
       if (detail?.action !== 'end') return;
-
       // MemoryOverlay still clears the legacy local projection before it emits
       // this UI-intent event. Restore the verified projection captured by App
       // before routing so readVerifiedFocusProjection() cannot observe a false
@@ -1207,7 +1248,6 @@ ${confirmedTaskCompletionResult.completedTasks
       setActivePanel('none');
       void handleSend('end focus anyway', 'End focus');
     };
-
     window.addEventListener(
       'qmeet-active-session-command',
       handleLegacyFocusEndRequest as EventListener,
@@ -1219,12 +1259,13 @@ ${confirmedTaskCompletionResult.completedTasks
       );
     };
   }, [activeSession, handleSend]);
-
   const handleOrbClick = useCallback(() => {
     // If QMeet is actively generating/streaming, tapping the orb should cancel
     // that response instead of starting a new listening session.
-    if (responseActive) {
+    if (responseActive || conversationResponseActive) {
       cancelActiveResponse();
+      cancelActiveConversationLane();
+      setConversationResponseActive(false);
       setChatActive(true);
       setMessages((prev) => [
         ...prev,
@@ -1253,7 +1294,7 @@ ${confirmedTaskCompletionResult.completedTasks
       setLastNormalizedTranscript(normalizedTranscript);
       handleSend(normalizedTranscript);
     });
-  }, [orbState, responseActive, handleSend, stopCurrentSpeech, cancelActiveResponse, setMessages, startListening]);
+  }, [orbState, responseActive, conversationResponseActive, handleSend, stopCurrentSpeech, cancelActiveResponse, setMessages, startListening]);
   const statusSnapshot = new Date();
     const statusDateLabel = statusSnapshot.toLocaleDateString([], {
       weekday: 'short',
