@@ -20,6 +20,7 @@ from app.focus.native_read_middleware import (  # noqa: E402
     FocusNativeReadRouteMiddleware,
 )
 from app.routers import (  # noqa: E402
+    agent_shadow,
     calendar,
     chat,
     command,
@@ -68,6 +69,7 @@ async def health():
 
 
 app.include_router(chat.router)
+app.include_router(agent_shadow.router)
 app.include_router(tool_continuation.router)
 app.include_router(command.router)
 app.include_router(search.router)
