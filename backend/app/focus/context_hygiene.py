@@ -114,8 +114,15 @@ _QUESTION_WORDS = {
 }
 
 _GENERIC_OUTCOME_WORDS = {
+    "accomplish",
+    "accomplishment",
+    "achieve",
+    "achiev",
+    "aim",
     "goal",
+    "objective",
     "outcome",
+    "purpose",
     "result",
     "success",
     "successful",
@@ -432,9 +439,20 @@ def equivalent_values_to_remove(
     ]
 
 
-def _question_is_generic_outcome(question: str) -> bool:
+def question_is_generic_outcome(question: str) -> bool:
+    """Return whether a coaching question asks for the Focus's desired outcome.
+
+    Phase 20W4 broadens the deterministic vocabulary to cover natural coaching
+    prompts such as "What would you like this meeting to accomplish?" while
+    keeping the decision token-based and independent of the model classifier.
+    """
     tokens = set(semantic_tokens(question))
     return bool(tokens & _GENERIC_OUTCOME_WORDS)
+
+
+def _question_is_generic_outcome(question: str) -> bool:
+    # Backward-compatible private alias for the existing Phase 20W3 call sites.
+    return question_is_generic_outcome(question)
 
 
 def question_answered_by_focus_update(

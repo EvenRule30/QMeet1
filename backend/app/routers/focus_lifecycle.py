@@ -36,6 +36,7 @@ from app.focus.lifecycle import (
     update_focus_verified,
 )
 from app.focus.pending_question_resolution import (
+    pending_outcome_objective_for_current_focus,
     resolve_pending_question_after_verified_update,
 )
 from app.focus.summary import (
@@ -316,6 +317,18 @@ async def interpret_semantic_focus_update(
 async def interpret_semantic_focus_lifecycle(
     request: SemanticFocusLifecyclePreflightRequest,
 ) -> SemanticFocusLifecyclePreflightResult:
+    pending_objective = pending_outcome_objective_for_current_focus(request.message)
+    if pending_objective is not None:
+        return SemanticFocusLifecyclePreflightResult(
+            intent="update",
+            possibleMutation=True,
+            objective=pending_objective,
+            objectiveSpecified=True,
+            confidence=1.0,
+            reason="phase20w4-pending-outcome-answer",
+            sourceTurnId=request.sourceTurnId,
+        )
+
     context_signal = classify_focus_context(request.message)
     if context_signal is not None:
         return SemanticFocusLifecyclePreflightResult(

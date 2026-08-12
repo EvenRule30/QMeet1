@@ -1,16 +1,99 @@
 from __future__ import annotations
 
+import re
+
 from app.focus import store as focus_store
-from app.focus.context_hygiene import question_answered_by_focus_update
+from app.focus.context_hygiene import (
+    question_answered_by_focus_update,
+    question_is_generic_outcome,
+)
 from app.focus.lifecycle import (
     NativeFocusLifecycleError,
     NativeFocusUpdateRequest,
     NativeFocusUpdateResult,
 )
-from app.focus.models import FocusEventType, FocusStatus
+from app.focus.models import FocusEventType, FocusStatus, PendingQuestion
 
 
 _NATIVE_GOAL_QUESTION_SOURCE = "focus-native-goal-question-resolution"
+
+
+_OPEN_FOCUS_STATUSES = {
+    FocusStatus.CLARIFYING,
+    FocusStatus.ACTIVE,
+    FocusStatus.WAITING,
+    FocusStatus.READY,
+}
+
+
+def _clean_text(value: object, max_length: int = 500) -> str:
+    return " ".join(str(value or "").split()).strip()[:max_length].strip()
+
+
+def pending_outcome_objective_from_message(
+    pending_question: PendingQuestion | None,
+    message: str,
+) -> str | None:
+    """Extract a natural desired outcome only when the pending question owns it.
+
+    This is intentionally context-sensitive. The same sentence can be a normal
+    preference when no outcome question is pending, but "I want to present the
+    progress of my app" is a direct answer to "What would you like this meeting
+    to accomplish?" and should therefore become the canonical Focus objective.
+    """
+    if pending_question is None:
+        return None
+
+    question = _clean_text(getattr(pending_question, "question", ""))
+    if not question or not question_is_generic_outcome(question):
+        return None
+
+    text = _clean_text(message)
+    if not text or "?" in text:
+        return None
+    if re.match(
+        r"^(?:what|who|which|when|where|why|how|is|are|do|does|can|could|would|should)\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return None
+
+    patterns = (
+        r"^(?:i|we)\s+(?:really\s+)?want\s+to\s+(.+)$",
+        r"^(?:i|we)(?:'d|\s+would)\s+like\s+to\s+(.+)$",
+        r"^(?:i|we)\s+(?:really\s+)?want\s+(?:this|the)\s+"
+        r"(?:meeting|focus|session|work)\s+to\s+(.+)$",
+        r"^(?:my|our)\s+(?:goal|objective|aim)\s+is\s+(?:to\s+)?(.+)$",
+        r"^to\s+(.+)$",
+    )
+    for pattern in patterns:
+        match = re.match(pattern, text, flags=re.IGNORECASE)
+        if not match:
+            continue
+        objective = _clean_text(match.group(1)).rstrip(" .!?;:")
+        if not objective:
+            return None
+        # Avoid promoting a disguised information request into the Focus goal.
+        if re.match(
+            r"^(?:know|find out)\s+(?:when|where|who|what|why|how)\b",
+            objective,
+            flags=re.IGNORECASE,
+        ):
+            return None
+        return objective
+    return None
+
+
+def pending_outcome_objective_for_current_focus(message: str) -> str | None:
+    """Return a canonical objective candidate for the current pending outcome question."""
+    state = focus_store.get_state()
+    if (
+        state.status not in _OPEN_FOCUS_STATUSES
+        or not str(state.focusId or "").strip()
+        or getattr(state, "pendingAction", None) is not None
+    ):
+        return None
+    return pending_outcome_objective_from_message(state.pendingQuestion, message)
 
 
 def resolve_pending_question_after_verified_update(
