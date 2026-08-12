@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 import openai
 from openai import AsyncOpenAI
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.agent import (
     AgentUserFacingError,
@@ -61,6 +61,24 @@ class ConversationLaneMessage(BaseModel):
         return value.strip()
 
 
+class ConversationOwnershipHint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["agent-shadow"]
+    turnOwner: Literal["general_chat", "focus"]
+    focusRelevant: bool
+    confidence: float = Field(ge=0.9, le=1.0)
+    turnId: str = Field(min_length=1, max_length=160)
+
+    @model_validator(mode="after")
+    def validate_owner_focus_relevance(self) -> "ConversationOwnershipHint":
+        if self.turnOwner == "general_chat" and self.focusRelevant:
+            raise ValueError("general_chat ownership cannot mark Focus relevant")
+        if self.turnOwner == "focus" and not self.focusRelevant:
+            raise ValueError("focus ownership must mark Focus relevant")
+        return self
+
+
 class ConversationLaneRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -70,6 +88,7 @@ class ConversationLaneRequest(BaseModel):
         max_length=16,
     )
     uiContext: dict[str, Any] = Field(default_factory=dict)
+    ownershipHint: ConversationOwnershipHint | None = None
 
     @field_validator("userMessage")
     @classmethod
@@ -152,6 +171,41 @@ def _focus_relevant_to_current_turn(
     return bool(focus_tokens & _context_tokens(user_message))
 
 
+def _promoted_ownership_instruction(
+    hint: ConversationOwnershipHint | None,
+) -> str | None:
+    if hint is None:
+        return None
+
+    if hint.turnOwner == "general_chat":
+        return (
+            "Promoted read-only turn ownership from QMeet agent shadow: general_chat. "
+            "This classification controls conversation context only and authorizes no tool or mutation. "
+            "Answer the current message independently. Recent Focus-related conversation is background only; "
+            "do not mention, summarize, or steer back to the Focus unless the current user message explicitly does so."
+        )
+
+    return (
+        "Promoted read-only turn ownership from QMeet agent shadow: focus. "
+        "This classification controls conversation context only and authorizes no tool or mutation. "
+        "Treat the current turn as substantive work inside the active canonical Focus and use that Focus context when available."
+    )
+
+
+def _focus_relevant_for_request(
+    request: ConversationLaneRequest,
+    focus: dict[str, Any] | None,
+) -> bool:
+    hint = request.ownershipHint
+    if hint is not None:
+        if hint.turnOwner == "general_chat":
+            return False
+        if hint.turnOwner == "focus":
+            return bool(focus)
+
+    return _focus_relevant_to_current_turn(request.userMessage, focus)
+
+
 def _compact_focus_context(focus: dict[str, Any]) -> dict[str, Any]:
     return {
         "focusId": focus.get("focusId"),
@@ -216,10 +270,15 @@ def build_conversation_lane_input(
 
     messages: list[dict[str, str]] = [developer_contexts[0]]
     messages.append({"role": "developer", "content": CONVERSATION_LANE_PROMPT})
+
+    ownership_instruction = _promoted_ownership_instruction(request.ownershipHint)
+    if ownership_instruction:
+        messages.append({"role": "developer", "content": ownership_instruction})
+
     messages.extend(developer_contexts[1:])
 
     focus = active_focus_snapshot()
-    if _focus_relevant_to_current_turn(request.userMessage, focus):
+    if _focus_relevant_for_request(request, focus):
         messages.append(
             {
                 "role": "developer",

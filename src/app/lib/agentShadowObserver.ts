@@ -62,6 +62,79 @@ export type AgentShadowResponse = {
 };
 
 
+
+
+export type PromotedConversationOwnershipHint = {
+  source: 'agent-shadow';
+  turnOwner: 'general_chat' | 'focus';
+  focusRelevant: boolean;
+  confidence: number;
+  turnId: string;
+};
+
+const CONVERSATION_OWNERSHIP_MIN_CONFIDENCE = 0.9;
+const CONVERSATION_OWNERSHIP_WAIT_MS = 900;
+
+function waitForTimeout(milliseconds: number): Promise<null> {
+  return new Promise((resolve) => {
+    globalThis.setTimeout(() => resolve(null), milliseconds);
+  });
+}
+
+export async function resolvePromotedConversationOwnership(options: {
+  shadowTurn: Promise<AgentShadowResponse | null> | null;
+  activeFocusId: string | null;
+  timeoutMs?: number;
+}): Promise<PromotedConversationOwnershipHint | null> {
+  if (!options.shadowTurn) return null;
+
+  const timeoutMs = Math.max(0, options.timeoutMs ?? CONVERSATION_OWNERSHIP_WAIT_MS);
+
+  try {
+    const shadow = await Promise.race([
+      options.shadowTurn,
+      waitForTimeout(timeoutMs),
+    ]);
+    if (!shadow?.decision) return null;
+
+    const decision = shadow.decision;
+    if (decision.disposition !== 'conversation') return null;
+    if (decision.confidence < CONVERSATION_OWNERSHIP_MIN_CONFIDENCE) return null;
+
+    if (decision.turnOwner === 'general_chat' && decision.focusRelevant === false) {
+      return {
+        source: 'agent-shadow',
+        turnOwner: 'general_chat',
+        focusRelevant: false,
+        confidence: decision.confidence,
+        turnId: shadow.turnId,
+      };
+    }
+
+    if (
+      decision.turnOwner === 'focus' &&
+      decision.focusRelevant === true &&
+      Boolean(options.activeFocusId)
+    ) {
+      return {
+        source: 'agent-shadow',
+        turnOwner: 'focus',
+        focusRelevant: true,
+        confidence: decision.confidence,
+        turnId: shadow.turnId,
+      };
+    }
+
+    return null;
+  } catch (error) {
+    console.warn(
+      'Agent shadow conversation ownership was unavailable. Conversation heuristics remain authoritative.',
+      error,
+    );
+    return null;
+  }
+}
+
 export type AgentShadowFocusMutationGuardResult = {
   guarded: boolean;
   shadow: AgentShadowResponse | null;

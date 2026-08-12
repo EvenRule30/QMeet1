@@ -60,7 +60,9 @@ def test_app_routes_guarded_replacement_to_conversation_before_executor() -> Non
     mutation = text.index("semanticFocusLifecycle.kind === 'update'", guarded)
     assert lifecycle < guard < guarded < mutation
     block = text[guarded:mutation]
-    assert "await sendNormalChat(trimmed, visibleUserText);" in block
+    assert "await sendNormalChat(" in block
+    assert "shadowTurn" in block
+    assert "routingActiveSession?.id ?? null" in block
     assert "handleSend(" not in block
     assert "apply semantic focus start" not in block
     assert "apply semantic focus update" not in block

@@ -25,6 +25,7 @@ import {
 import {
   observeAgentShadowTurn,
   reportAgentShadowLegacyRoute,
+  resolvePromotedConversationOwnership,
   shouldGuardInferredSemanticFocusMutationWithShadow,
 } from './lib/agentShadowObserver';
 import {
@@ -105,6 +106,31 @@ type SplitCommandResult = {
   shouldSpeakConfirmation?: boolean;
   confirmationSpeechRate?: number;
 };
+
+const FOCUS_COMMANDS_THAT_PRESERVE_ACTIVE_PANEL = new Set<string>([
+  'start-focus-session',
+  'update-focus-session',
+  'resume-last-focus-session',
+  'end-focus-session',
+  'end-focus-with-summary',
+  'wrap-up-meeting-focus',
+  'save-focus-summary',
+  'focus-to-tasks',
+  'create-meeting-follow-up-tasks',
+  'prepare-calendar-focus',
+  'read-focus-session',
+  'summarize-focus-session',
+]);
+
+function shouldSuppressLegacyFocusMemoryOpen(
+  command: string,
+  panel: ActivePanel,
+): boolean {
+  return (
+    panel === 'memory' &&
+    FOCUS_COMMANDS_THAT_PRESERVE_ACTIVE_PANEL.has(command)
+  );
+}
 export default function App() {
   const [chatActive, setChatActive] = useState(false);
   const [orbState, setOrbState] = useState<OrbState>('idle');
@@ -306,12 +332,23 @@ export default function App() {
 
 
   // Calendar state and Google Calendar actions live in useCalendarController.
-  const sendNormalChat = useCallback(async (messageText: string, visibleUserText: string) => {
+  const sendNormalChat = useCallback(async (
+    messageText: string,
+    visibleUserText: string,
+    shadowTurn: ReturnType<typeof observeAgentShadowTurn> | null = null,
+    activeFocusId: string | null = activeSession?.id ?? null,
+  ) => {
+    const ownershipHint = await resolvePromotedConversationOwnership({
+      shadowTurn,
+      activeFocusId,
+    });
+
     await sendConversationLaneMessage({
       userMessage: messageText,
       visibleUserText,
       recentMessages: messages,
       activePanel,
+      ownershipHint,
       voiceOutputEnabled,
       setMessages,
       setShowThinkingBubble,
@@ -320,7 +357,7 @@ export default function App() {
       setConversationResponseActive,
       speakAssistantText,
     });
-  }, [activePanel, messages, speakAssistantText, voiceOutputEnabled]);
+  }, [activePanel, activeSession?.id, messages, speakAssistantText, voiceOutputEnabled]);
 
   const handleSend = useCallback(async (text: string, displayText?: string, commandRoute: CommandRoute = 'exact', forcedCommandMatch?: CommandMatch, confirmedTaskTargets: ConfirmedTaskTarget[] = [], continuationUserText?: string) => {
     const trimmed = text.trim();
@@ -876,13 +913,19 @@ ${confirmedTaskCompletionResult.completedTasks
         clearNotes,
         getNotesReadout,
       });
+      const setPanelForMemoryCommand = (panel: ActivePanel) => {
+        if (shouldSuppressLegacyFocusMemoryOpen(commandMatch.command, panel)) {
+          return;
+        }
+        setActivePanel(panel);
+      };
       const memoryCommandResult: SplitCommandResult = notesCommandResult.handled
         ? { handled: false }
         : confirmedTaskCommandResult.handled
           ? confirmedTaskCommandResult
           : await handleMemoryCommand(commandMatch, {
             voiceOutputEnabled,
-            setActivePanel,
+            setActivePanel: setPanelForMemoryCommand,
             closePanel,
             getMemoryReadout,
             saveMemoryTask,
@@ -1079,7 +1122,12 @@ ${confirmedTaskCompletionResult.completedTasks
       setLastInterpreterFrontendCommand('None');
       setLastInterpreterConfidence(null);
       setLastInterpreterReason(inferredFocusMutationGuard.reason);
-      await sendNormalChat(trimmed, visibleUserText);
+      await sendNormalChat(
+        trimmed,
+        visibleUserText,
+        shadowTurn,
+        routingActiveSession?.id ?? null,
+      );
       return;
     }
     if (
@@ -1328,7 +1376,12 @@ ${confirmedTaskCompletionResult.completedTasks
       setLastInterpreterConfidence(null);
       setLastInterpreterReason(getInterpreterUnavailableReason(error));
     }
-    await sendNormalChat(trimmed, visibleUserText);
+    await sendNormalChat(
+      trimmed,
+      visibleUserText,
+      shadowTurn,
+      routingActiveSession?.id ?? null,
+    );
   }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveMemoryTask, memoryTasks, activeSession, reconcileFocusProjection, markMemoryTaskDone, clearCompletedTasks, getMemoryReadout, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, deleteCalendarEventByCriteria, findCalendarEventForDeletion, findCalendarEventForChange, getNextCalendarEventForDeletion, getNextCalendarEventForChange, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, runWebSearch, clearSearchState, searchError, pushResultToast, addRecentAction, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents, messages, sendNormalChat]);
   useEffect(() => {
     if (typeof window === 'undefined') return;

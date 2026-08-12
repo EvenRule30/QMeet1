@@ -9,12 +9,21 @@ type ConversationLaneMessage = {
   content: string;
 };
 
+export type ConversationOwnershipHint = {
+  source: 'agent-shadow';
+  turnOwner: 'general_chat' | 'focus';
+  focusRelevant: boolean;
+  confidence: number;
+  turnId: string;
+};
+
 type ConversationLaneRequest = {
   userMessage: string;
   recentConversation: ConversationLaneMessage[];
   uiContext: {
     activePanel: ActivePanel;
   };
+  ownershipHint: ConversationOwnershipHint | null;
 };
 
 type ConversationLaneUiOptions = {
@@ -22,6 +31,7 @@ type ConversationLaneUiOptions = {
   visibleUserText: string;
   recentMessages: Message[];
   activePanel: ActivePanel;
+  ownershipHint?: ConversationOwnershipHint | null;
   voiceOutputEnabled: boolean;
   setMessages: StateSetter<Message[]>;
   setShowThinkingBubble: StateSetter<boolean>;
@@ -43,14 +53,48 @@ let activeConversationLaneController: AbortController | null = null;
 let conversationMessageSequence = 0;
 let conversationRunToken = 0;
 
+type PromotedConversationOwner = 'general_chat' | 'focus';
+const conversationMessageOwners = new Map<string, PromotedConversationOwner>();
+const CONVERSATION_OWNER_REGISTRY_LIMIT = 240;
+
+function getPromotedConversationOwner(
+  hint: ConversationOwnershipHint | null | undefined,
+): PromotedConversationOwner | null {
+  if (!hint) return null;
+  return hint.turnOwner;
+}
+
+function rememberConversationMessageOwner(
+  messageId: string,
+  owner: PromotedConversationOwner | null,
+): void {
+  if (!owner) return;
+  conversationMessageOwners.set(messageId, owner);
+  while (conversationMessageOwners.size > CONVERSATION_OWNER_REGISTRY_LIMIT) {
+    const oldestKey = conversationMessageOwners.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    conversationMessageOwners.delete(oldestKey);
+  }
+}
+
 export function cancelActiveConversationLane(): void {
   conversationRunToken += 1;
   activeConversationLaneController?.abort();
   activeConversationLaneController = null;
 }
 
-function buildRecentConversation(messages: Message[]): ConversationLaneMessage[] {
-  return messages
+function buildRecentConversation(
+  messages: Message[],
+  ownershipHint: ConversationOwnershipHint | null | undefined,
+): ConversationLaneMessage[] {
+  const promotedOwner = getPromotedConversationOwner(ownershipHint);
+  const recentMessages = promotedOwner === 'general_chat'
+    ? messages.filter(
+        (message) => conversationMessageOwners.get(message.id) === 'general_chat',
+      )
+    : messages;
+
+  return recentMessages
     .slice(-10)
     .map((message): ConversationLaneMessage | null => {
       const content = message.content.trim();
@@ -73,10 +117,14 @@ function buildRecentConversation(messages: Message[]): ConversationLaneMessage[]
 function buildRequest(options: ConversationLaneUiOptions): ConversationLaneRequest {
   return {
     userMessage: options.userMessage.trim(),
-    recentConversation: buildRecentConversation(options.recentMessages),
+    recentConversation: buildRecentConversation(
+      options.recentMessages,
+      options.ownershipHint,
+    ),
     uiContext: {
       activePanel: options.activePanel,
     },
+    ownershipHint: options.ownershipHint ?? null,
   };
 }
 
@@ -124,19 +172,28 @@ function getPayloadString(
   return typeof value === 'string' ? value : '';
 }
 
-function createUserMessage(content: string): Message {
+function createUserMessage(
+  content: string,
+  owner: PromotedConversationOwner | null,
+): Message {
   conversationMessageSequence += 1;
+  const id = `conversation-user-${Date.now()}-${conversationMessageSequence}`;
+  rememberConversationMessageOwner(id, owner);
   return {
-    id: `conversation-user-${Date.now()}-${conversationMessageSequence}`,
+    id,
     role: 'user',
     content,
     timestamp: new Date(),
   };
 }
 
-function createAssistantMessageId(): string {
+function createAssistantMessageId(
+  owner: PromotedConversationOwner | null,
+): string {
   conversationMessageSequence += 1;
-  return `conversation-assistant-${Date.now()}-${conversationMessageSequence}`;
+  const id = `conversation-assistant-${Date.now()}-${conversationMessageSequence}`;
+  rememberConversationMessageOwner(id, owner);
+  return id;
 }
 
 function appendOrUpdateAssistantMessage(
@@ -261,7 +318,8 @@ export async function sendConversationLaneMessage(
   const controller = new AbortController();
   activeConversationLaneController = controller;
 
-  const assistantMessageId = createAssistantMessageId();
+  const promotedOwner = getPromotedConversationOwner(options.ownershipHint);
+  const assistantMessageId = createAssistantMessageId(promotedOwner);
   let reply = '';
   let visibleChunkSeen = false;
   let handedOffToSpeech = false;
@@ -272,7 +330,7 @@ export async function sendConversationLaneMessage(
   options.setOrbState('thinking');
   options.setMessages((previous) => [
     ...previous,
-    createUserMessage(visibleUserText),
+    createUserMessage(visibleUserText, promotedOwner),
   ]);
 
   try {
