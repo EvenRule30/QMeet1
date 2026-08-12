@@ -135,6 +135,185 @@ export async function resolvePromotedConversationOwnership(options: {
   }
 }
 
+export type ExplicitDeterministicRouteBeforeAgent = {
+  kind: 'exact-command' | 'focus-mutation';
+  reason: string;
+};
+
+const EXPLICIT_COMMAND_LEAD = /^(?:please\s+)?(?:open|show|display|bring\s+up|pull\s+up|close|hide|go|return|take|read|list|search|look\s+up|find|add|create|schedule|delete|remove|erase|edit|change|update|mark|complete|save|clear|start|begin|resume|restart|end|stop|finish|rename|retitle|set|turn|enable|disable|mute|unmute|increase|decrease|summarize|recap|prepare|wrap|link)\b/i;
+const EXPLICIT_FOCUS_FIELD_ASSIGNMENT = /^(?:please\s+)?(?:(?:focus\s+)?(?:goal|objective|mode|title))\s*[:=]\s*\S/i;
+const EXPLICIT_FOCUS_LIFECYCLE_COMMANDS = new Set([
+  'start-focus-session',
+  'update-focus-session',
+  'resume-last-focus-session',
+  'end-focus-session',
+  'end-focus-with-summary',
+]);
+
+/**
+ * Phase 21B agent-first routing inspects an exact local parse before asking the
+ * model to own the turn, but parsing alone is not authority to execute it.
+ * Bare aliases such as "health", "menu", or "status" remain contextual and
+ * may be overridden by the agent. Explicit command syntax such as
+ * "show status", "open menu", or "rename the focus ..." keeps the existing
+ * deterministic route authoritative.
+ */
+export function resolveExplicitDeterministicRouteBeforeAgent(options: {
+  userMessage: string;
+  parsedCommand: string | null;
+}): ExplicitDeterministicRouteBeforeAgent | null {
+  const text = options.userMessage.trim();
+  if (!text) return null;
+
+  if (EXPLICIT_FOCUS_FIELD_ASSIGNMENT.test(text)) {
+    return {
+      kind: 'focus-mutation',
+      reason: 'The user used an explicit Focus field assignment before agent-first ownership.',
+    };
+  }
+
+  if (!options.parsedCommand || !EXPLICIT_COMMAND_LEAD.test(text)) {
+    return null;
+  }
+
+  if (EXPLICIT_FOCUS_LIFECYCLE_COMMANDS.has(options.parsedCommand)) {
+    return {
+      kind: 'focus-mutation',
+      reason: 'The user used explicit Focus lifecycle/update command syntax.',
+    };
+  }
+
+  return {
+    kind: 'exact-command',
+    reason: 'The user used explicit deterministic command syntax.',
+  };
+}
+
+export type PromotedSingleIntentDecision = {
+  source: 'agent-shadow';
+  turnOwner:
+    | 'general_chat'
+    | 'calendar'
+    | 'search'
+    | 'memory'
+    | 'tasks'
+    | 'notes'
+    | 'focus'
+    | 'device_ui'
+    | 'visual';
+  focusRelevant: boolean;
+  disposition: 'conversation' | 'tool';
+  proposedCapability: string;
+  proposedAction: string;
+  confidence: number;
+  turnId: string;
+};
+
+const AGENT_FIRST_SINGLE_INTENT_MIN_CONFIDENCE = 0.9;
+const AGENT_FIRST_SINGLE_INTENT_WAIT_MS = 2500;
+const PROMOTABLE_TOOL_OWNERS = new Set<PromotedSingleIntentDecision['turnOwner']>([
+  'calendar',
+  'search',
+  'memory',
+  'tasks',
+  'notes',
+  'focus',
+  'device_ui',
+  'visual',
+]);
+
+export async function resolvePromotedSingleIntentDecision(options: {
+  shadowTurn: Promise<AgentShadowResponse | null> | null;
+  activeFocusId: string | null;
+  timeoutMs?: number;
+}): Promise<PromotedSingleIntentDecision | null> {
+  if (!options.shadowTurn) return null;
+
+  const timeoutMs = Math.max(
+    0,
+    options.timeoutMs ?? AGENT_FIRST_SINGLE_INTENT_WAIT_MS,
+  );
+
+  try {
+    const shadow = await Promise.race([
+      options.shadowTurn,
+      waitForTimeout(timeoutMs),
+    ]);
+    if (!shadow?.decision) return null;
+
+    const decision = shadow.decision;
+    if (decision.confidence < AGENT_FIRST_SINGLE_INTENT_MIN_CONFIDENCE) {
+      return null;
+    }
+    if (decision.disposition === 'clarify') return null;
+
+    if (decision.disposition === 'conversation') {
+      if (
+        decision.turnOwner === 'general_chat' &&
+        decision.focusRelevant === false
+      ) {
+        return {
+          source: 'agent-shadow',
+          turnOwner: 'general_chat',
+          focusRelevant: false,
+          disposition: 'conversation',
+          proposedCapability: decision.proposedCapability,
+          proposedAction: decision.proposedAction,
+          confidence: decision.confidence,
+          turnId: shadow.turnId,
+        };
+      }
+
+      if (
+        decision.turnOwner === 'focus' &&
+        decision.focusRelevant === true &&
+        Boolean(options.activeFocusId)
+      ) {
+        return {
+          source: 'agent-shadow',
+          turnOwner: 'focus',
+          focusRelevant: true,
+          disposition: 'conversation',
+          proposedCapability: decision.proposedCapability,
+          proposedAction: decision.proposedAction,
+          confidence: decision.confidence,
+          turnId: shadow.turnId,
+        };
+      }
+
+      return null;
+    }
+
+    if (decision.disposition !== 'tool') return null;
+    if (!PROMOTABLE_TOOL_OWNERS.has(decision.turnOwner as PromotedSingleIntentDecision['turnOwner'])) {
+      return null;
+    }
+    if (!decision.proposedAction || decision.proposedAction === 'none') {
+      return null;
+    }
+    if (decision.turnOwner === 'focus' && decision.focusRelevant !== true) {
+      return null;
+    }
+
+    return {
+      source: 'agent-shadow',
+      turnOwner: decision.turnOwner as PromotedSingleIntentDecision['turnOwner'],
+      focusRelevant: decision.focusRelevant,
+      disposition: 'tool',
+      proposedCapability: decision.proposedCapability,
+      proposedAction: decision.proposedAction,
+      confidence: decision.confidence,
+      turnId: shadow.turnId,
+    };
+  } catch (error) {
+    console.warn(
+      'Agent-first single-intent ownership was unavailable. Existing deterministic routing remains authoritative.',
+      error,
+    );
+    return null;
+  }
+}
+
 export type AgentShadowFocusMutationGuardResult = {
   guarded: boolean;
   shadow: AgentShadowResponse | null;

@@ -63,11 +63,20 @@ class FocusExactActionPrecedencePhase20I8Tests(unittest.TestCase):
         self.assertIn("commandRoute === 'exact'", claim)
         self.assertIn("Boolean(parsedCommandMatch)", claim)
         self.assertIn("!Boolean(deferredExactFocusLifecycleMatch)", claim)
+
         preflight = routing[preflight_start:]
         self.assertIn("!exactNonLifecycleCommandClaimed", preflight)
+
+        # Phase 21B explicit-command precedence adds one additional reason to
+        # enter semantic Focus preflight: a deterministic explicit Focus
+        # mutation such as "goal:" or "rename the focus". The Phase 20I8
+        # invariant remains the same: an exact non-lifecycle command claim
+        # blocks the entire generic preflight branch.
         self.assertRegex(
             preflight,
-            r"Boolean\(deferredExactFocusLifecycleMatch\)\s*\|\|\s*shouldPreflightSemanticFocusLifecycleBeforeCommandRouting\(trimmed\)",
+            r"Boolean\(deferredExactFocusLifecycleMatch\)\s*\|\|\s*"
+            r"explicitDeterministicRoute\?\.kind\s*===\s*'focus-mutation'\s*\|\|\s*"
+            r"shouldPreflightSemanticFocusLifecycleBeforeCommandRouting\(trimmed\)",
         )
 
     def test_focus_to_tasks_is_exact_and_not_a_lifecycle_mutation(self) -> None:
@@ -96,6 +105,10 @@ class FocusExactActionPrecedencePhase20I8Tests(unittest.TestCase):
             self.assertIn(f"commandMatch?.command === '{command}'", helper)
         self.assertIn(
             "Boolean(deferredExactFocusLifecycleMatch)", self._routing_block()
+        )
+        self.assertIn(
+            "explicitDeterministicRoute?.kind === 'focus-mutation'",
+            self._routing_block(),
         )
 
     def test_mark_task_done_retains_focus_terminal_precedence(self) -> None:

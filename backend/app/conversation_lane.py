@@ -40,6 +40,9 @@ Turn ownership comes first:
 Conversation quality:
 - Help first whenever a useful first pass is possible.
 - If the user has already provided an objective or enough context to make progress, provide concrete help now instead of running another intake question.
+- For Active Focus work, the current canonical objective is the primary direction for what to do next. Follow it even when older conversation or a pending coaching question points at an earlier phase of the work.
+- A pending Focus coaching question is optional advisory context, never a prerequisite. Do not make the user answer it before advancing the current objective unless the user explicitly returns to that question or the answer is required by a canonical constraint/requirement.
+- Never invent a blocker such as "first decide X" solely because a pending question exists. If the current objective says to gather sources, draft, practice, plan, or otherwise move forward, make progress on that objective now.
 - If the user accepts an offer you just made, fulfill the offer. Do not replace it with a new setup question unless the requested work is impossible without that answer.
 - Do not repeat or lightly rephrase a question that was already asked and left unanswered just because it remains pending somewhere in state or history.
 - Missing details such as audience, deadline, format, or preference are not blockers when a reasonable first pass can be made without them.
@@ -206,7 +209,13 @@ def _focus_relevant_for_request(
     return _focus_relevant_to_current_turn(request.userMessage, focus)
 
 
-def _compact_focus_context(focus: dict[str, Any]) -> dict[str, Any]:
+def _compact_focus_context(
+    focus: dict[str, Any],
+    *,
+    suppress_pending_question: bool = False,
+) -> dict[str, Any]:
+    objective = str(focus.get("objective") or "").strip()
+    next_action = str(focus.get("nextAction") or "").strip()
     return {
         "focusId": focus.get("focusId"),
         "title": focus.get("title"),
@@ -219,7 +228,8 @@ def _compact_focus_context(focus: dict[str, Any]) -> dict[str, Any]:
         "decisions": focus.get("decisions", []),
         "knownFacts": focus.get("knownFacts", []),
         "nextAction": focus.get("nextAction"),
-        "pendingQuestion": focus.get("pendingQuestion"),
+        "primaryDirection": objective or next_action or str(focus.get("title") or "").strip(),
+        "pendingQuestion": None if suppress_pending_question else focus.get("pendingQuestion"),
         "status": focus.get("status"),
     }
 
@@ -244,7 +254,7 @@ def _recent_visible_history(
     return history
 
 
-def _developer_contexts_for_message(message: str) -> list[dict[str, str]]:
+def _developer_contexts_for_request(request: ConversationLaneRequest) -> list[dict[str, str]]:
     """Reuse the existing Memory/Calendar/planning context builders only.
 
     `_build_chat_input_messages` also contains backend history and a user turn;
@@ -253,18 +263,28 @@ def _developer_contexts_for_message(message: str) -> list[dict[str, str]]:
     Focus coaching prompts.
     """
 
-    base_messages = _build_chat_input_messages(message)
-    return [
+    base_messages = _build_chat_input_messages(request.userMessage)
+    developer_messages = [
         {"role": "developer", "content": str(item.get("content") or "")}
         for item in base_messages
         if item.get("role") == "developer" and str(item.get("content") or "").strip()
     ]
 
+    if request.ownershipHint is not None and request.ownershipHint.turnOwner == "focus":
+        # A promoted Focus-owned conversation already has the authoritative
+        # canonical Focus snapshot below. Generic Memory/Calendar/planner
+        # developer contexts are intentionally excluded here so phrases such as
+        # "continue with the focus" cannot accidentally activate the old
+        # day-planner policy (for example, "your calendar looks open").
+        return developer_messages[:1]
+
+    return developer_messages
+
 
 def build_conversation_lane_input(
     request: ConversationLaneRequest,
 ) -> list[dict[str, str]]:
-    developer_contexts = _developer_contexts_for_message(request.userMessage)
+    developer_contexts = _developer_contexts_for_request(request)
     if not developer_contexts:
         developer_contexts = [{"role": "developer", "content": SYSTEM_PROMPT}]
 
@@ -284,9 +304,18 @@ def build_conversation_lane_input(
                 "role": "developer",
                 "content": (
                     "Canonical Active Focus context is relevant to this specific turn. "
-                    "Treat it as advisory read-only context; do not infer a mutation from conversation.\n\n"
+                    "Treat it as advisory read-only context; do not infer a mutation from conversation. "
+                    "The current objective/primaryDirection is authoritative for what to work on next. "
+                    "If pendingQuestion is null, do not recover or reintroduce an older coaching question from recent history.\n\n"
                     + json.dumps(
-                        _compact_focus_context(focus or {}),
+                        _compact_focus_context(
+                            focus or {},
+                            suppress_pending_question=bool(
+                                request.ownershipHint is not None
+                                and request.ownershipHint.turnOwner == "focus"
+                                and str((focus or {}).get("objective") or "").strip()
+                            ),
+                        ),
                         ensure_ascii=False,
                         indent=2,
                     )

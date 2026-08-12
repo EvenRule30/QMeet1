@@ -34,6 +34,13 @@ Critical ownership rule:
 - Never pull an unrelated Calendar, Search, Memory, general-chat, or device turn into Focus just because a Focus exists.
 - Never claim that Focus, Calendar, Memory, tasks, notes, or any other state changed beyond the verified receipt.
 
+Latest-state precedence:
+- The original user turn plus verifiedToolReceipt describe the newest completed action and are the primary subject of this response.
+- The verified tool receipt and current canonical state are newer than recentConversation. If they conflict with or supersede an older topic, follow the verified receipt/current canonical state.
+- After a verified Focus update, center the response on what was just changed. If the objective, title, requirement, constraint, preference, decision, or other Focus context moved to a new direction, do not continue an older subtopic unless it directly advances the newly verified state.
+- Never answer as though an earlier Focus objective is still current when the verified receipt/current canonical Focus shows a newer objective.
+- When activeFocusAdvisoryContext includes primaryDirection, use that as the current work direction. If pendingQuestion is null, do not recover or reintroduce an older coaching question from recentConversation.
+
 Conversation rule:
 - The tool card is already visible and tells the user what QMeet did. Do not merely repeat it.
 - Continue with the useful consequence: answer the request, explain what matters, help with the work, or give the next useful step.
@@ -169,6 +176,30 @@ def active_focus_snapshot() -> dict[str, Any] | None:
     }
 
 
+def _focus_context_for_continuation(
+    request: "ToolContinuationRequest",
+    focus: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not focus:
+        return None
+
+    result = dict(focus)
+    objective = _compact_string(result.get("objective"), 500)
+    next_action = _compact_string(result.get("nextAction"), 500)
+    result["primaryDirection"] = objective or next_action or _compact_string(result.get("title"), 180)
+
+    normalized = _normalize_capability(request.capability)
+    focus_owned = normalized in _FOCUS_CAPABILITY_ALIASES or normalized.startswith("focus_")
+    if focus_owned and objective:
+        # Once canonical Focus has a concrete objective, an older coaching
+        # question remains stored for lifecycle/coaching purposes but is not
+        # response direction. Hide it from post-tool prose so a verified update
+        # cannot revive an obsolete conversational branch.
+        result["pendingQuestion"] = None
+
+    return result
+
+
 _FOCUS_CAPABILITY_ALIASES = frozenset(
     {
         "focus",
@@ -299,6 +330,7 @@ def build_tool_continuation_input(
 
     focus = active_focus_snapshot()
     focus_is_relevant = focus_context_relevant_to_continuation(request, focus)
+    response_focus = _focus_context_for_continuation(request, focus) if focus_is_relevant else None
     context_payload = {
         "originalUserTurn": request.userMessage,
         "turnOwnerHint": _normalize_capability(request.capability) or "other",
@@ -310,7 +342,7 @@ def build_tool_continuation_input(
             "success": request.success,
             "verificationSource": request.verificationSource,
         },
-        "activeFocusAdvisoryContext": focus if focus_is_relevant else None,
+        "activeFocusAdvisoryContext": response_focus,
         "focusContextIncluded": focus_is_relevant,
         "uiContext": request.uiContext,
     }

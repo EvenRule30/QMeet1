@@ -26,6 +26,8 @@ import {
   observeAgentShadowTurn,
   reportAgentShadowLegacyRoute,
   resolvePromotedConversationOwnership,
+  resolvePromotedSingleIntentDecision,
+  resolveExplicitDeterministicRouteBeforeAgent,
   shouldGuardInferredSemanticFocusMutationWithShadow,
 } from './lib/agentShadowObserver';
 import {
@@ -50,6 +52,7 @@ import {
   shouldPreflightSemanticFocusLifecycleBeforeCommandRouting,
   shouldRouteExactFocusLifecycleThroughSemanticPreflight,
 } from './lib/semanticFocusLifecycle';
+import { normalizeVerifiedFocusToolReceipt } from './lib/focusToolReceipt';
 import { getAssistantActivity, getPanelLabel } from './lib/activityUtils';
 import { getDateKeyForCalendarView } from './lib/dateUtils';
 import {
@@ -505,6 +508,45 @@ export default function App() {
       );
     }
     const parsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);
+    const explicitDeterministicRoute =
+      !forcedCommandMatch && commandRoute === 'exact'
+        ? resolveExplicitDeterministicRouteBeforeAgent({
+            userMessage: trimmed,
+            parsedCommand: parsedCommandMatch?.command ?? null,
+          })
+        : null;
+    const promotedSingleIntent =
+      !forcedCommandMatch &&
+      commandRoute === 'exact' &&
+      !explicitDeterministicRoute
+        ? await resolvePromotedSingleIntentDecision({
+            shadowTurn,
+            activeFocusId: routingActiveSession?.id ?? null,
+          })
+        : null;
+    if (promotedSingleIntent?.disposition === 'conversation') {
+      setPendingInterpreterCommand(null);
+      setLastInputRoute('Agent-first single-intent conversation');
+      setLastLocalCommand('No local command');
+      setLastInterpreterAction(promotedSingleIntent.proposedAction);
+      setLastInterpreterFrontendCommand('None');
+      setLastInterpreterConfidence(promotedSingleIntent.confidence);
+      setLastInterpreterReason(
+        `Agent-first owner=${promotedSingleIntent.turnOwner}: ${promotedSingleIntent.proposedAction}.`,
+      );
+      await sendNormalChat(
+        trimmed,
+        visibleUserText,
+        shadowTurn,
+        routingActiveSession?.id ?? null,
+      );
+      return;
+    }
+    const promotedNonFocusToolOwner =
+      promotedSingleIntent?.disposition === 'tool' &&
+      promotedSingleIntent.turnOwner !== 'focus'
+        ? promotedSingleIntent.turnOwner
+        : null;
     const naturalTaskCompletionEligible =
       !parsedCommandMatch || parsedCommandMatch.command === 'mark-task-done';
     const naturalTaskCompletionTarget =
@@ -528,6 +570,7 @@ export default function App() {
     const deferredExactFocusLifecycleMatch =
       !forcedCommandMatch &&
       commandRoute === 'exact' &&
+      !promotedNonFocusToolOwner &&
       shouldRouteExactFocusLifecycleThroughSemanticPreflight(
         parsedCommandMatch,
         trimmed,
@@ -553,8 +596,10 @@ export default function App() {
     const semanticLifecyclePreflightBeforeCommandRouting =
       !forcedCommandMatch &&
       commandRoute === 'exact' &&
+      !promotedNonFocusToolOwner &&
       !exactNonLifecycleCommandClaimed &&
       (Boolean(deferredExactFocusLifecycleMatch) ||
+        explicitDeterministicRoute?.kind === 'focus-mutation' ||
         shouldPreflightSemanticFocusLifecycleBeforeCommandRouting(trimmed))
         ? exactResumeLifecyclePreflight ??
           await interpretSemanticFocusLifecycle(trimmed)
@@ -1034,6 +1079,10 @@ ${confirmedTaskCompletionResult.completedTasks
         await handleEndChat();
         return;
       }
+      confirmationContent = normalizeVerifiedFocusToolReceipt(
+        commandMatch,
+        confirmationContent,
+      );
       if (
         commandMatch.command === 'mark-task-done' &&
         focusTaskProgressResult?.verified
@@ -1095,9 +1144,15 @@ ${confirmedTaskCompletionResult.completedTasks
       speakAssistantText(assistantMsg.content);
       return;
     }
-    const semanticFocusLifecycle =
-      semanticLifecyclePreflightBeforeCommandRouting ??
-      await interpretSemanticFocusLifecycle(trimmed);
+    const semanticFocusLifecycle = promotedNonFocusToolOwner
+      ? {
+          kind: 'none' as const,
+          confidence: promotedSingleIntent?.confidence ?? 0,
+          reason: `Agent-first owner=${promotedNonFocusToolOwner}; Focus lifecycle preflight was not allowed to claim this tool turn.`,
+          possibleMutation: false as const,
+        }
+      : semanticLifecyclePreflightBeforeCommandRouting ??
+        await interpretSemanticFocusLifecycle(trimmed);
     const inferredFocusMutationGuard =
       await shouldGuardInferredSemanticFocusMutationWithShadow({
         shadowTurn,
