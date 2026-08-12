@@ -9,13 +9,11 @@ load_dotenv()
 from app.focus.canonical_work_context_source import (  # noqa: E402
     install_canonical_work_context_source,
 )
-
 # Phase 20V: the mature background coaching module still consumes the old
 # active-session read shape internally, but canonical Focus is now its only
 # runtime authority. Install the read adapter before middleware imports so stale
 # compatibility Memory state cannot reappear in chat after a verified Focus end.
 install_canonical_work_context_source()
-
 from app.background_context_middleware import BackgroundWorkContextMiddleware  # noqa: E402
 from app.focus.middleware import FocusShadowMiddleware  # noqa: E402
 from app.focus.native_read_middleware import (  # noqa: E402
@@ -30,19 +28,24 @@ from app.routers import (  # noqa: E402
     memory,
     memory_state,
     search,
+    tool_continuation,
     visual,
 )
 
 app = FastAPI(title="QMeet Agent Backend")
-
 # Middleware is registered inside-out. FocusShadowMiddleware remains outside the
 # native read router so it still owns shared turn planning, guarded comparison,
 # telemetry, and fallback. The native layer only replaces the downstream legacy
 # command-model call for a conservative read-only allowlist.
+#
+# Phase 21A intentionally does NOT add /api/chat/tool-continuation/stream to the
+# Focus middleware observation allowlist. That endpoint is a read-only response
+# seam after a deterministic tool has already executed; observing it as a new
+# Focus turn would risk turning conversational continuation into a second state
+# mutation opportunity.
 app.add_middleware(BackgroundWorkContextMiddleware)
 app.add_middleware(FocusNativeReadRouteMiddleware)
 app.add_middleware(FocusShadowMiddleware)
-
 frontend_origin = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
 # For prototype LAN/tablet testing this stays permissive. Tighten this before
 # a real deployment by switching allow_origins back to [frontend_origin].
@@ -56,7 +59,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 @app.get("/health")
 async def health():
     return {
@@ -66,6 +68,7 @@ async def health():
 
 
 app.include_router(chat.router)
+app.include_router(tool_continuation.router)
 app.include_router(command.router)
 app.include_router(search.router)
 app.include_router(calendar.router)
