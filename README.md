@@ -1,115 +1,89 @@
 # QMeet
 
-QMeet is a voice-first AI tablet interface for the Chascii orb prototype. The frontend is a React/Vite app built around an interactive orb UI, and the backend is a FastAPI service for chat, command interpretation, web search, Google Calendar actions, persistent memory, workflow context, visual observations, and camera snapshot analysis.
+QMeet is a voice-first AI tablet interface built around the Chascii orb concept. The current prototype combines a React/Vite tablet UI with a FastAPI backend for AI chat, command routing, Google Calendar, persistent memory, visual context, and Active Focus.
 
-The current prototype target is a 1024x600 Raspberry Pi/tablet-style screen. Laptop development remains normal browser development, while Raspberry Pi kiosk behavior lives in the launcher script and Pi documentation.
+The main hardware target is a 1024x600 Raspberry Pi/tablet-style display, but normal development runs in a desktop browser.
 
-## Current status
+## What QMeet can do
 
-QMeet currently supports:
+Current prototype capabilities include:
 
 - Text and browser voice input
-- Spoken responses through browser speech synthesis
-- OpenAI-backed chat streaming
-- Immediate orb feedback while spoken prompts are routed
-- Local exact command routing before normal chat
-- Backend fuzzy command interpretation for natural phrasing
-- Command/result toast cards
-- Web search result cards
-- Notes
-- Backend-backed persistent memory for tasks, notes, recent actions, active focus sessions, recent focus history, and visual context
-- Memory import/export/reset controls
-- Google Calendar read/create/edit/delete with confirmation gates
-- Active Context / Focus Sessions
-- Focus-aware chat context
-- Focus-to-tasks generation
-- Focus summaries saved as notes
-- Recent focus history, recall, resume, and local/enhanced recaps
-- Focus nudges and clickable focus actions in the Memory panel
-- Manual visual observations
-- Browser camera preview and one-shot snapshot capture
-- Snapshot analysis through the backend vision route
-- Uploaded image analysis through the same visual route
-- Visual context in normal chat
-- Explicit visual context read/history/summary commands
-- Visual observations linked to active focus sessions
-- Discreet chat-log toggle without starting voice input
-- Calendar-aware meeting-prep focus sessions
-- Calendar-derived meeting prep tasks
-- Meeting notes, follow-up tasks, and meeting wrap-up commands
-- 1024x600 tablet/kiosk layout polish
-- Raspberry Pi Chromium kiosk launcher in `scripts/pi-kiosk-start.sh`
+- Browser speech synthesis for spoken replies
+- OpenAI-backed chat and streaming responses
+- Exact local commands plus model-assisted intent routing
+- Google Calendar read/create/edit/delete flows
+- Tasks, notes, recent actions, and persistent memory
+- Active Focus sessions with goals, context, tasks, summaries, history, resume, and progress tracking
+- Focus-aware coaching and meeting preparation
+- Web search
+- Camera snapshots and uploaded-image analysis
+- Saved visual observations that can be linked to a Focus
+- Orb/tablet UI with Memory, Calendar, Search, Notes, Camera, Settings, and status panels
+- Raspberry Pi Chromium kiosk launch support
 
-## Phase status
-
-```text
-Phase 1   Browser speech input
-Phase 2   Local UI commands
-Phase 3   Browser speech output
-Phase 4   Notes, local tools, settings
-Phase 5   Fuzzy command interpreter and confirmations
-Phase 6   Google Calendar read/create/delete/edit
-Phase 7   Web search and result cards
-Phase 8   Orb activity UI, tablet/kiosk polish, Pi launcher, docs cleanup
-Phase 9   Local memory/task persistence and frontend refactor work
-Phase 10  Backend-backed persistent memory
-Phase 11  Regression audit and bug-fix hardening
-Phase 12  Active Context / Focus Sessions
-Phase 13  Workflow memory, focus nudges, history, and recaps
-Phase 14  Visual context and one-shot camera observation pipeline
-Phase 15  Visual-focus fusion, image upload analysis, discreet chat-log toggle
-Phase 16  Calendar-focus lifecycle: meeting prep, prep tasks, notes, follow-up, wrap-up
-```
+QMeet is still a prototype. Some routing and coaching paths are transitional while the project moves toward a more unified agent architecture.
 
 ## Requirements
 
 - Node.js 20+ recommended
 - Python 3.11+ recommended
-- OpenAI API key
-- Google Calendar OAuth credentials, optional but needed for real calendar actions
-- Browser with `navigator.mediaDevices.getUserMedia` for camera preview/capture, preferably Google Chrome
+- An OpenAI API key for real AI behavior
+- Google Calendar OAuth credentials only if you want connected calendar actions
+- Chrome or another browser with microphone/camera support for voice and camera features
 
 ## Run locally
 
 ### 1. Backend
 
-From the repo root:
+From the repository root:
+
+#### Windows PowerShell
 
 ```powershell
 cd backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+Copy-Item .env.example .env
 ```
 
-Create `backend/.env`:
+#### Linux/macOS
+
+```bash
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+```
+
+For real OpenAI responses, edit `backend/.env` and set at minimum:
 
 ```env
 LLM_PROVIDER=openai
 OPENAI_API_KEY=your_openai_key_here
 OPENAI_MODEL=gpt-4.1-mini
-OPENAI_VISION_MODEL=gpt-4.1-mini
-OPENAI_MAX_OUTPUT_TOKENS=300
-QMEET_MAX_SNAPSHOT_BYTES=6291456
 FRONTEND_ORIGIN=http://localhost:5173
-GOOGLE_CALENDAR_ENABLED=true
-GOOGLE_CALENDAR_WRITE_ENABLED=true
-GOOGLE_CALENDAR_CREDENTIALS_FILE=google_credentials.json
-GOOGLE_CALENDAR_TOKEN_FILE=token_calendar_events.json
-GOOGLE_CALENDAR_REDIRECT_URI=http://localhost:8000/api/calendar/auth/callback
-GOOGLE_CALENDAR_ID=primary
-GOOGLE_CALENDAR_TIMEZONE=local
 ```
 
-Start the backend:
+The repository's `.env.example` defaults to mock mode, so it is safe to start without an API key while checking the app itself.
+
+Start FastAPI:
 
 ```powershell
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
+Backend health check:
+
+```text
+http://localhost:8000/health
+```
+
 ### 2. Frontend
 
-Open a second terminal from the repo root:
+Open a second terminal at the repository root:
 
 ```powershell
 npm install
@@ -121,107 +95,252 @@ Create `.env.local`:
 VITE_QMEET_API_URL=http://localhost:8000
 ```
 
-Start the frontend:
+Start Vite:
 
 ```powershell
 npm run dev -- --host 0.0.0.0
 ```
 
-Open the Vite URL, usually:
+Open the displayed Vite URL, normally:
 
 ```text
 http://localhost:5173
 ```
 
-## Test commands
+## Google Calendar setup
 
-Build and backend checks:
+Calendar integration is optional. Without Google credentials, the rest of QMeet can still run.
+
+When using Google Calendar, place the OAuth client credentials file in `backend/` and configure `backend/.env` similar to:
+
+```env
+GOOGLE_CALENDAR_ENABLED=true
+GOOGLE_CALENDAR_WRITE_ENABLED=true
+GOOGLE_CALENDAR_CREDENTIALS_FILE=google_credentials.json
+GOOGLE_CALENDAR_TOKEN_FILE=token_calendar_events.json
+GOOGLE_CALENDAR_REDIRECT_URI=http://localhost:8000/api/calendar/auth/callback
+GOOGLE_CALENDAR_ID=primary
+GOOGLE_CALENDAR_TIMEZONE=local
+```
+
+The token and auth-state files are generated locally during authorization.
+
+## High-level architecture
+
+```text
+User
+  |
+  v
+React / Vite tablet UI
+  |- Orb, chat, panels, voice and camera UI
+  |- Exact local command parser
+  |- Command handlers and confirmation gates
+  |- Typed FastAPI client
+  |
+  v
+FastAPI backend
+  |- QMeet intent orchestrator
+  |- Normal AI chat / streaming
+  |- Canonical Active Focus system
+  |- Persistent memory
+  |- Google Calendar
+  |- Search
+  |- Vision / snapshot analysis
+  |
+  +--> OpenAI API
+  +--> Google Calendar API
+```
+
+QMeet currently uses a **hybrid command + chat architecture**. It is not yet a single general-purpose agent.
+
+For a user message, the system can:
+
+1. Match a known local command directly.
+2. Ask the backend intent orchestrator whether the message maps to a supported QMeet action.
+3. Execute the selected deterministic frontend/backend tool path.
+4. Fall back to normal conversational chat when no tool action should own the turn.
+
+`backend/app/qmeet_orchestrator.py` is intentionally a thin router. It chooses between known QMeet capabilities and normal chat; the existing deterministic command/tool implementations still perform the actual action.
+
+## Active Focus architecture
+
+Active Focus is the most developed stateful workflow in QMeet.
+
+```text
+User Focus turn
+  |
+  v
+Focus routing / semantic interpretation
+  |
+  v
+Verified native operation
+  |- start
+  |- update
+  |- add context
+  |- create/link tasks
+  |- save summary
+  |- end / complete
+  |- resume
+  |
+  v
+Canonical Focus event log
+  |
+  v
+Reduced current Focus state
+  |
+  +--> UI / Memory panel
+  +--> coaching context
+  +--> task progress
+  +--> summaries / history
+```
+
+The canonical Focus event log lives at:
+
+```text
+backend/data/qmeet_focus.json
+```
+
+or at the path specified by `QMEET_FOCUS_FILE`.
+
+Important Focus code is under:
+
+```text
+backend/app/focus/
+```
+
+Key responsibilities include:
+
+- `store.py` - event log, state reduction, guarded routing/response telemetry
+- `models.py` - canonical Focus models and event types
+- `lifecycle.py` - verified start/update/end/resume operations
+- `context.py` - verified durable Focus context writes
+- `context_boundary.py` - decides which natural-language details belong to Focus context
+- `context_hygiene.py` - deduplication, corrections, and coaching-question answer checks
+- `tasks.py`, `task_progress.py`, `task_lineage.py` - Focus-linked task behavior
+- `summary.py` - Focus summary persistence
+- `calendar_prep.py` - calendar-to-Focus preparation
+- `planner.py` - Focus turn planning/coaching
+- `middleware.py` and `native_read_middleware.py` - guarded Focus routing/read behavior
+
+### Canonical Focus versus legacy Memory
+
+Older QMeet versions stored an active session inside the general Memory document. The current Focus system uses the canonical event store as runtime authority.
+
+`backend/app/focus/canonical_work_context_source.py` adapts canonical Focus state into the older background-coaching seam. This prevents stale compatibility Memory data from becoming an active Focus again after a canonical Focus has ended.
+
+Legacy Focus bootstrap is intentionally disabled during normal runtime. `QMEET_ENABLE_LEGACY_FOCUS_BOOTSTRAP=1` is only for an explicit migration/bootstrap operation and should not be enabled for normal use.
+
+## General memory
+
+QMeet still uses the backend memory store for non-Focus data such as tasks, notes, recent actions, and visual observations.
+
+The prototype-local memory file is:
+
+```text
+backend/data/qmeet_memory.json
+```
+
+Browser storage is used as fallback/migration support, but backend state is intended to be authoritative after initialization.
+
+## Normal chat and coaching
+
+Normal chat is handled through the FastAPI chat routes and `backend/app/agent.py`. Background workflow context can be added to the conversation through `work_context.py` and its middleware.
+
+The current codebase therefore has several reasoning layers:
+
+```text
+frontend command routing
+backend intent orchestrator
+normal chat agent
+Focus planner / semantic routing
+background work-context coaching
+```
+
+This separation is useful for the prototype but is also the main architectural area currently being simplified. The planned direction is a unified QMeet agent that can reason across general chat, Calendar, Memory, Focus, Search, and other tools while keeping deterministic backend verification for state-changing operations.
+
+A future agent should **not** assume every message belongs to an active Focus. For example, a general question or a request to add a calendar event should remain general chat/calendar work unless the user clearly connects it to the Focus.
+
+## Main project structure
+
+```text
+repo root
+|- src/app/
+|  |- App.tsx                 # top-level tablet/orb orchestration
+|  |- api.ts                  # FastAPI client and streaming helpers
+|  |- commands.ts             # exact local command parser
+|  |- commandHandlers/        # feature command execution
+|  |- hooks/                  # chat, memory, calendar, search, speech state
+|  |- panels/                 # Memory, Calendar, Search, Settings, etc.
+|  |- camera/                 # browser camera/snapshot UI
+|  `- components/             # reusable UI pieces
+|
+|- backend/app/
+|  |- main.py                 # FastAPI app, middleware, router registration
+|  |- agent.py                # normal AI chat/streaming helpers
+|  |- qmeet_orchestrator.py   # thin intent/action router
+|  |- qmeet_capabilities.py   # supported orchestrator action catalog
+|  |- work_context.py         # background workflow/coaching compatibility layer
+|  |- memory_store.py         # general persistent memory
+|  |- calendar_service.py     # Google Calendar OAuth/API
+|  |- focus/                  # canonical Active Focus implementation
+|  `- routers/                # HTTP API routes
+|
+|- backend/tests/             # backend regression suite
+|- docs/                      # development, architecture, Pi notes
+|- scripts/                   # kiosk/startup helpers
+`- package.json
+```
+
+## Tests
+
+From `backend/` with the virtual environment active:
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+Frontend production build:
 
 ```powershell
 npm run build
-Invoke-RestMethod http://localhost:8000/api/status
-Invoke-RestMethod http://localhost:8000/api/calendar/status
-Invoke-RestMethod "http://localhost:8000/api/calendar/events?view=today"
-Invoke-RestMethod http://localhost:8000/api/memory/status
-Invoke-RestMethod http://localhost:8000/api/memory/context
-Invoke-RestMethod http://localhost:8000/api/memory/sessions/recent
-Invoke-RestMethod http://localhost:8000/api/memory/visual
 ```
 
-Snapshot analysis test from PowerShell:
+Useful backend checks:
 
 ```powershell
-Invoke-RestMethod `
-  -Method Post `
-  -Uri "http://localhost:8000/api/visual/analyze-snapshot" `
-  -ContentType "image/png" `
-  -InFile ".\snapshot.png"
+Invoke-RestMethod http://localhost:8000/health
+Invoke-RestMethod http://localhost:8000/api/status
+Invoke-RestMethod http://localhost:8000/api/calendar/status
+Invoke-RestMethod http://localhost:8000/api/memory/status
 ```
 
-## Common prompt examples
+The Focus system has a large regression suite under `backend/tests/test_focus*.py`. After modifying Focus lifecycle, routing, context, tasks, or planner behavior, run the Focus tests before the complete backend suite.
 
-```text
-start a coding focus session for QMeet Phase 16
-what is my focus
-turn this focus into tasks
-save this focus as a note
-what was my last focus
-resume my last focus
-summarize what I worked on today
-give me a better recap of today
-```
+## Raspberry Pi / kiosk mode
 
-Calendar-focus lifecycle:
-
-```text
-prepare me for my next meeting
-what is my focus
-turn this focus into tasks
-save meeting notes
-create follow-up tasks from this meeting
-wrap up this meeting
-open notes
-show recent focus sessions
-```
-
-Visual/camera examples:
-
-```text
-open camera
-take snapshot
-Analyze Snapshot
-what was the last thing you saw
-save this visual context to my focus
-show visuals for my focus
-```
-
-## Raspberry Pi kiosk mode
-
-The Pi kiosk setup is separate and documented in:
+Pi-specific notes live in:
 
 ```text
 docs/pi-kiosk.md
 scripts/pi-kiosk-start.sh
 ```
 
-Basic Pi test:
+For a Pi using a backend hosted on another machine, the frontend must point at that machine's LAN IP rather than `localhost`:
+
+```env
+VITE_QMEET_API_URL=http://YOUR_LAPTOP_IP:8000
+```
+
+Example kiosk launch:
 
 ```bash
 chmod +x scripts/pi-kiosk-start.sh
 QMEET_URL=http://YOUR_LAPTOP_IP:5173 ./scripts/pi-kiosk-start.sh
 ```
 
-For Pi testing against a laptop-hosted backend, make sure the frontend `.env.local` uses the laptop LAN IP, not `localhost`:
+## Do not commit secrets or local user data
 
-```env
-VITE_QMEET_API_URL=http://YOUR_LAPTOP_IP:8000
-```
-
-Restart Vite after changing `.env.local`.
-
-## Do not commit secrets
-
-Keep these files local only:
+Keep these local:
 
 ```text
 .env.local
@@ -231,53 +350,15 @@ backend/token_calendar_readonly.json
 backend/token_calendar_events.json
 backend/calendar_auth_state.json
 backend/data/qmeet_memory.json
+backend/data/qmeet_focus.json
 ```
 
-Do not commit snapshot images, uploaded camera test images, or other personal media unless they are intentional fixture assets.
+Also avoid committing personal camera snapshots or uploaded test images unless they are intentional fixtures.
 
-## More docs
+## More documentation
 
-- `docs/development.md` - setup details, API endpoints, phase history, testing, troubleshooting
-- `docs/architecture.md` - current frontend/backend architecture snapshot
-- `docs/pi-kiosk.md` - Raspberry Pi kiosk launch/autostart notes
+- `docs/development.md` - detailed development/setup notes and older workflow history
+- `docs/architecture.md` - architecture snapshot; some sections may lag the newer canonical Focus work
+- `docs/pi-kiosk.md` - Raspberry Pi kiosk setup
 
-## Main project structure
-
-```text
-repo root
-├─ src/app/
-│  ├─ App.tsx
-│  ├─ api.ts
-│  ├─ commands.ts
-│  ├─ types.ts
-│  ├─ camera/
-│  │  └─ CameraCaptureOverlay.tsx
-│  ├─ components/
-│  │  └─ ChatLogToggle.tsx
-│  ├─ commandHandlers/
-│  │  ├─ calendar.ts
-│  │  ├─ memory.ts
-│  │  ├─ notes.ts
-│  │  ├─ search.ts
-│  │  └─ voice.ts
-│  ├─ hooks/
-│  ├─ lib/
-│  └─ panels/
-├─ backend/app/
-│  ├─ main.py
-│  ├─ agent.py
-│  ├─ calendar_service.py
-│  ├─ memory_store.py
-│  ├─ schemas.py
-│  └─ routers/
-│     ├─ calendar.py
-│     ├─ chat.py
-│     ├─ command.py
-│     ├─ memory.py
-│     ├─ memory_state.py
-│     ├─ search.py
-│     └─ visual.py
-├─ docs/
-├─ guidelines/
-└─ scripts/
-```
+For new contributors, start with this README, then inspect `src/app/App.tsx`, `backend/app/main.py`, `backend/app/qmeet_orchestrator.py`, and `backend/app/focus/`.
