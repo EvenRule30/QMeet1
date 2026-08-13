@@ -66,7 +66,7 @@ class AgentCalendarReadToolPromotionPhase21BTests(unittest.TestCase):
                 decision = self._fallback_decision(text)
                 self.assertNotEqual(decision.proposedAction, "read-calendar")
 
-    def test_calendar_capability_contract_exposes_only_promoted_read_schema(self) -> None:
+    def test_calendar_capability_contract_exposes_read_and_create_schemas(self) -> None:
         calendar_contract = next(
             item
             for item in shadow.GLOBAL_CAPABILITY_CONTRACT
@@ -81,9 +81,18 @@ class AgentCalendarReadToolPromotionPhase21BTests(unittest.TestCase):
             schema["properties"]["view"]["enum"],
             ["today", "tomorrow", "all"],
         )
-        self.assertIn("writes remain", calendar_contract["promotionConstraint"])
+        self.assertEqual(calendar_contract["promotedCreateAction"], "add-calendar-event")
+        create_schema = calendar_contract["createArgumentSchema"]
+        self.assertFalse(create_schema["additionalProperties"])
+        self.assertEqual(create_schema["required"], ["day", "title", "time"])
+        self.assertEqual(
+            create_schema["properties"]["day"]["enum"],
+            ["today", "tomorrow"],
+        )
+        self.assertIn("add-calendar-event", calendar_contract["promotionConstraint"])
+        self.assertIn("edits and deletes remain deferred", calendar_contract["promotionConstraint"])
 
-    def test_frontend_calendar_promotion_is_exact_and_read_only(self) -> None:
+    def test_frontend_calendar_promotion_keeps_reads_exact_and_promotes_only_create_write(self) -> None:
         source = (ROOT / "src" / "app" / "lib" / "agentToolPromotion.ts").read_text(
             encoding="utf-8"
         )
@@ -103,8 +112,11 @@ class AgentCalendarReadToolPromotionPhase21BTests(unittest.TestCase):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, source)
 
+        self.assertIn("resolvePromotedCalendarCreateToolCommand", source)
+        self.assertIn("command: 'add-calendar-event'", source)
+        self.assertIn("hasExactlyKeys(argumentsValue, ['day', 'title', 'time'])", source)
+        self.assertIn("time: validated.time ?? 'Later'", source)
         for forbidden_write in (
-            "command: 'add-calendar-event'",
             "command: 'edit-last-event'",
             "command: 'delete-calendar-event'",
             "command: 'delete-last-event'",
@@ -119,13 +131,15 @@ class AgentCalendarReadToolPromotionPhase21BTests(unittest.TestCase):
         explicit_index = source.index("resolveExplicitDeterministicRouteBeforeAgent({")
         single_intent_index = source.index("await resolvePromotedSingleIntentDecision({")
         search_index = source.index("resolvePromotedSearchToolCommand(")
-        calendar_index = source.index("resolvePromotedCalendarReadToolCommand(")
+        calendar_create_index = source.index("resolvePromotedCalendarCreateToolCommand(")
+        calendar_read_index = source.index("resolvePromotedCalendarReadToolCommand(")
         generic_tool_index = source.index("const promotedNonFocusToolOwner =")
 
         self.assertLess(explicit_index, single_intent_index)
         self.assertLess(single_intent_index, search_index)
-        self.assertLess(search_index, calendar_index)
-        self.assertLess(calendar_index, generic_tool_index)
+        self.assertLess(search_index, calendar_create_index)
+        self.assertLess(calendar_create_index, calendar_read_index)
+        self.assertLess(calendar_read_index, generic_tool_index)
         self.assertIn("'Agent-promoted Calendar read'", source)
         self.assertIn("promotedCalendarReadTool.commandMatch", source)
         self.assertIn("visibleUserText,\n        'agent',", source)
@@ -230,11 +244,11 @@ class AgentCalendarReadToolPromotionPhase21BTests(unittest.TestCase):
 
     def test_calendar_continuation_prompt_requires_verified_schedule_grounding(self) -> None:
         self.assertIn(
-            "For Calendar reads, every claim about events, schedule contents, availability, or free/busy status",
+            "For Calendar, every claim about events, schedule contents, availability, free/busy status, or a completed Calendar write",
             TOOL_CONTINUATION_PROMPT,
         )
         self.assertIn(
-            "Never reconstruct Calendar state from model memory or stale recentConversation.",
+            "Never reconstruct Calendar state or write outcomes from model memory or stale recentConversation.",
             TOOL_CONTINUATION_PROMPT,
         )
 

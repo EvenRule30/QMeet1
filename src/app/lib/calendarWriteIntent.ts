@@ -1,10 +1,8 @@
-import { parseCommand, type CommandMatch } from '../commands';
+import type { CommandMatch } from '../commands';
 import type { DeferredCalendarWriteAction } from './agentToolPromotion';
 
 export type ExplicitCalendarWriteIntent = {
   expectedAction: DeferredCalendarWriteAction;
-  canonicalFrontendCommand?: string;
-  commandMatch?: CommandMatch;
   reason: string;
 };
 
@@ -31,40 +29,6 @@ function stripRequestPrefix(value: string): string {
     .trim();
 }
 
-function buildExactNoTimeScheduleCommand(
-  writeText: string,
-): ExplicitCalendarWriteIntent | null {
-  if (SCHEDULE_AS_NOUN_OR_READ.test(writeText)) return null;
-
-  const match = writeText.match(
-    /^schedule\s+(.+?)\s+(?:(?:for|on)\s+)?(today|tomorrow)$/i,
-  );
-  if (!match) return null;
-
-  const title = match[1].trim();
-  const day = match[2].toLowerCase() as 'today' | 'tomorrow';
-  if (!title || BROAD_SCHEDULING_PLAN_TITLE.test(title)) return null;
-
-  const canonicalFrontendCommand = `add event ${day} called ${title}`;
-  const commandMatch = parseCommand(canonicalFrontendCommand);
-  if (
-    !commandMatch ||
-    commandMatch.command !== 'add-calendar-event' ||
-    commandMatch.calendarEvent?.day !== day ||
-    !commandMatch.calendarEvent?.title?.trim()
-  ) {
-    return null;
-  }
-
-  return {
-    expectedAction: 'add-calendar-event',
-    canonicalFrontendCommand,
-    commandMatch,
-    reason:
-      'Explicit schedule syntax named one today/tomorrow event without a time; normalized through the existing Calendar parser, which preserves its established Later-time behavior.',
-  };
-}
-
 function classifyUnparsedExplicitCalendarWrite(
   writeText: string,
 ): DeferredCalendarWriteAction | null {
@@ -79,14 +43,15 @@ function classifyUnparsedExplicitCalendarWrite(
 
   if (/^schedule\b/i.test(writeText)) {
     const scheduleTarget = writeText.replace(/^schedule\s+/i, '').trim();
-    if (BROAD_SCHEDULING_PLAN_TITLE.test(scheduleTarget.replace(/\s+(?:today|tomorrow)$/i, '').trim())) {
-      return null;
-    }
+    const targetWithoutNearTermDay = scheduleTarget
+      .replace(/\s+(?:today|tomorrow)$/i, '')
+      .trim();
+    if (BROAD_SCHEDULING_PLAN_TITLE.test(targetWithoutNearTermDay)) return null;
     return 'add-calendar-event';
   }
 
   if (
-    /^(?:add|create|make|put)\b/i.test(writeText) &&
+    /^(?:add|create|make|put|book)\b/i.test(writeText) &&
     CALENDAR_TARGET_TERM.test(writeText)
   ) {
     return 'add-calendar-event';
@@ -110,19 +75,13 @@ function classifyUnparsedExplicitCalendarWrite(
 }
 
 /**
- * Protect explicit Calendar mutations before agent-first ownership.
+ * Deterministic ownership fallback only.
  *
- * Existing exact parse results remain authoritative and are left alone. For the
- * one safe grammar gap this slice needs -- `schedule <title> today|tomorrow`
- * without a time -- the helper rewrites to an already-supported canonical
- * frontend command and re-parses it through commands.ts. It never executes a
- * Calendar write itself.
- *
- * Other explicit but underspecified Calendar writes only return the expected
- * canonical mutation id. They deliberately do not create a CommandMatch, so
- * the existing interpreter/confirmation path must either resolve the same
- * mutation safely or leave Calendar unchanged. This prevents a write request
- * such as `delete tomorrow's meeting` from being answered as ordinary chat.
+ * Exact commands remain authoritative and bypass this helper. For an explicit
+ * Calendar mutation that the exact parser did not understand, this helper only
+ * preserves the expected Calendar mutation id so semantic Focus routing cannot
+ * steal the turn if the agent is unavailable or returns no usable ownership.
+ * It never synthesizes arguments, a frontend command, or a CommandMatch.
  */
 export function resolveExplicitCalendarWriteIntentBeforeAgent(options: {
   userMessage: string;
@@ -135,15 +94,12 @@ export function resolveExplicitCalendarWriteIntentBeforeAgent(options: {
   const writeText = stripRequestPrefix(normalized);
   if (!writeText) return null;
 
-  const exactScheduleCommand = buildExactNoTimeScheduleCommand(writeText);
-  if (exactScheduleCommand) return exactScheduleCommand;
-
   const expectedAction = classifyUnparsedExplicitCalendarWrite(writeText);
   if (!expectedAction) return null;
 
   return {
     expectedAction,
     reason:
-      'Explicit Calendar mutation syntax was detected before agent-first conversation ownership, but the existing exact parser did not safely resolve all mutation arguments.',
+      'Explicit Calendar mutation syntax established deterministic Calendar ownership, but no write arguments or executable command were synthesized.',
   };
 }

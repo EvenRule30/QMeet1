@@ -31,7 +31,9 @@ import {
   shouldGuardInferredSemanticFocusMutationWithShadow,
 } from './lib/agentShadowObserver';
 import {
+  isPromotedCalendarCreateToolDecision,
   resolveDeferredCalendarWriteAction,
+  resolvePromotedCalendarCreateToolCommand,
   resolvePromotedCalendarReadToolCommand,
   resolvePromotedSearchToolCommand,
   type DeferredCalendarWriteAction,
@@ -529,34 +531,6 @@ export default function App() {
             parsedCommand: parsedCommandMatch,
           })
         : null;
-    if (
-      explicitCalendarWriteIntent?.commandMatch &&
-      explicitCalendarWriteIntent.canonicalFrontendCommand
-    ) {
-      setPendingInterpreterCommand(null);
-      setTrackedInputRoute(
-        'Explicit Calendar write normalized before agent',
-        explicitCalendarWriteIntent.expectedAction,
-        explicitCalendarWriteIntent.canonicalFrontendCommand,
-        'calendar',
-        'tool',
-      );
-      setLastLocalCommand('Explicit Calendar write');
-      setLastInterpreterAction('Not used');
-      setLastInterpreterFrontendCommand(
-        explicitCalendarWriteIntent.canonicalFrontendCommand,
-      );
-      setLastInterpreterConfidence(1);
-      setLastInterpreterReason(explicitCalendarWriteIntent.reason);
-      return handleSend(
-        explicitCalendarWriteIntent.canonicalFrontendCommand,
-        visibleUserText,
-        'exact',
-        explicitCalendarWriteIntent.commandMatch,
-        [],
-        visibleUserText,
-      );
-    }
     const explicitDeterministicRoute =
       !forcedCommandMatch && commandRoute === 'exact'
         ? resolveExplicitDeterministicRouteBeforeAgent({
@@ -567,30 +541,34 @@ export default function App() {
     const promotedSingleIntent =
       !forcedCommandMatch &&
       commandRoute === 'exact' &&
-      !explicitDeterministicRoute &&
-      !explicitCalendarWriteIntent
+      !explicitDeterministicRoute
         ? await resolvePromotedSingleIntentDecision({
             shadowTurn,
             activeFocusId: routingActiveSession?.id ?? null,
           })
         : null;
+    const promotedConversationAllowed =
+      promotedSingleIntent?.disposition === 'conversation' &&
+      !explicitCalendarWriteIntent;
     if (promotedSingleIntent?.disposition === 'conversation') {
-      setPendingInterpreterCommand(null);
-      setLastInputRoute('Agent-first single-intent conversation');
-      setLastLocalCommand('No local command');
-      setLastInterpreterAction(promotedSingleIntent.proposedAction);
-      setLastInterpreterFrontendCommand('None');
-      setLastInterpreterConfidence(promotedSingleIntent.confidence);
-      setLastInterpreterReason(
-        `Agent-first owner=${promotedSingleIntent.turnOwner}: ${promotedSingleIntent.proposedAction}.`,
-      );
-      await sendNormalChat(
-        trimmed,
-        visibleUserText,
-        shadowTurn,
-        routingActiveSession?.id ?? null,
-      );
-      return;
+      if (promotedConversationAllowed) {
+        setPendingInterpreterCommand(null);
+        setLastInputRoute('Agent-first single-intent conversation');
+        setLastLocalCommand('No local command');
+        setLastInterpreterAction(promotedSingleIntent.proposedAction);
+        setLastInterpreterFrontendCommand('None');
+        setLastInterpreterConfidence(promotedSingleIntent.confidence);
+        setLastInterpreterReason(
+          `Agent-first owner=${promotedSingleIntent.turnOwner}: ${promotedSingleIntent.proposedAction}.`,
+        );
+        await sendNormalChat(
+          trimmed,
+          visibleUserText,
+          shadowTurn,
+          routingActiveSession?.id ?? null,
+        );
+        return;
+      }
     }
     const promotedSearchTool = resolvePromotedSearchToolCommand(
       promotedSingleIntent,
@@ -620,11 +598,76 @@ export default function App() {
         visibleUserText,
       );
     }
+    const promotedCalendarCreateCandidate =
+      isPromotedCalendarCreateToolDecision(promotedSingleIntent);
+    const promotedCalendarCreateTool =
+      resolvePromotedCalendarCreateToolCommand(promotedSingleIntent);
+    if (promotedCalendarCreateCandidate && !promotedCalendarCreateTool) {
+      finishListening();
+      setShowThinkingBubble(false);
+      setPendingInterpreterCommand(null);
+      pendingTaskCompletionTargetsRef.current = [];
+      setTrackedInputRoute(
+        'Agent-promoted Calendar create rejected',
+        'add-calendar-event',
+        undefined,
+        'calendar',
+        'tool',
+      );
+      setLastLocalCommand('Calendar write not executed');
+      setLastInterpreterAction('add-calendar-event');
+      setLastInterpreterFrontendCommand('None');
+      setLastInterpreterConfidence(promotedSingleIntent?.confidence ?? null);
+      setLastInterpreterReason(
+        'The unified agent proposed Calendar creation, but its typed arguments failed deterministic validation.',
+      );
+      if (!chatActive) setChatActive(true);
+      const now = Date.now();
+      const userMsg = createUserMessage(now, visibleUserText);
+      const assistantMsg = createAssistantMessage(
+        now,
+        'I understood this as creating a Calendar event, but I could not safely validate one event title, day, and time. No calendar change was made.',
+      );
+      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      pushResultToast({
+        kind: 'warning',
+        title: 'Calendar unchanged',
+        detail: assistantMsg.content,
+      });
+      speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+      return;
+    }
+    if (promotedCalendarCreateTool) {
+      setPendingInterpreterCommand(null);
+      setTrackedInputRoute(
+        'Agent-promoted Calendar create',
+        promotedCalendarCreateTool.commandMatch.command,
+        `calendar create: ${promotedCalendarCreateTool.day} / ${promotedCalendarCreateTool.time ?? 'all day'} / ${promotedCalendarCreateTool.title}`,
+        'calendar',
+        'tool',
+      );
+      setLastLocalCommand('Agent-promoted Calendar create');
+      setLastInterpreterAction(promotedCalendarCreateTool.commandMatch.command);
+      setLastInterpreterFrontendCommand('Validated Calendar create proposal');
+      setLastInterpreterConfidence(promotedSingleIntent?.confidence ?? null);
+      setLastInterpreterReason(
+        'The unified agent proposed one canonical Calendar create action and its title/day/time arguments passed deterministic frontend validation; execution still requires the existing Calendar confirmation path.',
+      );
+      return handleSend(
+        visibleUserText,
+        visibleUserText,
+        'agent',
+        promotedCalendarCreateTool.commandMatch,
+        [],
+        visibleUserText,
+      );
+    }
     const promotedCalendarReadTool =
       resolvePromotedCalendarReadToolCommand(promotedSingleIntent);
     const deferredCalendarWriteAction =
+      resolveDeferredCalendarWriteAction(promotedSingleIntent) ??
       explicitCalendarWriteIntent?.expectedAction ??
-      resolveDeferredCalendarWriteAction(promotedSingleIntent);
+      null;
     if (promotedCalendarReadTool) {
       setPendingInterpreterCommand(null);
       setTrackedInputRoute(
@@ -656,7 +699,9 @@ export default function App() {
       promotedSingleIntent?.disposition === 'tool' &&
       promotedSingleIntent.turnOwner !== 'focus'
         ? promotedSingleIntent.turnOwner
-        : null;
+        : explicitCalendarWriteIntent
+          ? 'calendar'
+          : null;
     const naturalTaskCompletionEligible =
       !parsedCommandMatch || parsedCommandMatch.command === 'mark-task-done';
     const naturalTaskCompletionTarget =
@@ -776,8 +821,9 @@ export default function App() {
         const targetTime = commandMatch.calendarEvent?.time?.trim() || 'Later';
         const targetTitle = commandMatch.calendarEvent?.title?.trim() ?? '';
         if (targetTitle) {
+          const isAllDay = targetTime.toLowerCase() === 'later';
           const frontendCommand = `add event ${targetView} at ${targetTime} called ${targetTitle}`;
-          const confirmationPrompt = `I understood that as: create a Google Calendar event ${targetView} at ${targetTime}: ${targetTitle}. Say "confirm" to create it, or "cancel" to stop.`;
+          const confirmationPrompt = `I understood that as: create a Google Calendar event ${targetView} ${isAllDay ? 'all day' : `at ${targetTime}`}: ${targetTitle}. Say "confirm" to create it, or "cancel" to stop.`;
           pendingTaskCompletionTargetsRef.current = [];
           setPendingInterpreterCommand({
             originalText: visibleUserText,

@@ -1,4 +1,4 @@
-import type { CommandMatch } from '../commands';
+import { parseCommand, type CommandMatch } from '../commands';
 import type { PromotedSingleIntentDecision } from './agentShadowObserver';
 
 export type PromotedSearchToolCommand = {
@@ -13,6 +13,15 @@ export type PromotedCalendarReadToolCommand = {
   commandMatch: CommandMatch;
 };
 
+export type PromotedCalendarCreateDay = 'today' | 'tomorrow';
+
+export type PromotedCalendarCreateToolCommand = {
+  day: PromotedCalendarCreateDay;
+  title: string;
+  time: string | null;
+  commandMatch: CommandMatch;
+};
+
 export type DeferredCalendarWriteAction =
   | 'add-calendar-event'
   | 'edit-last-event'
@@ -21,7 +30,6 @@ export type DeferredCalendarWriteAction =
   | 'clear-calendar';
 
 const DEFERRED_CALENDAR_WRITE_ACTIONS = new Set<DeferredCalendarWriteAction>([
-  'add-calendar-event',
   'edit-last-event',
   'delete-calendar-event',
   'delete-last-event',
@@ -29,11 +37,28 @@ const DEFERRED_CALENDAR_WRITE_ACTIONS = new Set<DeferredCalendarWriteAction>([
 ]);
 
 const MAX_PROMOTED_SEARCH_QUERY_LENGTH = 500;
+const MAX_PROMOTED_CALENDAR_TITLE_LENGTH = 240;
+const MAX_PROMOTED_CALENDAR_TIME_LENGTH = 32;
 const PROMOTED_CALENDAR_READ_VIEWS = new Set<PromotedCalendarReadView>([
   'today',
   'tomorrow',
   'all',
 ]);
+const PROMOTED_CALENDAR_CREATE_DAYS = new Set<PromotedCalendarCreateDay>([
+  'today',
+  'tomorrow',
+]);
+const BROAD_CALENDAR_CONTAINER_TITLE = /^(?:(?:my|our|the)\s+)?(?:day|schedule|agenda|plans?)$/i;
+const CONTROL_CHARACTER_RE = /[\u0000-\u001f\u007f]/;
+
+function hasExactlyKeys(
+  value: Record<string, unknown>,
+  expectedKeys: readonly string[],
+): boolean {
+  const keys = Object.keys(value).sort();
+  const expected = [...expectedKeys].sort();
+  return keys.length === expected.length && keys.every((key, index) => key === expected[index]);
+}
 
 function readValidatedSearchQuery(
   argumentsValue: Record<string, unknown>,
@@ -45,7 +70,7 @@ function readValidatedSearchQuery(
 
   const query = rawQuery.trim();
   if (!query || query.length > MAX_PROMOTED_SEARCH_QUERY_LENGTH) return null;
-  if(/[\u0000-\u001f\u007f]/.test(query)) return null;
+  if (CONTROL_CHARACTER_RE.test(query)) return null;
   return query;
 }
 
@@ -62,6 +87,94 @@ function readValidatedCalendarReadView(
   }
 
   return rawView as PromotedCalendarReadView;
+}
+
+function readValidatedCalendarCreateTime(rawTime: unknown): string | null | undefined {
+  if (rawTime === null) return null;
+  if (typeof rawTime !== 'string') return undefined;
+
+  const time = rawTime.trim();
+  if (!time || time.length > MAX_PROMOTED_CALENDAR_TIME_LENGTH) return undefined;
+  if (CONTROL_CHARACTER_RE.test(time)) return undefined;
+
+  const normalized = time.toLowerCase().replace(/\./g, '').replace(/\s+/g, ' ').trim();
+  if (normalized === 'noon' || normalized === 'midnight') return time;
+
+  const match = normalized.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/);
+  if (!match) return undefined;
+
+  const hour = Number(match[1]);
+  const minute = match[2] === undefined ? 0 : Number(match[2]);
+  const meridiem = match[3] ?? null;
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || minute < 0 || minute > 59) {
+    return undefined;
+  }
+  if (meridiem) {
+    if (hour < 1 || hour > 12) return undefined;
+  } else if (hour < 0 || hour > 23) {
+    return undefined;
+  }
+
+  return time;
+}
+
+function readValidatedCalendarCreateArguments(
+  argumentsValue: Record<string, unknown>,
+): { day: PromotedCalendarCreateDay; title: string; time: string | null } | null {
+  if (!hasExactlyKeys(argumentsValue, ['day', 'title', 'time'])) return null;
+
+  const rawDay = argumentsValue.day;
+  if (
+    typeof rawDay !== 'string' ||
+    !PROMOTED_CALENDAR_CREATE_DAYS.has(rawDay as PromotedCalendarCreateDay)
+  ) {
+    return null;
+  }
+
+  const rawTitle = argumentsValue.title;
+  if (typeof rawTitle !== 'string') return null;
+  const title = rawTitle.trim();
+  if (
+    !title ||
+    title.length > MAX_PROMOTED_CALENDAR_TITLE_LENGTH ||
+    CONTROL_CHARACTER_RE.test(title) ||
+    BROAD_CALENDAR_CONTAINER_TITLE.test(title)
+  ) {
+    return null;
+  }
+
+  const time = readValidatedCalendarCreateTime(argumentsValue.time);
+  if (time === undefined) return null;
+
+  return {
+    day: rawDay as PromotedCalendarCreateDay,
+    title,
+    time,
+  };
+}
+
+function buildCalendarCreateFrontendCommand(options: {
+  day: PromotedCalendarCreateDay;
+  title: string;
+  time: string | null;
+}): string {
+  return `add event ${options.day} at ${options.time ?? 'Later'} called ${options.title}`;
+}
+
+function calendarCreateRoundTripsThroughCanonicalParser(options: {
+  day: PromotedCalendarCreateDay;
+  title: string;
+  time: string | null;
+}): boolean {
+  const parsed = parseCommand(buildCalendarCreateFrontendCommand(options));
+  if (parsed?.command !== 'add-calendar-event' || !parsed.calendarEvent) return false;
+
+  return (
+    parsed.calendarEvent.day === options.day &&
+    parsed.calendarEvent.time.trim().toLowerCase() ===
+      (options.time ?? 'Later').trim().toLowerCase() &&
+    parsed.calendarEvent.title.trim() === options.title
+  );
 }
 
 /**
@@ -91,10 +204,8 @@ export function resolvePromotedSearchToolCommand(
 }
 
 /**
- * Calendar promotion is intentionally read-only. The agent can choose Calendar
- * ownership and one canonical read action, but only this exact one-field view
- * contract is allowed back into the existing deterministic Calendar executor.
- * Calendar writes, edits, and deletes cannot produce a CommandMatch here.
+ * Calendar reads remain executable only through the canonical read-calendar
+ * action and one validated view argument.
  */
 export function resolvePromotedCalendarReadToolCommand(
   decision: PromotedSingleIntentDecision | null,
@@ -118,10 +229,56 @@ export function resolvePromotedCalendarReadToolCommand(
 }
 
 /**
- * Calendar writes are still NOT promoted for execution. This helper only
- * preserves the unified agent's canonical write classification long enough to
- * validate the older command interpreter's result. Proposed write arguments
- * are deliberately ignored, and no CommandMatch can be created here.
+ * True when the unified agent is trying to propose Calendar creation. This is
+ * intentionally broader than the executable validator so malformed create
+ * proposals can fail closed instead of falling through to chat or a legacy
+ * interpreter.
+ */
+export function isPromotedCalendarCreateToolDecision(
+  decision: PromotedSingleIntentDecision | null,
+): boolean {
+  return Boolean(
+    decision &&
+      decision.disposition === 'tool' &&
+      decision.turnOwner === 'calendar' &&
+      decision.proposedAction === 'add-calendar-event',
+  );
+}
+
+/**
+ * Promote exactly one Calendar mutation in this slice: add-calendar-event.
+ * The model only proposes typed arguments. This validator constructs the
+ * canonical CommandMatch that re-enters App.tsx's existing confirmation and
+ * deterministic Calendar execution pipeline. No Calendar state changes here.
+ */
+export function resolvePromotedCalendarCreateToolCommand(
+  decision: PromotedSingleIntentDecision | null,
+): PromotedCalendarCreateToolCommand | null {
+  if (!isPromotedCalendarCreateToolDecision(decision)) return null;
+  if (!decision || decision.proposedCapability !== 'calendar') return null;
+
+  const validated = readValidatedCalendarCreateArguments(decision.proposedArguments);
+  if (!validated || !calendarCreateRoundTripsThroughCanonicalParser(validated)) return null;
+
+  return {
+    ...validated,
+    commandMatch: {
+      command: 'add-calendar-event',
+      confirmation: 'Added event.',
+      calendarEvent: {
+        day: validated.day,
+        time: validated.time ?? 'Later',
+        title: validated.title,
+      },
+    },
+  };
+}
+
+/**
+ * Calendar edits/deletes remain unpromoted. This helper preserves only their
+ * canonical action id so the existing guarded interpreter result can be
+ * checked before reaching the deterministic Calendar write path. Create is no
+ * longer deferred: it must pass resolvePromotedCalendarCreateToolCommand.
  */
 export function resolveDeferredCalendarWriteAction(
   decision: PromotedSingleIntentDecision | null,

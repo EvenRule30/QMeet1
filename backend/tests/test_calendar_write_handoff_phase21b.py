@@ -122,15 +122,15 @@ class CalendarWriteHandoffPhase21BTests(unittest.TestCase):
         self.assertEqual(result["intent"], "chat")
         self.assertGreaterEqual(result["confidence"], 0.85)
 
-    def test_calendar_write_shadow_action_is_routing_only_not_executable(self) -> None:
+    def test_calendar_create_is_promoted_but_other_writes_remain_deferred(self) -> None:
         source = (ROOT / "src" / "app" / "lib" / "agentToolPromotion.ts").read_text(
             encoding="utf-8"
         )
 
+        self.assertIn("resolvePromotedCalendarCreateToolCommand", source)
+        self.assertIn("command: 'add-calendar-event'", source)
         self.assertIn("resolveDeferredCalendarWriteAction", source)
-        self.assertIn("Proposed write arguments", source)
-        self.assertIn("no CommandMatch can be created here", source)
-        self.assertNotIn("command: 'add-calendar-event'", source)
+        self.assertIn("Calendar edits/deletes remain unpromoted", source)
         self.assertNotIn("command: 'edit-last-event'", source)
         self.assertNotIn("command: 'delete-calendar-event'", source)
         self.assertNotIn("command: 'delete-last-event'", source)
@@ -158,7 +158,11 @@ class CalendarWriteHandoffPhase21BTests(unittest.TestCase):
         self.assertIn('return "edit-last-event"', source)
         self.assertIn('return "delete-calendar-event"', source)
         self.assertIn(
-            "proposed Calendar write arguments are not executable in this slice",
+            "Calendar CREATE is the first promoted write proposal",
+            source,
+        )
+        self.assertIn(
+            "Calendar edits, moves, deletes, cancellations, and clears are NOT agent-executable yet",
             source,
         )
         self.assertNotIn('action="calendar.create_event"', source)

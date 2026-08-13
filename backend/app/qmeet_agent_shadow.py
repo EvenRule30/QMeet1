@@ -182,12 +182,14 @@ Search ownership rule:
 - If the user's request asks QMeet to discover, verify, inspect, compare, or report external opinions/evidence that should come from the web, choose turnOwner=search and disposition=tool. Do not answer those requests from model memory merely because you could produce a plausible answer.
 - Natural research wording still counts as Search even when the user does not say the word "search". Examples of the semantic class include asking what reviewers think, what people are saying about a product, whether recent sources support a claim, or asking QMeet to see/check/find out what the web says.
 - For executable Search, use proposedCapability=search, proposedAction=run-search, and proposedArguments with exactly one field: {"query": "<the concise web query to run>"}. Do not use request/topic/text/url or extra argument keys.
-Calendar read ownership rule:
+Calendar ownership rule:
 - Natural single-intent schedule and availability questions are Calendar-owned reads even when the user does not literally say "calendar". This includes asking what is scheduled today or tomorrow, whether anything is scheduled, what the schedule looks like, or whether the user is free, available, busy, or booked.
-- For executable Calendar READS only, use proposedCapability=calendar, proposedAction=read-calendar, and proposedArguments with exactly one field: {"view": "today" | "tomorrow" | "all"}. Use today or tomorrow when the user names that day. Use all only for a general schedule/calendar read with no specific day.
-- Calendar writes are NOT part of this promoted read contract. Creation, edits, moves, deletes, and cancellations must continue through the existing deterministic Calendar write/confirmation paths; do not turn them into read-calendar.
-- Still classify a single-intent Calendar write as turnOwner=calendar, disposition=tool, proposedCapability=calendar, and the exact canonical Calendar write action that matches the requested mutation. This write proposal is routing/consistency metadata only: proposed Calendar write arguments are not executable in this slice.
-Proposed action is shadow metadata only. It is NOT executable and must never be treated as proof that anything changed.
+- For executable Calendar READS, use proposedCapability=calendar, proposedAction=read-calendar, and proposedArguments with exactly one field: {"view": "today" | "tomorrow" | "all"}. Use today or tomorrow when the user names that day. Use all only for a general schedule/calendar read with no specific day.
+- Calendar CREATE is the first promoted write proposal. For one event on today or tomorrow, use proposedCapability=calendar, proposedAction=add-calendar-event, and proposedArguments with exactly these fields: {"day": "today" | "tomorrow", "title": "<one event title>", "time": "<specific time>" | null}. Use time=null when the user gives no specific time; the deterministic Calendar path will preview and confirm that as an all-day event. Never invent a time.
+- Do not collapse a broad plan such as "schedule my day" or a multi-event request into one add-calendar-event proposal. Those are outside this single-intent slice.
+- Calendar edits, moves, deletes, cancellations, and clears are NOT agent-executable yet. Still classify one of those single-intent writes as turnOwner=calendar, disposition=tool, proposedCapability=calendar, and the exact canonical Calendar write action, but treat its proposed arguments only as routing/consistency metadata for the existing guarded path.
+- A Calendar create proposal is still only a proposal. It is not proof that an event was written; deterministic validation, confirmation, execution, and verified receipts remain authoritative.
+Proposed action never proves that anything changed.
 Canonical action vocabulary:
 - If disposition=tool, proposedAction MUST be one exact action id from capabilityContract. Do not invent aliases such as focus.read, read_current_focus, calendar.create_event, or custom compound action names.
 - If disposition=conversation, proposedAction MUST be focus.help for Focus-owned work or conversation.respond otherwise.
@@ -235,9 +237,21 @@ GLOBAL_CAPABILITY_CONTRACT = [
                 "view": {"type": "string", "enum": ["today", "tomorrow", "all"]},
             },
         },
+        "promotedCreateAction": "add-calendar-event",
+        "createArgumentSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["day", "title", "time"],
+            "properties": {
+                "day": {"type": "string", "enum": ["today", "tomorrow"]},
+                "title": {"type": "string", "minLength": 1, "maxLength": 240},
+                "time": {"type": ["string", "null"]},
+            },
+        },
         "promotionConstraint": (
-            "Only read-calendar is agent-promotable in this slice; Calendar writes remain "
-            "on deterministic confirmation/write paths."
+            "read-calendar and add-calendar-event proposals are agent-promotable. Calendar create "
+            "still requires deterministic argument validation plus the existing confirmation/write path; "
+            "edits and deletes remain deferred."
         ),
     },
     {
@@ -584,6 +598,76 @@ def _has_explicit_calendar_time_slot(text: str) -> bool:
     )
 
 
+def _calendar_create_arguments(text: str) -> dict[str, Any] | None:
+    """Extract a narrow fallback create proposal for one today/tomorrow event.
+
+    This is a capability ownership floor, not an executor. The frontend performs
+    the same strict schema validation again before constructing a CommandMatch,
+    and the existing Calendar confirmation gate remains authoritative.
+    """
+    normalized = re.sub(r"\s+", " ", text.strip())
+    normalized = re.sub(
+        r"^(?:(?:please\s+)?|(?:can|could|would|will)\s+you\s+(?:please\s+)?|i\s+(?:want|need)\s+you\s+to\s+|i(?:'d| would)\s+like\s+you\s+to\s+)",
+        "",
+        normalized,
+        flags=re.IGNORECASE,
+    ).strip()
+    match = re.match(
+        r"^(?:add|schedule|create|book)\s+(.+?)\s+(today|tomorrow)(?:\s+at\s+(.+?))?$",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+
+    title = match.group(1).strip().strip(" ,.;:")
+    day = match.group(2).casefold()
+    raw_time = (match.group(3) or "").strip().strip(" ,.;:")
+    if not title or len(title) > 240 or re.search(r"[\x00-\x1f\x7f]", title):
+        return None
+    if re.fullmatch(r"(?:(?:my|our|the)\s+)?(?:day|schedule|agenda|plans?)", title, re.IGNORECASE):
+        return None
+
+    time_value: str | None = None
+    if raw_time:
+        if len(raw_time) > 32 or re.search(r"[\x00-\x1f\x7f]", raw_time):
+            return None
+        normalized_time = re.sub(r"\s+", " ", raw_time.casefold().replace(".", "")).strip()
+        if normalized_time not in {"noon", "midnight"}:
+            time_match = re.fullmatch(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", normalized_time)
+            if not time_match:
+                return None
+            hour = int(time_match.group(1))
+            minute = int(time_match.group(2) or "0")
+            meridiem = time_match.group(3)
+            if minute > 59:
+                return None
+            if meridiem and not 1 <= hour <= 12:
+                return None
+            if not meridiem and not 0 <= hour <= 23:
+                return None
+        time_value = raw_time
+
+    return {"day": day, "title": title, "time": time_value}
+
+
+def _looks_like_broad_calendar_planning_request(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", text.strip())
+    normalized = re.sub(
+        r"^(?:(?:please\s+)?|(?:can|could|would|will)\s+you\s+(?:please\s+)?|i\s+(?:want|need)\s+you\s+to\s+|i(?:'d| would)\s+like\s+you\s+to\s+)",
+        "",
+        normalized,
+        flags=re.IGNORECASE,
+    ).strip()
+    return bool(
+        re.fullmatch(
+            r"schedule\s+(?:(?:my|our|the)\s+)?(?:day|schedule|agenda|plans?)(?:\s+(?:today|tomorrow))?",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
 def _looks_like_calendar_read_request(text: str) -> bool:
     # Read ownership must never reinterpret a Calendar write as a read. Exact
     # deterministic writes still win before the agent, and ambiguous writes
@@ -670,8 +754,23 @@ def _fallback_shadow_decision(
         re.search(r"\b(?:calendar|agenda|appointments?|schedule|events?|meetings?)\b", text)
     )
     calendar_write_action = _calendar_write_action(text)
-    calendar_write_target = calendar_terms or _has_explicit_calendar_time_slot(text)
+    if calendar_write_action == "add-calendar-event" and _looks_like_broad_calendar_planning_request(request.userMessage):
+        calendar_write_action = None
+    calendar_create_arguments = (
+        _calendar_create_arguments(request.userMessage)
+        if calendar_write_action == "add-calendar-event"
+        else None
+    )
+    calendar_write_target = (
+        calendar_terms
+        or _has_explicit_calendar_time_slot(text)
+        or calendar_create_arguments is not None
+    )
     if calendar_write_action and calendar_write_target:
+        create_is_typed = (
+            calendar_write_action == "add-calendar-event"
+            and calendar_create_arguments is not None
+        )
         return _decision(
             owner="calendar",
             focus_relevant=focus_relevant,
@@ -679,12 +778,21 @@ def _fallback_shadow_decision(
             capability="calendar",
             action=calendar_write_action,
             response_plan=(
-                "Classify the Calendar mutation canonically, then defer argument "
-                "interpretation and all execution to the existing guarded Calendar write path."
+                "Validate the typed Calendar create proposal, require the existing confirmation, then continue only from the verified write receipt."
+                if create_is_typed
+                else "Keep Calendar ownership, then defer this unpromoted mutation to the existing guarded Calendar write path."
             ),
             confidence=0.95,
-            reason="Calendar/event write language owns this turn, but writes are not agent-executable in this slice.",
-            arguments={"request": request.userMessage},
+            reason=(
+                "The request is one Calendar event creation with a narrow today/tomorrow argument contract."
+                if create_is_typed
+                else "Calendar/event write language owns this turn, but this mutation is not agent-executable in this slice."
+            ),
+            arguments=(
+                calendar_create_arguments
+                if create_is_typed
+                else {"request": request.userMessage}
+            ),
         )
     if _looks_like_calendar_read_request(text):
         return _decision(
@@ -832,6 +940,105 @@ def _is_executable_search_tool_decision(decision: AgentShadowDecision) -> bool:
         return False
     query = arguments.get("query")
     return isinstance(query, str) and bool(query.strip()) and len(query.strip()) <= 500
+
+
+def _is_valid_calendar_create_arguments(arguments: dict[str, Any]) -> bool:
+    if set(arguments) != {"day", "title", "time"}:
+        return False
+    day = arguments.get("day")
+    title = arguments.get("title")
+    time_value = arguments.get("time")
+    if day not in {"today", "tomorrow"}:
+        return False
+    if not isinstance(title, str):
+        return False
+    title = title.strip()
+    if (
+        not title
+        or len(title) > 240
+        or re.search(r"[\x00-\x1f\x7f]", title)
+        or re.fullmatch(r"(?:(?:my|our|the)\s+)?(?:day|schedule|agenda|plans?)", title, re.IGNORECASE)
+    ):
+        return False
+    if time_value is None:
+        return True
+    if not isinstance(time_value, str):
+        return False
+    time_value = time_value.strip()
+    if not time_value or len(time_value) > 32 or re.search(r"[\x00-\x1f\x7f]", time_value):
+        return False
+    normalized_time = re.sub(r"\s+", " ", time_value.casefold().replace(".", "")).strip()
+    if normalized_time in {"noon", "midnight"}:
+        return True
+    match = re.fullmatch(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", normalized_time)
+    if not match:
+        return False
+    hour = int(match.group(1))
+    minute = int(match.group(2) or "0")
+    meridiem = match.group(3)
+    if minute > 59:
+        return False
+    if meridiem:
+        return 1 <= hour <= 12
+    return 0 <= hour <= 23
+
+
+def _is_executable_calendar_create_tool_decision(decision: AgentShadowDecision) -> bool:
+    return (
+        decision.turnOwner == "calendar"
+        and decision.disposition == "tool"
+        and decision.proposedCapability == "calendar"
+        and canonical_action_id(decision.proposedAction) == "add-calendar-event"
+        and _is_valid_calendar_create_arguments(decision.proposedArguments)
+    )
+
+
+def apply_calendar_write_ownership_floor(
+    request: AgentShadowRequest,
+    focus: dict[str, Any] | None,
+    decision: AgentShadowDecision,
+) -> AgentShadowDecision:
+    """Keep clear single-intent Calendar mutations out of chat/Focus ownership.
+
+    Calendar create may carry the narrow typed proposal that the frontend will
+    validate again. Other writes remain routing metadata only and continue into
+    their existing guarded interpreter/confirmation paths. Nothing executes here.
+    """
+    fallback = normalize_shadow_decision(_fallback_shadow_decision(request, focus))
+    fallback_action = canonical_action_id(fallback.proposedAction)
+    if not (
+        fallback.turnOwner == "calendar"
+        and fallback.disposition == "tool"
+        and fallback_action in {
+            "add-calendar-event",
+            "edit-last-event",
+            "delete-calendar-event",
+            "delete-last-event",
+            "clear-calendar",
+        }
+        and fallback.confidence >= 0.95
+    ):
+        return decision
+
+    if fallback_action == "add-calendar-event" and _is_executable_calendar_create_tool_decision(decision):
+        return decision
+
+    if (
+        fallback_action != "add-calendar-event"
+        and decision.turnOwner == "calendar"
+        and decision.disposition == "tool"
+        and decision.proposedCapability == "calendar"
+        and canonical_action_id(decision.proposedAction) == fallback_action
+    ):
+        return decision
+
+    return fallback.model_copy(
+        update={
+            "reason": (
+                "Deterministic Calendar write ownership floor: an explicit single-intent Calendar mutation cannot be swallowed by Focus or ordinary conversation. Execution still requires the capability-specific validator and guarded Calendar path."
+            )
+        }
+    )
 
 
 def apply_search_ownership_floor(
@@ -1382,6 +1589,7 @@ async def decide_agent_shadow(request: AgentShadowRequest) -> AgentShadowRespons
         model_decision or _fallback_shadow_decision(request, focus)
     )
     decision = apply_search_ownership_floor(request, focus, decision)
+    decision = apply_calendar_write_ownership_floor(request, focus, decision)
     comparison = compare_shadow_to_legacy(decision, request.legacyObservation)
     turn_id = f"shadow-{uuid4().hex}"
     _append_telemetry(
