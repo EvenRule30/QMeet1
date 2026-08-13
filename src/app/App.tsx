@@ -30,7 +30,12 @@ import {
   resolveExplicitDeterministicRouteBeforeAgent,
   shouldGuardInferredSemanticFocusMutationWithShadow,
 } from './lib/agentShadowObserver';
-import { resolvePromotedSearchToolCommand } from './lib/agentToolPromotion';
+import {
+  resolveDeferredCalendarWriteAction,
+  resolvePromotedCalendarReadToolCommand,
+  resolvePromotedSearchToolCommand,
+  type DeferredCalendarWriteAction,
+} from './lib/agentToolPromotion';
 import {
   describeTaskCompletionPreviewTargets,
   describeUnresolvedTaskCompletionRequest,
@@ -111,6 +116,22 @@ type SplitCommandResult = {
   confirmationSpeechRate?: number;
   continuationContext?: string;
 };
+const CALENDAR_WRITE_COMMANDS = new Set<DeferredCalendarWriteAction>([
+  'add-calendar-event',
+  'edit-last-event',
+  'delete-calendar-event',
+  'delete-last-event',
+  'clear-calendar',
+]);
+
+function parseVerifiedCalendarWriteAction(
+  frontendCommand: string,
+): DeferredCalendarWriteAction | null {
+  const parsed = parseCommand(frontendCommand);
+  if (!parsed) return null;
+  const command = parsed.command as DeferredCalendarWriteAction;
+  return CALENDAR_WRITE_COMMANDS.has(command) ? command : null;
+}
 
 const FOCUS_COMMANDS_THAT_PRESERVE_ACTIVE_PANEL = new Set<string>([
   'start-focus-session',
@@ -126,7 +147,6 @@ const FOCUS_COMMANDS_THAT_PRESERVE_ACTIVE_PANEL = new Set<string>([
   'read-focus-session',
   'summarize-focus-session',
 ]);
-
 function shouldSuppressLegacyFocusMemoryOpen(
   command: string,
   panel: ActivePanel,
@@ -256,11 +276,9 @@ export default function App() {
       return activeSession;
     }
   }, [activeSession, recentFocusSessions]);
-
   useEffect(() => {
     void reconcileFocusProjection();
   }, [reconcileFocusProjection]);
-
   const [lastHeardTranscript, setLastHeardTranscript] = useState('');
   const [lastNormalizedTranscript, setLastNormalizedTranscript] = useState('');
   const [lastLocalCommand, setLastLocalCommand] = useState('None');
@@ -306,7 +324,6 @@ export default function App() {
   const closePanel = useCallback(() => {
     setActivePanel('none');
   }, []);
-
   const goHome = useCallback(() => {
     stopCurrentSpeech();
     cancelActiveResponse();
@@ -325,16 +342,12 @@ export default function App() {
     if (panel === 'calendar') {
       setCalendarView('today');
     }
-
     if (panel === 'search') {
       setSearchQuery('');
     }
 
     setActivePanel(panel);
   }, [setCalendarView, setSearchQuery]);
-
-
-
 
   // Calendar state and Google Calendar actions live in useCalendarController.
   const sendNormalChat = useCallback(async (
@@ -347,7 +360,6 @@ export default function App() {
       shadowTurn,
       activeFocusId,
     });
-
     await sendConversationLaneMessage({
       userMessage: messageText,
       visibleUserText,
@@ -363,7 +375,6 @@ export default function App() {
       speakAssistantText,
     });
   }, [activePanel, activeSession?.id, messages, speakAssistantText, voiceOutputEnabled]);
-
   const handleSend = useCallback(async (text: string, displayText?: string, commandRoute: CommandRoute = 'exact', forcedCommandMatch?: CommandMatch, confirmedTaskTargets: ConfirmedTaskTarget[] = [], continuationUserText?: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
@@ -472,12 +483,10 @@ export default function App() {
             );
             setLastLocalCommand('Pending command cancelled');
             setLastInterpreterReason(`User cancelled pending command: ${pendingInterpreterCommand.frontendCommand}.`);
-
             if (!chatActive) setChatActive(true);
             const now = Date.now();
             const userMsg = createUserMessage(now, visibleUserText);
             const assistantMsg = createAssistantMessage(now, 'Cancelled pending command.');
-
             setMessages((prev) => [...prev, userMsg, assistantMsg]);
             pushResultToast({ kind: 'warning', title: 'Cancelled', detail: 'Pending command dismissed.' });
             speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
@@ -572,6 +581,37 @@ export default function App() {
         visibleUserText,
       );
     }
+    const promotedCalendarReadTool =
+      resolvePromotedCalendarReadToolCommand(promotedSingleIntent);
+    const deferredCalendarWriteAction =
+      resolveDeferredCalendarWriteAction(promotedSingleIntent);
+    if (promotedCalendarReadTool) {
+      setPendingInterpreterCommand(null);
+      setTrackedInputRoute(
+        'Agent-promoted Calendar read',
+        promotedCalendarReadTool.commandMatch.command,
+        `calendar read: ${promotedCalendarReadTool.view}`,
+        'calendar',
+        'tool',
+      );
+      setLastLocalCommand('Agent-promoted Calendar read');
+      setLastInterpreterAction(promotedCalendarReadTool.commandMatch.command);
+      setLastInterpreterFrontendCommand(
+        `calendar read: ${promotedCalendarReadTool.view}`,
+      );
+      setLastInterpreterConfidence(promotedSingleIntent?.confidence ?? null);
+      setLastInterpreterReason(
+        'The unified agent proposed the canonical read-only Calendar action and its view passed deterministic frontend validation.',
+      );
+      return handleSend(
+        visibleUserText,
+        visibleUserText,
+        'agent',
+        promotedCalendarReadTool.commandMatch,
+        [],
+        visibleUserText,
+      );
+    }
     const promotedNonFocusToolOwner =
       promotedSingleIntent?.disposition === 'tool' &&
       promotedSingleIntent.turnOwner !== 'focus'
@@ -659,9 +699,7 @@ export default function App() {
       }
       finishListening();
       setShowThinkingBubble(false);
-
       if (!chatActive) setChatActive(true);
-
       const now = Date.now();
       const previousLastHeardTranscript = lastHeardTranscript;
       const previousLastNormalizedTranscript = lastNormalizedTranscript;
@@ -726,7 +764,6 @@ export default function App() {
               if (!targetEditEvent) {
                 setTrackedInputRoute('Edit command had no target', commandMatch.command);
                 setLastLocalCommand('No calendar event to edit');
-
                 const assistantMsg = createAssistantMessage(
                   now,
                   googleCalendarStatus?.connected
@@ -1170,7 +1207,6 @@ ${confirmedTaskCompletionResult.completedTasks
       const now = Date.now();
       const userMsg = createUserMessage(now, visibleUserText);
       const assistantMsg = createAssistantMessage(now, 'I understood that as a command, but I could not match it to a local action.');
-
       setMessages((prev) => [...prev, userMsg, assistantMsg]);
       speakAssistantText(assistantMsg.content);
       return;
@@ -1357,8 +1393,52 @@ ${confirmedTaskCompletionResult.completedTasks
       });
       return;
     }
+    const stopUnverifiedCalendarWrite = (reason: string) => {
+      finishListening();
+      setShowThinkingBubble(false);
+      setPendingInterpreterCommand(null);
+      pendingTaskCompletionTargetsRef.current = [];
+      setTrackedInputRoute(
+        'Calendar write not safely resolved',
+        deferredCalendarWriteAction ?? 'calendar-write',
+      );
+      setLastLocalCommand('Calendar write not executed');
+      setLastInterpreterAction(deferredCalendarWriteAction ?? 'calendar-write');
+      setLastInterpreterFrontendCommand('None');
+      setLastInterpreterConfidence(promotedSingleIntent?.confidence ?? null);
+      setLastInterpreterReason(reason);
+      if (!chatActive) setChatActive(true);
+      const now = Date.now();
+      const userMsg = createUserMessage(now, visibleUserText);
+      const assistantMsg = createAssistantMessage(
+        now,
+        'I understood this as a Calendar change, but I could not safely map it to one existing Calendar write command. No calendar change was made.',
+      );
+      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      pushResultToast({
+        kind: 'warning',
+        title: 'Calendar unchanged',
+        detail: assistantMsg.content,
+      });
+      speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+    };
+
     try {
       const interpretedCommand = await interpretCommandIntent(trimmed);
+      const interpretedCalendarWriteAction = interpretedCommand.frontendCommand
+        ? parseVerifiedCalendarWriteAction(interpretedCommand.frontendCommand)
+        : null;
+      if (
+        deferredCalendarWriteAction &&
+        interpretedCommand.intent === 'command' &&
+        interpretedCommand.frontendCommand &&
+        interpretedCalendarWriteAction !== deferredCalendarWriteAction
+      ) {
+        stopUnverifiedCalendarWrite(
+          `Unified agent classified ${deferredCalendarWriteAction}, but the legacy interpreter produced ${interpretedCalendarWriteAction ?? 'a non-Calendar or unparseable command'}. No write was executed.`,
+        );
+        return;
+      }
       if (
         interpretedCommand.intent === 'command' &&
         interpretedCommand.frontendCommand &&
@@ -1445,6 +1525,13 @@ ${confirmedTaskCompletionResult.completedTasks
         speakAssistantText(assistantMsg.content);
         return;
       }
+      if (deferredCalendarWriteAction) {
+        stopUnverifiedCalendarWrite(
+          interpretedCommand.reason ||
+            'The unified agent identified a Calendar write, but the legacy interpreter did not return one executable Calendar mutation.',
+        );
+        return;
+      }
       setPendingInterpreterCommand(null);
       setTrackedInputRoute('Normal chat');
       setLastLocalCommand('No local command');
@@ -1453,6 +1540,11 @@ ${confirmedTaskCompletionResult.completedTasks
       setLastInterpreterConfidence(interpretedCommand.confidence);
       setLastInterpreterReason(interpretedCommand.reason || 'Interpreter classified the input as normal chat.');
     } catch (error) {
+      if (deferredCalendarWriteAction) {
+        console.warn('Command interpreter unavailable for Calendar write:', error);
+        stopUnverifiedCalendarWrite(getInterpreterUnavailableReason(error));
+        return;
+      }
       console.warn('Command interpreter unavailable, falling back to chat:', error);
       setPendingInterpreterCommand(null);
       setTrackedInputRoute('Interpreter unavailable → normal chat');
@@ -1471,7 +1563,6 @@ ${confirmedTaskCompletionResult.completedTasks
   }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveMemoryTask, memoryTasks, activeSession, reconcileFocusProjection, markMemoryTaskDone, clearCompletedTasks, getMemoryReadout, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, deleteCalendarEventByCriteria, findCalendarEventForDeletion, findCalendarEventForChange, getNextCalendarEventForDeletion, getNextCalendarEventForChange, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, runWebSearch, clearSearchState, searchError, pushResultToast, addRecentAction, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents, messages, sendNormalChat]);
   useEffect(() => {
     if (typeof window === 'undefined') return;
-
     const handleLegacyFocusEndRequest = (event: Event) => {
       const detail = (event as CustomEvent<{ action?: unknown }>).detail;
       if (detail?.action !== 'end') return;

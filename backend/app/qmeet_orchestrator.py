@@ -394,7 +394,17 @@ async def interpret_qmeet_orchestrator(
         if parsed:
             sanitized = _sanitize_model_intent(parsed)
             if sanitized is not None:
-                return sanitized
+                if sanitized.get("intent") == "command":
+                    return sanitized
+                # This orchestrator intentionally exposes only a subset of QMeet's
+                # command vocabulary. Preserve its existing chat decision when a
+                # deterministic fallback existed, but do not let a model-level "chat"
+                # decision become authoritative when this layer had no matching action.
+                # Returning None in that case lets /api/command/interpret continue into
+                # the broader legacy command interpreter, where Calendar writes and
+                # other supported commands still pass through their established
+                # deterministic frontend parser/confirmation/execution path.
+                return sanitized if fallback is not None else None
     except Exception:
         # Keep command routing usable even if the model fails.
         return fallback

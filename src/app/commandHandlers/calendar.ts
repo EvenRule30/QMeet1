@@ -19,13 +19,12 @@ import {
   clearExplicitCalendarRead,
   consumeLatestCalendarFocusResponse,
 } from '../lib/focusTurnHeaders';
-
 export type CalendarCommandResult = {
   handled: boolean;
   confirmationContent?: string;
   shouldSpeakConfirmation?: boolean;
+  continuationContext?: string;
 };
-
 export async function handleCalendarCommand(
   commandMatch: CommandMatch,
   deps: {
@@ -106,7 +105,11 @@ export async function handleCalendarCommand(
           clearExplicitCalendarRead();
         }
       }
-      const guardedFocusResponse = consumeLatestCalendarFocusResponse();
+
+      // Consume the one-shot middleware response so it cannot leak into a later
+      // turn, but do not substitute Focus prose for the authoritative calendar
+      // readout produced from the events the deterministic controller just read.
+      consumeLatestCalendarFocusResponse();
       const sourceEvents = deps.googleCalendarStatus?.connected ? remoteEvents : deps.calendarEvents;
       const hasTodayEvents = sourceEvents.some((event) => isEventForCalendarView(event, 'today'));
       const hasTomorrowEvents = sourceEvents.some((event) => isEventForCalendarView(event, 'tomorrow'));
@@ -117,15 +120,17 @@ export async function handleCalendarCommand(
           : hasTomorrowEvents
             ? 'tomorrow'
             : deps.calendarView;
+      const verifiedCalendarReadout = deps.getCalendarReadout(
+        requestedCalendarView,
+        remoteEvents,
+      );
       deps.setCalendarView(targetView);
       deps.setActivePanel('calendar');
       return {
         handled: true,
-        confirmationContent:
-          guardedFocusResponse?.tool === 'calendar_read' && guardedFocusResponse.text.trim()
-            ? guardedFocusResponse.text.trim()
-            : deps.getCalendarReadout(requestedCalendarView, remoteEvents),
+        confirmationContent: verifiedCalendarReadout,
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
+        continuationContext: verifiedCalendarReadout,
       };
     }
     case 'delete-calendar-event': {
@@ -158,7 +163,6 @@ export async function handleCalendarCommand(
     }
     case 'clear-calendar':
       deps.clearCalendarEvents();
-
       try {
         await deps.resetConversation();
       } catch (error) {
@@ -175,7 +179,6 @@ export async function handleCalendarCommand(
       deps.setCalendarView('today');
       deps.setActivePanel('calendar');
       return { handled: true };
-
     case 'show-tomorrow':
       deps.setCalendarView('tomorrow');
       deps.setActivePanel('calendar');

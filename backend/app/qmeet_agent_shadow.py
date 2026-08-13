@@ -18,7 +18,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.qmeet_capabilities import capability_digest
 from app.tool_continuation import active_focus_snapshot
 
-
 TurnOwner = Literal[
     "general_chat",
     "calendar",
@@ -44,7 +43,6 @@ DEFAULT_MODEL = (
 AGENT_SHADOW_SCHEMA_VERSION = "phase21b-v1"
 
 ACTION_VOCABULARY_VERSION = "canonical-local-command-v1"
-
 CANONICAL_TOOL_ACTIONS_BY_OWNER: dict[str, tuple[str, ...]] = {
     "focus": (
         "start-focus-session",
@@ -119,13 +117,11 @@ CANONICAL_TOOL_ACTIONS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "delete-last-visual-observation",
     ),
 }
-
 CANONICAL_TOOL_ACTIONS = {
     action
     for actions in CANONICAL_TOOL_ACTIONS_BY_OWNER.values()
     for action in actions
 }
-
 ACTION_ALIASES = {
     "focus.start": "start-focus-session",
     "start-focus": "start-focus-session",
@@ -155,14 +151,12 @@ ACTION_ALIASES = {
     "notes.save": "save-note",
     "notes.delete": "delete-last-note",
 }
-
 AGENT_SHADOW_SYSTEM_PROMPT = """
 You are the Phase 21B shadow decision layer for QMeet, an AI-first tablet assistant.
 
 You are OBSERVATIONAL ONLY. You never execute tools, mutate state, or generate the visible user reply. Your job is to predict how a future unified QMeet agent should own the current user turn before any state-changing action occurs.
 
 Core rule: decide TURN OWNERSHIP before deciding whether Active Focus matters.
-
 Turn owners:
 - general_chat: greetings, general knowledge, ordinary conversation, or unrelated questions that need no QMeet capability.
 - calendar: schedule/event/calendar reads or writes.
@@ -174,34 +168,32 @@ Turn owners:
 - device_ui: navigation, voice, panel, launcher, or other direct UI/device controls.
 - visual: camera/upload/visual-context requests.
 - other: a capability not represented above.
-
 Focus rules:
 - An active Focus is context, not universal ownership.
 - Set focusRelevant=false for unrelated Calendar, Search, Memory, greeting, general-knowledge, or device turns.
 - Cross-capability turns may have turnOwner != focus while focusRelevant=true. Example: "add practice time for my presentation tomorrow at 2" can be calendar-owned while the presentation Focus is relevant context.
 - A pending Focus coaching question is advisory context, not a conversational lock.
 - If the user asks for substantive help and enough Focus context already exists, prefer disposition=conversation rather than inventing a Focus mutation.
-
 Disposition:
 - conversation: the assistant should answer/help without a state-changing tool.
 - tool: a deterministic capability should execute or read authoritative state.
 - clarify: one clarification is genuinely required before safe/useful execution.
-
 Search ownership rule:
 - If the user's request asks QMeet to discover, verify, inspect, compare, or report external opinions/evidence that should come from the web, choose turnOwner=search and disposition=tool. Do not answer those requests from model memory merely because you could produce a plausible answer.
-- Natural research wording still counts as Search even when the user does not say the word \"search\". Examples of the semantic class include asking what reviewers think, what people are saying about a product, whether recent sources support a claim, or asking QMeet to see/check/find out what the web says.
-- For executable Search, use proposedCapability=search, proposedAction=run-search, and proposedArguments with exactly one field: {\"query\": \"<the concise web query to run>\"}. Do not use request/topic/text/url or extra argument keys.
-
+- Natural research wording still counts as Search even when the user does not say the word "search". Examples of the semantic class include asking what reviewers think, what people are saying about a product, whether recent sources support a claim, or asking QMeet to see/check/find out what the web says.
+- For executable Search, use proposedCapability=search, proposedAction=run-search, and proposedArguments with exactly one field: {"query": "<the concise web query to run>"}. Do not use request/topic/text/url or extra argument keys.
+Calendar read ownership rule:
+- Natural single-intent schedule and availability questions are Calendar-owned reads even when the user does not literally say "calendar". This includes asking what is scheduled today or tomorrow, whether anything is scheduled, what the schedule looks like, or whether the user is free, available, busy, or booked.
+- For executable Calendar READS only, use proposedCapability=calendar, proposedAction=read-calendar, and proposedArguments with exactly one field: {"view": "today" | "tomorrow" | "all"}. Use today or tomorrow when the user names that day. Use all only for a general schedule/calendar read with no specific day.
+- Calendar writes are NOT part of this promoted read contract. Creation, edits, moves, deletes, and cancellations must continue through the existing deterministic Calendar write/confirmation paths; do not turn them into read-calendar.
+- Still classify a single-intent Calendar write as turnOwner=calendar, disposition=tool, proposedCapability=calendar, and the exact canonical Calendar write action that matches the requested mutation. This write proposal is routing/consistency metadata only: proposed Calendar write arguments are not executable in this slice.
 Proposed action is shadow metadata only. It is NOT executable and must never be treated as proof that anything changed.
-
 Canonical action vocabulary:
 - If disposition=tool, proposedAction MUST be one exact action id from capabilityContract. Do not invent aliases such as focus.read, read_current_focus, calendar.create_event, or custom compound action names.
 - If disposition=conversation, proposedAction MUST be focus.help for Focus-owned work or conversation.respond otherwise.
 - If disposition=clarify, proposedAction MUST be none.
 - proposedCapability identifies the owning capability; proposedAction identifies the exact canonical action contract.
-
 Current prototype constraint: Calendar event creation currently understands today/tomorrow reliably; do not treat unsupported farther-day wording as a Focus-routing issue.
-
 Return one compact JSON object with exactly these fields:
 {
   "turnOwner": one owner string,
@@ -215,7 +207,6 @@ Return one compact JSON object with exactly these fields:
   "reason": one short routing reason
 }
 """.strip()
-
 
 GLOBAL_CAPABILITY_CONTRACT = [
     {
@@ -235,6 +226,19 @@ GLOBAL_CAPABILITY_CONTRACT = [
         "authority": "deterministic Calendar handlers / verified Google Calendar writes",
         "actions": list(CANONICAL_TOOL_ACTIONS_BY_OWNER["calendar"]),
         "constraint": "Current natural event-date support is primarily today/tomorrow.",
+        "promotedReadAction": "read-calendar",
+        "readArgumentSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["view"],
+            "properties": {
+                "view": {"type": "string", "enum": ["today", "tomorrow", "all"]},
+            },
+        },
+        "promotionConstraint": (
+            "Only read-calendar is agent-promotable in this slice; Calendar writes remain "
+            "on deterministic confirmation/write paths."
+        ),
     },
     {
         "owner": "search",
@@ -296,7 +300,6 @@ class ShadowConversationMessage(BaseModel):
 
 class LegacyRouteObservation(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     route: str = Field(min_length=1, max_length=160)
     owner: TurnOwner | None = None
     action: str = Field(default="", max_length=160)
@@ -307,7 +310,6 @@ class LegacyRouteObservation(BaseModel):
 
 class AgentShadowRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     userMessage: str = Field(min_length=1, max_length=6000)
     recentConversation: list[ShadowConversationMessage] = Field(default_factory=list, max_length=16)
     uiState: dict[str, Any] = Field(default_factory=dict)
@@ -325,7 +327,6 @@ class AgentShadowRequest(BaseModel):
 
 class AgentShadowDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     turnOwner: TurnOwner
     focusRelevant: bool
     disposition: Disposition
@@ -339,7 +340,6 @@ class AgentShadowDecision(BaseModel):
 
 class AgentShadowComparison(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     compared: bool
     ownerAgreement: bool | None = None
     dispositionAgreement: bool | None = None
@@ -451,7 +451,6 @@ def _recent_focus_continuation(request: AgentShadowRequest, focus: dict[str, Any
     )
     if not any(marker in message for marker in continuation_markers):
         return False
-
     recent_text = " ".join(item.content for item in request.recentConversation[-4:])
     focus_text = " ".join(
         str(focus.get(key) or "")
@@ -536,13 +535,84 @@ def _decision(
     )
 
 
+def _calendar_read_view(text: str) -> Literal["today", "tomorrow", "all"]:
+    if re.search(r"\btomorrow\b", text):
+        return "tomorrow"
+    if re.search(r"\btoday\b", text):
+        return "today"
+    return "all"
+
+
+def _calendar_write_action(text: str) -> str | None:
+    match = re.match(
+        r"^(?:(?:please\s+)?|(?:can|could|would|will)\s+you\s+(?:please\s+)?|i\s+(?:want|need)\s+you\s+to\s+|i(?:'d| would)\s+like\s+you\s+to\s+)(add|schedule|create|book|move|reschedule|change|edit|delete|remove|cancel)\b",
+        text,
+    )
+    if not match:
+        return None
+
+    verb = match.group(1)
+    if verb in {"add", "schedule", "create", "book"}:
+        return "add-calendar-event"
+    if verb in {"move", "reschedule", "change", "edit"}:
+        return "edit-last-event"
+    if verb in {"delete", "remove", "cancel"}:
+        return "delete-calendar-event"
+    return None
+
+
+def _looks_like_calendar_write_request(text: str) -> bool:
+    return _calendar_write_action(text) is not None
+
+
+def _has_explicit_calendar_time_slot(text: str) -> bool:
+    """Recognize a concrete near-term time slot without requiring a Calendar noun.
+
+    This preserves cross-capability ownership for requests such as adding Focus-related
+    practice time tomorrow at 2: Calendar owns the mutation while Focus may still be
+    relevant context. The prototype's existing natural-date contract remains limited
+    to today/tomorrow.
+    """
+    if not re.search(r"\b(?:today|tomorrow)\b", text):
+        return False
+    return bool(
+        re.search(
+            r"\bat\s+\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?\b"
+            r"|\b(?:morning|afternoon|evening|night)\b",
+            text,
+        )
+    )
+
+
+def _looks_like_calendar_read_request(text: str) -> bool:
+    # Read ownership must never reinterpret a Calendar write as a read. Exact
+    # deterministic writes still win before the agent, and ambiguous writes
+    # remain on the existing guarded write/confirmation path.
+    if _looks_like_calendar_write_request(text):
+        return False
+
+    calendar_or_schedule_term = bool(
+        re.search(r"\b(?:calendar|agenda|appointments?|schedule|meetings?|events?)\b", text)
+    )
+    availability_question = bool(
+        re.search(
+            r"\b(?:am i|are we|do i look|will i be)\s+(?:free|available|busy|booked)\b",
+            text,
+        )
+    )
+    have_anything_question = bool(
+        re.search(r"\b(?:do i|do we)\s+have\s+(?:anything|something|plans?|meetings?|events?)\b", text)
+        and re.search(r"\b(?:today|tomorrow)\b", text)
+    )
+    return calendar_or_schedule_term or availability_question or have_anything_question
+
+
 def _fallback_shadow_decision(
     request: AgentShadowRequest,
     focus: dict[str, Any] | None,
 ) -> AgentShadowDecision:
     text = _normalize(request.userMessage)
     focus_relevant = _focus_is_relevant(request, focus)
-
     if re.fullmatch(r"(?:hi|hello|hey|hello there|hey there|good morning|good afternoon|good evening)[.!?]*", text):
         return _decision(
             owner="general_chat",
@@ -554,7 +624,6 @@ def _fallback_shadow_decision(
             confidence=0.99,
             reason="Self-contained greeting should remain general conversation.",
         )
-
     explicit_search_request = bool(
         re.search(
             r"\b(?:search|look up|lookup|research|check online|check the web|web search|find out|find reviews?|reviews? of)\b",
@@ -597,21 +666,38 @@ def _fallback_shadow_decision(
             arguments={"query": request.userMessage},
         )
 
-    calendar_terms = re.search(r"\b(?:calendar|appointment|schedule|event|meeting at|tomorrow at|today at)\b", text)
-    calendar_write = re.search(r"\b(?:add|schedule|create|move|change|delete|remove|cancel)\b", text)
-    if calendar_terms:
+    calendar_terms = bool(
+        re.search(r"\b(?:calendar|agenda|appointments?|schedule|events?|meetings?)\b", text)
+    )
+    calendar_write_action = _calendar_write_action(text)
+    calendar_write_target = calendar_terms or _has_explicit_calendar_time_slot(text)
+    if calendar_write_action and calendar_write_target:
         return _decision(
             owner="calendar",
             focus_relevant=focus_relevant,
             disposition="tool",
             capability="calendar",
-            action="calendar.create_event" if calendar_write else "calendar.read",
-            response_plan="Use Calendar as the authoritative capability and keep unrelated Focus state unchanged.",
+            action=calendar_write_action,
+            response_plan=(
+                "Classify the Calendar mutation canonically, then defer argument "
+                "interpretation and all execution to the existing guarded Calendar write path."
+            ),
             confidence=0.95,
-            reason="Calendar/event language owns this turn.",
+            reason="Calendar/event write language owns this turn, but writes are not agent-executable in this slice.",
             arguments={"request": request.userMessage},
         )
-
+    if _looks_like_calendar_read_request(text):
+        return _decision(
+            owner="calendar",
+            focus_relevant=focus_relevant,
+            disposition="tool",
+            capability="calendar",
+            action="read-calendar",
+            response_plan="Read authoritative Calendar state, then summarize only the verified schedule result.",
+            confidence=0.95,
+            reason="The turn is a single-intent Calendar schedule or availability read.",
+            arguments={"view": _calendar_read_view(text)},
+        )
     if re.search(r"\b(?:note|notes)\b", text):
         return _decision(
             owner="notes",
@@ -624,7 +710,6 @@ def _fallback_shadow_decision(
             reason="The user explicitly referenced notes.",
             arguments={"request": request.userMessage},
         )
-
     if re.search(r"\b(?:task|tasks|checklist|to do|todo)\b", text):
         action = "tasks.complete" if re.search(r"\b(?:done|complete|completed|finish|finished)\b", text) else "tasks.read"
         if re.search(r"\b(?:make|create|turn .* into|add)\b", text):
@@ -640,7 +725,6 @@ def _fallback_shadow_decision(
             reason="The user explicitly referenced task work.",
             arguments={"request": request.userMessage},
         )
-
     if re.search(r"\bmemory\b", text):
         return _decision(
             owner="memory",
@@ -653,7 +737,6 @@ def _fallback_shadow_decision(
             reason="The user explicitly referenced Memory.",
             arguments={"request": request.userMessage},
         )
-
     if re.search(r"\b(?:unmute|mute|voice|open menu|open launcher|go home|open camera|camera)\b", text):
         visual = bool(re.search(r"\bcamera\b", text))
         return _decision(
@@ -667,7 +750,6 @@ def _fallback_shadow_decision(
             reason="The turn directly controls QMeet UI/device behavior.",
             arguments={"request": request.userMessage},
         )
-
     explicit_focus = bool(
         re.search(
             r"\b(?:start|end|resume|update|change|set|what is|what's|show)\b.*\bfocus\b|\bgoal\s*:|\bset (?:my )?goal\b",
@@ -695,7 +777,6 @@ def _fallback_shadow_decision(
             reason="The user explicitly requested a Focus operation.",
             arguments={"request": request.userMessage},
         )
-
     if _recent_focus_continuation(request, focus) or _recent_focus_work_reply(request, focus) or (
         focus_relevant and re.search(r"\b(?:help|outline|points|draft|write|ideas|structure|practice|improve)\b", text)
     ):
@@ -709,7 +790,6 @@ def _fallback_shadow_decision(
             confidence=0.88,
             reason="The turn clearly continues substantive work inside the active Focus.",
         )
-
     general_question = bool(re.match(r"^(?:why|what|who|where|when|how|is|are|can|could|do|does)\b", text))
     if general_question and not focus_relevant:
         return _decision(
@@ -722,7 +802,6 @@ def _fallback_shadow_decision(
             confidence=0.86,
             reason="The turn reads as a self-contained general question with no Focus connection.",
         )
-
     return _decision(
         owner="focus" if focus_relevant else "general_chat",
         focus_relevant=focus_relevant,
@@ -743,8 +822,6 @@ def _fallback_shadow_decision(
     )
 
 
-
-
 def _is_executable_search_tool_decision(decision: AgentShadowDecision) -> bool:
     if decision.turnOwner != "search" or decision.disposition != "tool":
         return False
@@ -763,7 +840,6 @@ def apply_search_ownership_floor(
     decision: AgentShadowDecision,
 ) -> AgentShadowDecision:
     """Keep external-evidence requests on the Search capability.
-
     The model remains the primary owner classifier, but a confident deterministic
     external-evidence classification is a capability safety floor: QMeet must not
     answer requests for reviewers/users/current web evidence from model memory.
@@ -771,7 +847,6 @@ def apply_search_ownership_floor(
     it only normalizes the proposed owner/action/arguments before the existing
     frontend Search validator and deterministic Search handler run.
     """
-
     fallback = normalize_shadow_decision(_fallback_shadow_decision(request, focus))
     if not (
         fallback.turnOwner == "search"
@@ -783,7 +858,6 @@ def apply_search_ownership_floor(
 
     if _is_executable_search_tool_decision(decision):
         return decision
-
     return fallback.model_copy(
         update={
             "reason": (
@@ -792,6 +866,7 @@ def apply_search_ownership_floor(
             )
         }
     )
+
 
 def _action_token(value: str) -> str:
     return re.sub(r"-+", "-", value.strip().casefold().replace("_", "-"))
@@ -816,14 +891,12 @@ def normalize_shadow_decision(decision: AgentShadowDecision) -> AgentShadowDecis
                 "proposedAction": expected_action,
             }
         )
-
     if decision.disposition == "clarify":
         return decision.model_copy(update={"proposedAction": "none"})
 
     canonical = canonical_action_id(decision.proposedAction)
     if canonical is not None:
         return decision.model_copy(update={"proposedAction": canonical})
-
     arguments = dict(decision.proposedArguments)
     raw_action = decision.proposedAction.strip()
     if raw_action and raw_action.casefold() != "none":
@@ -834,6 +907,7 @@ def normalize_shadow_decision(decision: AgentShadowDecision) -> AgentShadowDecis
             "proposedArguments": arguments,
         }
     )
+
 
 def _json_object_from_text(text: str) -> dict[str, Any] | None:
     stripped = text.strip()
@@ -884,7 +958,6 @@ async def _generate_model_decision(
 ) -> AgentShadowDecision | None:
     if not _is_openai_enabled() or not os.getenv("OPENAI_API_KEY") or AsyncOpenAI is None:
         return None
-
     try:
         client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
         response = await client.chat.completions.create(
@@ -965,7 +1038,6 @@ def compare_shadow_to_legacy(
 ) -> AgentShadowComparison:
     if observation is None:
         return AgentShadowComparison(compared=False)
-
     owner_agreement = None if observation.owner is None else observation.owner == decision.turnOwner
     disposition_agreement = (
         None if observation.disposition is None else observation.disposition == decision.disposition
@@ -984,7 +1056,6 @@ def compare_shadow_to_legacy(
             action_agreement = _action_token(decision.proposedAction) == _action_token(observation.action)
         else:
             action_agreement = shadow_action == legacy_action
-
     disagreements: list[str] = []
     if owner_agreement is False:
         disagreements.append(f"owner shadow={decision.turnOwner} legacy={observation.owner}")
@@ -996,7 +1067,6 @@ def compare_shadow_to_legacy(
         disagreements.append(
             f"action shadow={decision.proposedAction} legacy={observation.action}"
         )
-
     return AgentShadowComparison(
         compared=True,
         ownerAgreement=owner_agreement,
@@ -1129,7 +1199,6 @@ def _load_shadow_telemetry() -> tuple[
     comparison_event_count = 0
     if not path.exists():
         return decision_order, decisions, comparison_by_turn, comparison_event_count
-
     with path.open("r", encoding="utf-8") as handle:
         for raw_line in handle:
             line = raw_line.strip()
@@ -1144,7 +1213,6 @@ def _load_shadow_telemetry() -> tuple[
             turn_id = str(record.get("turnId") or "")
             if not turn_id:
                 continue
-
             if record_type == "decision":
                 if turn_id not in decisions:
                     decision_order.append(turn_id)
@@ -1159,10 +1227,8 @@ def _load_shadow_telemetry() -> tuple[
                         continue
                     comparison_by_turn[turn_id] = (0, observation, comparison)
                 continue
-
             if record_type != "comparison":
                 continue
-
             comparison_event_count += 1
             try:
                 observation = LegacyRouteObservation.model_validate(record.get("legacyObservation") or {})
@@ -1173,7 +1239,6 @@ def _load_shadow_telemetry() -> tuple[
             existing = comparison_by_turn.get(turn_id)
             if existing is None or sequence >= existing[0]:
                 comparison_by_turn[turn_id] = (sequence, observation, comparison)
-
     for turn_id, comparison_record in list(comparison_by_turn.items()):
         decision_record = decisions.get(turn_id) or {}
         try:
@@ -1189,7 +1254,6 @@ def _load_shadow_telemetry() -> tuple[
             normalized_observation,
             compare_shadow_to_legacy(decision, normalized_observation),
         )
-
     return decision_order, decisions, comparison_by_turn, comparison_event_count
 
 
@@ -1201,7 +1265,6 @@ def _is_focus_replacement_risk(
         return False
     if not str(decision_record.get("activeFocusId") or "").strip():
         return False
-
     _, observation, _ = comparison_record
     joined = " ".join(
         part
@@ -1216,7 +1279,6 @@ def _is_focus_replacement_risk(
     )
     if not legacy_started_focus:
         return False
-
     try:
         decision = normalize_shadow_decision(
             AgentShadowDecision.model_validate(decision_record.get("decision") or {})
@@ -1234,14 +1296,12 @@ def shadow_recent(*, limit: int = 20, disagreements_only: bool = False) -> dict[
     bounded_limit = max(1, min(int(limit), 50))
     decision_order, decisions, comparison_by_turn, _ = _load_shadow_telemetry()
     items: list[dict[str, Any]] = []
-
     for turn_id in reversed(decision_order):
         decision_record = decisions.get(turn_id) or {}
         comparison_record = comparison_by_turn.get(turn_id)
         comparison = comparison_record[2] if comparison_record is not None else None
         if disagreements_only and not (comparison and comparison.disagreementSummary):
             continue
-
         legacy_observation = comparison_record[1] if comparison_record is not None else None
         normalized_decision_payload = decision_record.get("decision") or {}
         try:
@@ -1250,7 +1310,6 @@ def shadow_recent(*, limit: int = 20, disagreements_only: bool = False) -> dict[
             ).model_dump()
         except Exception:
             pass
-
         items.append(
             {
                 "timestamp": str(decision_record.get("timestamp") or ""),
@@ -1271,7 +1330,6 @@ def shadow_recent(*, limit: int = 20, disagreements_only: bool = False) -> dict[
         )
         if len(items) >= bounded_limit:
             break
-
     return {
         "ok": True,
         "mode": "shadow",
