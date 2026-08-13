@@ -27,6 +27,7 @@ type ToolContinuationRequest = {
   capability: ToolContinuationCapability;
   action: string;
   toolResult: string;
+  toolContext?: string;
   verified: true;
   success: true;
   verificationSource: 'frontend-deterministic-command';
@@ -41,6 +42,7 @@ type ToolContinuationUiOptions = {
   userMessage: string;
   command: LocalCommand;
   toolResult: string;
+  toolContext?: string;
   recentMessages: Message[];
   activePanel: ActivePanel;
   voiceOutputEnabled: boolean;
@@ -230,6 +232,7 @@ function buildRequest(
     capability: getToolContinuationCapability(options.command),
     action: options.command,
     toolResult: options.toolResult.trim(),
+    toolContext: options.toolContext?.trim() || undefined,
     verified: true,
     success: true,
     verificationSource: 'frontend-deterministic-command',

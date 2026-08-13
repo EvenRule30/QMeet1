@@ -254,21 +254,32 @@ def _recent_visible_history(
     return history
 
 
-def _developer_contexts_for_request(request: ConversationLaneRequest) -> list[dict[str, str]]:
-    """Reuse the existing Memory/Calendar/planning context builders only.
+def _developer_contexts_for_message(message: str) -> list[dict[str, str]]:
+    """Return reusable developer contexts for one visible conversation message.
 
-    `_build_chat_input_messages` also contains backend history and a user turn;
-    those are deliberately excluded here because this lane receives the recent
-    *visible* conversation from the frontend and must not resurrect stale hidden
-    Focus coaching prompts.
+    This helper remains a stable compatibility seam for Phase 21A/early-21B
+    regressions and callers. Request-aware ownership filtering belongs in
+    `_developer_contexts_for_request`, not here.
     """
 
-    base_messages = _build_chat_input_messages(request.userMessage)
-    developer_messages = [
+    base_messages = _build_chat_input_messages(message)
+    return [
         {"role": "developer", "content": str(item.get("content") or "")}
         for item in base_messages
         if item.get("role") == "developer" and str(item.get("content") or "").strip()
     ]
+
+
+def _developer_contexts_for_request(request: ConversationLaneRequest) -> list[dict[str, str]]:
+    """Return developer contexts after applying request-aware ownership policy.
+
+    `_build_chat_input_messages` also contains backend history and a user turn;
+    those are deliberately excluded by `_developer_contexts_for_message` because
+    this lane receives the recent *visible* conversation from the frontend and
+    must not resurrect stale hidden Focus coaching prompts.
+    """
+
+    developer_messages = _developer_contexts_for_message(request.userMessage)
 
     if request.ownershipHint is not None and request.ownershipHint.turnOwner == "focus":
         # A promoted Focus-owned conversation already has the authoritative

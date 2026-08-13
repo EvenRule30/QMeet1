@@ -166,7 +166,7 @@ Core rule: decide TURN OWNERSHIP before deciding whether Active Focus matters.
 Turn owners:
 - general_chat: greetings, general knowledge, ordinary conversation, or unrelated questions that need no QMeet capability.
 - calendar: schedule/event/calendar reads or writes.
-- search: web/search/review/look-up requests.
+- search: requests whose answer should come from external/web evidence rather than model memory. This includes explicit search/look-up/research requests, requests to check what reviewers/users/critics/people are saying, requests for current/recent/latest information, or requests to find/verify sources, reviews, ratings, evidence, or web opinions.
 - memory: memory panel/history/general memory operations that are not specifically task or note operations.
 - tasks: task creation, completion, task reads, or task organization.
 - notes: note creation, note reads, note editing, or notes panel work.
@@ -186,6 +186,11 @@ Disposition:
 - conversation: the assistant should answer/help without a state-changing tool.
 - tool: a deterministic capability should execute or read authoritative state.
 - clarify: one clarification is genuinely required before safe/useful execution.
+
+Search ownership rule:
+- If the user's request asks QMeet to discover, verify, inspect, compare, or report external opinions/evidence that should come from the web, choose turnOwner=search and disposition=tool. Do not answer those requests from model memory merely because you could produce a plausible answer.
+- Natural research wording still counts as Search even when the user does not say the word \"search\". Examples of the semantic class include asking what reviewers think, what people are saying about a product, whether recent sources support a claim, or asking QMeet to see/check/find out what the web says.
+- For executable Search, use proposedCapability=search, proposedAction=run-search, and proposedArguments with exactly one field: {\"query\": \"<the concise web query to run>\"}. Do not use request/topic/text/url or extra argument keys.
 
 Proposed action is shadow metadata only. It is NOT executable and must never be treated as proof that anything changed.
 
@@ -235,6 +240,19 @@ GLOBAL_CAPABILITY_CONTRACT = [
         "owner": "search",
         "authority": "deterministic search capability",
         "actions": list(CANONICAL_TOOL_ACTIONS_BY_OWNER["search"]),
+        "ownershipRule": (
+            "Use Search when the user asks QMeet to discover, verify, inspect, compare, or report "
+            "external web evidence/opinions/current information rather than answer from model memory."
+        ),
+        "executableAction": "run-search",
+        "argumentSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["query"],
+            "properties": {
+                "query": {"type": "string", "minLength": 1, "maxLength": 500},
+            },
+        },
     },
     {
         "owner": "memory",
@@ -537,7 +555,36 @@ def _fallback_shadow_decision(
             reason="Self-contained greeting should remain general conversation.",
         )
 
-    if re.search(r"\b(?:search|look up|find reviews?|reviews? of|web search)\b", text):
+    explicit_search_request = bool(
+        re.search(
+            r"\b(?:search|look up|lookup|research|check online|check the web|web search|find out|find reviews?|reviews? of)\b",
+            text,
+        )
+    )
+    external_opinion_request = bool(
+        re.search(
+            r"\b(?:reviewers?|users?|critics?|people|customers?)\b",
+            text,
+        )
+        and re.search(
+            r"\b(?:think|thinking|say|saying|said|feel|reviews?|ratings?|opinions?|feedback|experience|experiences)\b",
+            text,
+        )
+    )
+    external_evidence_request = bool(
+        re.search(r"\b(?:sources?|evidence|reviews?|ratings?|news)\b", text)
+        and re.search(r"\b(?:find|check|see|show|give|get|gather|verify|compare|what)\b", text)
+    )
+    recency_requires_search = bool(
+        re.search(r"\b(?:latest|recent|current|currently|today|this week|this month)\b", text)
+        and re.search(r"\b(?:reviews?|news|prices?|opinions?|feedback|information|info|saying|think)\b", text)
+    )
+    if (
+        explicit_search_request
+        or external_opinion_request
+        or external_evidence_request
+        or recency_requires_search
+    ):
         return _decision(
             owner="search",
             focus_relevant=focus_relevant,
@@ -546,7 +593,7 @@ def _fallback_shadow_decision(
             action="search.run",
             response_plan="Run Search, then summarize or offer the most useful consequence of the verified result.",
             confidence=0.94,
-            reason="The user explicitly requested web/search work.",
+            reason="The request depends on external web evidence/opinions rather than model memory.",
             arguments={"query": request.userMessage},
         )
 
@@ -696,6 +743,55 @@ def _fallback_shadow_decision(
     )
 
 
+
+
+def _is_executable_search_tool_decision(decision: AgentShadowDecision) -> bool:
+    if decision.turnOwner != "search" or decision.disposition != "tool":
+        return False
+    if decision.proposedCapability != "search" or canonical_action_id(decision.proposedAction) != "run-search":
+        return False
+    arguments = decision.proposedArguments
+    if set(arguments) != {"query"}:
+        return False
+    query = arguments.get("query")
+    return isinstance(query, str) and bool(query.strip()) and len(query.strip()) <= 500
+
+
+def apply_search_ownership_floor(
+    request: AgentShadowRequest,
+    focus: dict[str, Any] | None,
+    decision: AgentShadowDecision,
+) -> AgentShadowDecision:
+    """Keep external-evidence requests on the Search capability.
+
+    The model remains the primary owner classifier, but a confident deterministic
+    external-evidence classification is a capability safety floor: QMeet must not
+    answer requests for reviewers/users/current web evidence from model memory.
+    This is intentionally Search-only in Phase 21B and does not execute anything;
+    it only normalizes the proposed owner/action/arguments before the existing
+    frontend Search validator and deterministic Search handler run.
+    """
+
+    fallback = normalize_shadow_decision(_fallback_shadow_decision(request, focus))
+    if not (
+        fallback.turnOwner == "search"
+        and fallback.disposition == "tool"
+        and fallback.proposedAction == "run-search"
+        and fallback.confidence >= 0.94
+    ):
+        return decision
+
+    if _is_executable_search_tool_decision(decision):
+        return decision
+
+    return fallback.model_copy(
+        update={
+            "reason": (
+                "Deterministic Search ownership floor: the request requires external "
+                "web evidence/opinions, so model-memory conversation cannot own it."
+            )
+        }
+    )
 
 def _action_token(value: str) -> str:
     return re.sub(r"-+", "-", value.strip().casefold().replace("_", "-"))
@@ -1227,6 +1323,7 @@ async def decide_agent_shadow(request: AgentShadowRequest) -> AgentShadowRespons
     decision = normalize_shadow_decision(
         model_decision or _fallback_shadow_decision(request, focus)
     )
+    decision = apply_search_ownership_floor(request, focus, decision)
     comparison = compare_shadow_to_legacy(decision, request.legacyObservation)
     turn_id = f"shadow-{uuid4().hex}"
     _append_telemetry(

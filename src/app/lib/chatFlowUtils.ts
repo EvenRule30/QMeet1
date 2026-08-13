@@ -1,6 +1,6 @@
 import type { Message } from '../types';
 
-export type CommandRoute = 'exact' | 'interpreter' | 'confirmed';
+export type CommandRoute = 'exact' | 'interpreter' | 'confirmed' | 'agent';
 
 export function createUserMessage(idSeed: number | string, content: string): Message {
   return {
@@ -28,6 +28,7 @@ export function createAssistantMessage(
 export function getLocalCommandRouteLabel(commandRoute: CommandRoute): string {
   if (commandRoute === 'interpreter') return 'Fuzzy interpreter command';
   if (commandRoute === 'confirmed') return 'Confirmed destructive command';
+  if (commandRoute === 'agent') return 'Agent-promoted tool command';
   return 'Exact local command';
 }
 

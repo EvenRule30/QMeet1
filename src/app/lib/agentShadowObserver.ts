@@ -205,6 +205,7 @@ export type PromotedSingleIntentDecision = {
   disposition: 'conversation' | 'tool';
   proposedCapability: string;
   proposedAction: string;
+  proposedArguments: Record<string, unknown>;
   confidence: number;
   turnId: string;
 };
@@ -259,6 +260,7 @@ export async function resolvePromotedSingleIntentDecision(options: {
           disposition: 'conversation',
           proposedCapability: decision.proposedCapability,
           proposedAction: decision.proposedAction,
+          proposedArguments: { ...decision.proposedArguments },
           confidence: decision.confidence,
           turnId: shadow.turnId,
         };
@@ -276,6 +278,7 @@ export async function resolvePromotedSingleIntentDecision(options: {
           disposition: 'conversation',
           proposedCapability: decision.proposedCapability,
           proposedAction: decision.proposedAction,
+          proposedArguments: { ...decision.proposedArguments },
           confidence: decision.confidence,
           turnId: shadow.turnId,
         };
@@ -302,6 +305,7 @@ export async function resolvePromotedSingleIntentDecision(options: {
       disposition: 'tool',
       proposedCapability: decision.proposedCapability,
       proposedAction: decision.proposedAction,
+      proposedArguments: { ...decision.proposedArguments },
       confidence: decision.confidence,
       turnId: shadow.turnId,
     };

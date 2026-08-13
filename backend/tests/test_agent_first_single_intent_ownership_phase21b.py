@@ -35,7 +35,7 @@ class AgentFirstSingleIntentOwnershipPhase21BTests(unittest.TestCase):
 
     def test_promoted_conversation_still_bypasses_legacy_parsers_and_tools(self):
         start = APP.index("if (promotedSingleIntent?.disposition === 'conversation')")
-        end = APP.index("const promotedNonFocusToolOwner =", start)
+        end = APP.index("const promotedSearchTool =", start)
         block = APP[start:end]
         self.assertIn("await sendNormalChat(", block)
         self.assertIn("return;", block)
@@ -56,7 +56,6 @@ class AgentFirstSingleIntentOwnershipPhase21BTests(unittest.TestCase):
         block = OBSERVER[start:end]
         self.assertIn("EXPLICIT_COMMAND_LEAD.test(text)", block)
         self.assertIn("EXPLICIT_FOCUS_FIELD_ASSIGNMENT.test(text)", block)
-        # Bare aliases such as health/status must not be hard-coded as explicit.
         self.assertNotIn("text === 'health'", block)
         self.assertNotIn("text === 'status'", block)
 
@@ -67,12 +66,25 @@ class AgentFirstSingleIntentOwnershipPhase21BTests(unittest.TestCase):
         self.assertIn("isConfirmingPendingCommand(trimmed)", APP[pending:agent_first])
         self.assertIn("isRejectingPendingCommand(trimmed)", APP[pending:agent_first])
 
-    def test_non_focus_tool_owner_is_advisory_and_cannot_execute_agent_arguments(self):
-        start = APP.index("const promotedSingleIntent =")
+    def test_only_search_tool_is_promoted_to_execution_in_this_slice(self):
+        start = APP.index("const promotedSearchTool =")
+        end = APP.index("const promotedNonFocusToolOwner =", start)
+        block = APP[start:end]
+        self.assertIn("resolvePromotedSearchToolCommand", block)
+        self.assertIn("promotedSearchTool.commandMatch", block)
+        self.assertIn("'agent'", block)
+        self.assertNotIn("promotedSingleIntent.proposedArguments", block)
+        self.assertNotIn("handleCalendarCommand", block)
+        self.assertNotIn("handleMemoryCommand", block)
+        self.assertNotIn("handleNotesCommand", block)
+
+    def test_other_non_focus_tool_owners_remain_advisory(self):
+        start = APP.index("const promotedNonFocusToolOwner =")
         end = APP.index("const naturalTaskCompletionEligible =", start)
         block = APP[start:end]
+        self.assertIn("promotedSingleIntent.turnOwner !== 'focus'", block)
         self.assertNotIn("proposedArguments", block)
-        self.assertNotIn("handleSend(promotedSingleIntent", block)
+        self.assertNotIn("handleSend(", block)
 
     def test_ambiguous_single_intent_wait_is_bounded(self):
         self.assertIn("AGENT_FIRST_SINGLE_INTENT_WAIT_MS = 2500", OBSERVER)

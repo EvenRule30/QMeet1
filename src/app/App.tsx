@@ -30,6 +30,7 @@ import {
   resolveExplicitDeterministicRouteBeforeAgent,
   shouldGuardInferredSemanticFocusMutationWithShadow,
 } from './lib/agentShadowObserver';
+import { resolvePromotedSearchToolCommand } from './lib/agentToolPromotion';
 import {
   describeTaskCompletionPreviewTargets,
   describeUnresolvedTaskCompletionRequest,
@@ -108,6 +109,7 @@ type SplitCommandResult = {
   confirmationContent?: string;
   shouldSpeakConfirmation?: boolean;
   confirmationSpeechRate?: number;
+  continuationContext?: string;
 };
 
 const FOCUS_COMMANDS_THAT_PRESERVE_ACTIVE_PANEL = new Set<string>([
@@ -541,6 +543,34 @@ export default function App() {
         routingActiveSession?.id ?? null,
       );
       return;
+    }
+    const promotedSearchTool = resolvePromotedSearchToolCommand(
+      promotedSingleIntent,
+    );
+    if (promotedSearchTool) {
+      setPendingInterpreterCommand(null);
+      setTrackedInputRoute(
+        'Agent-promoted Search tool',
+        promotedSearchTool.commandMatch.command,
+        promotedSearchTool.query,
+        'search',
+        'tool',
+      );
+      setLastLocalCommand('Agent-promoted Search');
+      setLastInterpreterAction(promotedSearchTool.commandMatch.command);
+      setLastInterpreterFrontendCommand(`search: ${promotedSearchTool.query}`);
+      setLastInterpreterConfidence(promotedSingleIntent?.confidence ?? null);
+      setLastInterpreterReason(
+        'The unified agent proposed one canonical Search action and its query passed deterministic frontend validation.',
+      );
+      return handleSend(
+        promotedSearchTool.query,
+        visibleUserText,
+        'agent',
+        promotedSearchTool.commandMatch,
+        [],
+        visibleUserText,
+      );
     }
     const promotedNonFocusToolOwner =
       promotedSingleIntent?.disposition === 'tool' &&
@@ -1119,6 +1149,7 @@ ${confirmedTaskCompletionResult.completedTasks
         userMessage: continuationUserTextForTool,
         command: commandMatch.command,
         toolResult: confirmationContent,
+        toolContext: splitCommandResult.continuationContext,
         recentMessages: messages,
         activePanel,
         voiceOutputEnabled,
