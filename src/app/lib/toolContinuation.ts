@@ -324,6 +324,15 @@ function appendOrUpdateContinuationMessage(
   });
 }
 
+function removeContinuationMessage(
+  setMessages: StateSetter<Message[]>,
+  messageId: string,
+): void {
+  setMessages((previous) =>
+    previous.filter((message) => message.id !== messageId),
+  );
+}
+
 async function readContinuationStream(
   response: Response,
   signal: AbortSignal,
@@ -467,6 +476,9 @@ export async function continueAfterVerifiedToolUpdate(
     }
   } catch (error) {
     if (!controller.signal.aborted && runToken === continuationRunToken) {
+      if (visibleChunkSeen) {
+        removeContinuationMessage(options.setMessages, messageId);
+      }
       console.warn(
         'Post-tool conversational continuation failed; preserving the verified tool result without retrying the tool.',
         error,

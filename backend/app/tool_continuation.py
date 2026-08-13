@@ -472,6 +472,7 @@ async def stream_tool_continuation(
 
     client = AsyncOpenAI(api_key=api_key)
     full_reply = ""
+    completed = False
     try:
         stream = await client.responses.create(
             model=config.model,
@@ -485,11 +486,41 @@ async def stream_tool_continuation(
                 full_reply += delta
                 yield delta
             elif event.type == "response.completed":
+                completed = True
                 break
-            elif event.type == "response.failed":
-                raise AgentUserFacingError(
-                    "The model failed while generating the post-tool continuation."
+            elif event.type == "response.incomplete":
+                response = getattr(event, "response", None)
+                incomplete_details = getattr(response, "incomplete_details", None)
+                reason = _compact_string(
+                    getattr(incomplete_details, "reason", "") or "unknown reason",
+                    160,
                 )
+                raise AgentUserFacingError(
+                    "The model stopped before completing the post-tool continuation "
+                    f"({reason})."
+                )
+            elif event.type == "response.failed":
+                response = getattr(event, "response", None)
+                error = getattr(response, "error", None)
+                message = _compact_string(getattr(error, "message", ""), 240)
+                raise AgentUserFacingError(
+                    message
+                    or "The model failed while generating the post-tool continuation."
+                )
+            elif event.type == "error":
+                message = _compact_string(getattr(event, "message", ""), 240)
+                if not message:
+                    error = getattr(event, "error", None)
+                    message = _compact_string(getattr(error, "message", ""), 240)
+                raise AgentUserFacingError(
+                    message
+                    or "The model stream failed while generating the post-tool continuation."
+                )
+
+        if not completed:
+            raise AgentUserFacingError(
+                "The model stream ended before the post-tool continuation completed."
+            )
     except openai.AuthenticationError as exc:
         raise AgentUserFacingError(
             "OpenAI authentication failed. Check backend/.env and verify the API key."
