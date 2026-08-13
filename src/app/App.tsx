@@ -37,6 +37,9 @@ import {
   type DeferredCalendarWriteAction,
 } from './lib/agentToolPromotion';
 import {
+  resolveExplicitCalendarWriteIntentBeforeAgent,
+} from './lib/calendarWriteIntent';
+import {
   describeTaskCompletionPreviewTargets,
   describeUnresolvedTaskCompletionRequest,
   resolveTaskCompletionPreviewTargets,
@@ -519,6 +522,41 @@ export default function App() {
       );
     }
     const parsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);
+    const explicitCalendarWriteIntent =
+      !forcedCommandMatch && commandRoute === 'exact'
+        ? resolveExplicitCalendarWriteIntentBeforeAgent({
+            userMessage: trimmed,
+            parsedCommand: parsedCommandMatch,
+          })
+        : null;
+    if (
+      explicitCalendarWriteIntent?.commandMatch &&
+      explicitCalendarWriteIntent.canonicalFrontendCommand
+    ) {
+      setPendingInterpreterCommand(null);
+      setTrackedInputRoute(
+        'Explicit Calendar write normalized before agent',
+        explicitCalendarWriteIntent.expectedAction,
+        explicitCalendarWriteIntent.canonicalFrontendCommand,
+        'calendar',
+        'tool',
+      );
+      setLastLocalCommand('Explicit Calendar write');
+      setLastInterpreterAction('Not used');
+      setLastInterpreterFrontendCommand(
+        explicitCalendarWriteIntent.canonicalFrontendCommand,
+      );
+      setLastInterpreterConfidence(1);
+      setLastInterpreterReason(explicitCalendarWriteIntent.reason);
+      return handleSend(
+        explicitCalendarWriteIntent.canonicalFrontendCommand,
+        visibleUserText,
+        'exact',
+        explicitCalendarWriteIntent.commandMatch,
+        [],
+        visibleUserText,
+      );
+    }
     const explicitDeterministicRoute =
       !forcedCommandMatch && commandRoute === 'exact'
         ? resolveExplicitDeterministicRouteBeforeAgent({
@@ -529,7 +567,8 @@ export default function App() {
     const promotedSingleIntent =
       !forcedCommandMatch &&
       commandRoute === 'exact' &&
-      !explicitDeterministicRoute
+      !explicitDeterministicRoute &&
+      !explicitCalendarWriteIntent
         ? await resolvePromotedSingleIntentDecision({
             shadowTurn,
             activeFocusId: routingActiveSession?.id ?? null,
@@ -584,6 +623,7 @@ export default function App() {
     const promotedCalendarReadTool =
       resolvePromotedCalendarReadToolCommand(promotedSingleIntent);
     const deferredCalendarWriteAction =
+      explicitCalendarWriteIntent?.expectedAction ??
       resolveDeferredCalendarWriteAction(promotedSingleIntent);
     if (promotedCalendarReadTool) {
       setPendingInterpreterCommand(null);
