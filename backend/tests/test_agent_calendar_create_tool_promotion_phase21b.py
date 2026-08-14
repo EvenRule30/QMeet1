@@ -97,35 +97,39 @@ class AgentCalendarCreateToolPromotionPhase21BTests(unittest.TestCase):
         self.assertIsNone(decision.proposedArguments["time"])
         self.assertIn("ownership floor", decision.reason)
 
-    def test_delete_write_ownership_floor_prevents_focus_or_chat_theft_but_stays_unpromoted(self) -> None:
+    def test_delete_write_ownership_floor_preserves_valid_typed_delete_proposal(self) -> None:
         request = self._request("delete tomorrow's meeting")
-        wrong_focus = shadow.AgentShadowDecision(
-            turnOwner="focus",
-            focusRelevant=True,
-            disposition="conversation",
-            proposedCapability="focus",
-            proposedAction="focus.help",
-            proposedArguments={},
-            responsePlan="Continue Focus conversation.",
-            confidence=0.9,
-            reason="Incorrect Focus ownership.",
+        typed_delete = shadow.AgentShadowDecision(
+            turnOwner="calendar",
+            focusRelevant=False,
+            disposition="tool",
+            proposedCapability="calendar",
+            proposedAction="delete-calendar-event",
+            proposedArguments={"day": "tomorrow", "title": "meeting", "time": None},
+            responsePlan="Resolve the target from canonical Calendar state, then require confirmation.",
+            confidence=0.93,
+            reason="Single targeted Calendar deletion.",
         )
 
         decision = shadow.apply_calendar_write_ownership_floor(
             request,
             None,
-            shadow.normalize_shadow_decision(wrong_focus),
+            shadow.normalize_shadow_decision(typed_delete),
         )
 
         self.assertEqual(decision.turnOwner, "calendar")
         self.assertEqual(decision.disposition, "tool")
         self.assertEqual(decision.proposedAction, "delete-calendar-event")
-        self.assertEqual(decision.proposedArguments, {"request": "delete tomorrow's meeting"})
+        self.assertEqual(
+            decision.proposedArguments,
+            {"day": "tomorrow", "title": "meeting", "time": None},
+        )
 
         frontend_source = (
             ROOT / "src" / "app" / "lib" / "agentToolPromotion.ts"
         ).read_text(encoding="utf-8")
-        self.assertNotIn("command: 'delete-calendar-event'", frontend_source)
+        self.assertIn("resolvePromotedCalendarDeleteToolCommand", frontend_source)
+        self.assertIn("command: 'delete-calendar-event'", frontend_source)
 
     def test_broad_schedule_planning_is_not_promoted_as_one_create(self) -> None:
         decision = self._fallback("schedule my day tomorrow")

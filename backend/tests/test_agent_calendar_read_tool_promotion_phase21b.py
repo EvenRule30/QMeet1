@@ -66,7 +66,7 @@ class AgentCalendarReadToolPromotionPhase21BTests(unittest.TestCase):
                 decision = self._fallback_decision(text)
                 self.assertNotEqual(decision.proposedAction, "read-calendar")
 
-    def test_calendar_capability_contract_exposes_read_and_create_schemas(self) -> None:
+    def test_calendar_capability_contract_exposes_read_create_delete_and_edit_schemas(self) -> None:
         calendar_contract = next(
             item
             for item in shadow.GLOBAL_CAPABILITY_CONTRACT
@@ -90,9 +90,30 @@ class AgentCalendarReadToolPromotionPhase21BTests(unittest.TestCase):
             ["today", "tomorrow"],
         )
         self.assertIn("add-calendar-event", calendar_contract["promotionConstraint"])
-        self.assertIn("edits and deletes remain deferred", calendar_contract["promotionConstraint"])
+        self.assertEqual(calendar_contract["promotedDeleteAction"], "delete-calendar-event")
+        delete_schema = calendar_contract["deleteArgumentSchema"]
+        self.assertFalse(delete_schema["additionalProperties"])
+        self.assertEqual(delete_schema["required"], ["day", "title", "time"])
+        self.assertEqual(
+            delete_schema["properties"]["day"]["enum"],
+            ["today", "tomorrow"],
+        )
+        self.assertIn("delete-calendar-event", calendar_contract["promotionConstraint"])
+        self.assertEqual(calendar_contract["promotedEditAction"], "edit-last-event")
+        edit_schema = calendar_contract["editArgumentSchema"]
+        self.assertFalse(edit_schema["additionalProperties"])
+        self.assertEqual(
+            edit_schema["required"],
+            ["targetDay", "targetTitle", "targetTime", "newDay", "newTitle", "newTime"],
+        )
+        self.assertEqual(
+            edit_schema["properties"]["targetDay"]["enum"],
+            ["today", "tomorrow"],
+        )
+        self.assertIn("edit-last-event", calendar_contract["promotionConstraint"])
+        self.assertIn("Delete-last and clears remain deferred", calendar_contract["promotionConstraint"])
 
-    def test_frontend_calendar_promotion_keeps_reads_exact_and_promotes_only_create_write(self) -> None:
+    def test_frontend_calendar_promotion_keeps_reads_exact_and_promotes_create_delete_and_edit(self) -> None:
         source = (ROOT / "src" / "app" / "lib" / "agentToolPromotion.ts").read_text(
             encoding="utf-8"
         )
@@ -114,11 +135,17 @@ class AgentCalendarReadToolPromotionPhase21BTests(unittest.TestCase):
 
         self.assertIn("resolvePromotedCalendarCreateToolCommand", source)
         self.assertIn("command: 'add-calendar-event'", source)
+        self.assertIn("resolvePromotedCalendarDeleteToolCommand", source)
+        self.assertIn("command: 'delete-calendar-event'", source)
+        self.assertIn("resolvePromotedCalendarEditToolCommand", source)
+        self.assertIn("command: 'edit-last-event'", source)
         self.assertIn("hasExactlyKeys(argumentsValue, ['day', 'title', 'time'])", source)
+        self.assertIn("'targetDay'", source)
+        self.assertIn("'newTime'", source)
         self.assertIn("time: validated.time ?? 'Later'", source)
+        self.assertIn("calendarDeleteRoundTripsThroughCanonicalParser", source)
+        self.assertIn("calendarEditRoundTripsThroughCanonicalParser", source)
         for forbidden_write in (
-            "command: 'edit-last-event'",
-            "command: 'delete-calendar-event'",
             "command: 'delete-last-event'",
             "command: 'clear-calendar'",
         ):
@@ -132,13 +159,17 @@ class AgentCalendarReadToolPromotionPhase21BTests(unittest.TestCase):
         single_intent_index = source.index("await resolvePromotedSingleIntentDecision({")
         search_index = source.index("resolvePromotedSearchToolCommand(")
         calendar_create_index = source.index("resolvePromotedCalendarCreateToolCommand(")
+        calendar_delete_index = source.index("resolvePromotedCalendarDeleteToolCommand(")
+        calendar_edit_index = source.index("resolvePromotedCalendarEditToolCommand(")
         calendar_read_index = source.index("resolvePromotedCalendarReadToolCommand(")
         generic_tool_index = source.index("const promotedNonFocusToolOwner =")
 
         self.assertLess(explicit_index, single_intent_index)
         self.assertLess(single_intent_index, search_index)
         self.assertLess(search_index, calendar_create_index)
-        self.assertLess(calendar_create_index, calendar_read_index)
+        self.assertLess(calendar_create_index, calendar_delete_index)
+        self.assertLess(calendar_delete_index, calendar_edit_index)
+        self.assertLess(calendar_edit_index, calendar_read_index)
         self.assertLess(calendar_read_index, generic_tool_index)
         self.assertIn("'Agent-promoted Calendar read'", source)
         self.assertIn("promotedCalendarReadTool.commandMatch", source)

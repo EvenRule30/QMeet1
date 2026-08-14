@@ -32,11 +32,16 @@ import {
 } from './lib/agentShadowObserver';
 import {
   isPromotedCalendarCreateToolDecision,
+  isPromotedCalendarDeleteToolDecision,
+  isPromotedCalendarEditToolDecision,
   resolveDeferredCalendarWriteAction,
   resolvePromotedCalendarCreateToolCommand,
+  resolvePromotedCalendarDeleteToolCommand,
+  resolvePromotedCalendarEditToolCommand,
   resolvePromotedCalendarReadToolCommand,
   resolvePromotedSearchToolCommand,
   type DeferredCalendarWriteAction,
+  type PromotedCalendarEditTargetCriteria,
 } from './lib/agentToolPromotion';
 import {
   resolveExplicitCalendarWriteIntentBeforeAgent,
@@ -69,6 +74,7 @@ import { getDateKeyForCalendarView } from './lib/dateUtils';
 import {
   buildCalendarDeleteFrontendCommand,
   buildCalendarEditFrontendCommand,
+  calendarEventMatchesDeleteCriteria,
   describeCalendarDeletePayload,
   describeCalendarEditPayload,
 } from './lib/calendarUtils';
@@ -121,6 +127,8 @@ type SplitCommandResult = {
   confirmationSpeechRate?: number;
   continuationContext?: string;
 };
+const AGENT_FIRST_EXPLICIT_CALENDAR_WRITE_WAIT_MS = 7000;
+
 const CALENDAR_WRITE_COMMANDS = new Set<DeferredCalendarWriteAction>([
   'add-calendar-event',
   'edit-last-event',
@@ -197,6 +205,7 @@ export default function App() {
     googleCalendarLoading,
     googleCalendarError,
     saveCalendarEvent,
+    updateCalendarEvent,
     deleteCalendarEvent,
     clearCalendarEvents,
     getNextCalendarEventForDeletion,
@@ -207,6 +216,7 @@ export default function App() {
     refreshGoogleCalendar,
     findCalendarEventForDeletion,
     findCalendarEventForChange,
+    getCalendarEventsForDeleteCriteria,
     deleteCalendarEventByCriteria,
     handleStartGoogleCalendarAuth,
     handleResetGoogleCalendarAuth,
@@ -294,6 +304,8 @@ export default function App() {
   const [lastInterpreterReason, setLastInterpreterReason] = useState('No interpreter request has run yet.');
   const [pendingInterpreterCommand, setPendingInterpreterCommand] = useState<PendingInterpreterCommand | null>(null);
   const pendingTaskCompletionTargetsRef = useRef<ConfirmedTaskTarget[]>([]);
+  const pendingCalendarDeleteTargetIdRef = useRef<string | null>(null);
+  const pendingCalendarEditTargetIdRef = useRef<string | null>(null);
   const orbAreaRef = useRef<HTMLDivElement | null>(null);
   const {
     listeningTranscript,
@@ -317,6 +329,8 @@ export default function App() {
     setActivePanel('none');
     setPendingInterpreterCommand(null);
     pendingTaskCompletionTargetsRef.current = [];
+    pendingCalendarDeleteTargetIdRef.current = null;
+    pendingCalendarEditTargetIdRef.current = null;
     clearResultToasts();
     setChatActive(false);
     clearMessages();
@@ -380,7 +394,7 @@ export default function App() {
       speakAssistantText,
     });
   }, [activePanel, activeSession?.id, messages, speakAssistantText, voiceOutputEnabled]);
-  const handleSend = useCallback(async (text: string, displayText?: string, commandRoute: CommandRoute = 'exact', forcedCommandMatch?: CommandMatch, confirmedTaskTargets: ConfirmedTaskTarget[] = [], continuationUserText?: string) => {
+  const handleSend = useCallback(async (text: string, displayText?: string, commandRoute: CommandRoute = 'exact', forcedCommandMatch?: CommandMatch, confirmedTaskTargets: ConfirmedTaskTarget[] = [], continuationUserText?: string, confirmedCalendarDeleteTargetId: string | null = null, confirmedCalendarEditTargetId: string | null = null, promotedCalendarEditTargetCriteria: PromotedCalendarEditTargetCriteria | null = null) => {
     const trimmed = text.trim();
     if (!trimmed) return;
     const visibleUserText = (displayText ?? trimmed).trim() || trimmed;
@@ -445,8 +459,80 @@ export default function App() {
           if (isConfirmingPendingCommand(trimmed)) {
             const commandToRun = pendingInterpreterCommand;
             const resolvedTaskTargets = pendingTaskCompletionTargetsRef.current;
+            const resolvedCalendarDeleteTargetId =
+              commandToRun.action === 'delete-calendar-event'
+                ? pendingCalendarDeleteTargetIdRef.current
+                : null;
+            const resolvedCalendarEditTargetId =
+              commandToRun.action === 'edit-last-event'
+                ? pendingCalendarEditTargetIdRef.current
+                : null;
             setPendingInterpreterCommand(null);
             pendingTaskCompletionTargetsRef.current = [];
+            pendingCalendarDeleteTargetIdRef.current = null;
+            pendingCalendarEditTargetIdRef.current = null;
+            if (
+              commandToRun.action === 'delete-calendar-event' &&
+              !resolvedCalendarDeleteTargetId
+            ) {
+              finishListening();
+              setShowThinkingBubble(false);
+              setTrackedInputRoute(
+                'Confirmed Calendar delete target missing',
+                commandToRun.action,
+                commandToRun.frontendCommand,
+              );
+              setLastLocalCommand('Calendar delete not executed');
+              setLastInterpreterReason(
+                'The confirmed targeted delete no longer had one verified event identity, so QMeet refused to re-resolve a different event.',
+              );
+              if (!chatActive) setChatActive(true);
+              const now = Date.now();
+              const userMsg = createUserMessage(now, visibleUserText);
+              const assistantMsg = createAssistantMessage(
+                now,
+                'I could not verify the exact calendar event that was previously selected, so I did not delete anything. Please ask me to delete it again.',
+              );
+              setMessages((prev) => [...prev, userMsg, assistantMsg]);
+              pushResultToast({
+                kind: 'warning',
+                title: 'Calendar unchanged',
+                detail: assistantMsg.content,
+              });
+              speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+              return;
+            }
+            if (
+              commandToRun.action === 'edit-last-event' &&
+              !resolvedCalendarEditTargetId
+            ) {
+              finishListening();
+              setShowThinkingBubble(false);
+              setTrackedInputRoute(
+                'Confirmed Calendar edit target missing',
+                commandToRun.action,
+                commandToRun.frontendCommand,
+              );
+              setLastLocalCommand('Calendar edit not executed');
+              setLastInterpreterReason(
+                'The confirmed targeted edit no longer had one verified event identity, so QMeet refused to re-resolve a different event.',
+              );
+              if (!chatActive) setChatActive(true);
+              const now = Date.now();
+              const userMsg = createUserMessage(now, visibleUserText);
+              const assistantMsg = createAssistantMessage(
+                now,
+                'I could not verify the exact calendar event that was previously selected, so I did not update anything. Please ask me to edit it again.',
+              );
+              setMessages((prev) => [...prev, userMsg, assistantMsg]);
+              pushResultToast({
+                kind: 'warning',
+                title: 'Calendar unchanged',
+                detail: assistantMsg.content,
+              });
+              speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+              return;
+            }
             setTrackedInputRoute(
               'Confirmed fuzzy interpreter command',
               commandToRun.action,
@@ -474,6 +560,8 @@ export default function App() {
               confirmedTaskCommandMatch,
               resolvedTaskTargets,
               commandToRun.originalText,
+              resolvedCalendarDeleteTargetId,
+              resolvedCalendarEditTargetId,
             );
           }
           if (isRejectingPendingCommand(trimmed)) {
@@ -481,6 +569,8 @@ export default function App() {
             setShowThinkingBubble(false);
             setPendingInterpreterCommand(null);
             pendingTaskCompletionTargetsRef.current = [];
+            pendingCalendarDeleteTargetIdRef.current = null;
+            pendingCalendarEditTargetIdRef.current = null;
             setTrackedInputRoute(
               'Cancelled pending command',
               pendingInterpreterCommand.action,
@@ -499,6 +589,8 @@ export default function App() {
           }
           setPendingInterpreterCommand(null);
           pendingTaskCompletionTargetsRef.current = [];
+          pendingCalendarDeleteTargetIdRef.current = null;
+          pendingCalendarEditTargetIdRef.current = null;
         }
     const routingActiveSession =
       !forcedCommandMatch && commandRoute === 'exact'
@@ -545,6 +637,9 @@ export default function App() {
         ? await resolvePromotedSingleIntentDecision({
             shadowTurn,
             activeFocusId: routingActiveSession?.id ?? null,
+            timeoutMs: explicitCalendarWriteIntent
+              ? AGENT_FIRST_EXPLICIT_CALENDAR_WRITE_WAIT_MS
+              : undefined,
           })
         : null;
     const promotedConversationAllowed =
@@ -660,6 +755,140 @@ export default function App() {
         promotedCalendarCreateTool.commandMatch,
         [],
         visibleUserText,
+      );
+    }
+    const promotedCalendarDeleteCandidate =
+      isPromotedCalendarDeleteToolDecision(promotedSingleIntent);
+    const promotedCalendarDeleteTool =
+      resolvePromotedCalendarDeleteToolCommand(promotedSingleIntent);
+    if (promotedCalendarDeleteCandidate && !promotedCalendarDeleteTool) {
+      finishListening();
+      setShowThinkingBubble(false);
+      setPendingInterpreterCommand(null);
+      pendingTaskCompletionTargetsRef.current = [];
+      pendingCalendarDeleteTargetIdRef.current = null;
+      pendingCalendarEditTargetIdRef.current = null;
+      setTrackedInputRoute(
+        'Agent-promoted Calendar delete rejected',
+        'delete-calendar-event',
+        undefined,
+        'calendar',
+        'tool',
+      );
+      setLastLocalCommand('Calendar delete not executed');
+      setLastInterpreterAction('delete-calendar-event');
+      setLastInterpreterFrontendCommand('None');
+      setLastInterpreterConfidence(promotedSingleIntent?.confidence ?? null);
+      setLastInterpreterReason(
+        'The unified agent proposed targeted Calendar deletion, but its day/title/time criteria failed deterministic validation.',
+      );
+      if (!chatActive) setChatActive(true);
+      const now = Date.now();
+      const userMsg = createUserMessage(now, visibleUserText);
+      const assistantMsg = createAssistantMessage(
+        now,
+        'I understood this as deleting a Calendar event, but I could not safely validate one target day plus a title or time. No calendar change was made.',
+      );
+      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      pushResultToast({
+        kind: 'warning',
+        title: 'Calendar unchanged',
+        detail: assistantMsg.content,
+      });
+      speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+      return;
+    }
+    if (promotedCalendarDeleteTool) {
+      setPendingInterpreterCommand(null);
+      setTrackedInputRoute(
+        'Agent-promoted Calendar delete',
+        promotedCalendarDeleteTool.commandMatch.command,
+        `calendar delete: ${promotedCalendarDeleteTool.day} / ${promotedCalendarDeleteTool.time ?? 'any time'} / ${promotedCalendarDeleteTool.title ?? 'no title filter'}`,
+        'calendar',
+        'tool',
+      );
+      setLastLocalCommand('Agent-promoted Calendar delete');
+      setLastInterpreterAction(promotedCalendarDeleteTool.commandMatch.command);
+      setLastInterpreterFrontendCommand('Validated Calendar delete criteria');
+      setLastInterpreterConfidence(promotedSingleIntent?.confidence ?? null);
+      setLastInterpreterReason(
+        'The unified agent proposed one canonical Calendar delete action and its lookup criteria passed deterministic validation; canonical Calendar state must still resolve exactly one target before confirmation.',
+      );
+      return handleSend(
+        visibleUserText,
+        visibleUserText,
+        'agent',
+        promotedCalendarDeleteTool.commandMatch,
+        [],
+        visibleUserText,
+      );
+    }
+    const promotedCalendarEditCandidate =
+      isPromotedCalendarEditToolDecision(promotedSingleIntent);
+    const promotedCalendarEditTool =
+      resolvePromotedCalendarEditToolCommand(promotedSingleIntent);
+    if (promotedCalendarEditCandidate && !promotedCalendarEditTool) {
+      finishListening();
+      setShowThinkingBubble(false);
+      setPendingInterpreterCommand(null);
+      pendingTaskCompletionTargetsRef.current = [];
+      pendingCalendarEditTargetIdRef.current = null;
+      setTrackedInputRoute(
+        'Agent-promoted Calendar edit rejected',
+        'edit-last-event',
+        undefined,
+        'calendar',
+        'tool',
+      );
+      setLastLocalCommand('Calendar edit not executed');
+      setLastInterpreterAction('edit-last-event');
+      setLastInterpreterFrontendCommand('None');
+      setLastInterpreterConfidence(promotedSingleIntent?.confidence ?? null);
+      setLastInterpreterReason(
+        'The unified agent proposed targeted Calendar editing, but its target criteria or requested changes failed deterministic validation.',
+      );
+      if (!chatActive) setChatActive(true);
+      const now = Date.now();
+      const userMsg = createUserMessage(now, visibleUserText);
+      const assistantMsg = createAssistantMessage(
+        now,
+        'I understood this as editing a Calendar event, but I could not safely validate both one target and one requested change. No calendar change was made.',
+      );
+      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      pushResultToast({
+        kind: 'warning',
+        title: 'Calendar unchanged',
+        detail: assistantMsg.content,
+      });
+      speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+      return;
+    }
+    if (promotedCalendarEditTool) {
+      setPendingInterpreterCommand(null);
+      setTrackedInputRoute(
+        'Agent-promoted Calendar edit',
+        promotedCalendarEditTool.commandMatch.command,
+        `calendar edit target: ${promotedCalendarEditTool.target.day} / ${promotedCalendarEditTool.target.time ?? 'any time'} / ${promotedCalendarEditTool.target.title ?? 'no title filter'}`,
+        'calendar',
+        'tool',
+      );
+      setLastLocalCommand('Agent-promoted Calendar edit');
+      setLastInterpreterAction(promotedCalendarEditTool.commandMatch.command);
+      setLastInterpreterFrontendCommand('Validated Calendar edit criteria and changes');
+      setLastInterpreterConfidence(promotedSingleIntent?.confidence ?? null);
+      setLastInterpreterReason(
+        'The unified agent proposed one canonical Calendar edit action; target criteria and requested changes passed deterministic validation, but canonical Calendar state must still resolve exactly one target before confirmation.',
+      );
+      return handleSend(
+        visibleUserText,
+        visibleUserText,
+        'agent',
+        promotedCalendarEditTool.commandMatch,
+        [],
+        visibleUserText,
+        null,
+        null,
+        promotedCalendarEditTool.target,
       );
     }
     const promotedCalendarReadTool =
@@ -845,43 +1074,98 @@ export default function App() {
         }
       }
       if (commandRoute !== 'confirmed' && commandMatch.command === 'edit-last-event') {
-              const targetEditEvent = await findCalendarEventForChange();
-              const editDescription = describeCalendarEditPayload(commandMatch.calendarEdit);
-              if (!targetEditEvent) {
-                setTrackedInputRoute('Edit command had no target', commandMatch.command);
-                setLastLocalCommand('No calendar event to edit');
-                const assistantMsg = createAssistantMessage(
-                  now,
-                  googleCalendarStatus?.connected
-                    ? 'I did not find a Google Calendar event to edit for the current view.'
-                    : 'I did not find a local calendar event to edit.'
-                );
-                setMessages((prev) => [...prev, userMsg, assistantMsg]);
-                speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
-                return;
-              }
-              const frontendCommand = buildCalendarEditFrontendCommand(commandMatch.calendarEdit);
-              const sourceLabel = targetEditEvent.source === 'google' ? 'Google Calendar' : 'local';
-              const confirmationPrompt = `I understood that as: update ${sourceLabel} event: ${targetEditEvent.time || '—'}: ${targetEditEvent.title}. Changes: ${editDescription}. Say "confirm" to update it, or "cancel" to stop.`;
-              pendingTaskCompletionTargetsRef.current = [];
-              setPendingInterpreterCommand({
-                originalText: visibleUserText,
-                frontendCommand,
-                action: commandMatch.command,
-                confidence: commandRoute === 'exact' ? 1 : 0.9,
-                reason: 'Calendar event editing requires confirmation before changing the calendar.',
-              });
-              setTrackedInputRoute(commandRoute === 'exact' ? 'Exact Google Calendar edit needs confirmation' : 'Fuzzy Google Calendar edit needs confirmation');
-              setLastLocalCommand('Pending calendar edit');
-              setLastInterpreterAction(commandRoute === 'exact' ? 'Not used' : commandMatch.command);
-              setLastInterpreterFrontendCommand(frontendCommand);
-              setLastInterpreterConfidence(commandRoute === 'exact' ? 1 : 0.9);
-              setLastInterpreterReason('Calendar event editing requires confirmation before changing the calendar.');
-              const assistantMsg = createAssistantMessage(now, confirmationPrompt);
-              setMessages((prev) => [...prev, userMsg, assistantMsg]);
-              speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
-              return;
-            }
+        const editDescription = describeCalendarEditPayload(commandMatch.calendarEdit);
+        let targetEditEvent = null as Awaited<ReturnType<typeof findCalendarEventForChange>>;
+
+        if (promotedCalendarEditTargetCriteria) {
+          const sourceEvents = await getCalendarEventsForDeleteCriteria(
+            promotedCalendarEditTargetCriteria,
+          );
+          const matchingEvents = sourceEvents.filter((event) =>
+            calendarEventMatchesDeleteCriteria(
+              event,
+              promotedCalendarEditTargetCriteria,
+            ),
+          );
+          if (matchingEvents.length > 1) {
+            pendingCalendarEditTargetIdRef.current = null;
+            setTrackedInputRoute(
+              'Calendar edit needs deterministic target clarification',
+              commandMatch.command,
+            );
+            setLastLocalCommand('Calendar edit needs a more specific target');
+            setLastInterpreterReason(
+              `Targeted Calendar edit matched ${matchingEvents.length} events, so QMeet refused to choose one.`,
+            );
+            const candidateText = matchingEvents
+              .slice(0, 5)
+              .map((event) => `${event.time || 'All day'}: ${event.title}`)
+              .join('; ');
+            const assistantMsg = createAssistantMessage(
+              now,
+              `I found ${matchingEvents.length} calendar events matching that target: ${candidateText}. Please give me a more specific title or current time. No calendar change was made.`,
+            );
+            setMessages((prev) => [...prev, userMsg, assistantMsg]);
+            speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+            return;
+          }
+          targetEditEvent = matchingEvents[0] ?? null;
+        } else {
+          targetEditEvent = await findCalendarEventForChange();
+        }
+
+        if (!targetEditEvent) {
+          pendingCalendarEditTargetIdRef.current = null;
+          setTrackedInputRoute('Edit command had no target', commandMatch.command);
+          setLastLocalCommand('No calendar event to edit');
+          const targetDescription = promotedCalendarEditTargetCriteria
+            ? `${promotedCalendarEditTargetCriteria.day}${promotedCalendarEditTargetCriteria.time ? ` at ${promotedCalendarEditTargetCriteria.time}` : ''}${promotedCalendarEditTargetCriteria.title ? ` called "${promotedCalendarEditTargetCriteria.title}"` : ''}`
+            : 'the current view';
+          const assistantMsg = createAssistantMessage(
+            now,
+            googleCalendarStatus?.connected
+              ? `I did not find a Google Calendar event matching ${targetDescription}.`
+              : `I did not find a local calendar event matching ${targetDescription}.`,
+          );
+          setMessages((prev) => [...prev, userMsg, assistantMsg]);
+          speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+          return;
+        }
+
+        const frontendCommand = buildCalendarEditFrontendCommand(commandMatch.calendarEdit);
+        const sourceLabel = targetEditEvent.source === 'google' ? 'Google Calendar' : 'local';
+        const confirmationPrompt = `I understood that as: update ${sourceLabel} event: ${targetEditEvent.time || '—'}: ${targetEditEvent.title}. Changes: ${editDescription}. Say "confirm" to update it, or "cancel" to stop.`;
+        pendingTaskCompletionTargetsRef.current = [];
+        pendingCalendarEditTargetIdRef.current = targetEditEvent.id;
+        if (promotedCalendarEditTargetCriteria?.day) {
+          setCalendarView(promotedCalendarEditTargetCriteria.day);
+        }
+        setPendingInterpreterCommand({
+          originalText: visibleUserText,
+          frontendCommand,
+          action: commandMatch.command,
+          confidence: commandRoute === 'exact' ? 1 : 0.9,
+          reason: 'Calendar event editing requires confirmation after one canonical event target has been resolved.',
+        });
+        setTrackedInputRoute(
+          promotedCalendarEditTargetCriteria
+            ? 'Targeted Calendar edit needs confirmation'
+            : commandRoute === 'exact'
+              ? 'Exact Google Calendar edit needs confirmation'
+              : 'Fuzzy Google Calendar edit needs confirmation',
+        );
+        setLastLocalCommand('Pending calendar edit');
+        setLastInterpreterAction(commandRoute === 'exact' ? 'Not used' : commandMatch.command);
+        setLastInterpreterFrontendCommand(frontendCommand);
+        setLastInterpreterConfidence(commandRoute === 'exact' ? 1 : 0.9);
+        setLastInterpreterReason(
+          'Exactly one canonical Calendar event was resolved and its identity is locked across confirmation.',
+        );
+        const assistantMsg = createAssistantMessage(now, confirmationPrompt);
+        setMessages((prev) => [...prev, userMsg, assistantMsg]);
+        speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+        return;
+      }
       if (commandRoute !== 'confirmed' && isDestructiveLocalCommand(commandMatch.command)) {
         const isTaskCompletionCommand = commandMatch.command === 'mark-task-done';
         const taskCompletionTarget = isTaskCompletionCommand
@@ -902,25 +1186,52 @@ export default function App() {
             ? `mark task ${taskCompletionTarget} done`
             : getFrontendCommandForLocalCommand(commandMatch.command);
         const isCalendarDeleteCommand = commandMatch.command === 'delete-last-event' || commandMatch.command === 'delete-calendar-event';
+        const targetedDeleteMatches = commandMatch.command === 'delete-calendar-event'
+          ? (await getCalendarEventsForDeleteCriteria(commandMatch.calendarDelete)).filter((event) =>
+              calendarEventMatchesDeleteCriteria(event, commandMatch.calendarDelete),
+            )
+          : [];
         const targetDeleteEvent = commandMatch.command === 'delete-last-event'
           ? await findCalendarEventForDeletion()
-          : commandMatch.command === 'delete-calendar-event'
-            ? await findCalendarEventForDeletion(commandMatch.calendarDelete)
+          : targetedDeleteMatches.length === 1
+            ? targetedDeleteMatches[0]
             : null;
         const rawDeleteDescription = commandMatch.command === 'delete-calendar-event'
           ? describeCalendarDeletePayload(commandMatch.calendarDelete)
           : frontendCommand;
         const deleteDescription = rawDeleteDescription.replace(/[.?!\s]+$/g, '').trim() || rawDeleteDescription;
+        const ambiguousDeletePrompt =
+          commandMatch.command === 'delete-calendar-event' && targetedDeleteMatches.length > 1
+            ? `I found ${targetedDeleteMatches.length} calendar events matching ${deleteDescription}: ${targetedDeleteMatches
+                .slice(0, 5)
+                .map((event, index) => `${index + 1}. ${event.time || '—'}: ${event.title}`)
+                .join(' ')}${targetedDeleteMatches.length > 5 ? ` Plus ${targetedDeleteMatches.length - 5} more.` : ''} Please specify the time or more of the title. No calendar change was made.`
+            : null;
         const confirmationPrompt = targetDeleteEvent
           ? `I understood that as: ${deleteDescription}. This will delete ${targetDeleteEvent.source === 'google' ? 'Google Calendar' : 'local'} event: ${targetDeleteEvent.time || '—'}: ${targetDeleteEvent.title}. Say "confirm" to run it, or "cancel" to stop.`
-          : isCalendarDeleteCommand
+          : ambiguousDeletePrompt ?? (isCalendarDeleteCommand
             ? `I did not find a calendar event matching ${deleteDescription}.`
             : isTaskCompletionCommand && !taskCompletionPreviewDescription
               ? describeUnresolvedTaskCompletionRequest(taskCompletionTarget)
               : taskCompletionPreviewDescription
                 ? `I understood that as: ${taskCompletionPreviewDescription}. This changes local task data. Say "confirm" to run it, or "cancel" to stop.`
-                : `I understood that as: ${frontendCommand}. This changes or deletes local data. Say "confirm" to run it, or "cancel" to stop.`;
+                : `I understood that as: ${frontendCommand}. This changes or deletes local data. Say "confirm" to run it, or "cancel" to stop.`);
+        if (commandMatch.command === 'delete-calendar-event' && targetedDeleteMatches.length > 1) {
+          pendingCalendarDeleteTargetIdRef.current = null;
+          pendingCalendarEditTargetIdRef.current = null;
+          setTrackedInputRoute('Delete command had multiple targets', commandMatch.command, frontendCommand);
+          setLastLocalCommand('Calendar delete needs a more specific target');
+          setLastInterpreterReason(
+            'Deterministic Calendar lookup found multiple matching events, so no target identity was selected and no confirmation was created.',
+          );
+          const assistantMsg = createAssistantMessage(now, confirmationPrompt);
+          setMessages((prev) => [...prev, userMsg, assistantMsg]);
+          speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+          return;
+        }
         if (isCalendarDeleteCommand && !targetDeleteEvent) {
+          pendingCalendarDeleteTargetIdRef.current = null;
+          pendingCalendarEditTargetIdRef.current = null;
           setTrackedInputRoute('Delete command had no target', commandMatch.command, frontendCommand);
           setLastLocalCommand('No matching calendar event to delete');
           const assistantMsg = createAssistantMessage(now, confirmationPrompt);
@@ -950,6 +1261,17 @@ export default function App() {
               title: task.title,
             }))
           : [];
+        if (
+          commandMatch.command === 'delete-calendar-event' &&
+          targetDeleteEvent &&
+          commandMatch.calendarDelete?.day
+        ) {
+          setCalendarView(commandMatch.calendarDelete.day);
+        }
+        pendingCalendarDeleteTargetIdRef.current =
+          commandMatch.command === 'delete-calendar-event' && targetDeleteEvent
+            ? targetDeleteEvent.id
+            : null;
         setPendingInterpreterCommand({
           originalText: visibleUserText,
           frontendCommand,
@@ -1170,8 +1492,14 @@ ${confirmedTaskCompletionResult.completedTasks
             setActivePanel,
             closePanel,
             saveCalendarEvent,
-            editLastCalendarEvent,
-            deleteCalendarEventByCriteria,
+            editLastCalendarEvent:
+              confirmedCalendarEditTargetId && commandMatch.command === 'edit-last-event'
+                ? async (changes) => updateCalendarEvent(confirmedCalendarEditTargetId, changes)
+                : editLastCalendarEvent,
+            deleteCalendarEventByCriteria:
+              confirmedCalendarDeleteTargetId && commandMatch.command === 'delete-calendar-event'
+                ? async () => deleteCalendarEvent(confirmedCalendarDeleteTargetId)
+                : deleteCalendarEventByCriteria,
             deleteLastCalendarEvent,
             clearCalendarEvents,
             refreshGoogleCalendar,
@@ -1531,6 +1859,28 @@ ${confirmedTaskCompletionResult.completedTasks
         interpretedCommand.confidence >= COMMAND_INTERPRETER_EXECUTE_THRESHOLD &&
         isDestructiveInterpreterCommand(interpretedCommand.frontendCommand)
       ) {
+        const parsedInterpreterDestructiveCommand = parseCommand(
+          interpretedCommand.frontendCommand,
+        );
+        if (parsedInterpreterDestructiveCommand?.command === 'delete-calendar-event') {
+          setTrackedInputRoute(
+            'Fuzzy Calendar delete needs deterministic target resolution',
+            interpretedCommand.action,
+            interpretedCommand.frontendCommand,
+          );
+          setLastInterpreterAction(interpretedCommand.action);
+          setLastInterpreterFrontendCommand(interpretedCommand.frontendCommand);
+          setLastInterpreterConfidence(interpretedCommand.confidence);
+          setLastInterpreterReason(
+            interpretedCommand.reason ||
+              'Interpreter mapped fuzzy input to targeted Calendar deletion; canonical Calendar state must resolve the target before confirmation.',
+          );
+          return handleSend(
+            interpretedCommand.frontendCommand,
+            visibleUserText,
+            'interpreter',
+          );
+        }
         finishListening();
         setShowThinkingBubble(false);
         pendingTaskCompletionTargetsRef.current = [];
@@ -1646,7 +1996,7 @@ ${confirmedTaskCompletionResult.completedTasks
       shadowTurn,
       routingActiveSession?.id ?? null,
     );
-  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveMemoryTask, memoryTasks, activeSession, reconcileFocusProjection, markMemoryTaskDone, clearCompletedTasks, getMemoryReadout, saveCalendarEvent, getCalendarReadout, deleteLastCalendarEvent, deleteCalendarEventByCriteria, findCalendarEventForDeletion, findCalendarEventForChange, getNextCalendarEventForDeletion, getNextCalendarEventForChange, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, runWebSearch, clearSearchState, searchError, pushResultToast, addRecentAction, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents, messages, sendNormalChat]);
+  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveMemoryTask, memoryTasks, activeSession, reconcileFocusProjection, markMemoryTaskDone, clearCompletedTasks, getMemoryReadout, saveCalendarEvent, getCalendarReadout, deleteCalendarEvent, deleteLastCalendarEvent, deleteCalendarEventByCriteria, getCalendarEventsForDeleteCriteria, findCalendarEventForDeletion, findCalendarEventForChange, getNextCalendarEventForDeletion, getNextCalendarEventForChange, updateCalendarEvent, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, runWebSearch, clearSearchState, searchError, pushResultToast, addRecentAction, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents, messages, sendNormalChat]);
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const handleLegacyFocusEndRequest = (event: Event) => {

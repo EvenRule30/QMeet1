@@ -1,5 +1,6 @@
 import { parseCommand, type CommandMatch } from '../commands';
 import type { PromotedSingleIntentDecision } from './agentShadowObserver';
+import { buildCalendarEditFrontendCommand } from './calendarUtils';
 
 export type PromotedSearchToolCommand = {
   query: string;
@@ -22,6 +23,31 @@ export type PromotedCalendarCreateToolCommand = {
   commandMatch: CommandMatch;
 };
 
+export type PromotedCalendarDeleteToolCommand = {
+  day: PromotedCalendarCreateDay;
+  title: string | null;
+  time: string | null;
+  commandMatch: CommandMatch;
+};
+
+export type PromotedCalendarEditTargetCriteria = {
+  day: PromotedCalendarCreateDay;
+  title: string | null;
+  time: string | null;
+};
+
+export type PromotedCalendarEditChanges = {
+  day?: PromotedCalendarCreateDay;
+  title?: string;
+  time?: string;
+};
+
+export type PromotedCalendarEditToolCommand = {
+  target: PromotedCalendarEditTargetCriteria;
+  changes: PromotedCalendarEditChanges;
+  commandMatch: CommandMatch;
+};
+
 export type DeferredCalendarWriteAction =
   | 'add-calendar-event'
   | 'edit-last-event'
@@ -30,8 +56,6 @@ export type DeferredCalendarWriteAction =
   | 'clear-calendar';
 
 const DEFERRED_CALENDAR_WRITE_ACTIONS = new Set<DeferredCalendarWriteAction>([
-  'edit-last-event',
-  'delete-calendar-event',
   'delete-last-event',
   'clear-calendar',
 ]);
@@ -153,6 +177,173 @@ function readValidatedCalendarCreateArguments(
   };
 }
 
+function readValidatedCalendarDeleteArguments(
+  argumentsValue: Record<string, unknown>,
+): { day: PromotedCalendarCreateDay; title: string | null; time: string | null } | null {
+  if (!hasExactlyKeys(argumentsValue, ['day', 'title', 'time'])) return null;
+
+  const rawDay = argumentsValue.day;
+  if (
+    typeof rawDay !== 'string' ||
+    !PROMOTED_CALENDAR_CREATE_DAYS.has(rawDay as PromotedCalendarCreateDay)
+  ) {
+    return null;
+  }
+
+  const rawTitle = argumentsValue.title;
+  let title: string | null = null;
+  if (rawTitle !== null) {
+    if (typeof rawTitle !== 'string') return null;
+    title = rawTitle.trim();
+    if (
+      !title ||
+      title.length > MAX_PROMOTED_CALENDAR_TITLE_LENGTH ||
+      CONTROL_CHARACTER_RE.test(title)
+    ) {
+      return null;
+    }
+  }
+
+  const time = readValidatedCalendarCreateTime(argumentsValue.time);
+  if (time === undefined) return null;
+  if (!title && !time) return null;
+
+  return {
+    day: rawDay as PromotedCalendarCreateDay,
+    title,
+    time,
+  };
+}
+
+
+function readValidatedCalendarNullableTitle(rawTitle: unknown): string | null | undefined {
+  if (rawTitle === null) return null;
+  if (typeof rawTitle !== 'string') return undefined;
+  const title = rawTitle.trim();
+  if (
+    !title ||
+    title.length > MAX_PROMOTED_CALENDAR_TITLE_LENGTH ||
+    CONTROL_CHARACTER_RE.test(title)
+  ) {
+    return undefined;
+  }
+  return title;
+}
+
+function readValidatedCalendarEditArguments(
+  argumentsValue: Record<string, unknown>,
+): {
+  target: PromotedCalendarEditTargetCriteria;
+  changes: PromotedCalendarEditChanges;
+} | null {
+  if (
+    !hasExactlyKeys(argumentsValue, [
+      'targetDay',
+      'targetTitle',
+      'targetTime',
+      'newDay',
+      'newTitle',
+      'newTime',
+    ])
+  ) {
+    return null;
+  }
+
+  const rawTargetDay = argumentsValue.targetDay;
+  if (
+    typeof rawTargetDay !== 'string' ||
+    !PROMOTED_CALENDAR_CREATE_DAYS.has(rawTargetDay as PromotedCalendarCreateDay)
+  ) {
+    return null;
+  }
+
+  const targetTitle = readValidatedCalendarNullableTitle(argumentsValue.targetTitle);
+  if (targetTitle === undefined) return null;
+  const targetTime = readValidatedCalendarCreateTime(argumentsValue.targetTime);
+  if (targetTime === undefined) return null;
+  if (!targetTitle && !targetTime) return null;
+
+  const rawNewDay = argumentsValue.newDay;
+  let newDay: PromotedCalendarCreateDay | null = null;
+  if (rawNewDay !== null) {
+    if (
+      typeof rawNewDay !== 'string' ||
+      !PROMOTED_CALENDAR_CREATE_DAYS.has(rawNewDay as PromotedCalendarCreateDay)
+    ) {
+      return null;
+    }
+    newDay = rawNewDay as PromotedCalendarCreateDay;
+  }
+
+  const newTitle = readValidatedCalendarNullableTitle(argumentsValue.newTitle);
+  if (newTitle === undefined) return null;
+  const newTime = readValidatedCalendarCreateTime(argumentsValue.newTime);
+  if (newTime === undefined) return null;
+  if (!newDay && !newTitle && !newTime) return null;
+  // The existing canonical edit grammar can move an event to another day only
+  // when a time is supplied as part of that move. Keep the typed contract
+  // aligned with what can round-trip through commands.ts.
+  if (newDay && !newTime) return null;
+
+  return {
+    target: {
+      day: rawTargetDay as PromotedCalendarCreateDay,
+      title: targetTitle,
+      time: targetTime,
+    },
+    changes: {
+      ...(newDay ? { day: newDay } : {}),
+      ...(newTitle ? { title: newTitle } : {}),
+      ...(newTime ? { time: newTime } : {}),
+    },
+  };
+}
+
+function calendarEditRoundTripsThroughCanonicalParser(
+  changes: PromotedCalendarEditChanges,
+): boolean {
+  const parsed = parseCommand(buildCalendarEditFrontendCommand(changes));
+  if (parsed?.command !== 'edit-last-event' || !parsed.calendarEdit) return false;
+
+  const parsedDay = parsed.calendarEdit.day ?? null;
+  const parsedTitle = parsed.calendarEdit.title?.trim() ?? null;
+  const parsedTime = parsed.calendarEdit.time?.trim().toLowerCase() ?? null;
+  return (
+    parsedDay === (changes.day ?? null) &&
+    parsedTitle === (changes.title?.trim() ?? null) &&
+    parsedTime === (changes.time?.trim().toLowerCase() ?? null)
+  );
+}
+
+function buildCalendarDeleteFrontendCommand(options: {
+  day: PromotedCalendarCreateDay;
+  title: string | null;
+  time: string | null;
+}): string {
+  const parts = ['delete event', options.day];
+  if (options.time) parts.push(`at ${options.time}`);
+  if (options.title) parts.push(`called ${options.title}`);
+  return parts.join(' ');
+}
+
+function calendarDeleteRoundTripsThroughCanonicalParser(options: {
+  day: PromotedCalendarCreateDay;
+  title: string | null;
+  time: string | null;
+}): boolean {
+  const parsed = parseCommand(buildCalendarDeleteFrontendCommand(options));
+  if (parsed?.command !== 'delete-calendar-event' || !parsed.calendarDelete) return false;
+
+  const parsedDay = parsed.calendarDelete.day ?? null;
+  const parsedTitle = parsed.calendarDelete.title?.trim() ?? null;
+  const parsedTime = parsed.calendarDelete.time?.trim().toLowerCase() ?? null;
+  return (
+    parsedDay === options.day &&
+    parsedTitle === options.title &&
+    parsedTime === (options.time?.trim().toLowerCase() ?? null)
+  );
+}
+
 function buildCalendarCreateFrontendCommand(options: {
   day: PromotedCalendarCreateDay;
   title: string;
@@ -246,10 +437,10 @@ export function isPromotedCalendarCreateToolDecision(
 }
 
 /**
- * Promote exactly one Calendar mutation in this slice: add-calendar-event.
- * The model only proposes typed arguments. This validator constructs the
- * canonical CommandMatch that re-enters App.tsx's existing confirmation and
+ * Promote Calendar creation with typed arguments only. This validator constructs
+ * the canonical CommandMatch that re-enters App.tsx's existing confirmation and
  * deterministic Calendar execution pipeline. No Calendar state changes here.
+ * Targeted deletion has its own criteria-only validator below.
  */
 export function resolvePromotedCalendarCreateToolCommand(
   decision: PromotedSingleIntentDecision | null,
@@ -275,10 +466,98 @@ export function resolvePromotedCalendarCreateToolCommand(
 }
 
 /**
- * Calendar edits/deletes remain unpromoted. This helper preserves only their
- * canonical action id so the existing guarded interpreter result can be
- * checked before reaching the deterministic Calendar write path. Create is no
- * longer deferred: it must pass resolvePromotedCalendarCreateToolCommand.
+ * True when the unified agent is proposing a targeted Calendar deletion.
+ * Malformed delete proposals fail closed rather than falling through to chat
+ * or being reinterpreted as some other mutation.
+ */
+export function isPromotedCalendarDeleteToolDecision(
+  decision: PromotedSingleIntentDecision | null,
+): boolean {
+  return Boolean(
+    decision &&
+      decision.disposition === 'tool' &&
+      decision.turnOwner === 'calendar' &&
+      decision.proposedAction === 'delete-calendar-event',
+  );
+}
+
+/**
+ * Promote targeted Calendar deletion as a typed criteria proposal only. The
+ * agent never selects an event id. App.tsx resolves these validated criteria
+ * against canonical Calendar state and requires exactly one match before the
+ * existing destructive confirmation path can proceed.
+ */
+export function resolvePromotedCalendarDeleteToolCommand(
+  decision: PromotedSingleIntentDecision | null,
+): PromotedCalendarDeleteToolCommand | null {
+  if (!isPromotedCalendarDeleteToolDecision(decision)) return null;
+  if (!decision || decision.proposedCapability !== 'calendar') return null;
+
+  const validated = readValidatedCalendarDeleteArguments(decision.proposedArguments);
+  if (!validated || !calendarDeleteRoundTripsThroughCanonicalParser(validated)) return null;
+
+  return {
+    ...validated,
+    commandMatch: {
+      command: 'delete-calendar-event',
+      confirmation: 'Deleted event.',
+      calendarDelete: {
+        day: validated.day,
+        ...(validated.time ? { time: validated.time } : {}),
+        ...(validated.title ? { title: validated.title } : {}),
+      },
+    },
+  };
+}
+
+/**
+ * True when the unified agent is proposing one targeted Calendar edit. The
+ * proposal carries lookup criteria and requested changes only; it never carries
+ * an event id and cannot mutate Calendar state directly.
+ */
+export function isPromotedCalendarEditToolDecision(
+  decision: PromotedSingleIntentDecision | null,
+): boolean {
+  return Boolean(
+    decision &&
+      decision.disposition === 'tool' &&
+      decision.turnOwner === 'calendar' &&
+      decision.proposedAction === 'edit-last-event',
+  );
+}
+
+/**
+ * Promote one Calendar edit as target criteria plus validated changes. App.tsx
+ * must resolve the target criteria against authoritative Calendar state and
+ * bind exactly one canonical event id before the existing confirmation/executor
+ * path may run.
+ */
+export function resolvePromotedCalendarEditToolCommand(
+  decision: PromotedSingleIntentDecision | null,
+): PromotedCalendarEditToolCommand | null {
+  if (!isPromotedCalendarEditToolDecision(decision)) return null;
+  if (!decision || decision.proposedCapability !== 'calendar') return null;
+
+  const validated = readValidatedCalendarEditArguments(decision.proposedArguments);
+  if (!validated || !calendarEditRoundTripsThroughCanonicalParser(validated.changes)) {
+    return null;
+  }
+
+  return {
+    ...validated,
+    commandMatch: {
+      command: 'edit-last-event',
+      confirmation: 'Updated the last event.',
+      calendarEdit: validated.changes,
+    },
+  };
+}
+
+/**
+ * Calendar delete-last/clear remain unpromoted. Their canonical action ids stay
+ * available so the existing guarded interpreter result can be checked before
+ * reaching the deterministic Calendar write path. Create, targeted delete, and
+ * targeted edit have capability-specific validators above.
  */
 export function resolveDeferredCalendarWriteAction(
   decision: PromotedSingleIntentDecision | null,

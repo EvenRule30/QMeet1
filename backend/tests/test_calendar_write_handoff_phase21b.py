@@ -122,17 +122,19 @@ class CalendarWriteHandoffPhase21BTests(unittest.TestCase):
         self.assertEqual(result["intent"], "chat")
         self.assertGreaterEqual(result["confidence"], 0.85)
 
-    def test_calendar_create_is_promoted_but_other_writes_remain_deferred(self) -> None:
+    def test_calendar_create_targeted_delete_and_targeted_edit_are_promoted_but_broad_writes_remain_deferred(self) -> None:
         source = (ROOT / "src" / "app" / "lib" / "agentToolPromotion.ts").read_text(
             encoding="utf-8"
         )
 
         self.assertIn("resolvePromotedCalendarCreateToolCommand", source)
         self.assertIn("command: 'add-calendar-event'", source)
+        self.assertIn("resolvePromotedCalendarDeleteToolCommand", source)
+        self.assertIn("command: 'delete-calendar-event'", source)
+        self.assertIn("resolvePromotedCalendarEditToolCommand", source)
+        self.assertIn("command: 'edit-last-event'", source)
         self.assertIn("resolveDeferredCalendarWriteAction", source)
-        self.assertIn("Calendar edits/deletes remain unpromoted", source)
-        self.assertNotIn("command: 'edit-last-event'", source)
-        self.assertNotIn("command: 'delete-calendar-event'", source)
+        self.assertIn("Calendar delete-last/clear remain unpromoted", source)
         self.assertNotIn("command: 'delete-last-event'", source)
         self.assertNotIn("command: 'clear-calendar'", source)
 
@@ -158,11 +160,15 @@ class CalendarWriteHandoffPhase21BTests(unittest.TestCase):
         self.assertIn('return "edit-last-event"', source)
         self.assertIn('return "delete-calendar-event"', source)
         self.assertIn(
-            "Calendar CREATE is the first promoted write proposal",
+            "Calendar CREATE is promoted",
             source,
         )
         self.assertIn(
-            "Calendar edits, moves, deletes, cancellations, and clears are NOT agent-executable yet",
+            "Calendar TARGETED EDIT is promoted",
+            source,
+        )
+        self.assertIn(
+            "Calendar delete-last and clear operations are NOT agent-executable yet",
             source,
         )
         self.assertNotIn('action="calendar.create_event"', source)
