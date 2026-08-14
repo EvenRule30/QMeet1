@@ -49,13 +49,33 @@ class AgentNotesPromotionPhase21C2Tests(unittest.TestCase):
 
     def test_existing_notes_handler_remains_authoritative(self):
         source = APP.read_text(encoding="utf-8")
-        self.assertIn("const notesCommandResult: SplitCommandResult = handleNotesCommand(commandMatch", source)
-        self.assertIn("saveNote,", source)
-        self.assertIn("getNotesReadout,", source)
+
+        notes_result = source.index(
+            "const notesCommandResult: SplitCommandResult ="
+        )
+        notes_handler = source.index(
+            "handleNotesCommand(commandMatch",
+            notes_result,
+        )
+        memory_result = source.index(
+            "const memoryCommandResult: SplitCommandResult =",
+            notes_handler,
+        )
+
+        self.assertLess(notes_result, notes_handler)
+        self.assertLess(notes_handler, memory_result)
+
+        notes_block = source[notes_result:memory_result]
+        self.assertIn("handleNotesCommand(commandMatch", notes_block)
+        self.assertIn("saveNote,", notes_block)
+        self.assertIn("getNotesReadout,", notes_block)
 
     def test_phase20_confirmed_task_source_seam_remains(self):
         source = APP.read_text(encoding="utf-8")
-        self.assertIn("const confirmedTaskCommandMatch: CommandMatch | undefined =", source)
+        self.assertIn(
+            "const confirmedTaskCommandMatch: CommandMatch | undefined =",
+            source,
+        )
         self.assertIn("confirmedTaskCommandMatch,", source)
 
 
