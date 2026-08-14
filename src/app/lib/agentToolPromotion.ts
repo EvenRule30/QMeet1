@@ -12,6 +12,15 @@ export type PromotedTaskCreateToolCommand = {
   commandMatch: CommandMatch;
 };
 
+export type PromotedNoteSaveToolCommand = {
+  content: string;
+  commandMatch: CommandMatch;
+};
+
+export type PromotedNoteReadToolCommand = {
+  commandMatch: CommandMatch;
+};
+
 export type PromotedCalendarReadView = 'today' | 'tomorrow' | 'all';
 
 export type PromotedCalendarReadToolCommand = {
@@ -67,6 +76,7 @@ const DEFERRED_CALENDAR_WRITE_ACTIONS = new Set<DeferredCalendarWriteAction>([
 
 const MAX_PROMOTED_SEARCH_QUERY_LENGTH = 500;
 const MAX_PROMOTED_TASK_TITLE_LENGTH = 240;
+const MAX_PROMOTED_NOTE_CONTENT_LENGTH = 6000;
 const MAX_PROMOTED_CALENDAR_TITLE_LENGTH = 240;
 const MAX_PROMOTED_CALENDAR_TIME_LENGTH = 32;
 const PROMOTED_CALENDAR_READ_VIEWS = new Set<PromotedCalendarReadView>([
@@ -141,6 +151,26 @@ function readValidatedTaskCreateTitle(
   if (!title || title.length > MAX_PROMOTED_TASK_TITLE_LENGTH) return null;
   if (CONTROL_CHARACTER_RE.test(title)) return null;
   return title;
+}
+
+function readValidatedNoteSaveContent(
+  argumentsValue: Record<string, unknown>,
+): string | null {
+  const keys = Object.keys(argumentsValue);
+  if (keys.length !== 1 || keys[0] !== 'content') return null;
+
+  const rawContent = argumentsValue.content;
+  if (typeof rawContent !== 'string') return null;
+  const content = rawContent.trim();
+  if (!content || content.length > MAX_PROMOTED_NOTE_CONTENT_LENGTH) return null;
+  if (CONTROL_CHARACTER_RE.test(content)) return null;
+  return content;
+}
+
+function hasValidNoteReadArguments(
+  argumentsValue: Record<string, unknown>,
+): boolean {
+  return Object.keys(argumentsValue).length === 0;
 }
 
 function readValidatedCalendarReadView(
@@ -507,6 +537,76 @@ export function resolvePromotedTaskCreateToolCommand(
       command: 'remember-task',
       confirmation: 'Saved task.',
       payload: title,
+    },
+  };
+}
+
+/**
+ * True when the unified agent proposes one Notes save. Malformed proposals
+ * fail closed in App instead of falling through to conversation.
+ */
+export function isPromotedNoteSaveToolDecision(
+  decision: PromotedSingleIntentDecision | null,
+): boolean {
+  return Boolean(
+    decision &&
+      decision.disposition === 'tool' &&
+      decision.turnOwner === 'notes' &&
+      decision.proposedAction === 'save-note',
+  );
+}
+
+/**
+ * Save exactly one validated note through the existing Notes handler.
+ */
+export function resolvePromotedNoteSaveToolCommand(
+  decision: PromotedSingleIntentDecision | null,
+): PromotedNoteSaveToolCommand | null {
+  if (!isPromotedNoteSaveToolDecision(decision)) return null;
+  if (!decision || decision.proposedCapability !== 'notes') return null;
+
+  const content = readValidatedNoteSaveContent(decision.proposedArguments);
+  if (!content) return null;
+
+  return {
+    content,
+    commandMatch: {
+      command: 'save-note',
+      confirmation: 'Saved note.',
+      payload: content,
+    },
+  };
+}
+
+/**
+ * True when the unified agent proposes an authoritative Notes read.
+ */
+export function isPromotedNoteReadToolDecision(
+  decision: PromotedSingleIntentDecision | null,
+): boolean {
+  return Boolean(
+    decision &&
+      decision.disposition === 'tool' &&
+      decision.turnOwner === 'notes' &&
+      decision.proposedAction === 'read-notes',
+  );
+}
+
+/**
+ * Read authoritative saved Notes through the existing Notes handler. The read
+ * action has no model-provided lookup payload in this slice.
+ */
+export function resolvePromotedNoteReadToolCommand(
+  decision: PromotedSingleIntentDecision | null,
+): PromotedNoteReadToolCommand | null {
+  if (!isPromotedNoteReadToolDecision(decision)) return null;
+  if (!decision || decision.proposedCapability !== 'notes') return null;
+  if (!hasValidNoteReadArguments(decision.proposedArguments)) return null;
+
+  return {
+    commandMatch: {
+      command: 'read-notes',
+      confirmation: 'Reading notes.',
     },
   };
 }

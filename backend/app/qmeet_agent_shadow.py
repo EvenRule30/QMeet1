@@ -125,6 +125,12 @@ Tasks ownership rule:
 - The task title is a proposed label, not execution authority. Make it concise and action-oriented, remove conversational filler such as "remember to" when natural, and do not invent deadlines, people, project context, or other details the user did not provide.
 - Do not use remember-task for statements that work was already completed. Task completion remains on QMeet's existing deterministic task-resolution and confirmation path in this slice. Task reads, delete-last, and clear-completed also remain unpromoted until their ownership semantics are made explicit.
 - A promoted task creation still executes only through the existing remember-task handler after deterministic frontend validation.
+Notes ownership rule:
+- Natural single-intent requests to save one note are Notes-owned mutations. Use proposedCapability=notes, proposedAction=save-note, and proposedArguments with exactly one field: {"content": "<the note content the user asked to preserve>"}.
+- Preserve the user's intended note content rather than turning it into a task, Calendar event, or invented summary. Remove only the surrounding request wrapper when appropriate. Do not invent deadlines, priorities, people, decisions, or conclusions that are not supported by the request/current conversation.
+- Natural requests to read/list/recall the user's saved Notes are Notes-owned reads. Use proposedCapability=notes, proposedAction=read-notes, and proposedArguments={}.
+- A request to save/summarize the active Focus as a note remains Focus-owned through save-focus-summary/end-focus-with-summary; do not reclassify that workflow as an ordinary save-note.
+- Notes delete/clear remain on their existing deterministic paths in this slice. A promoted note save/read still executes only through the existing Notes handler after deterministic frontend validation.
 Proposed action never proves that anything changed.
 Canonical action vocabulary:
 - If disposition=tool, proposedAction MUST be one exact action id from capabilityContract. Do not invent aliases such as focus.read, read_current_focus, calendar.create_event, or custom compound action names.
@@ -588,7 +594,7 @@ def _explicit_task_create_title(user_message: str) -> str | None:
         r"^(?:please\s+)?(?:put|add|save)\s+(.+?)\s+(?:on|to|in)\s+(?:(?:my|our|the)\s+)?(?:to[-\s]?do(?:\s+list)?|tasks?|task\s+list|checklist)\s*[.!?]*$",
         r"^(?:please\s+)?(?:make)\s+(.+?)\s+(?:a\s+)?task\s*[.!?]*$",
         r"^(?:please\s+)?(?:turn)\s+(.+?)\s+into\s+(?:a\s+)?task\s*[.!?]*$",
-        r"^(?:please\s+)?(?:create|add|make)\s+(?:a\s+)?task\s+(?:to\s+)?(.+?)\s*[.!?]*$",
+        r"^(?:please\s+)?(?:create|add|make)\s+(?:a\s+)?task\s+(?:to\s+)?(.+?)\s*$",
         r"^(?:please\s+)?(?:save|remember)\s+(.+?)\s+as\s+(?:a\s+)?task\s*[.!?]*$",
     )
     for pattern in wrappers:
@@ -596,6 +602,50 @@ def _explicit_task_create_title(user_message: str) -> str | None:
         if match:
             return _clean_explicit_task_create_title(match.group(1))
     return None
+
+
+def _clean_explicit_note_content(value: str) -> str | None:
+    content = re.sub(r"\s+", " ", value.strip())
+    content = re.sub(r"^[\"'`]+|[\"'`]+$", "", content).strip()
+    if not content or len(content) > 6000 or re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", content):
+        return None
+    return content
+
+
+def _explicit_note_save_content(user_message: str) -> str | None:
+    """Extract literal note content only from unmistakable note containers.
+
+    This is an ownership fallback, not the primary semantic interpreter. The
+    unified agent remains free to understand broader natural note wording. The
+    fallback only prevents obvious durable note mutations from being narrated by
+    read-only conversation when one literal note body is present in this turn.
+    """
+    text = re.sub(r"\s+", " ", user_message.strip())
+    wrappers = (
+        r"^(?:please\s+)?(?:jot|write)\s+(?:this\s+)?down\s+(?:in|to)\s+(?:(?:my|the)\s+)?notes?\s*(?:that\s+|:)?(.+?)\s*$",
+        r"^(?:please\s+)?(?:put|add|save)\s+(.+?)\s+(?:in|to)\s+(?:(?:my|the)\s+)?notes?\s*[.!?]*$",
+        r"^(?:please\s+)?(?:save|keep)\s+(.+?)\s+as\s+(?:a\s+)?note\s*[.!?]*$",
+        r"^(?:please\s+)?(?:make|create|take|write)\s+(?:a\s+)?note\s+(?:that\s+|saying\s+|about\s+)?(.+?)\s*$",
+        r"^(?:please\s+)?note\s+that\s+(.+?)\s*$",
+    )
+    for pattern in wrappers:
+        match = re.match(pattern, text, flags=re.IGNORECASE)
+        if match:
+            content = _clean_explicit_note_content(match.group(1))
+            if content and not re.fullmatch(r"(?:(?:this|the|my|current|active)\s+)?focus(?:\s+session)?", content, flags=re.IGNORECASE):
+                return content
+    return None
+
+
+def _is_explicit_note_read_request(user_message: str) -> bool:
+    text = _normalize(user_message)
+    if not re.search(r"\bnotes?\b", text):
+        return False
+    if re.search(r"\b(?:delete|remove|clear|wipe|save|add|put|write|jot|take|make|create)\b", text):
+        return False
+    return bool(
+        re.search(r"\b(?:read|list|recall|show|tell me|what|which|review|go over|have i written|did i write)\b", text)
+    )
 
 
 def _fallback_shadow_decision(
@@ -720,6 +770,31 @@ def _fallback_shadow_decision(
             confidence=0.95,
             reason="The turn is a single-intent Calendar schedule or availability read.",
             arguments={"view": _calendar_read_view(text)},
+        )
+    explicit_note_content = _explicit_note_save_content(request.userMessage)
+    if explicit_note_content:
+        return _decision(
+            owner="notes",
+            focus_relevant=focus_relevant,
+            disposition="tool",
+            capability="notes",
+            action="save-note",
+            response_plan="Save exactly one verified note through the deterministic Notes handler, then continue from the Tool receipt.",
+            confidence=0.97,
+            reason="The user placed one literal item into an explicit note container.",
+            arguments={"content": explicit_note_content},
+        )
+    if _is_explicit_note_read_request(request.userMessage):
+        return _decision(
+            owner="notes",
+            focus_relevant=focus_relevant,
+            disposition="tool",
+            capability="notes",
+            action="read-notes",
+            response_plan="Read authoritative saved Notes through the deterministic Notes handler and ground the reply in that Tool result.",
+            confidence=0.97,
+            reason="The user explicitly asked to read or recall saved Notes.",
+            arguments={},
         )
     if re.search(r"\b(?:note|notes)\b", text):
         return _decision(
@@ -1221,6 +1296,85 @@ def apply_task_create_ownership_floor(
             "proposedArguments": repaired_arguments,
             "reason": (
                 "Deterministic Tasks creation ownership floor: an unmistakable request to place one item in tasks/to-do cannot be answered by the read-only conversation lane. The model's validated title is preserved when available; otherwise only the literal task body from the current request is used. Execution still requires frontend validation and the deterministic remember-task handler."
+            ),
+        }
+    )
+
+
+def _is_valid_note_save_arguments(arguments: dict[str, Any]) -> bool:
+    if set(arguments) != {"content"}:
+        return False
+    content = arguments.get("content")
+    if not isinstance(content, str):
+        return False
+    content = content.strip()
+    return bool(content) and len(content) <= 6000 and not re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", content)
+
+
+def _is_executable_note_save_tool_decision(decision: AgentShadowDecision) -> bool:
+    return (
+        decision.turnOwner == "notes"
+        and decision.disposition == "tool"
+        and decision.proposedCapability == "notes"
+        and canonical_action_id(decision.proposedAction) == "save-note"
+        and _is_valid_note_save_arguments(decision.proposedArguments)
+    )
+
+
+def _is_executable_note_read_tool_decision(decision: AgentShadowDecision) -> bool:
+    return (
+        decision.turnOwner == "notes"
+        and decision.disposition == "tool"
+        and decision.proposedCapability == "notes"
+        and canonical_action_id(decision.proposedAction) == "read-notes"
+        and decision.proposedArguments == {}
+    )
+
+
+def apply_notes_ownership_floor(
+    request: AgentShadowRequest,
+    focus: dict[str, Any] | None,
+    decision: AgentShadowDecision,
+) -> AgentShadowDecision:
+    """Keep explicit Notes saves/reads out of read-only conversation.
+
+    The model remains primary. This floor only repairs unmistakable note-container
+    saves with literal content and explicit saved-note reads. It never writes or
+    reads state itself; frontend validation and the existing Notes handler remain
+    authoritative.
+    """
+    fallback = normalize_shadow_decision(_fallback_shadow_decision(request, focus))
+    fallback_action = canonical_action_id(fallback.proposedAction)
+    if not (
+        fallback.turnOwner == "notes"
+        and fallback.disposition == "tool"
+        and fallback_action in {"save-note", "read-notes"}
+        and fallback.confidence >= 0.95
+    ):
+        return decision
+
+    if fallback_action == "save-note":
+        if _is_executable_note_save_tool_decision(decision):
+            return decision
+        repaired_arguments = fallback.proposedArguments
+        if _is_valid_note_save_arguments(decision.proposedArguments):
+            repaired_arguments = {"content": str(decision.proposedArguments["content"]).strip()}
+        return fallback.model_copy(
+            update={
+                "proposedArguments": repaired_arguments,
+                "reason": (
+                    "Deterministic Notes save ownership floor: an unmistakable one-note mutation cannot be answered by read-only conversation. A strictly valid model-proposed note body is preserved when available; otherwise only literal note content from the current request is used. Execution still requires frontend validation and the deterministic Notes handler."
+                ),
+            }
+        )
+
+    if _is_executable_note_read_tool_decision(decision):
+        return decision
+    return fallback.model_copy(
+        update={
+            "proposedArguments": {},
+            "reason": (
+                "Deterministic Notes read ownership floor: an explicit request for saved Notes must read authoritative Notes state instead of being answered from conversation memory."
             ),
         }
     )
@@ -1862,6 +2016,7 @@ async def decide_agent_shadow(request: AgentShadowRequest) -> AgentShadowRespons
     )
     decision = apply_search_ownership_floor(request, focus, decision)
     decision = apply_task_create_ownership_floor(request, focus, decision)
+    decision = apply_notes_ownership_floor(request, focus, decision)
     decision = apply_calendar_write_ownership_floor(request, focus, decision)
     comparison = compare_shadow_to_legacy(decision, request.legacyObservation)
     turn_id = f"shadow-{uuid4().hex}"

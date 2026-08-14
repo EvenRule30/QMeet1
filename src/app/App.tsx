@@ -35,6 +35,8 @@ import {
   isPromotedCalendarDeleteToolDecision,
   isPromotedCalendarEditToolDecision,
   isPromotedTaskCreateToolDecision,
+  isPromotedNoteReadToolDecision,
+  isPromotedNoteSaveToolDecision,
   resolveDeferredCalendarWriteAction,
   resolvePromotedCalendarCreateToolCommand,
   resolvePromotedCalendarDeleteToolCommand,
@@ -42,6 +44,8 @@ import {
   resolvePromotedCalendarReadToolCommand,
   resolvePromotedSearchToolCommand,
   resolvePromotedTaskCreateToolCommand,
+  resolvePromotedNoteReadToolCommand,
+  resolvePromotedNoteSaveToolCommand,
   normalizePromotedCalendarCreateTitle,
   type DeferredCalendarWriteAction,
   type PromotedCalendarEditChanges,
@@ -787,6 +791,129 @@ export default function App() {
         visibleUserText,
         'agent',
         promotedTaskCreateTool.commandMatch,
+        [],
+        visibleUserText,
+      );
+    }
+    const promotedNoteSaveCandidate =
+      isPromotedNoteSaveToolDecision(promotedSingleIntent);
+    const promotedNoteSaveTool =
+      resolvePromotedNoteSaveToolCommand(promotedSingleIntent);
+    if (promotedNoteSaveCandidate && !promotedNoteSaveTool) {
+      finishListening();
+      setShowThinkingBubble(false);
+      setPendingInterpreterCommand(null);
+      pendingTaskCompletionTargetsRef.current = [];
+      setTrackedInputRoute(
+        'Agent-promoted note save rejected',
+        'save-note',
+        undefined,
+        'notes',
+        'tool',
+      );
+      setLastLocalCommand('Note not saved');
+      setLastInterpreterAction('save-note');
+      setLastInterpreterFrontendCommand('None');
+      setLastInterpreterConfidence(promotedSingleIntent?.confidence ?? null);
+      setLastInterpreterReason(
+        'The unified agent proposed one note save, but its typed content failed deterministic frontend validation.',
+      );
+      if (!chatActive) setChatActive(true);
+      const now = Date.now();
+      const userMsg = createUserMessage(now, visibleUserText);
+      const assistantMsg = createAssistantMessage(
+        now,
+        'I understood this as saving a note, but I could not safely validate one note body. No note was added.',
+      );
+      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      pushResultToast({
+        kind: 'warning',
+        title: 'Notes unchanged',
+        detail: assistantMsg.content,
+      });
+      speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+      return;
+    }
+    if (promotedNoteSaveTool) {
+      setPendingInterpreterCommand(null);
+      setTrackedInputRoute(
+        'Agent-promoted note save',
+        promotedNoteSaveTool.commandMatch.command,
+        'validated note content',
+        'notes',
+        'tool',
+      );
+      setLastLocalCommand('Agent-promoted note save');
+      setLastInterpreterAction(promotedNoteSaveTool.commandMatch.command);
+      setLastInterpreterFrontendCommand('Validated Notes save proposal');
+      setLastInterpreterConfidence(promotedSingleIntent?.confidence ?? null);
+      setLastInterpreterReason(
+        'The unified agent proposed one canonical note-save action and its content passed deterministic frontend validation; the existing Notes handler remains the writer.',
+      );
+      return handleSend(
+        visibleUserText,
+        visibleUserText,
+        'agent',
+        promotedNoteSaveTool.commandMatch,
+        [],
+        visibleUserText,
+      );
+    }
+    const promotedNoteReadCandidate =
+      isPromotedNoteReadToolDecision(promotedSingleIntent);
+    const promotedNoteReadTool =
+      resolvePromotedNoteReadToolCommand(promotedSingleIntent);
+    if (promotedNoteReadCandidate && !promotedNoteReadTool) {
+      finishListening();
+      setShowThinkingBubble(false);
+      setPendingInterpreterCommand(null);
+      pendingTaskCompletionTargetsRef.current = [];
+      setTrackedInputRoute(
+        'Agent-promoted note read rejected',
+        'read-notes',
+        undefined,
+        'notes',
+        'tool',
+      );
+      setLastLocalCommand('Notes not read');
+      setLastInterpreterAction('read-notes');
+      setLastInterpreterFrontendCommand('None');
+      setLastInterpreterConfidence(promotedSingleIntent?.confidence ?? null);
+      setLastInterpreterReason(
+        'The unified agent proposed an authoritative Notes read, but its argument shape failed deterministic frontend validation.',
+      );
+      if (!chatActive) setChatActive(true);
+      const now = Date.now();
+      const userMsg = createUserMessage(now, visibleUserText);
+      const assistantMsg = createAssistantMessage(
+        now,
+        'I understood this as reading your saved notes, but I could not safely validate the Notes read request.',
+      );
+      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+      return;
+    }
+    if (promotedNoteReadTool) {
+      setPendingInterpreterCommand(null);
+      setTrackedInputRoute(
+        'Agent-promoted note read',
+        promotedNoteReadTool.commandMatch.command,
+        'notes read',
+        'notes',
+        'tool',
+      );
+      setLastLocalCommand('Agent-promoted note read');
+      setLastInterpreterAction(promotedNoteReadTool.commandMatch.command);
+      setLastInterpreterFrontendCommand('notes read');
+      setLastInterpreterConfidence(promotedSingleIntent?.confidence ?? null);
+      setLastInterpreterReason(
+        'The unified agent proposed the canonical read-notes action; authoritative saved Notes state remains owned by the existing Notes handler.',
+      );
+      return handleSend(
+        visibleUserText,
+        visibleUserText,
+        'agent',
+        promotedNoteReadTool.commandMatch,
         [],
         visibleUserText,
       );

@@ -350,6 +350,26 @@ GLOBAL_CAPABILITY_CONTRACT: list[dict[str, Any]] = [
         "owner": "notes",
         "authority": "deterministic note handlers",
         "actions": list(CANONICAL_TOOL_ACTIONS_BY_OWNER["notes"]),
+        "promotedSaveAction": "save-note",
+        "saveArgumentSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["content"],
+            "properties": {
+                "content": {"type": "string", "minLength": 1, "maxLength": 6000},
+            },
+        },
+        "promotedReadAction": "read-notes",
+        "readArgumentSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [],
+            "properties": {},
+        },
+        "promotionConstraint": (
+            "Single-note save and authoritative note reads are agent-promotable. Save content is user-authored note content, not permission to invent or summarize unsupported facts. "
+            "Delete/clear remain on their existing deterministic confirmation paths, and Focus-summary-to-note remains Focus-owned."
+        ),
     },
     {
         "owner": "device_ui",
