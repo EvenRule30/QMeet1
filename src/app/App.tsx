@@ -35,6 +35,7 @@ import {
   isPromotedCalendarDeleteToolDecision,
   isPromotedCalendarEditToolDecision,
   isPromotedTaskCreateToolDecision,
+  isPromotedTaskReadToolDecision,
   isPromotedNoteReadToolDecision,
   isPromotedNoteSaveToolDecision,
   resolveDeferredCalendarWriteAction,
@@ -44,6 +45,9 @@ import {
   resolvePromotedCalendarReadToolCommand,
   resolvePromotedSearchToolCommand,
   resolvePromotedTaskCreateToolCommand,
+  resolvePromotedTaskReadToolCommand,
+  isExplicitGlobalTaskReadRequest,
+  buildExplicitGlobalTaskReadToolCommand,
   resolvePromotedNoteReadToolCommand,
   resolvePromotedNoteSaveToolCommand,
   normalizePromotedCalendarCreateTitle,
@@ -60,6 +64,7 @@ import {
   resolveTaskCompletionPreviewTargets,
 } from './lib/taskCompletionPreview';
 import { resolveNaturalFocusTaskCompletionTarget } from './lib/naturalTaskCompletion';
+import { formatOpenTasksReadout } from './lib/memoryReadSurface';
 import {
   completeConfirmedTaskTargets,
   type ConfirmedTaskTarget,
@@ -654,6 +659,13 @@ export default function App() {
       );
     }
     const parsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);
+    const explicitGlobalTaskReadRequest =
+      !forcedCommandMatch && commandRoute === 'exact'
+        ? isExplicitGlobalTaskReadRequest(
+            trimmed,
+            parsedCommandMatch?.command ?? null,
+          )
+        : false;
     const explicitCalendarWriteIntent =
       !forcedCommandMatch && commandRoute === 'exact'
         ? resolveExplicitCalendarWriteIntentBeforeAgent({
@@ -662,7 +674,9 @@ export default function App() {
           })
         : null;
     const explicitDeterministicRoute =
-      !forcedCommandMatch && commandRoute === 'exact'
+      !forcedCommandMatch &&
+      commandRoute === 'exact' &&
+      !explicitGlobalTaskReadRequest
         ? resolveExplicitDeterministicRouteBeforeAgent({
             userMessage: trimmed,
             parsedCommand: parsedCommandMatch?.command ?? null,
@@ -682,7 +696,8 @@ export default function App() {
         : null;
     const promotedConversationAllowed =
       promotedSingleIntent?.disposition === 'conversation' &&
-      !explicitCalendarWriteIntent;
+      !explicitCalendarWriteIntent &&
+      !explicitGlobalTaskReadRequest;
     if (promotedSingleIntent?.disposition === 'conversation') {
       if (promotedConversationAllowed) {
         setPendingInterpreterCommand(null);
@@ -791,6 +806,75 @@ export default function App() {
         visibleUserText,
         'agent',
         promotedTaskCreateTool.commandMatch,
+        [],
+        visibleUserText,
+      );
+    }
+    const promotedTaskReadCandidate =
+      isPromotedTaskReadToolDecision(promotedSingleIntent);
+    const promotedTaskReadTool =
+      resolvePromotedTaskReadToolCommand(promotedSingleIntent);
+    if (promotedTaskReadCandidate && !promotedTaskReadTool) {
+      finishListening();
+      setShowThinkingBubble(false);
+      setPendingInterpreterCommand(null);
+      pendingTaskCompletionTargetsRef.current = [];
+      setTrackedInputRoute(
+        'Agent-promoted global task read rejected',
+        'read-memory',
+        undefined,
+        'tasks',
+        'tool',
+      );
+      setLastLocalCommand('Tasks not read');
+      setLastInterpreterAction('read-memory');
+      setLastInterpreterFrontendCommand('None');
+      setLastInterpreterConfidence(promotedSingleIntent?.confidence ?? null);
+      setLastInterpreterReason(
+        'The unified agent proposed a global task read, but its scope argument failed deterministic frontend validation.',
+      );
+      if (!chatActive) setChatActive(true);
+      const now = Date.now();
+      const userMsg = createUserMessage(now, visibleUserText);
+      const assistantMsg = createAssistantMessage(
+        now,
+        'I understood this as reading your global task list, but I could not safely validate the task-read scope.',
+      );
+      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+      return;
+    }
+    const globalTaskReadTool =
+      promotedTaskReadTool ??
+      (explicitGlobalTaskReadRequest
+        ? buildExplicitGlobalTaskReadToolCommand()
+        : null);
+    if (globalTaskReadTool) {
+      setPendingInterpreterCommand(null);
+      pendingTaskCompletionTargetsRef.current = [];
+      setTrackedInputRoute(
+        promotedTaskReadTool
+          ? 'Agent-promoted global task read'
+          : 'Deterministic global task read ownership floor',
+        globalTaskReadTool.commandMatch.command,
+        'global task read',
+        'tasks',
+        'tool',
+      );
+      setLastLocalCommand('Global task read');
+      setLastInterpreterAction(globalTaskReadTool.commandMatch.command);
+      setLastInterpreterFrontendCommand('global task read');
+      setLastInterpreterConfidence(promotedSingleIntent?.confidence ?? 1);
+      setLastInterpreterReason(
+        promotedTaskReadTool
+          ? 'The unified agent proposed an authoritative global Tasks read; Active Focus is explicitly excluded from this scope.'
+          : 'An exact task-list read was disambiguated from legacy read-memory so Active Focus cannot replace the global task list.',
+      );
+      return handleSend(
+        visibleUserText,
+        visibleUserText,
+        'agent',
+        globalTaskReadTool.commandMatch,
         [],
         visibleUserText,
       );
@@ -1707,6 +1791,20 @@ ${confirmedTaskCompletionResult.completedTasks
               shouldSpeakConfirmation: voiceOutputEnabled,
             }
           : { handled: false };
+      const globalTaskReadCommandResult: SplitCommandResult =
+        commandMatch.command === 'read-memory' &&
+        commandMatch.payload === 'global-task-read'
+          ? {
+              handled: true,
+              confirmationContent: formatOpenTasksReadout(memoryTasks),
+              shouldSpeakConfirmation: voiceOutputEnabled,
+              continuationContext:
+                'qmeetScope=global-tasks. This verified read contains the global open task list only. Active Focus and Focus-linked task scope are excluded unless the user explicitly asks for Focus tasks.',
+            }
+          : { handled: false };
+      if (globalTaskReadCommandResult.handled) {
+        setActivePanel('memory');
+      }
       const notesCommandResult: SplitCommandResult = handleNotesCommand(commandMatch, {
         voiceOutputEnabled,
         setActivePanel,
@@ -1724,19 +1822,21 @@ ${confirmedTaskCompletionResult.completedTasks
       };
       const memoryCommandResult: SplitCommandResult = notesCommandResult.handled
         ? { handled: false }
-        : confirmedTaskCommandResult.handled
-          ? confirmedTaskCommandResult
-          : await handleMemoryCommand(commandMatch, {
-            voiceOutputEnabled,
-            setActivePanel: setPanelForMemoryCommand,
-            closePanel,
-            getMemoryReadout,
-            saveMemoryTask,
-            markMemoryTaskDone,
-            clearCompletedTasks,
-            saveNote,
-            deleteNote,
-          });
+        : globalTaskReadCommandResult.handled
+          ? globalTaskReadCommandResult
+          : confirmedTaskCommandResult.handled
+            ? confirmedTaskCommandResult
+            : await handleMemoryCommand(commandMatch, {
+              voiceOutputEnabled,
+              setActivePanel: setPanelForMemoryCommand,
+              closePanel,
+              getMemoryReadout,
+              saveMemoryTask,
+              markMemoryTaskDone,
+              clearCompletedTasks,
+              saveNote,
+              deleteNote,
+            });
       const searchCommandResult: SplitCommandResult = notesCommandResult.handled || memoryCommandResult.handled
         ? { handled: false }
         : await handleSearchCommand(commandMatch, {

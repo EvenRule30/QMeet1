@@ -123,8 +123,10 @@ Calendar ownership rule:
 Tasks ownership rule:
 - Natural single-intent requests to create one task are Tasks-owned tools when the user is asking QMeet to save/add something as a task or to-do. Structural forms such as "put X on my to-do list", "add X to my tasks", "make X a task", and equivalent natural wording are mutations, not conversation. Use proposedCapability=tasks, proposedAction=remember-task, and proposedArguments with exactly one field: {"title": "<concise task title>"}.
 - The task title is a proposed label, not execution authority. Make it concise and action-oriented, remove conversational filler such as "remember to" when natural, and do not invent deadlines, people, project context, or other details the user did not provide.
-- Do not use remember-task for statements that work was already completed. Task completion remains on QMeet's existing deterministic task-resolution and confirmation path in this slice. Task reads, delete-last, and clear-completed also remain unpromoted until their ownership semantics are made explicit.
-- A promoted task creation still executes only through the existing remember-task handler after deterministic frontend validation.
+- Natural requests for the user's GLOBAL task list are Tasks-owned reads. Examples include "what tasks do I have?", "read my tasks", "show my to-do list", and equivalent wording that does not explicitly reference the active Focus. Use proposedCapability=tasks, proposedAction=read-memory, and proposedArguments exactly {"scope": "global"}. For this global scope set focusRelevant=false even when a Focus is active.
+- Questions specifically about tasks linked to the active Focus (for example "what tasks are part of this focus?" or "show my Focus tasks") are Focus-owned, not global Tasks reads. Use the Focus capability/read surface so canonical Focus linkage remains authoritative.
+- Do not use remember-task for statements that work was already completed. Task completion remains on QMeet's existing deterministic identity/confirmation path; delete-last and clear-completed also remain on their existing guarded paths in this slice.
+- A promoted task create/read still executes only after deterministic frontend validation; a read proposal never authorizes mutation.
 Notes ownership rule:
 - Natural single-intent requests to save one note are Notes-owned mutations. Use proposedCapability=notes, proposedAction=save-note, and proposedArguments with exactly one field: {"content": "<the note content the user asked to preserve>"}.
 - Preserve the user's intended note content rather than turning it into a task, Calendar event, or invented summary. Remove only the surrounding request wrapper when appropriate. Do not invent deadlines, priorities, people, decisions, or conclusions that are not supported by the request/current conversation.
@@ -604,6 +606,22 @@ def _explicit_task_create_title(user_message: str) -> str | None:
     return None
 
 
+def _is_explicit_global_task_read_request(user_message: str) -> bool:
+    """Recognize an explicit global task-list read without claiming Focus tasks."""
+    text = _normalize(user_message)
+    if not re.search(r"\b(?:tasks?|task\s+list|to[- ]?do(?:\s+list)?|todo(?:\s+list)?|checklist)\b", text):
+        return False
+    if re.search(r"\b(?:focus|focus\s+session|linked\s+tasks?)\b", text):
+        return False
+    if re.search(r"\btasks?\s+(?:for|from|in|under)\s+(?:this|my|the|our)?\s*focus\b", text):
+        return False
+    if re.search(r"\b(?:add|create|make|put|save|remember|mark|complete|completed|finish|finished|delete|remove|clear|reopen|restore)\b", text):
+        return False
+    return bool(
+        re.search(r"\b(?:read|list|show|display|review|recall|tell me|what|which)\b", text)
+    )
+
+
 def _clean_explicit_note_content(value: str) -> str | None:
     content = re.sub(r"\s+", " ", value.strip())
     content = re.sub(r"^[\"'`]+|[\"'`]+$", "", content).strip()
@@ -820,6 +838,18 @@ def _fallback_shadow_decision(
             confidence=0.97,
             reason="The user placed one item into an explicit task/to-do container.",
             arguments={"title": explicit_task_create_title},
+        )
+    if _is_explicit_global_task_read_request(request.userMessage):
+        return _decision(
+            owner="tasks",
+            focus_relevant=False,
+            disposition="tool",
+            capability="tasks",
+            action="read-memory",
+            response_plan="Read the authoritative global open-task list without allowing Active Focus to replace the requested scope.",
+            confidence=0.97,
+            reason="The user explicitly requested the global task/to-do list and did not reference Focus-linked tasks.",
+            arguments={"scope": "global"},
         )
     if re.search(r"\b(?:task|tasks|checklist|to[- ]?do|todo)\b", text):
         action = "tasks.complete" if re.search(r"\b(?:done|complete|completed|finish|finished)\b", text) else "tasks.read"
@@ -1255,6 +1285,20 @@ def _is_executable_task_create_tool_decision(decision: AgentShadowDecision) -> b
     )
 
 
+def _is_valid_task_read_arguments(arguments: dict[str, Any]) -> bool:
+    return set(arguments) == {"scope"} and arguments.get("scope") == "global"
+
+
+def _is_executable_task_read_tool_decision(decision: AgentShadowDecision) -> bool:
+    return (
+        decision.turnOwner == "tasks"
+        and decision.disposition == "tool"
+        and decision.proposedCapability == "tasks"
+        and canonical_action_id(decision.proposedAction) == "read-memory"
+        and _is_valid_task_read_arguments(decision.proposedArguments)
+    )
+
+
 def apply_task_create_ownership_floor(
     request: AgentShadowRequest,
     focus: dict[str, Any] | None,
@@ -1296,6 +1340,45 @@ def apply_task_create_ownership_floor(
             "proposedArguments": repaired_arguments,
             "reason": (
                 "Deterministic Tasks creation ownership floor: an unmistakable request to place one item in tasks/to-do cannot be answered by the read-only conversation lane. The model's validated title is preserved when available; otherwise only the literal task body from the current request is used. Execution still requires frontend validation and the deterministic remember-task handler."
+            ),
+        }
+    )
+
+
+def apply_task_read_ownership_floor(
+    request: AgentShadowRequest,
+    focus: dict[str, Any] | None,
+    decision: AgentShadowDecision,
+) -> AgentShadowDecision:
+    """Keep explicit global task reads independent from Active Focus ownership."""
+    fallback = normalize_shadow_decision(_fallback_shadow_decision(request, focus))
+    if not (
+        fallback.turnOwner == "tasks"
+        and fallback.disposition == "tool"
+        and canonical_action_id(fallback.proposedAction) == "read-memory"
+        and fallback.focusRelevant is False
+        and fallback.confidence >= 0.95
+        and _is_valid_task_read_arguments(fallback.proposedArguments)
+    ):
+        return decision
+
+    if _is_executable_task_read_tool_decision(decision):
+        return decision.model_copy(
+            update={
+                "focusRelevant": False,
+                "proposedArguments": {"scope": "global"},
+                "reason": (
+                    "Deterministic global Tasks read ownership floor preserved the model's valid read proposal while explicitly excluding Active Focus from the requested scope."
+                ),
+            }
+        )
+
+    return fallback.model_copy(
+        update={
+            "focusRelevant": False,
+            "proposedArguments": {"scope": "global"},
+            "reason": (
+                "Deterministic global Tasks read ownership floor: an explicit request for the user's task/to-do list cannot be swallowed by Focus or read-only conversation. The read remains non-mutating and frontend validation is still authoritative."
             ),
         }
     )
@@ -2016,6 +2099,7 @@ async def decide_agent_shadow(request: AgentShadowRequest) -> AgentShadowRespons
     )
     decision = apply_search_ownership_floor(request, focus, decision)
     decision = apply_task_create_ownership_floor(request, focus, decision)
+    decision = apply_task_read_ownership_floor(request, focus, decision)
     decision = apply_notes_ownership_floor(request, focus, decision)
     decision = apply_calendar_write_ownership_floor(request, focus, decision)
     comparison = compare_shadow_to_legacy(decision, request.legacyObservation)

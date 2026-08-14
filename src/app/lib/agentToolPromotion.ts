@@ -12,6 +12,11 @@ export type PromotedTaskCreateToolCommand = {
   commandMatch: CommandMatch;
 };
 
+export type PromotedTaskReadToolCommand = {
+  scope: 'global';
+  commandMatch: CommandMatch;
+};
+
 export type PromotedNoteSaveToolCommand = {
   content: string;
   commandMatch: CommandMatch;
@@ -151,6 +156,15 @@ function readValidatedTaskCreateTitle(
   if (!title || title.length > MAX_PROMOTED_TASK_TITLE_LENGTH) return null;
   if (CONTROL_CHARACTER_RE.test(title)) return null;
   return title;
+}
+
+function hasValidTaskReadArguments(
+  argumentsValue: Record<string, unknown>,
+): boolean {
+  return (
+    Object.keys(argumentsValue).length === 1 &&
+    argumentsValue.scope === 'global'
+  );
 }
 
 function readValidatedNoteSaveContent(
@@ -537,6 +551,74 @@ export function resolvePromotedTaskCreateToolCommand(
       command: 'remember-task',
       confirmation: 'Saved task.',
       payload: title,
+    },
+  };
+}
+
+/**
+ * True when the unified agent proposes an authoritative global task read.
+ * Focus-linked task questions are intentionally excluded from this contract.
+ */
+export function isPromotedTaskReadToolDecision(
+  decision: PromotedSingleIntentDecision | null,
+): boolean {
+  return Boolean(
+    decision &&
+      decision.disposition === 'tool' &&
+      decision.turnOwner === 'tasks' &&
+      decision.proposedAction === 'read-memory',
+  );
+}
+
+/**
+ * Validate the global task-read scope. read-memory remains the legacy canonical
+ * action id, while scope=global prevents Active Focus from changing the result.
+ */
+export function resolvePromotedTaskReadToolCommand(
+  decision: PromotedSingleIntentDecision | null,
+): PromotedTaskReadToolCommand | null {
+  if (!isPromotedTaskReadToolDecision(decision)) return null;
+  if (!decision || decision.proposedCapability !== 'tasks') return null;
+  if (!hasValidTaskReadArguments(decision.proposedArguments)) return null;
+
+  return {
+    scope: 'global',
+    commandMatch: {
+      command: 'read-memory',
+      confirmation: 'Reading tasks.',
+      payload: 'global-task-read',
+    },
+  };
+}
+
+const GLOBAL_TASK_READ_NOUN = /\b(?:tasks?|task\s+list|to[-\s]?do(?:\s+list)?|todo(?:\s+list)?|checklist)\b/i;
+const GLOBAL_TASK_READ_VERB = /\b(?:read|list|show|display|review|recall|tell\s+me|what|which)\b/i;
+const TASK_MUTATION_OR_COMPLETION = /\b(?:add|create|make|put|save|remember|mark|complete|completed|finish|finished|delete|remove|clear|reopen|restore)\b/i;
+const FOCUS_TASK_REFERENCE = /\b(?:focus|focus\s+session|linked\s+tasks?|tasks?\s+(?:for|from|in|under)\s+(?:this|my|the|our)?\s*focus)\b/i;
+
+/**
+ * Resolve the legacy exact-parser ambiguity where task-list reads currently map
+ * to read-memory. This is only an ownership/scope detector; it never reads state.
+ */
+export function isExplicitGlobalTaskReadRequest(
+  userMessage: string,
+  parsedCommand: string | null,
+): boolean {
+  const text = userMessage.trim();
+  if (!text || !GLOBAL_TASK_READ_NOUN.test(text)) return false;
+  if (FOCUS_TASK_REFERENCE.test(text)) return false;
+  if (TASK_MUTATION_OR_COMPLETION.test(text)) return false;
+  if (!GLOBAL_TASK_READ_VERB.test(text)) return false;
+  return parsedCommand === null || parsedCommand === 'read-memory';
+}
+
+export function buildExplicitGlobalTaskReadToolCommand(): PromotedTaskReadToolCommand {
+  return {
+    scope: 'global',
+    commandMatch: {
+      command: 'read-memory',
+      confirmation: 'Reading tasks.',
+      payload: 'global-task-read',
     },
   };
 }

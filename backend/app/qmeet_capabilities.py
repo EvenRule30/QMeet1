@@ -341,9 +341,18 @@ GLOBAL_CAPABILITY_CONTRACT: list[dict[str, Any]] = [
                 "title": {"type": "string", "minLength": 1, "maxLength": 240},
             },
         },
+        "promotedReadAction": "read-memory",
+        "readArgumentSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["scope"],
+            "properties": {
+                "scope": {"type": "string", "enum": ["global"]},
+            },
+        },
         "promotionConstraint": (
-            "Only single-task creation is agent-promotable in this slice. Task reads retain their current Focus-sensitive read surface, "
-            "and completion/deletion/clear operations remain on existing deterministic identity and confirmation paths."
+            "Only single-task creation was agent-promotable in Phase 21C1; Phase 21C3 additionally promotes authoritative GLOBAL open-task reads. Global reads use read-memory with scope=global so an Active Focus cannot replace the requested task list. "
+            "Focus-linked task questions remain Focus-owned, while completion/deletion/clear operations stay on existing deterministic identity and confirmation paths."
         ),
     },
     {

@@ -261,6 +261,13 @@ def _context_tokens(value: str) -> set[str]:
     }
 
 
+def _is_global_task_read_continuation(request: ToolContinuationRequest) -> bool:
+    return (
+        request.action.strip().casefold() == "read-memory"
+        and "qmeetScope=global-tasks" in request.toolContext
+    )
+
+
 def focus_context_relevant_to_continuation(
     request: ToolContinuationRequest,
     focus: dict[str, Any] | None,
@@ -273,6 +280,8 @@ def focus_context_relevant_to_continuation(
     """
 
     if not focus:
+        return False
+    if _is_global_task_read_continuation(request):
         return False
     normalized = _normalize_capability(request.capability)
     if normalized in _FOCUS_CAPABILITY_ALIASES or normalized.startswith("focus_"):
@@ -390,8 +399,9 @@ def build_tool_continuation_input(
         "calendar_read",
         "calendar_write",
     }
+    global_task_read = _is_global_task_read_continuation(request)
     isolate_stale_conversation = (
-        search_owned or calendar_owned
+        search_owned or calendar_owned or global_task_read
     ) and not focus_is_relevant
     if isolate_stale_conversation:
         messages.extend(_request_recent_tool_updates(request))
