@@ -17,6 +17,12 @@ export type PromotedTaskReadToolCommand = {
   commandMatch: CommandMatch;
 };
 
+export type PromotedTaskCompletionToolCommand = {
+  scope: 'global';
+  query: string;
+  commandMatch: CommandMatch;
+};
+
 export type PromotedNoteSaveToolCommand = {
   content: string;
   commandMatch: CommandMatch;
@@ -165,6 +171,19 @@ function hasValidTaskReadArguments(
     Object.keys(argumentsValue).length === 1 &&
     argumentsValue.scope === 'global'
   );
+}
+
+function readValidatedTaskCompletionQuery(
+  argumentsValue: Record<string, unknown>,
+): string | null {
+  if (!hasExactlyKeys(argumentsValue, ['scope', 'query'])) return null;
+  if (argumentsValue.scope !== 'global') return null;
+  const rawQuery = argumentsValue.query;
+  if (typeof rawQuery !== 'string') return null;
+  const query = rawQuery.replace(/\s+/g, ' ').trim();
+  if (!query || query.length > MAX_PROMOTED_TASK_TITLE_LENGTH) return null;
+  if (CONTROL_CHARACTER_RE.test(query)) return null;
+  return query;
 }
 
 function readValidatedNoteSaveContent(
@@ -619,6 +638,43 @@ export function buildExplicitGlobalTaskReadToolCommand(): PromotedTaskReadToolCo
       command: 'read-memory',
       confirmation: 'Reading tasks.',
       payload: 'global-task-read',
+    },
+  };
+}
+
+/**
+ * True when the unified agent proposes completion of one named/referenced task.
+ * The proposal contains lookup language only; it never contains task identity.
+ */
+export function isPromotedTaskCompletionToolDecision(
+  decision: PromotedSingleIntentDecision | null,
+): boolean {
+  return Boolean(
+    decision &&
+      decision.disposition === 'tool' &&
+      decision.turnOwner === 'tasks' &&
+      decision.proposedAction === 'mark-task-done',
+  );
+}
+
+/**
+ * Validate one semantic task-completion reference. Canonical task state still
+ * resolves this query to zero/one/multiple real open tasks before confirmation.
+ */
+export function resolvePromotedTaskCompletionToolCommand(
+  decision: PromotedSingleIntentDecision | null,
+): PromotedTaskCompletionToolCommand | null {
+  if (!isPromotedTaskCompletionToolDecision(decision)) return null;
+  if (!decision || decision.proposedCapability !== 'tasks') return null;
+  const query = readValidatedTaskCompletionQuery(decision.proposedArguments);
+  if (!query) return null;
+  return {
+    scope: 'global',
+    query,
+    commandMatch: {
+      command: 'mark-task-done',
+      confirmation: 'Marked task done.',
+      payload: query,
     },
   };
 }

@@ -11,7 +11,7 @@ import { NotesOverlay } from './panels/NotesOverlay';
 import { CalendarOverlay } from './panels/CalendarOverlay';
 import { SearchOverlay } from './panels/SearchOverlay';
 import { OrbState, ActivePanel } from './types';
-import { resetConversation, interpretCommandIntent } from "./api";
+import { getMemoryTasks, resetConversation, interpretCommandIntent } from "./api";
 import { parseCommand, type CommandMatch } from './commands';
 import { observeExactLocalRoute } from './lib/focusTurnHeaders';
 import {
@@ -35,6 +35,7 @@ import {
   isPromotedCalendarDeleteToolDecision,
   isPromotedCalendarEditToolDecision,
   isPromotedTaskCreateToolDecision,
+  isPromotedTaskCompletionToolDecision,
   isPromotedTaskReadToolDecision,
   isPromotedNoteReadToolDecision,
   isPromotedNoteSaveToolDecision,
@@ -45,6 +46,7 @@ import {
   resolvePromotedCalendarReadToolCommand,
   resolvePromotedSearchToolCommand,
   resolvePromotedTaskCreateToolCommand,
+  resolvePromotedTaskCompletionToolCommand,
   resolvePromotedTaskReadToolCommand,
   isExplicitGlobalTaskReadRequest,
   buildExplicitGlobalTaskReadToolCommand,
@@ -64,7 +66,12 @@ import {
   resolveTaskCompletionPreviewTargets,
 } from './lib/taskCompletionPreview';
 import { resolveNaturalFocusTaskCompletionTarget } from './lib/naturalTaskCompletion';
+import {
+  resolveGlobalTaskCompletionReference,
+  resolveNaturalGlobalTaskCompletionRequest,
+} from './lib/taskCompletionResolver';
 import { formatOpenTasksReadout } from './lib/memoryReadSurface';
+import { createVerifiedGlobalTask } from './lib/verifiedTaskCreate';
 import {
   completeConfirmedTaskTargets,
   type ConfirmedTaskTarget,
@@ -409,7 +416,7 @@ export default function App() {
       speakAssistantText,
     });
   }, [activePanel, activeSession?.id, messages, speakAssistantText, voiceOutputEnabled]);
-  const handleSend = useCallback(async (text: string, displayText?: string, commandRoute: CommandRoute = 'exact', forcedCommandMatch?: CommandMatch, confirmedTaskTargets: ConfirmedTaskTarget[] = [], continuationUserText?: string, confirmedCalendarDeleteTargetId: string | null = null, confirmedCalendarEditTargetId: string | null = null, promotedCalendarEditTargetCriteria: PromotedCalendarEditTargetCriteria | null = null) => {
+  const handleSend = useCallback(async (text: string, displayText?: string, commandRoute: CommandRoute = 'exact', forcedCommandMatch?: CommandMatch, confirmedTaskTargets: ConfirmedTaskTarget[] = [], continuationUserText?: string, confirmedCalendarDeleteTargetId: string | null = null, confirmedCalendarEditTargetId: string | null = null, promotedCalendarEditTargetCriteria: PromotedCalendarEditTargetCriteria | null = null, promotedTaskCompletionTarget: ConfirmedTaskTarget | null = null) => {
     const trimmed = text.trim();
     if (!trimmed) return;
     const visibleUserText = (displayText ?? trimmed).trim() || trimmed;
@@ -694,10 +701,40 @@ export default function App() {
               : undefined,
           })
         : null;
+    const promotedTaskCompletionCandidate =
+      isPromotedTaskCompletionToolDecision(promotedSingleIntent);
+    const promotedTaskCompletionTool =
+      resolvePromotedTaskCompletionToolCommand(promotedSingleIntent);
+    const naturalGlobalTaskCompletionRequest =
+      !forcedCommandMatch &&
+      commandRoute === 'exact' &&
+      !explicitDeterministicRoute &&
+      !parsedCommandMatch
+        ? resolveNaturalGlobalTaskCompletionRequest(trimmed, memoryTasks)
+        : null;
+    const naturalGlobalTaskCompletionCandidates =
+      naturalGlobalTaskCompletionRequest?.resolution.kind === 'exact' ||
+      naturalGlobalTaskCompletionRequest?.resolution.kind === 'likely'
+        ? [naturalGlobalTaskCompletionRequest.resolution.task]
+        : naturalGlobalTaskCompletionRequest?.resolution.kind === 'ambiguous'
+          ? naturalGlobalTaskCompletionRequest.resolution.candidates
+          : [];
+    const naturalGlobalTaskCompletionTouchesActiveFocus = Boolean(
+      routingActiveSession &&
+      naturalGlobalTaskCompletionCandidates.some((task) =>
+        routingActiveSession.linkedTaskIds.includes(task.id),
+      ),
+    );
+    const naturalGlobalTaskCompletionFallback =
+      naturalGlobalTaskCompletionRequest &&
+      !naturalGlobalTaskCompletionTouchesActiveFocus
+        ? naturalGlobalTaskCompletionRequest
+        : null;
     const promotedConversationAllowed =
       promotedSingleIntent?.disposition === 'conversation' &&
       !explicitCalendarWriteIntent &&
-      !explicitGlobalTaskReadRequest;
+      !explicitGlobalTaskReadRequest &&
+      !naturalGlobalTaskCompletionFallback;
     if (promotedSingleIntent?.disposition === 'conversation') {
       if (promotedConversationAllowed) {
         setPendingInterpreterCommand(null);
@@ -877,6 +914,187 @@ export default function App() {
         globalTaskReadTool.commandMatch,
         [],
         visibleUserText,
+      );
+    }
+    const effectiveTaskCompletionQuery =
+      promotedTaskCompletionTool?.query ??
+      naturalGlobalTaskCompletionFallback?.query ??
+      null;
+    let effectiveTaskCompletionResolution = promotedTaskCompletionTool
+      ? resolveGlobalTaskCompletionReference(
+          promotedTaskCompletionTool.query,
+          memoryTasks,
+        )
+      : naturalGlobalTaskCompletionFallback?.resolution ?? null;
+    let taskCompletionAuthoritativeRefreshFailed = false;
+    if (
+      promotedTaskCompletionTool &&
+      effectiveTaskCompletionResolution.kind === 'none'
+    ) {
+      try {
+        const authoritativeTasks = await getMemoryTasks();
+        effectiveTaskCompletionResolution = resolveGlobalTaskCompletionReference(
+          promotedTaskCompletionTool.query,
+          authoritativeTasks.tasks ?? [],
+        );
+      } catch (error) {
+        taskCompletionAuthoritativeRefreshFailed = true;
+        console.warn(
+          'Authoritative task refresh failed during semantic completion resolution; QMeet will not treat the unverified local miss as a canonical no-match.',
+          error,
+        );
+      }
+    }
+    if (
+      promotedTaskCompletionCandidate &&
+      !promotedTaskCompletionTool &&
+      !naturalGlobalTaskCompletionFallback
+    ) {
+      finishListening();
+      setShowThinkingBubble(false);
+      setPendingInterpreterCommand(null);
+      pendingTaskCompletionTargetsRef.current = [];
+      setTrackedInputRoute(
+        'Agent-promoted task completion rejected',
+        'mark-task-done',
+        undefined,
+        'tasks',
+        'tool',
+      );
+      setLastLocalCommand('Task not completed');
+      setLastInterpreterAction('mark-task-done');
+      setLastInterpreterFrontendCommand('None');
+      setLastInterpreterConfidence(promotedSingleIntent?.confidence ?? null);
+      setLastInterpreterReason(
+        'The unified agent proposed one task completion, but its global scope/query arguments failed deterministic frontend validation.',
+      );
+      if (!chatActive) setChatActive(true);
+      const now = Date.now();
+      const userMsg = createUserMessage(now, visibleUserText);
+      const assistantMsg = createAssistantMessage(
+        now,
+        'I understood this as completing a task, but I could not safely validate one task reference. No task was changed.',
+      );
+      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      pushResultToast({
+        kind: 'warning',
+        title: 'Task unchanged',
+        detail: assistantMsg.content,
+      });
+      speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+      return;
+    }
+    if (effectiveTaskCompletionQuery && effectiveTaskCompletionResolution) {
+      if (effectiveTaskCompletionResolution.kind === 'ambiguous') {
+        finishListening();
+        setShowThinkingBubble(false);
+        setPendingInterpreterCommand(null);
+        pendingTaskCompletionTargetsRef.current = [];
+        setTrackedInputRoute(
+          'Task completion needs deterministic target clarification',
+          'mark-task-done',
+          effectiveTaskCompletionQuery,
+          'tasks',
+          'clarify',
+        );
+        setLastLocalCommand('Task completion needs a more specific target');
+        setLastInterpreterAction('mark-task-done');
+        setLastInterpreterFrontendCommand(effectiveTaskCompletionQuery);
+        setLastInterpreterConfidence(promotedSingleIntent?.confidence ?? 1);
+        setLastInterpreterReason(
+          'The task reference matched multiple real open tasks, so QMeet refused to choose one.',
+        );
+        if (!chatActive) setChatActive(true);
+        const now = Date.now();
+        const userMsg = createUserMessage(now, visibleUserText);
+        const candidates = effectiveTaskCompletionResolution.candidates
+          .slice(0, 5)
+          .map((task, index) => `${index + 1}. ${task.title}`)
+          .join(' ');
+        const assistantMsg = createAssistantMessage(
+          now,
+          `I found ${effectiveTaskCompletionResolution.candidates.length} possible open tasks for "${effectiveTaskCompletionQuery}": ${candidates} Which one did you mean? No task was changed.`,
+        );
+        setMessages((prev) => [...prev, userMsg, assistantMsg]);
+        speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+        return;
+      }
+      if (effectiveTaskCompletionResolution.kind === 'none') {
+        finishListening();
+        setShowThinkingBubble(false);
+        setPendingInterpreterCommand(null);
+        pendingTaskCompletionTargetsRef.current = [];
+        setTrackedInputRoute(
+          taskCompletionAuthoritativeRefreshFailed
+            ? 'Task completion state could not be verified'
+            : 'Task completion had no canonical target',
+          'mark-task-done',
+          effectiveTaskCompletionQuery,
+          'tasks',
+          'tool',
+        );
+        setLastLocalCommand(
+          taskCompletionAuthoritativeRefreshFailed
+            ? 'Task completion state unavailable'
+            : 'No matching open task to complete',
+        );
+        setLastInterpreterAction('mark-task-done');
+        setLastInterpreterFrontendCommand(effectiveTaskCompletionQuery);
+        setLastInterpreterConfidence(promotedSingleIntent?.confidence ?? null);
+        setLastInterpreterReason(
+          taskCompletionAuthoritativeRefreshFailed
+            ? 'The local task snapshot had no match and authoritative task state could not be read, so QMeet refused to claim there was no canonical task.'
+            : 'The validated semantic task reference did not match an open task after authoritative verification, so no confirmation was created.',
+        );
+        if (!chatActive) setChatActive(true);
+        const now = Date.now();
+        const userMsg = createUserMessage(now, visibleUserText);
+        const assistantMsg = createAssistantMessage(
+          now,
+          taskCompletionAuthoritativeRefreshFailed
+            ? `I couldn't verify the current open task list while checking "${effectiveTaskCompletionQuery}". No task was changed.`
+            : `I couldn't find an open task matching "${effectiveTaskCompletionQuery}". No task was changed.`,
+        );
+        setMessages((prev) => [...prev, userMsg, assistantMsg]);
+        speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+        return;
+      }
+      const resolvedTask = effectiveTaskCompletionResolution.task;
+      const taskCompletionCommandMatch: CommandMatch = {
+        command: 'mark-task-done',
+        confirmation: 'Marked task done.',
+        payload: resolvedTask.title,
+      };
+      setPendingInterpreterCommand(null);
+      setTrackedInputRoute(
+        promotedTaskCompletionTool
+          ? 'Agent-promoted task completion'
+          : 'Deterministic natural task completion ownership floor',
+        'mark-task-done',
+        resolvedTask.title,
+        'tasks',
+        'tool',
+      );
+      setLastLocalCommand('Pending agent task completion');
+      setLastInterpreterAction('mark-task-done');
+      setLastInterpreterFrontendCommand(`mark task ${resolvedTask.title} done`);
+      setLastInterpreterConfidence(promotedSingleIntent?.confidence ?? 1);
+      setLastInterpreterReason(
+        promotedTaskCompletionTool
+          ? 'The unified agent proposed one semantic task reference; deterministic open-task state resolved it to one canonical task before confirmation.'
+          : 'Completed-work language matched one real open global task after the unified agent failed to claim the mutation; deterministic state repaired ownership before conversation.',
+      );
+      return handleSend(
+        visibleUserText,
+        visibleUserText,
+        'agent',
+        taskCompletionCommandMatch,
+        [],
+        visibleUserText,
+        null,
+        null,
+        null,
+        { id: resolvedTask.id, title: resolvedTask.title },
       );
     }
     const promotedNoteSaveCandidate =
@@ -1520,12 +1738,29 @@ export default function App() {
         const taskCompletionTarget = isTaskCompletionCommand
           ? commandMatch.payload?.trim() ?? ''
           : '';
+        const promotedTaskCompletionPreviewTarget =
+          isTaskCompletionCommand && promotedTaskCompletionTarget
+            ? memoryTasks.find(
+                (task) =>
+                  task.id === promotedTaskCompletionTarget.id &&
+                  !task.completedAt &&
+                  task.title.trim() === promotedTaskCompletionTarget.title.trim(),
+              ) ?? {
+                id: promotedTaskCompletionTarget.id,
+                title: promotedTaskCompletionTarget.title,
+                createdAt: new Date().toISOString(),
+              }
+            : null;
         const taskCompletionPreviewTargets = isTaskCompletionCommand
-          ? resolveTaskCompletionPreviewTargets(
-              taskCompletionTarget,
-              memoryTasks,
-              routingActiveSession,
-            )
+          ? promotedTaskCompletionTarget
+            ? promotedTaskCompletionPreviewTarget
+              ? [promotedTaskCompletionPreviewTarget]
+              : []
+            : resolveTaskCompletionPreviewTargets(
+                taskCompletionTarget,
+                memoryTasks,
+                routingActiveSession,
+              )
           : [];
         const taskCompletionPreviewDescription =
           describeTaskCompletionPreviewTargets(taskCompletionPreviewTargets);
@@ -1617,9 +1852,11 @@ export default function App() {
           commandMatch.command === 'delete-calendar-event' &&
           targetedDeleteResolution?.kind === 'likely'
             ? 'One strong fuzzy Calendar event candidate was resolved; its exact event identity is locked and still requires confirmation before deletion.'
-            : naturalTaskCompletionTarget
-              ? 'Natural completed-work language matched one open task linked to the active Focus, so QMeet paused for confirmation.'
-              : commandRoute === 'exact'
+            : promotedTaskCompletionTarget
+              ? 'One canonical open task was resolved from a semantic completion reference and its identity is locked across confirmation.'
+              : naturalTaskCompletionTarget
+                ? 'Natural completed-work language matched one open task linked to the active Focus, so QMeet paused for confirmation.'
+                : commandRoute === 'exact'
                 ? 'Exact frontend parser matched a destructive command, so QMeet paused for confirmation.'
                 : 'Command interpreter mapped the input to a destructive command, so QMeet paused for confirmation.';
         pendingTaskCompletionTargetsRef.current = isTaskCompletionCommand
@@ -1647,11 +1884,13 @@ export default function App() {
           reason: destructiveConfirmationReason,
         });
         setTrackedInputRoute(
-          naturalTaskCompletionTarget
-            ? 'Natural Focus task completion needs safety confirmation'
-            : commandRoute === 'exact'
-              ? 'Exact command needs safety confirmation'
-              : 'Fuzzy interpreter needs safety confirmation',
+          promotedTaskCompletionTarget
+            ? 'Agent-promoted task completion needs safety confirmation'
+            : naturalTaskCompletionTarget
+              ? 'Natural Focus task completion needs safety confirmation'
+              : commandRoute === 'exact'
+                ? 'Exact command needs safety confirmation'
+                : 'Fuzzy interpreter needs safety confirmation',
         );
         setLastLocalCommand('Pending destructive command');
         setLastInterpreterAction(commandRoute === 'exact' ? 'Not used' : commandMatch.command);
@@ -1678,11 +1917,46 @@ export default function App() {
               )
               .filter((task): task is (typeof memoryTasks)[number] => Boolean(task))
           : [];
+      let confirmedTaskExecutionState = memoryTasks;
+      let verifiedConfirmedTaskTargets = immutableConfirmedTaskTargets;
       if (
         commandRoute === 'confirmed' &&
         commandMatch.command === 'mark-task-done' &&
         confirmedTaskTargets.length > 0 &&
         immutableConfirmedTaskTargets.length !== confirmedTaskTargets.length
+      ) {
+        try {
+          const authoritativeTasks = await getMemoryTasks();
+          const authoritativeTaskState = authoritativeTasks.tasks ?? [];
+          const authoritativeConfirmedTaskTargets = confirmedTaskTargets
+            .map((target) =>
+              authoritativeTaskState.find(
+                (task) =>
+                  task.id === target.id &&
+                  !task.completedAt &&
+                  task.title.trim() === target.title.trim(),
+              ),
+            )
+            .filter((task): task is (typeof memoryTasks)[number] => Boolean(task));
+          if (
+            authoritativeConfirmedTaskTargets.length ===
+            confirmedTaskTargets.length
+          ) {
+            confirmedTaskExecutionState = authoritativeTaskState;
+            verifiedConfirmedTaskTargets = authoritativeConfirmedTaskTargets;
+          }
+        } catch (error) {
+          console.warn(
+            'Authoritative task refresh failed during confirmed identity verification; preserving the current in-memory verification result.',
+            error,
+          );
+        }
+      }
+      if (
+        commandRoute === 'confirmed' &&
+        commandMatch.command === 'mark-task-done' &&
+        confirmedTaskTargets.length > 0 &&
+        verifiedConfirmedTaskTargets.length !== confirmedTaskTargets.length
       ) {
         finishListening();
         setShowThinkingBubble(false);
@@ -1703,13 +1977,15 @@ export default function App() {
         commandRoute === 'confirmed' &&
         commandMatch.command === 'mark-task-done' &&
         routingActiveSession
-          ? (immutableConfirmedTaskTargets.length > 0
+          ? (immutableConfirmedTaskTargets.length === confirmedTaskTargets.length
               ? immutableConfirmedTaskTargets
-              : resolveTaskCompletionPreviewTargets(
-                  commandMatch.payload?.trim() ?? '',
-                  memoryTasks,
-                  routingActiveSession,
-                )
+              : verifiedConfirmedTaskTargets.length > 0
+                ? verifiedConfirmedTaskTargets
+                : resolveTaskCompletionPreviewTargets(
+                    commandMatch.payload?.trim() ?? '',
+                    confirmedTaskExecutionState,
+                    routingActiveSession,
+                  )
             ).filter((task) =>
               routingActiveSession.linkedTaskIds.includes(task.id),
             )
@@ -1770,11 +2046,17 @@ export default function App() {
         commandRoute === 'confirmed' &&
         commandMatch.command === 'mark-task-done' &&
         confirmedTaskTargets.length > 0
-          ? completeConfirmedTaskTargets(
+          ? confirmedTaskExecutionState === memoryTasks
+            ? completeConfirmedTaskTargets(
               memoryTasks,
               confirmedTaskTargets,
               verifiedCompletedAtByTaskId,
             )
+            : completeConfirmedTaskTargets(
+                confirmedTaskExecutionState,
+                confirmedTaskTargets,
+                verifiedCompletedAtByTaskId,
+              )
           : null;
       const confirmedTaskCommandResult: SplitCommandResult =
         confirmedTaskCompletionResult?.ok
@@ -1805,7 +2087,26 @@ ${confirmedTaskCompletionResult.completedTasks
       if (globalTaskReadCommandResult.handled) {
         setActivePanel('memory');
       }
-      const notesCommandResult: SplitCommandResult = handleNotesCommand(commandMatch, {
+      const verifiedTaskCreateCommandResult: SplitCommandResult =
+        commandMatch.command === 'remember-task'
+          ? await (async () => {
+              const verifiedTaskCreate = await createVerifiedGlobalTask(
+                commandMatch.payload ?? '',
+              );
+              setActivePanel('memory');
+              return {
+                handled: true,
+                confirmationContent: verifiedTaskCreate.message,
+                shouldSpeakConfirmation: voiceOutputEnabled,
+                continuationContext: verifiedTaskCreate.ok
+                  ? 'qmeetScope=global-tasks. This task creation was verified by the canonical backend task endpoint before QMeet reported success.'
+                  : 'qmeetScope=global-tasks. The canonical backend task creation failed, so no task was added.',
+              };
+            })()
+          : { handled: false };
+      const notesCommandResult: SplitCommandResult = verifiedTaskCreateCommandResult.handled
+        ? { handled: false }
+        : handleNotesCommand(commandMatch, {
         voiceOutputEnabled,
         setActivePanel,
         closePanel,
@@ -1813,20 +2114,22 @@ ${confirmedTaskCompletionResult.completedTasks
         deleteLastNote,
         clearNotes,
         getNotesReadout,
-      });
+        });
       const setPanelForMemoryCommand = (panel: ActivePanel) => {
         if (shouldSuppressLegacyFocusMemoryOpen(commandMatch.command, panel)) {
           return;
         }
         setActivePanel(panel);
       };
-      const memoryCommandResult: SplitCommandResult = notesCommandResult.handled
-        ? { handled: false }
-        : globalTaskReadCommandResult.handled
-          ? globalTaskReadCommandResult
-          : confirmedTaskCommandResult.handled
-            ? confirmedTaskCommandResult
-            : await handleMemoryCommand(commandMatch, {
+      const memoryCommandResult: SplitCommandResult = verifiedTaskCreateCommandResult.handled
+        ? verifiedTaskCreateCommandResult
+        : notesCommandResult.handled
+          ? { handled: false }
+          : globalTaskReadCommandResult.handled
+            ? globalTaskReadCommandResult
+            : confirmedTaskCommandResult.handled
+              ? confirmedTaskCommandResult
+              : await handleMemoryCommand(commandMatch, {
               voiceOutputEnabled,
               setActivePanel: setPanelForMemoryCommand,
               closePanel,
@@ -1889,10 +2192,12 @@ ${confirmedTaskCompletionResult.completedTasks
             getCalendarReadout,
             resetConversation,
           });
-      const splitCommandResult: SplitCommandResult = notesCommandResult.handled
-        ? notesCommandResult
-        : memoryCommandResult.handled
-          ? memoryCommandResult
+      const splitCommandResult: SplitCommandResult = verifiedTaskCreateCommandResult.handled
+        ? verifiedTaskCreateCommandResult
+        : notesCommandResult.handled
+          ? notesCommandResult
+          : memoryCommandResult.handled
+            ? memoryCommandResult
           : searchCommandResult.handled
             ? searchCommandResult
             : voiceCommandResult.handled

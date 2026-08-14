@@ -350,9 +350,25 @@ GLOBAL_CAPABILITY_CONTRACT: list[dict[str, Any]] = [
                 "scope": {"type": "string", "enum": ["global"]},
             },
         },
+        "promotedCompleteAction": "mark-task-done",
+        "completeArgumentSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["scope", "query"],
+            "properties": {
+                "scope": {"type": "string", "enum": ["global"]},
+                "query": {"type": "string", "minLength": 1, "maxLength": 240},
+            },
+            "constraint": (
+                "query is semantic lookup language only and never task identity. "
+                "Exactly one real open task must be deterministically resolved before confirmation."
+            ),
+        },
         "promotionConstraint": (
-            "Only single-task creation was agent-promotable in Phase 21C1; Phase 21C3 additionally promotes authoritative GLOBAL open-task reads. Global reads use read-memory with scope=global so an Active Focus cannot replace the requested task list. "
-            "Focus-linked task questions remain Focus-owned, while completion/deletion/clear operations stay on existing deterministic identity and confirmation paths."
+            "Only single-task creation was agent-promotable in Phase 21C1; Phase 21C3 additionally promotes authoritative GLOBAL open-task reads. "
+            "Phase 21C4 promotes the semantic front door for one named/referenced task completion, but Task completion remains on QMeet's existing deterministic identity/confirmation execution path. "
+            "The model may provide only scope=global plus a lookup query; zero matches do nothing, multiple plausible matches require clarification, and one resolved task identity is locked across confirmation. "
+            "Focus-linked task questions remain Focus-owned. Historical completion/deletion/clear safeguards remain authoritative; deletion/clear operations stay on their existing guarded paths."
         ),
     },
     {
