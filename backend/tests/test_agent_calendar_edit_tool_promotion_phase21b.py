@@ -10,170 +10,188 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class AgentCalendarEditToolPromotionPhase21BTests(unittest.TestCase):
-    def test_calendar_contract_exposes_targeted_edit_schema_without_event_identity(self) -> None:
+    def _request(self, text: str) -> shadow.AgentShadowRequest:
+        return shadow.AgentShadowRequest(
+            userMessage=text,
+            recentConversation=[],
+            uiState={},
+            clientContext={},
+        )
+
+    def test_calendar_contract_separates_source_day_from_one_change(self) -> None:
         calendar_contract = next(
             item
             for item in shadow.GLOBAL_CAPABILITY_CONTRACT
             if item.get("owner") == "calendar"
         )
-
         self.assertEqual(calendar_contract["promotedEditAction"], "edit-last-event")
         schema = calendar_contract["editArgumentSchema"]
         self.assertFalse(schema["additionalProperties"])
         self.assertEqual(
             schema["required"],
-            ["targetDay", "targetTitle", "targetTime", "newDay", "newTitle", "newTime"],
+            ["targetDay", "query", "currentTime", "changeField", "changeValue"],
+        )
+        self.assertEqual(
+            schema["properties"]["changeField"]["enum"],
+            ["time", "title", "day"],
         )
         self.assertNotIn("eventId", schema["properties"])
-        self.assertIn("zero/one/multiple target resolution", calendar_contract["promotionConstraint"])
+        self.assertIn("targetDay identifies where the event exists before the edit", schema["constraint"])
+        self.assertIn("exact/likely/ambiguous/none", calendar_contract["promotionConstraint"])
 
-    def test_backend_edit_validator_requires_one_target_and_one_change(self) -> None:
-        valid = {
-            "targetDay": "tomorrow",
-            "targetTitle": "business meeting",
-            "targetTime": None,
-            "newDay": None,
-            "newTitle": None,
-            "newTime": "4 PM",
+    def test_backend_edit_validator_accepts_time_title_or_day_change(self) -> None:
+        base = {
+            "targetDay": "today",
+            "query": "business meeting",
+            "currentTime": None,
         }
-        self.assertTrue(shadow._is_valid_calendar_edit_arguments(valid))
-
-        no_target = dict(valid, targetTitle=None)
-        self.assertFalse(shadow._is_valid_calendar_edit_arguments(no_target))
-
-        no_change = dict(valid, newTime=None)
-        self.assertFalse(shadow._is_valid_calendar_edit_arguments(no_change))
-
-        day_only = dict(valid, newDay="today", newTime=None)
-        self.assertFalse(shadow._is_valid_calendar_edit_arguments(day_only))
-
-        with_event_id = dict(valid, eventId="google-secret-id")
-        self.assertFalse(shadow._is_valid_calendar_edit_arguments(with_event_id))
-
-    def test_calendar_edit_ownership_floor_cannot_fall_back_to_conversation(self) -> None:
-        request = shadow.AgentShadowRequest(
-            userMessage="move my business meeting tomorrow to 4 PM",
-            recentConversation=[],
-            uiState={},
+        self.assertTrue(
+            shadow._is_valid_calendar_edit_arguments(
+                dict(base, changeField="time", changeValue="4 PM")
+            )
         )
-        model_decision = shadow.AgentShadowDecision(
-            turnOwner="general_chat",
-            focusRelevant=False,
-            disposition="conversation",
-            proposedCapability="none",
-            proposedAction="conversation.respond",
-            proposedArguments={},
-            responsePlan="Answer conversationally.",
-            confidence=0.88,
-            reason="Incorrect model fallback for regression coverage.",
+        self.assertTrue(
+            shadow._is_valid_calendar_edit_arguments(
+                dict(base, changeField="title", changeValue="Executive Planning Meeting")
+            )
+        )
+        self.assertTrue(
+            shadow._is_valid_calendar_edit_arguments(
+                dict(base, changeField="day", changeValue="tomorrow")
+            )
+        )
+        self.assertFalse(
+            shadow._is_valid_calendar_edit_arguments(
+                dict(base, changeField="day", changeValue="today")
+            )
+        )
+        self.assertFalse(
+            shadow._is_valid_calendar_edit_arguments(
+                dict(base, changeField="location", changeValue="Boardroom")
+            )
+        )
+        self.assertFalse(
+            shadow._is_valid_calendar_edit_arguments(
+                dict(base, changeField="time", changeValue="4 PM", eventId="secret")
+            )
         )
 
-        result = shadow.apply_calendar_write_ownership_floor(request, None, model_decision)
-
-        self.assertEqual(result.turnOwner, "calendar")
-        self.assertEqual(result.disposition, "tool")
-        self.assertEqual(result.proposedAction, "edit-last-event")
-
-    def test_today_named_edit_is_calendar_owned_before_target_resolution(self) -> None:
-        request = shadow.AgentShadowRequest(
-            userMessage="move my business meeting today to 4 PM",
-            recentConversation=[],
-            uiState={},
-        )
-        fallback = shadow._fallback_shadow_decision(request, None)
-
-        self.assertEqual(fallback.turnOwner, "calendar")
-        self.assertEqual(fallback.disposition, "tool")
-        self.assertEqual(fallback.proposedAction, "edit-last-event")
-        self.assertGreaterEqual(fallback.confidence, 0.95)
-
-    def test_sparse_nullable_model_edit_arguments_are_canonicalized_before_ownership_floor(self) -> None:
-        request = shadow.AgentShadowRequest(
-            userMessage="move my business meeting today to 4 PM",
-            recentConversation=[],
-            uiState={},
-        )
-        sparse = shadow.AgentShadowDecision(
-            turnOwner="calendar",
-            focusRelevant=False,
-            disposition="tool",
-            proposedCapability="calendar",
-            proposedAction="edit-last-event",
-            proposedArguments={
+    def test_sparse_current_time_is_canonicalized_to_null(self) -> None:
+        normalized = shadow._normalize_calendar_edit_argument_shape(
+            {
                 "targetDay": "today",
-                "targetTitle": "business meeting",
-                "newTime": "4 PM",
+                "query": "business meeting",
+                "changeField": "time",
+                "changeValue": "4 PM",
+            }
+        )
+        self.assertEqual(
+            normalized,
+            {
+                "targetDay": "today",
+                "query": "business meeting",
+                "currentTime": None,
+                "changeField": "time",
+                "changeValue": "4 PM",
             },
-            responsePlan="Resolve one event, confirm, then update it.",
-            confidence=0.96,
-            reason="One targeted Calendar edit with omitted null fields.",
+        )
+        self.assertTrue(shadow._is_valid_calendar_edit_arguments(normalized))
+
+    def test_previous_day_key_contract_migrates_to_target_day(self) -> None:
+        normalized = shadow._normalize_calendar_edit_argument_shape(
+            {
+                "day": "today",
+                "query": "business meeting",
+                "changeField": "time",
+                "changeValue": "4 PM",
+            }
+        )
+        self.assertEqual(
+            normalized,
+            {
+                "targetDay": "today",
+                "query": "business meeting",
+                "currentTime": None,
+                "changeField": "time",
+                "changeValue": "4 PM",
+            },
         )
 
-        normalized = shadow.normalize_shadow_decision(sparse)
-        self.assertEqual(
-            normalized.proposedArguments,
+    def test_legacy_six_field_day_move_is_migrated_without_resolving_state(self) -> None:
+        normalized = shadow._normalize_calendar_edit_argument_shape(
             {
                 "targetDay": "today",
                 "targetTitle": "business meeting",
                 "targetTime": None,
-                "newDay": None,
+                "newDay": "tomorrow",
                 "newTitle": None,
-                "newTime": "4 PM",
-            },
-        )
-        result = shadow.apply_calendar_write_ownership_floor(request, None, normalized)
-        self.assertTrue(shadow._is_executable_calendar_edit_tool_decision(result))
-        self.assertEqual(result.proposedArguments, normalized.proposedArguments)
-
-        rename_sparse = shadow.AgentShadowDecision(
-            turnOwner="calendar",
-            focusRelevant=False,
-            disposition="tool",
-            proposedCapability="calendar",
-            proposedAction="edit-last-event",
-            proposedArguments={
-                "targetDay": "today",
-                "targetTitle": "business meeting",
-                "newTitle": "executive planning meeting",
-            },
-            responsePlan="Resolve one event, confirm, then rename it.",
-            confidence=0.96,
-            reason="One targeted Calendar rename with omitted null fields.",
-        )
-        rename_normalized = shadow.normalize_shadow_decision(rename_sparse)
-        self.assertTrue(
-            shadow._is_valid_calendar_edit_arguments(rename_normalized.proposedArguments)
+                "newTime": None,
+            }
         )
         self.assertEqual(
-            rename_normalized.proposedArguments["newTitle"],
-            "executive planning meeting",
+            normalized,
+            {
+                "targetDay": "today",
+                "query": "business meeting",
+                "currentTime": None,
+                "changeField": "day",
+                "changeValue": "tomorrow",
+            },
         )
-        self.assertIsNone(rename_normalized.proposedArguments["newTime"])
+        self.assertTrue(shadow._is_valid_calendar_edit_arguments(normalized))
 
-    def test_edit_argument_shape_normalizer_does_not_repair_unknown_or_missing_required_fields(self) -> None:
-        with_unknown = shadow._normalize_calendar_edit_argument_shape(
+    def test_legacy_multiple_change_stays_invalid(self) -> None:
+        multiple = shadow._normalize_calendar_edit_argument_shape(
             {
                 "targetDay": "today",
                 "targetTitle": "business meeting",
+                "targetTime": None,
+                "newDay": "tomorrow",
+                "newTitle": None,
                 "newTime": "4 PM",
-                "eventId": "must-not-be-accepted",
             }
         )
-        self.assertIn("eventId", with_unknown)
-        self.assertFalse(shadow._is_valid_calendar_edit_arguments(with_unknown))
+        self.assertIn("newDay", multiple)
+        self.assertFalse(shadow._is_valid_calendar_edit_arguments(multiple))
 
-        missing_target_day = shadow._normalize_calendar_edit_argument_shape(
-            {"targetTitle": "business meeting", "newTime": "4 PM"}
+    def test_calendar_ownership_floor_repairs_metadata_but_not_arguments(self) -> None:
+        decision = shadow.AgentShadowDecision(
+            turnOwner="other",
+            focusRelevant=False,
+            disposition="tool",
+            proposedCapability="other",
+            proposedAction="edit-last-event",
+            proposedArguments={
+                "targetDay": "today",
+                "query": "business meeting",
+                "changeField": "day",
+                "changeValue": "tomorrow",
+            },
+            responsePlan="Move the event.",
+            confidence=0.9,
+            reason="Right edit semantics, wrong metadata.",
         )
-        self.assertNotIn("targetDay", missing_target_day)
-        self.assertFalse(shadow._is_valid_calendar_edit_arguments(missing_target_day))
+        result = shadow.apply_calendar_write_ownership_floor(
+            self._request("move my business meeting today to tomorrow"),
+            None,
+            shadow.normalize_shadow_decision(decision),
+        )
+        self.assertEqual(result.turnOwner, "calendar")
+        self.assertEqual(result.proposedCapability, "calendar")
+        self.assertEqual(result.proposedAction, "edit-last-event")
+        self.assertEqual(
+            result.proposedArguments,
+            {
+                "targetDay": "today",
+                "query": "business meeting",
+                "currentTime": None,
+                "changeField": "day",
+                "changeValue": "tomorrow",
+            },
+        )
+        self.assertIn("ownership metadata", result.reason)
 
-    def test_valid_model_edit_proposal_survives_ownership_floor(self) -> None:
-        request = shadow.AgentShadowRequest(
-            userMessage="move my business meeting tomorrow to 4 PM",
-            recentConversation=[],
-            uiState={},
-        )
+    def test_ownership_floor_drops_current_time_inferred_only_from_history(self) -> None:
         decision = shadow.AgentShadowDecision(
             turnOwner="calendar",
             focusRelevant=False,
@@ -181,84 +199,94 @@ class AgentCalendarEditToolPromotionPhase21BTests(unittest.TestCase):
             proposedCapability="calendar",
             proposedAction="edit-last-event",
             proposedArguments={
-                "targetDay": "tomorrow",
-                "targetTitle": "business meeting",
-                "targetTime": None,
-                "newDay": None,
-                "newTitle": None,
-                "newTime": "4 PM",
+                "targetDay": "today",
+                "query": "business meeting",
+                "currentTime": "4 PM",
+                "changeField": "day",
+                "changeValue": "tomorrow",
             },
-            responsePlan="Resolve one event, confirm, then update it.",
-            confidence=0.96,
-            reason="One targeted Calendar edit.",
+            responsePlan="Move the event and preserve its time.",
+            confidence=0.95,
+            reason="Calendar edit using recent context.",
         )
-
-        result = shadow.apply_calendar_write_ownership_floor(request, None, decision)
-
-        self.assertEqual(result.proposedArguments, decision.proposedArguments)
-        self.assertTrue(shadow._is_executable_calendar_edit_tool_decision(result))
-
-    def test_frontend_validator_separates_target_criteria_from_changes(self) -> None:
-        source = (ROOT / "src" / "app" / "lib" / "agentToolPromotion.ts").read_text(
-            encoding="utf-8"
+        result = shadow.apply_calendar_write_ownership_floor(
+            self._request("move my business meeting today to tomorrow, same time"),
+            None,
+            shadow.normalize_shadow_decision(decision),
         )
+        self.assertIsNone(result.proposedArguments["currentTime"])
+        self.assertEqual(result.proposedArguments["targetDay"], "today")
+        self.assertEqual(result.proposedArguments["changeField"], "day")
+        self.assertEqual(result.proposedArguments["changeValue"], "tomorrow")
 
-        self.assertIn("resolvePromotedCalendarEditToolCommand", source)
-        self.assertIn("isPromotedCalendarEditToolDecision", source)
-        self.assertIn("'targetDay'", source)
-        self.assertIn("'targetTitle'", source)
-        self.assertIn("'targetTime'", source)
-        self.assertIn("'newDay'", source)
-        self.assertIn("'newTitle'", source)
-        self.assertIn("'newTime'", source)
-        self.assertIn("calendarEditRoundTripsThroughCanonicalParser", source)
-        self.assertIn("parseCommand(buildCalendarEditFrontendCommand(changes))", source)
-        self.assertIn("command: 'edit-last-event'", source)
-        self.assertNotIn("eventId: validated", source)
-
-    def test_explicit_calendar_write_waits_for_agent_beyond_default_budget(self) -> None:
-        source = (ROOT / "src" / "app" / "App.tsx").read_text(encoding="utf-8")
-
-        self.assertIn("const AGENT_FIRST_EXPLICIT_CALENDAR_WRITE_WAIT_MS = 7000;", source)
-        self.assertIn(
-            "timeoutMs: explicitCalendarWriteIntent\n"
-            "              ? AGENT_FIRST_EXPLICIT_CALENDAR_WRITE_WAIT_MS\n"
-            "              : undefined,",
-            source,
+    def test_explicit_current_time_can_still_narrow_target_lookup(self) -> None:
+        decision = shadow.AgentShadowDecision(
+            turnOwner="calendar",
+            focusRelevant=False,
+            disposition="tool",
+            proposedCapability="calendar",
+            proposedAction="edit-last-event",
+            proposedArguments={
+                "targetDay": "today",
+                "query": "business meeting",
+                "currentTime": "4 PM",
+                "changeField": "day",
+                "changeValue": "tomorrow",
+            },
+            responsePlan="Move the event.",
+            confidence=0.95,
+            reason="Calendar edit with explicit current time.",
         )
-        observer = (
-            ROOT / "src" / "app" / "lib" / "agentShadowObserver.ts"
+        result = shadow.apply_calendar_write_ownership_floor(
+            self._request("move my 4 PM business meeting today to tomorrow"),
+            None,
+            shadow.normalize_shadow_decision(decision),
+        )
+        self.assertEqual(result.proposedArguments["currentTime"], "4 PM")
+
+    def test_prompt_makes_source_and_destination_day_unambiguous(self) -> None:
+        prompt = shadow.AGENT_SHADOW_SYSTEM_PROMPT
+        self.assertIn('"targetDay": "today" | "tomorrow"', prompt)
+        self.assertIn('targetDay is always where the event exists now', prompt)
+        self.assertIn('changeField="day", changeValue="tomorrow"', prompt)
+        self.assertIn('"same time" means preserve the existing time', prompt)
+
+    def test_frontend_edit_validator_supports_day_move_without_event_id(self) -> None:
+        source = (
+            ROOT / "src" / "app" / "lib" / "agentToolPromotion.ts"
         ).read_text(encoding="utf-8")
-        self.assertIn("const AGENT_FIRST_SINGLE_INTENT_WAIT_MS = 2500;", observer)
+        self.assertIn("'targetDay'", source)
+        self.assertIn("changeField === 'time'", source)
+        self.assertIn("changeField === 'title'", source)
+        self.assertIn("changeField === 'day'", source)
+        self.assertIn("changes: { day: changeValue as PromotedCalendarCreateDay }", source)
+        self.assertIn("day-only move", source)
+        self.assertNotIn("eventId:", source)
 
-    def test_app_resolves_zero_one_many_before_edit_confirmation(self) -> None:
+    def test_app_resolves_source_day_and_locks_both_identity_and_changes(self) -> None:
         source = (ROOT / "src" / "app" / "App.tsx").read_text(encoding="utf-8")
-
-        promoted_index = source.index("'Agent-promoted Calendar edit'")
-        edit_confirmation_index = source.index(
-            "if (commandRoute !== 'confirmed' && commandMatch.command === 'edit-last-event')"
-        )
-        self.assertLess(promoted_index, edit_confirmation_index)
-        self.assertIn("getCalendarEventsForDeleteCriteria(", source[edit_confirmation_index:])
-        self.assertIn("calendarEventMatchesDeleteCriteria(", source[edit_confirmation_index:])
-        self.assertIn("if (matchingEvents.length > 1)", source[edit_confirmation_index:])
-        self.assertIn("matchingEvents[0] ?? null", source[edit_confirmation_index:])
-        self.assertIn("No calendar change was made.", source[edit_confirmation_index:])
-
-    def test_edit_confirmation_locks_resolved_event_identity(self) -> None:
-        source = (ROOT / "src" / "app" / "App.tsx").read_text(encoding="utf-8")
-
+        self.assertIn("resolveCalendarEventReference", source)
+        self.assertIn("day: promotedCalendarEditTargetCriteria.day", source)
         self.assertIn("pendingCalendarEditTargetIdRef.current = targetEditEvent.id", source)
-        self.assertIn("const resolvedCalendarEditTargetId", source)
-        self.assertIn("'Confirmed Calendar edit target missing'", source)
-        self.assertIn(
-            "updateCalendarEvent(confirmedCalendarEditTargetId, changes)",
-            source,
-        )
-        self.assertIn(
-            "Exactly one canonical Calendar event was resolved and its identity is locked across confirmation.",
-            source,
-        )
+        self.assertIn("pendingCalendarEditChangesRef.current = resolvedCalendarEditChanges", source)
+        self.assertIn("resolvedCalendarEditChanges", source)
+        self.assertIn("calendarEdit: { ...resolvedCalendarEditChanges }", source)
+        self.assertIn("updateCalendarEvent(confirmedCalendarEditTargetId, changes)", source)
+
+    def test_day_only_move_preserves_resolved_event_time_before_confirmation(self) -> None:
+        source = (ROOT / "src" / "app" / "App.tsx").read_text(encoding="utf-8")
+        self.assertIn("const resolvedCalendarEditChanges = commandMatch.calendarEdit", source)
+        self.assertIn("commandMatch.calendarEdit.day &&", source)
+        self.assertIn("!commandMatch.calendarEdit.time?.trim()", source)
+        self.assertIn("{ time: targetEditEvent.time || 'All day' }", source)
+        self.assertIn("describeCalendarEditPayload(\n          resolvedCalendarEditChanges", source)
+        self.assertIn("buildCalendarEditFrontendCommand(\n          resolvedCalendarEditChanges", source)
+        self.assertIn("pendingCalendarEditChangesRef.current = resolvedCalendarEditChanges", source)
+
+    def test_explicit_calendar_mutation_keeps_longer_agent_wait(self) -> None:
+        source = (ROOT / "src" / "app" / "App.tsx").read_text(encoding="utf-8")
+        self.assertIn("AGENT_FIRST_EXPLICIT_CALENDAR_WRITE_WAIT_MS = 7000", source)
+        self.assertIn("timeoutMs: explicitCalendarWriteIntent", source)
 
 
 if __name__ == "__main__":

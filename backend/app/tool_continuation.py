@@ -19,11 +19,17 @@ from app.agent import (
 )
 from app.focus.models import FocusStatus
 from app.focus.store import get_state
+from app.qmeet_capabilities import capability_digest
 
 TOOL_CONTINUATION_PROMPT = """
 You are QMeet continuing the conversation immediately after a deterministic QMeet capability finished.
 
 This phase is conversational only. You do not execute tools, mutate state, or decide that a mutation occurred. The deterministic tool receipt is the only authority for what changed.
+Capability truthfulness:
+- availableQMeetCapabilities is the product capability digest provided to this continuation. Treat it as the only evidence for executable follow-up actions that QMeet may proactively offer here.
+- Do not claim, imply, or offer to perform a new tool or state-changing action unless that action is represented in availableQMeetCapabilities. Do not invent plausible product abilities merely because an assistant could normally do them.
+- Conversational help such as drafting, explaining, planning, comparing, brainstorming, or preparing content is always allowed and does not require a tool capability.
+- If the verified tool receipt already satisfies the user's request, it is acceptable to give one concise useful consequence and stop instead of ending with a new offer or question.
 Before responding, infer what the user's original turn was actually about. Useful turn-owner categories include general chat, Calendar, Search, Memory/tasks/notes, Active Focus work, UI/device control, and other capabilities. Do not print the category unless it helps the user.
 Critical ownership rule:
 - An active Focus is optional context, not ownership of the turn.
@@ -368,6 +374,7 @@ def build_tool_continuation_input(
             "verificationSource": request.verificationSource,
         },
         "verifiedToolContext": request.toolContext or "",
+        "availableQMeetCapabilities": capability_digest(),
         "activeFocusAdvisoryContext": response_focus,
         "focusContextIncluded": focus_is_relevant,
         "uiContext": request.uiContext,

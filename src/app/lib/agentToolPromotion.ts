@@ -7,6 +7,11 @@ export type PromotedSearchToolCommand = {
   commandMatch: CommandMatch;
 };
 
+export type PromotedTaskCreateToolCommand = {
+  title: string;
+  commandMatch: CommandMatch;
+};
+
 export type PromotedCalendarReadView = 'today' | 'tomorrow' | 'all';
 
 export type PromotedCalendarReadToolCommand = {
@@ -32,7 +37,7 @@ export type PromotedCalendarDeleteToolCommand = {
 
 export type PromotedCalendarEditTargetCriteria = {
   day: PromotedCalendarCreateDay;
-  title: string | null;
+  query: string;
   time: string | null;
 };
 
@@ -61,6 +66,7 @@ const DEFERRED_CALENDAR_WRITE_ACTIONS = new Set<DeferredCalendarWriteAction>([
 ]);
 
 const MAX_PROMOTED_SEARCH_QUERY_LENGTH = 500;
+const MAX_PROMOTED_TASK_TITLE_LENGTH = 240;
 const MAX_PROMOTED_CALENDAR_TITLE_LENGTH = 240;
 const MAX_PROMOTED_CALENDAR_TIME_LENGTH = 32;
 const PROMOTED_CALENDAR_READ_VIEWS = new Set<PromotedCalendarReadView>([
@@ -74,6 +80,31 @@ const PROMOTED_CALENDAR_CREATE_DAYS = new Set<PromotedCalendarCreateDay>([
 ]);
 const BROAD_CALENDAR_CONTAINER_TITLE = /^(?:(?:my|our|the)\s+)?(?:day|schedule|agenda|plans?)$/i;
 const CONTROL_CHARACTER_RE = /[\u0000-\u001f\u007f]/;
+const CALENDAR_TITLE_SMALL_WORDS = new Set([
+  'and', 'or', 'of', 'the', 'to', 'for', 'with', 'at', 'in', 'on',
+]);
+
+export function normalizePromotedCalendarCreateTitle(rawTitle: string): string {
+  const withoutLeadingFiller = rawTitle
+    .trim()
+    .replace(/^(?:a|an|the|my|our)\s+/i, '')
+    .replace(/\s+/g, ' ');
+  const words = withoutLeadingFiller.split(' ').filter(Boolean);
+  return words
+    .map((word, index) => {
+      if (/[A-Z]/.test(word.slice(1)) || /[&0-9]/.test(word)) return word;
+      const lower = word.toLowerCase();
+      if (
+        index > 0 &&
+        index < words.length - 1 &&
+        CALENDAR_TITLE_SMALL_WORDS.has(lower)
+      ) {
+        return lower;
+      }
+      return `${word.slice(0, 1).toUpperCase()}${word.slice(1).toLowerCase()}`;
+    })
+    .join(' ');
+}
 
 function hasExactlyKeys(
   value: Record<string, unknown>,
@@ -96,6 +127,20 @@ function readValidatedSearchQuery(
   if (!query || query.length > MAX_PROMOTED_SEARCH_QUERY_LENGTH) return null;
   if (CONTROL_CHARACTER_RE.test(query)) return null;
   return query;
+}
+
+function readValidatedTaskCreateTitle(
+  argumentsValue: Record<string, unknown>,
+): string | null {
+  const keys = Object.keys(argumentsValue);
+  if (keys.length !== 1 || keys[0] !== 'title') return null;
+
+  const rawTitle = argumentsValue.title;
+  if (typeof rawTitle !== 'string') return null;
+  const title = rawTitle.replace(/\s+/g, ' ').trim();
+  if (!title || title.length > MAX_PROMOTED_TASK_TITLE_LENGTH) return null;
+  if (CONTROL_CHARACTER_RE.test(title)) return null;
+  return title;
 }
 
 function readValidatedCalendarReadView(
@@ -239,11 +284,10 @@ function readValidatedCalendarEditArguments(
   if (
     !hasExactlyKeys(argumentsValue, [
       'targetDay',
-      'targetTitle',
-      'targetTime',
-      'newDay',
-      'newTitle',
-      'newTime',
+      'query',
+      'currentTime',
+      'changeField',
+      'changeValue',
     ])
   ) {
     return null;
@@ -257,51 +301,86 @@ function readValidatedCalendarEditArguments(
     return null;
   }
 
-  const targetTitle = readValidatedCalendarNullableTitle(argumentsValue.targetTitle);
-  if (targetTitle === undefined) return null;
-  const targetTime = readValidatedCalendarCreateTime(argumentsValue.targetTime);
-  if (targetTime === undefined) return null;
-  if (!targetTitle && !targetTime) return null;
+  const rawQuery = argumentsValue.query;
+  if (typeof rawQuery !== 'string') return null;
+  const query = rawQuery.trim();
+  if (
+    !query ||
+    query.length > MAX_PROMOTED_CALENDAR_TITLE_LENGTH ||
+    CONTROL_CHARACTER_RE.test(query)
+  ) {
+    return null;
+  }
 
-  const rawNewDay = argumentsValue.newDay;
-  let newDay: PromotedCalendarCreateDay | null = null;
-  if (rawNewDay !== null) {
+  const currentTime = readValidatedCalendarCreateTime(argumentsValue.currentTime);
+  if (currentTime === undefined) return null;
+
+  const changeField = argumentsValue.changeField;
+  const changeValue = argumentsValue.changeValue;
+  if (changeField === 'time') {
+    const newTime = readValidatedCalendarCreateTime(changeValue);
+    if (!newTime) return null;
+    return {
+      target: {
+        day: rawTargetDay as PromotedCalendarCreateDay,
+        query,
+        time: currentTime,
+      },
+      changes: { time: newTime },
+    };
+  }
+
+  if (changeField === 'title') {
+    const newTitle = readValidatedCalendarNullableTitle(changeValue);
+    if (!newTitle) return null;
+    return {
+      target: {
+        day: rawTargetDay as PromotedCalendarCreateDay,
+        query,
+        time: currentTime,
+      },
+      changes: { title: newTitle },
+    };
+  }
+
+  if (changeField === 'day') {
     if (
-      typeof rawNewDay !== 'string' ||
-      !PROMOTED_CALENDAR_CREATE_DAYS.has(rawNewDay as PromotedCalendarCreateDay)
+      typeof changeValue !== 'string' ||
+      !PROMOTED_CALENDAR_CREATE_DAYS.has(
+        changeValue as PromotedCalendarCreateDay,
+      ) ||
+      changeValue === rawTargetDay
     ) {
       return null;
     }
-    newDay = rawNewDay as PromotedCalendarCreateDay;
+    return {
+      target: {
+        day: rawTargetDay as PromotedCalendarCreateDay,
+        query,
+        time: currentTime,
+      },
+      changes: { day: changeValue as PromotedCalendarCreateDay },
+    };
   }
 
-  const newTitle = readValidatedCalendarNullableTitle(argumentsValue.newTitle);
-  if (newTitle === undefined) return null;
-  const newTime = readValidatedCalendarCreateTime(argumentsValue.newTime);
-  if (newTime === undefined) return null;
-  if (!newDay && !newTitle && !newTime) return null;
-  // The existing canonical edit grammar can move an event to another day only
-  // when a time is supplied as part of that move. Keep the typed contract
-  // aligned with what can round-trip through commands.ts.
-  if (newDay && !newTime) return null;
-
-  return {
-    target: {
-      day: rawTargetDay as PromotedCalendarCreateDay,
-      title: targetTitle,
-      time: targetTime,
-    },
-    changes: {
-      ...(newDay ? { day: newDay } : {}),
-      ...(newTitle ? { title: newTitle } : {}),
-      ...(newTime ? { time: newTime } : {}),
-    },
-  };
+  return null;
 }
 
 function calendarEditRoundTripsThroughCanonicalParser(
   changes: PromotedCalendarEditChanges,
 ): boolean {
+  if (
+    changes.day &&
+    !changes.time &&
+    !changes.title &&
+    PROMOTED_CALENDAR_CREATE_DAYS.has(changes.day)
+  ) {
+    // The deterministic exact-id Calendar updater supports a day-only move and
+    // preserves the event's existing time. The legacy text parser represents
+    // `edit last event to tomorrow` ambiguously, so confirmation carries this
+    // validated CommandMatch directly rather than reparsing that string.
+    return true;
+  }
   const parsed = parseCommand(buildCalendarEditFrontendCommand(changes));
   if (parsed?.command !== 'edit-last-event' || !parsed.calendarEdit) return false;
 
@@ -395,6 +474,44 @@ export function resolvePromotedSearchToolCommand(
 }
 
 /**
+ * True when the unified agent is proposing one new task. Malformed proposals
+ * fail closed in App instead of falling through to a legacy parser or chat.
+ */
+export function isPromotedTaskCreateToolDecision(
+  decision: PromotedSingleIntentDecision | null,
+): boolean {
+  return Boolean(
+    decision &&
+      decision.disposition === 'tool' &&
+      decision.turnOwner === 'tasks' &&
+      decision.proposedAction === 'remember-task',
+  );
+}
+
+/**
+ * Promote one task title into the existing remember-task CommandMatch. The
+ * model proposes semantics only; the Memory handler remains the sole writer.
+ */
+export function resolvePromotedTaskCreateToolCommand(
+  decision: PromotedSingleIntentDecision | null,
+): PromotedTaskCreateToolCommand | null {
+  if (!isPromotedTaskCreateToolDecision(decision)) return null;
+  if (!decision || decision.proposedCapability !== 'tasks') return null;
+
+  const title = readValidatedTaskCreateTitle(decision.proposedArguments);
+  if (!title) return null;
+
+  return {
+    title,
+    commandMatch: {
+      command: 'remember-task',
+      confirmation: 'Saved task.',
+      payload: title,
+    },
+  };
+}
+
+/**
  * Calendar reads remain executable only through the canonical read-calendar
  * action and one validated view argument.
  */
@@ -449,17 +566,27 @@ export function resolvePromotedCalendarCreateToolCommand(
   if (!decision || decision.proposedCapability !== 'calendar') return null;
 
   const validated = readValidatedCalendarCreateArguments(decision.proposedArguments);
-  if (!validated || !calendarCreateRoundTripsThroughCanonicalParser(validated)) return null;
+  if (!validated) return null;
+  const normalized = {
+    ...validated,
+    title: normalizePromotedCalendarCreateTitle(validated.title),
+  };
+  if (
+    !normalized.title ||
+    !calendarCreateRoundTripsThroughCanonicalParser(normalized)
+  ) {
+    return null;
+  }
 
   return {
-    ...validated,
+    ...normalized,
     commandMatch: {
       command: 'add-calendar-event',
       confirmation: 'Added event.',
       calendarEvent: {
-        day: validated.day,
-        time: validated.time ?? 'Later',
-        title: validated.title,
+        day: normalized.day,
+        time: normalized.time ?? 'Later',
+        title: normalized.title,
       },
     },
   };

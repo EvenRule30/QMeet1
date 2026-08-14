@@ -42,7 +42,7 @@ class AgentCalendarCreateToolPromotionPhase21BTests(unittest.TestCase):
             decision.proposedArguments,
             {
                 "day": "tomorrow",
-                "title": "a Dungeons and Dragons session",
+                "title": "Dungeons and Dragons Session",
                 "time": None,
             },
         )
@@ -153,7 +153,9 @@ class AgentCalendarCreateToolPromotionPhase21BTests(unittest.TestCase):
         self.assertIn("calendarCreateRoundTripsThroughCanonicalParser", promotion_source)
         self.assertIn("parseCommand(buildCalendarCreateFrontendCommand(options))", promotion_source)
         self.assertIn("command: 'add-calendar-event'", promotion_source)
-        self.assertIn("time: validated.time ?? 'Later'", promotion_source)
+        self.assertIn("time: normalized.time ?? 'Later'", promotion_source)
+        self.assertIn("normalizePromotedCalendarCreateTitle", promotion_source)
+        self.assertIn("title: normalized.title", promotion_source)
 
         promoted_index = app_source.index("'Agent-promoted Calendar create'")
         confirmation_index = app_source.index(

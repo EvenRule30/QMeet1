@@ -132,6 +132,237 @@ QMEET_ACTIONS: list[dict[str, Any]] = [
     },
 ]
 
+
+ACTION_VOCABULARY_VERSION = "canonical-local-command-v1"
+
+CANONICAL_TOOL_ACTIONS_BY_OWNER: dict[str, tuple[str, ...]] = {
+    "focus": (
+        "start-focus-session",
+        "update-focus-session",
+        "read-focus-session",
+        "end-focus-session",
+        "focus-to-tasks",
+        "summarize-focus-session",
+        "save-focus-summary",
+        "end-focus-with-summary",
+        "read-last-focus-session",
+        "read-focus-history",
+        "resume-last-focus-session",
+        "recap-focus-activity",
+        "enhanced-focus-recap",
+        "prepare-calendar-focus",
+        "create-meeting-follow-up-tasks",
+        "wrap-up-meeting-focus",
+        "link-visual-to-focus",
+        "read-focus-visuals",
+    ),
+    "calendar": (
+        "open-calendar",
+        "add-calendar-event",
+        "read-calendar",
+        "refresh-calendar",
+        "edit-last-event",
+        "delete-calendar-event",
+        "delete-last-event",
+        "clear-calendar",
+        "show-today",
+        "show-tomorrow",
+        "close-calendar",
+    ),
+    "search": ("open-search", "run-search", "clear-search", "close-search"),
+    "memory": ("open-memory", "close-memory", "read-memory"),
+    "tasks": (
+        "remember-task",
+        "mark-task-done",
+        "delete-last-task",
+        "clear-done-tasks",
+        "read-memory",
+    ),
+    "notes": (
+        "open-notes",
+        "new-note",
+        "save-note",
+        "read-notes",
+        "delete-last-note",
+        "close-notes",
+        "clear-notes",
+    ),
+    "device_ui": (
+        "help",
+        "identity",
+        "open-menu",
+        "close-menu",
+        "open-settings",
+        "close-settings",
+        "go-home",
+        "show-status",
+        "close-status",
+        "hide-status",
+        "voice-output-on",
+        "voice-output-off",
+        "voice-output-toggle",
+        "voice-slower",
+        "voice-faster",
+        "voice-normal",
+        "stop-speaking",
+        "what-did-you-hear",
+        "cancel-action",
+        "clear-chat",
+        "end-chat",
+        "close-generic",
+    ),
+    "visual": (
+        "create-visual-observation",
+        "read-visual-context",
+        "read-last-visual-observation",
+        "read-visual-history",
+        "summarize-visual-context",
+        "link-visual-to-focus",
+        "read-focus-visuals",
+        "clear-visual-context",
+        "delete-last-visual-observation",
+    ),
+}
+
+CANONICAL_TOOL_ACTIONS = {
+    action
+    for actions in CANONICAL_TOOL_ACTIONS_BY_OWNER.values()
+    for action in actions
+}
+
+GLOBAL_CAPABILITY_CONTRACT: list[dict[str, Any]] = [
+    {
+        "owner": "general_chat",
+        "authority": "read-only conversation",
+        "conversationActions": ["conversation.respond"],
+    },
+    {
+        "owner": "focus",
+        "authority": "canonical verified Focus backend",
+        "actions": list(CANONICAL_TOOL_ACTIONS_BY_OWNER["focus"]),
+        "conversationActions": ["focus.help"],
+        "rule": "Active Focus is context, not universal ownership.",
+    },
+    {
+        "owner": "calendar",
+        "authority": "deterministic Calendar handlers / verified Google Calendar writes",
+        "actions": list(CANONICAL_TOOL_ACTIONS_BY_OWNER["calendar"]),
+        "constraint": "Current natural event-date support is primarily today/tomorrow.",
+        "promotedReadAction": "read-calendar",
+        "readArgumentSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["view"],
+            "properties": {
+                "view": {"type": "string", "enum": ["today", "tomorrow", "all"]},
+            },
+        },
+        "promotedCreateAction": "add-calendar-event",
+        "createArgumentSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["day", "title", "time"],
+            "properties": {
+                "day": {"type": "string", "enum": ["today", "tomorrow"]},
+                "title": {"type": "string", "minLength": 1, "maxLength": 240},
+                "time": {"type": ["string", "null"]},
+            },
+        },
+        "promotedDeleteAction": "delete-calendar-event",
+        "deleteArgumentSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["day", "title", "time"],
+            "properties": {
+                "day": {"type": "string", "enum": ["today", "tomorrow"]},
+                "title": {"type": ["string", "null"]},
+                "time": {"type": ["string", "null"]},
+            },
+            "constraint": "At least one of title or time must be non-null; values are lookup criteria, never canonical event identity.",
+        },
+        "promotedEditAction": "edit-last-event",
+        "editArgumentSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["targetDay", "query", "currentTime", "changeField", "changeValue"],
+            "properties": {
+                "targetDay": {"type": "string", "enum": ["today", "tomorrow"]},
+                "query": {"type": "string", "minLength": 1, "maxLength": 240},
+                "currentTime": {"type": ["string", "null"]},
+                "changeField": {"type": "string", "enum": ["time", "title", "day"]},
+                "changeValue": {"type": "string", "minLength": 1, "maxLength": 240},
+            },
+            "constraint": (
+                "targetDay identifies where the event exists before the edit; it is separate from a destination day. "
+                "The query is a natural lookup reference, not canonical event identity. Exactly one time/title/day change is proposed. "
+                "A day-only move preserves the event's existing time. Deterministic Calendar state performs exact/fuzzy/ambiguous resolution before confirmation."
+            ),
+        },
+        "promotionConstraint": (
+            "read-calendar, add-calendar-event, targeted delete-calendar-event, and targeted edit-last-event proposals are agent-promotable. "
+            "Create/delete/edit require deterministic argument validation; targeted delete/edit additionally require canonical "
+            "zero/one/multiple target resolution through the shared exact/likely/ambiguous/none resolver, and writes still require the existing confirmation path. "
+            "Delete-last and clears remain deferred."
+        ),
+    },
+    {
+        "owner": "search",
+        "authority": "deterministic search capability",
+        "actions": list(CANONICAL_TOOL_ACTIONS_BY_OWNER["search"]),
+        "ownershipRule": (
+            "Use Search when the user asks QMeet to discover, verify, inspect, compare, or report "
+            "external web evidence/opinions/current information rather than answer from model memory."
+        ),
+        "executableAction": "run-search",
+        "argumentSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["query"],
+            "properties": {
+                "query": {"type": "string", "minLength": 1, "maxLength": 500},
+            },
+        },
+    },
+    {
+        "owner": "memory",
+        "authority": "deterministic Memory state",
+        "actions": list(CANONICAL_TOOL_ACTIONS_BY_OWNER["memory"]),
+    },
+    {
+        "owner": "tasks",
+        "authority": "deterministic task handlers plus canonical Focus lineage when linked",
+        "actions": list(CANONICAL_TOOL_ACTIONS_BY_OWNER["tasks"]),
+        "promotedCreateAction": "remember-task",
+        "createArgumentSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["title"],
+            "properties": {
+                "title": {"type": "string", "minLength": 1, "maxLength": 240},
+            },
+        },
+        "promotionConstraint": (
+            "Only single-task creation is agent-promotable in this slice. Task reads retain their current Focus-sensitive read surface, "
+            "and completion/deletion/clear operations remain on existing deterministic identity and confirmation paths."
+        ),
+    },
+    {
+        "owner": "notes",
+        "authority": "deterministic note handlers",
+        "actions": list(CANONICAL_TOOL_ACTIONS_BY_OWNER["notes"]),
+    },
+    {
+        "owner": "device_ui",
+        "authority": "deterministic frontend/device handlers",
+        "actions": list(CANONICAL_TOOL_ACTIONS_BY_OWNER["device_ui"]),
+    },
+    {
+        "owner": "visual",
+        "authority": "deterministic camera/visual-context handlers",
+        "actions": list(CANONICAL_TOOL_ACTIONS_BY_OWNER["visual"]),
+    },
+]
+
 QMEET_SYSTEM_PROMPT = """
 You are QMeet's intent orchestrator. QMeet is a local orb tablet interface with panels,
 focus sessions, memory/tasks/notes, Google Calendar workflows, camera/upload visual
@@ -159,4 +390,7 @@ def capability_digest() -> str:
         lines.append(
             f"- {item['id']}: frontendCommand={item['frontendCommand']!r}; useWhen={item['useWhen']}"
         )
+    lines.append("Canonical executable actions by owner:")
+    for owner, actions in CANONICAL_TOOL_ACTIONS_BY_OWNER.items():
+        lines.append(f"- {owner}: {', '.join(actions)}")
     return "\n".join(lines)

@@ -15,7 +15,13 @@ except Exception:  # pragma: no cover
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.qmeet_capabilities import capability_digest
+from app.qmeet_capabilities import (
+    ACTION_VOCABULARY_VERSION,
+    CANONICAL_TOOL_ACTIONS,
+    CANONICAL_TOOL_ACTIONS_BY_OWNER,
+    GLOBAL_CAPABILITY_CONTRACT,
+    capability_digest,
+)
 from app.tool_continuation import active_focus_snapshot
 
 TurnOwner = Literal[
@@ -42,86 +48,6 @@ DEFAULT_MODEL = (
 
 AGENT_SHADOW_SCHEMA_VERSION = "phase21b-v1"
 
-ACTION_VOCABULARY_VERSION = "canonical-local-command-v1"
-CANONICAL_TOOL_ACTIONS_BY_OWNER: dict[str, tuple[str, ...]] = {
-    "focus": (
-        "start-focus-session",
-        "update-focus-session",
-        "read-focus-session",
-        "end-focus-session",
-        "focus-to-tasks",
-        "summarize-focus-session",
-        "save-focus-summary",
-        "end-focus-with-summary",
-        "read-last-focus-session",
-        "read-focus-history",
-        "resume-last-focus-session",
-        "recap-focus-activity",
-        "enhanced-focus-recap",
-        "prepare-calendar-focus",
-        "create-meeting-follow-up-tasks",
-        "wrap-up-meeting-focus",
-        "link-visual-to-focus",
-        "read-focus-visuals",
-    ),
-    "calendar": (
-        "open-calendar",
-        "add-calendar-event",
-        "read-calendar",
-        "refresh-calendar",
-        "edit-last-event",
-        "delete-calendar-event",
-        "delete-last-event",
-        "clear-calendar",
-        "show-today",
-        "show-tomorrow",
-        "close-calendar",
-    ),
-    "search": ("open-search", "run-search", "clear-search", "close-search"),
-    "memory": ("open-memory", "close-memory", "read-memory"),
-    "tasks": ("remember-task", "mark-task-done", "delete-last-task", "clear-done-tasks", "read-memory"),
-    "notes": ("open-notes", "new-note", "save-note", "read-notes", "delete-last-note", "close-notes", "clear-notes"),
-    "device_ui": (
-        "help",
-        "identity",
-        "open-menu",
-        "close-menu",
-        "open-settings",
-        "close-settings",
-        "go-home",
-        "show-status",
-        "close-status",
-        "hide-status",
-        "voice-output-on",
-        "voice-output-off",
-        "voice-output-toggle",
-        "voice-slower",
-        "voice-faster",
-        "voice-normal",
-        "stop-speaking",
-        "what-did-you-hear",
-        "cancel-action",
-        "clear-chat",
-        "end-chat",
-        "close-generic",
-    ),
-    "visual": (
-        "create-visual-observation",
-        "read-visual-context",
-        "read-last-visual-observation",
-        "read-visual-history",
-        "summarize-visual-context",
-        "link-visual-to-focus",
-        "read-focus-visuals",
-        "clear-visual-context",
-        "delete-last-visual-observation",
-    ),
-}
-CANONICAL_TOOL_ACTIONS = {
-    action
-    for actions in CANONICAL_TOOL_ACTIONS_BY_OWNER.values()
-    for action in actions
-}
 ACTION_ALIASES = {
     "focus.start": "start-focus-session",
     "start-focus": "start-focus-session",
@@ -178,6 +104,7 @@ Disposition:
 - conversation: the assistant should answer/help without a state-changing tool.
 - tool: a deterministic capability should execute or read authoritative state.
 - clarify: one clarification is genuinely required before safe/useful execution.
+- If the user's requested outcome would add, save, change, complete, delete, move, or otherwise mutate durable QMeet state, do not use disposition=conversation merely because a conversational acknowledgement would sound natural. Route the mutation to its owning capability/tool contract.
 Search ownership rule:
 - If the user's request asks QMeet to discover, verify, inspect, compare, or report external opinions/evidence that should come from the web, choose turnOwner=search and disposition=tool. Do not answer those requests from model memory merely because you could produce a plausible answer.
 - Natural research wording still counts as Search even when the user does not say the word "search". Examples of the semantic class include asking what reviewers think, what people are saying about a product, whether recent sources support a claim, or asking QMeet to see/check/find out what the web says.
@@ -185,14 +112,19 @@ Search ownership rule:
 Calendar ownership rule:
 - Natural single-intent schedule and availability questions are Calendar-owned reads even when the user does not literally say "calendar". This includes asking what is scheduled today or tomorrow, whether anything is scheduled, what the schedule looks like, or whether the user is free, available, busy, or booked.
 - For executable Calendar READS, use proposedCapability=calendar, proposedAction=read-calendar, and proposedArguments with exactly one field: {"view": "today" | "tomorrow" | "all"}. Use today or tomorrow when the user names that day. Use all only for a general schedule/calendar read with no specific day.
-- Calendar CREATE is promoted for one event on today or tomorrow. Use proposedCapability=calendar, proposedAction=add-calendar-event, and proposedArguments with exactly these fields: {"day": "today" | "tomorrow", "title": "<one event title>", "time": "<specific time>" | null}. Use time=null when the user gives no specific time; the deterministic Calendar path will preview and confirm that as an all-day event. Never invent a time.
+- Calendar CREATE is promoted for one event on today or tomorrow. Use proposedCapability=calendar, proposedAction=add-calendar-event, and proposedArguments with exactly these fields: {"day": "today" | "tomorrow", "title": "<concise human-friendly event title>", "time": "<specific time>" | null}. The title is a proposed Calendar label, not a verbatim transcript: remove filler/articles when natural, correct obvious spelling, preserve proper names, and compress descriptive wording into a useful event name (for example "a business meeting" -> "Business Meeting", "time to practice my presentation" -> "Presentation Practice"). Do not invent people, companies, locations, goals, or other facts that are unsupported by the request or genuinely relevant Focus context. Use time=null when the user gives no specific time; the deterministic Calendar path will preview and confirm that as an all-day event. Never invent a time.
 - Calendar TARGETED DELETE is also promoted, but only as criteria for deterministic lookup. Use proposedCapability=calendar, proposedAction=delete-calendar-event, and proposedArguments with exactly these fields: {"day": "today" | "tomorrow", "title": "<user-provided title or identifying descriptor>" | null, "time": "<specific time>" | null}. The day must be explicit in the user request, and at least one of title or time must be non-null. Preserve identifying words the user actually supplied (for example "meeting" or "dentist"); never invent a title, time, event id, or hidden Calendar fact.
 - A delete proposal identifies search criteria only. It never identifies the canonical event itself. Deterministic Calendar state must resolve the criteria to zero, one, or multiple events; only one resolved event may proceed to the existing destructive confirmation path.
-- Calendar TARGETED EDIT is promoted with the existing canonical edit-last-event action, but the arguments must separate lookup criteria from requested changes. Use proposedCapability=calendar, proposedAction=edit-last-event, and proposedArguments with exactly these fields: {"targetDay": "today" | "tomorrow", "targetTitle": "<user-provided title or identifying descriptor>" | null, "targetTime": "<current specific time>" | null, "newDay": "today" | "tomorrow" | null, "newTitle": "<new title>" | null, "newTime": "<new specific time>" | null}. Include all six keys even when a nullable value is null. targetDay must be explicit, at least one of targetTitle or targetTime must be non-null, and at least one new* field must be non-null. If newDay is non-null, newTime must also be non-null so the proposal can round-trip through the existing canonical edit grammar. Never put an event id in proposedArguments and never invent a missing target or change.
-- An edit proposal identifies target criteria plus desired changes only. Deterministic Calendar state must resolve the target criteria to zero, one, or multiple events; only one resolved event may proceed to confirmation, and the resolved canonical event identity must be locked across confirmation before the deterministic editor runs.
+- Calendar TARGETED EDIT is promoted with the existing canonical edit-last-event action, but this single-intent slice proposes one natural event reference plus one requested change. Use proposedCapability=calendar, proposedAction=edit-last-event, and proposedArguments with exactly these fields: {"targetDay": "today" | "tomorrow", "query": "<the user's event reference or identifying descriptor>", "currentTime": "<current specific time>" | null, "changeField": "time" | "title" | "day", "changeValue": "<new time, new title, or destination day>"}. targetDay is always where the event exists now, never the destination day. The query is lookup language, not canonical identity; preserve what the user means even if it may differ slightly from the stored Calendar title. Use currentTime only when the user identifies the existing event by its current time. For "move my business meeting today to tomorrow" use targetDay="today", changeField="day", changeValue="tomorrow"; "same time" means preserve the existing time and do not invent a time change. Never put an event id in proposedArguments and never invent a target or requested change.
+- An edit proposal identifies a natural target reference plus one desired change only. Deterministic Calendar state resolves the reference as exact, likely, ambiguous, or none. A likely fuzzy match must be shown to the user for confirmation against the real Calendar event before mutation; ambiguous matches must ask the user to distinguish candidates; only one resolved canonical event identity may proceed and it must remain locked across confirmation.
 - Do not collapse a broad plan such as "schedule my day" or a multi-event request into one add-calendar-event proposal. Those are outside this single-intent slice.
 - Calendar delete-last and clear operations are NOT agent-executable yet. Still classify those single-intent writes as turnOwner=calendar, disposition=tool, proposedCapability=calendar, and the exact canonical Calendar write action, but treat proposed arguments only as routing/consistency metadata for the existing guarded path.
 - Calendar create/delete/edit proposals are still only proposals. They are not proof that anything changed; deterministic validation, target resolution, confirmation, execution, and verified receipts remain authoritative.
+Tasks ownership rule:
+- Natural single-intent requests to create one task are Tasks-owned tools when the user is asking QMeet to save/add something as a task or to-do. Structural forms such as "put X on my to-do list", "add X to my tasks", "make X a task", and equivalent natural wording are mutations, not conversation. Use proposedCapability=tasks, proposedAction=remember-task, and proposedArguments with exactly one field: {"title": "<concise task title>"}.
+- The task title is a proposed label, not execution authority. Make it concise and action-oriented, remove conversational filler such as "remember to" when natural, and do not invent deadlines, people, project context, or other details the user did not provide.
+- Do not use remember-task for statements that work was already completed. Task completion remains on QMeet's existing deterministic task-resolution and confirmation path in this slice. Task reads, delete-last, and clear-completed also remain unpromoted until their ownership semantics are made explicit.
+- A promoted task creation still executes only through the existing remember-task handler after deterministic frontend validation.
 Proposed action never proves that anything changed.
 Canonical action vocabulary:
 - If disposition=tool, proposedAction MUST be one exact action id from capabilityContract. Do not invent aliases such as focus.read, read_current_focus, calendar.create_event, or custom compound action names.
@@ -214,132 +146,6 @@ Return one compact JSON object with exactly these fields:
 }
 """.strip()
 
-GLOBAL_CAPABILITY_CONTRACT = [
-    {
-        "owner": "general_chat",
-        "authority": "read-only conversation",
-        "conversationActions": ["conversation.respond"],
-    },
-    {
-        "owner": "focus",
-        "authority": "canonical verified Focus backend",
-        "actions": list(CANONICAL_TOOL_ACTIONS_BY_OWNER["focus"]),
-        "conversationActions": ["focus.help"],
-        "rule": "Active Focus is context, not universal ownership.",
-    },
-    {
-        "owner": "calendar",
-        "authority": "deterministic Calendar handlers / verified Google Calendar writes",
-        "actions": list(CANONICAL_TOOL_ACTIONS_BY_OWNER["calendar"]),
-        "constraint": "Current natural event-date support is primarily today/tomorrow.",
-        "promotedReadAction": "read-calendar",
-        "readArgumentSchema": {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["view"],
-            "properties": {
-                "view": {"type": "string", "enum": ["today", "tomorrow", "all"]},
-            },
-        },
-        "promotedCreateAction": "add-calendar-event",
-        "createArgumentSchema": {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["day", "title", "time"],
-            "properties": {
-                "day": {"type": "string", "enum": ["today", "tomorrow"]},
-                "title": {"type": "string", "minLength": 1, "maxLength": 240},
-                "time": {"type": ["string", "null"]},
-            },
-        },
-        "promotedDeleteAction": "delete-calendar-event",
-        "deleteArgumentSchema": {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["day", "title", "time"],
-            "properties": {
-                "day": {"type": "string", "enum": ["today", "tomorrow"]},
-                "title": {"type": ["string", "null"]},
-                "time": {"type": ["string", "null"]},
-            },
-            "constraint": "At least one of title or time must be non-null; values are lookup criteria, never canonical event identity.",
-        },
-        "promotedEditAction": "edit-last-event",
-        "editArgumentSchema": {
-            "type": "object",
-            "additionalProperties": False,
-            "required": [
-                "targetDay",
-                "targetTitle",
-                "targetTime",
-                "newDay",
-                "newTitle",
-                "newTime",
-            ],
-            "properties": {
-                "targetDay": {"type": "string", "enum": ["today", "tomorrow"]},
-                "targetTitle": {"type": ["string", "null"]},
-                "targetTime": {"type": ["string", "null"]},
-                "newDay": {"type": ["string", "null"], "enum": ["today", "tomorrow", None]},
-                "newTitle": {"type": ["string", "null"]},
-                "newTime": {"type": ["string", "null"]},
-            },
-            "constraint": (
-                "At least one targetTitle/targetTime and at least one newDay/newTitle/newTime must be non-null. "
-                "Target fields are lookup criteria only; the agent never supplies canonical event identity."
-            ),
-        },
-        "promotionConstraint": (
-            "read-calendar, add-calendar-event, targeted delete-calendar-event, and targeted edit-last-event proposals are agent-promotable. "
-            "Create/delete/edit require deterministic argument validation; targeted delete/edit additionally require canonical "
-            "zero/one/multiple target resolution, and writes still require the existing confirmation path. "
-            "Delete-last and clears remain deferred."
-        ),
-    },
-    {
-        "owner": "search",
-        "authority": "deterministic search capability",
-        "actions": list(CANONICAL_TOOL_ACTIONS_BY_OWNER["search"]),
-        "ownershipRule": (
-            "Use Search when the user asks QMeet to discover, verify, inspect, compare, or report "
-            "external web evidence/opinions/current information rather than answer from model memory."
-        ),
-        "executableAction": "run-search",
-        "argumentSchema": {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["query"],
-            "properties": {
-                "query": {"type": "string", "minLength": 1, "maxLength": 500},
-            },
-        },
-    },
-    {
-        "owner": "memory",
-        "authority": "deterministic Memory state",
-        "actions": list(CANONICAL_TOOL_ACTIONS_BY_OWNER["memory"]),
-    },
-    {
-        "owner": "tasks",
-        "authority": "deterministic task handlers plus canonical Focus lineage when linked",
-        "actions": list(CANONICAL_TOOL_ACTIONS_BY_OWNER["tasks"]),
-    },
-    {
-        "owner": "notes",
-        "authority": "deterministic note handlers",
-        "actions": list(CANONICAL_TOOL_ACTIONS_BY_OWNER["notes"]),
-    },
-    {
-        "owner": "device_ui",
-        "authority": "deterministic frontend/device handlers",
-        "actions": list(CANONICAL_TOOL_ACTIONS_BY_OWNER["device_ui"]),
-    },
-    {
-        "owner": "visual",
-        "authority": "deterministic camera/visual-context handlers",
-        "actions": list(CANONICAL_TOOL_ACTIONS_BY_OWNER["visual"]),
-    },
-]
 
 
 class ShadowConversationMessage(BaseModel):
@@ -640,6 +446,31 @@ def _has_explicit_calendar_time_slot(text: str) -> bool:
     )
 
 
+def _clean_fallback_calendar_create_title(value: str) -> str:
+    """Apply conservative display cleanup when the model create proposal is unavailable.
+
+    Semantic naming remains the agent's job. This fallback only removes an opening
+    article/possessive and applies restrained title casing; it never invents facts.
+    """
+    cleaned = re.sub(r"\s+", " ", value.strip()).strip(" ,.;:")
+    cleaned = re.sub(r"^(?:a|an|the|my|our)\s+", "", cleaned, flags=re.IGNORECASE)
+    if not cleaned:
+        return ""
+    small_words = {"and", "or", "of", "the", "to", "for", "with", "at", "in", "on"}
+    words = cleaned.split(" ")
+    rendered: list[str] = []
+    for index, word in enumerate(words):
+        if any(char.isupper() for char in word[1:]) or "&" in word or any(char.isdigit() for char in word):
+            rendered.append(word)
+            continue
+        lower = word.casefold()
+        if index not in {0, len(words) - 1} and lower in small_words:
+            rendered.append(lower)
+        else:
+            rendered.append(word[:1].upper() + word[1:].lower())
+    return " ".join(rendered)
+
+
 def _calendar_create_arguments(text: str) -> dict[str, Any] | None:
     """Extract a narrow fallback create proposal for one today/tomorrow event.
 
@@ -662,7 +493,7 @@ def _calendar_create_arguments(text: str) -> dict[str, Any] | None:
     if not match:
         return None
 
-    title = match.group(1).strip().strip(" ,.;:")
+    title = _clean_fallback_calendar_create_title(match.group(1))
     day = match.group(2).casefold()
     raw_time = (match.group(3) or "").strip().strip(" ,.;:")
     if not title or len(title) > 240 or re.search(r"[\x00-\x1f\x7f]", title):
@@ -731,6 +562,40 @@ def _looks_like_calendar_read_request(text: str) -> bool:
         and re.search(r"\b(?:today|tomorrow)\b", text)
     )
     return calendar_or_schedule_term or availability_question or have_anything_question
+
+
+def _clean_explicit_task_create_title(value: str) -> str | None:
+    title = re.sub(r"\s+", " ", value.strip())
+    title = re.sub(r"^[\"'`]+|[\"'`]+$", "", title).strip()
+    title = re.sub(r"^(?:to\s+)", "", title, flags=re.IGNORECASE).strip()
+    title = re.sub(r"[.!?]+$", "", title).strip()
+    if not title or len(title) > 240 or re.search(r"[\x00-\x1f\x7f]", title):
+        return None
+    return title
+
+
+def _explicit_task_create_title(user_message: str) -> str | None:
+    """Extract one literal task body only from an unmistakable task container.
+
+    This is a deterministic ownership/execution fallback, not the primary semantic
+    parser. The unified agent still gets the first chance to produce a cleaner
+    action-oriented title. These wrappers only ensure an obvious durable task
+    mutation cannot fall through to read-only conversation when the model
+    misclassifies the disposition.
+    """
+    text = re.sub(r"\s+", " ", user_message.strip())
+    wrappers = (
+        r"^(?:please\s+)?(?:put|add|save)\s+(.+?)\s+(?:on|to|in)\s+(?:(?:my|our|the)\s+)?(?:to[-\s]?do(?:\s+list)?|tasks?|task\s+list|checklist)\s*[.!?]*$",
+        r"^(?:please\s+)?(?:make)\s+(.+?)\s+(?:a\s+)?task\s*[.!?]*$",
+        r"^(?:please\s+)?(?:turn)\s+(.+?)\s+into\s+(?:a\s+)?task\s*[.!?]*$",
+        r"^(?:please\s+)?(?:create|add|make)\s+(?:a\s+)?task\s+(?:to\s+)?(.+?)\s*[.!?]*$",
+        r"^(?:please\s+)?(?:save|remember)\s+(.+?)\s+as\s+(?:a\s+)?task\s*[.!?]*$",
+    )
+    for pattern in wrappers:
+        match = re.match(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return _clean_explicit_task_create_title(match.group(1))
+    return None
 
 
 def _fallback_shadow_decision(
@@ -868,9 +733,22 @@ def _fallback_shadow_decision(
             reason="The user explicitly referenced notes.",
             arguments={"request": request.userMessage},
         )
-    if re.search(r"\b(?:task|tasks|checklist|to do|todo)\b", text):
+    explicit_task_create_title = _explicit_task_create_title(request.userMessage)
+    if explicit_task_create_title:
+        return _decision(
+            owner="tasks",
+            focus_relevant=focus_relevant,
+            disposition="tool",
+            capability="tasks",
+            action="remember-task",
+            response_plan="Save exactly one verified task through the deterministic task handler, then continue from the Tool receipt.",
+            confidence=0.97,
+            reason="The user placed one item into an explicit task/to-do container.",
+            arguments={"title": explicit_task_create_title},
+        )
+    if re.search(r"\b(?:task|tasks|checklist|to[- ]?do|todo)\b", text):
         action = "tasks.complete" if re.search(r"\b(?:done|complete|completed|finish|finished)\b", text) else "tasks.read"
-        if re.search(r"\b(?:make|create|turn .* into|add)\b", text):
+        if re.search(r"\b(?:make|create|turn .* into|add|put|save)\b", text):
             action = "tasks.create"
         return _decision(
             owner="tasks",
@@ -1091,37 +969,24 @@ def _is_executable_calendar_delete_tool_decision(decision: AgentShadowDecision) 
 
 
 def _is_valid_calendar_edit_arguments(arguments: dict[str, Any]) -> bool:
-    if set(arguments) != {
-        "targetDay",
-        "targetTitle",
-        "targetTime",
-        "newDay",
-        "newTitle",
-        "newTime",
-    }:
+    if set(arguments) != {"targetDay", "query", "currentTime", "changeField", "changeValue"}:
         return False
 
     target_day = arguments.get("targetDay")
-    target_title = arguments.get("targetTitle")
-    target_time = arguments.get("targetTime")
-    new_day = arguments.get("newDay")
-    new_title = arguments.get("newTitle")
-    new_time = arguments.get("newTime")
+    query = arguments.get("query")
+    current_time = arguments.get("currentTime")
+    change_field = arguments.get("changeField")
+    change_value = arguments.get("changeValue")
 
     if target_day not in {"today", "tomorrow"}:
         return False
-    if new_day not in {None, "today", "tomorrow"}:
+    if (
+        not isinstance(query, str)
+        or not query.strip()
+        or len(query.strip()) > 240
+        or re.search(r"[\x00-\x1f\x7f]", query.strip())
+    ):
         return False
-
-    def valid_optional_title(value: Any) -> bool:
-        if value is None:
-            return True
-        return (
-            isinstance(value, str)
-            and bool(value.strip())
-            and len(value.strip()) <= 240
-            and not re.search(r"[\x00-\x1f\x7f]", value.strip())
-        )
 
     def valid_optional_time(value: Any) -> bool:
         if value is None:
@@ -1146,17 +1011,20 @@ def _is_valid_calendar_edit_arguments(arguments: dict[str, Any]) -> bool:
             return 1 <= hour <= 12
         return 0 <= hour <= 23
 
-    if not valid_optional_title(target_title) or not valid_optional_time(target_time):
+    if not valid_optional_time(current_time):
         return False
-    if not (target_title or target_time):
+    if change_field not in {"time", "title", "day"}:
         return False
-    if not valid_optional_title(new_title) or not valid_optional_time(new_time):
+    if not isinstance(change_value, str):
         return False
-    if not (new_day or new_title or new_time):
+    change_value = change_value.strip()
+    if not change_value or re.search(r"[\x00-\x1f\x7f]", change_value):
         return False
-    if new_day and not new_time:
-        return False
-    return True
+    if change_field == "time":
+        return len(change_value) <= 32 and valid_optional_time(change_value)
+    if change_field == "day":
+        return change_value in {"today", "tomorrow"} and change_value != target_day
+    return len(change_value) <= 240
 
 
 def _is_executable_calendar_edit_tool_decision(decision: AgentShadowDecision) -> bool:
@@ -1166,6 +1034,58 @@ def _is_executable_calendar_edit_tool_decision(decision: AgentShadowDecision) ->
         and decision.proposedCapability == "calendar"
         and canonical_action_id(decision.proposedAction) == "edit-last-event"
         and _is_valid_calendar_edit_arguments(decision.proposedArguments)
+    )
+
+
+def _normalize_calendar_time_reference(value: str) -> str:
+    cleaned = re.sub(r"\s+", " ", value.casefold().replace(".", "")).strip()
+    if cleaned in {"noon", "midnight"}:
+        return cleaned
+    match = re.fullmatch(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", cleaned)
+    if not match:
+        return cleaned.replace(" ", "")
+    hour = str(int(match.group(1)))
+    minute = match.group(2) or "00"
+    meridiem = match.group(3) or ""
+    return f"{hour}:{minute}{meridiem}"
+
+
+def _calendar_edit_current_time_is_explicit(
+    user_message: str,
+    current_time: Any,
+) -> bool:
+    """Allow currentTime to narrow lookup only when this turn says that time.
+
+    Recent conversation can be useful context, but it must not silently become a
+    canonical lookup criterion for a Calendar mutation.
+    """
+    if current_time is None:
+        return True
+    if not isinstance(current_time, str) or not current_time.strip():
+        return False
+    target = _normalize_calendar_time_reference(current_time)
+    tokens = re.findall(
+        r"\b(?:\d{1,2}(?::\d{2})?\s*(?:a\.?\s*m\.?|p\.?\s*m\.?|am|pm)?|noon|midnight)\b",
+        user_message,
+        flags=re.IGNORECASE,
+    )
+    return any(_normalize_calendar_time_reference(token) == target for token in tokens)
+
+
+def _has_valid_calendar_edit_proposal(decision: AgentShadowDecision) -> bool:
+    """Accept typed edit semantics for ownership-floor repair only.
+
+    This does not execute or authorize Calendar state. It lets the deterministic
+    Calendar ownership floor preserve a valid target/change proposal even when
+    the model mislabeled owner/capability metadata. Frontend validation, canonical
+    state resolution, confirmation, and the deterministic executor still gate the write.
+    """
+    return (
+        decision.disposition == "tool"
+        and canonical_action_id(decision.proposedAction) == "edit-last-event"
+        and _is_valid_calendar_edit_arguments(
+            _normalize_calendar_edit_argument_shape(decision.proposedArguments)
+        )
     )
 
 
@@ -1201,8 +1121,26 @@ def apply_calendar_write_ownership_floor(
         return decision
     if fallback_action == "delete-calendar-event" and _is_executable_calendar_delete_tool_decision(decision):
         return decision
-    if fallback_action == "edit-last-event" and _is_executable_calendar_edit_tool_decision(decision):
-        return decision
+    if fallback_action == "edit-last-event" and _has_valid_calendar_edit_proposal(decision):
+        normalized_arguments = _normalize_calendar_edit_argument_shape(
+            decision.proposedArguments
+        )
+        if not _calendar_edit_current_time_is_explicit(
+            request.userMessage,
+            normalized_arguments.get("currentTime"),
+        ):
+            normalized_arguments = {
+                **normalized_arguments,
+                "currentTime": None,
+            }
+        return fallback.model_copy(
+            update={
+                "proposedArguments": normalized_arguments,
+                "reason": (
+                    "Deterministic Calendar write ownership floor repaired Calendar edit ownership metadata while preserving only the model's strictly validated target/change proposal. Execution still requires deterministic event resolution and confirmation."
+                ),
+            }
+        )
 
     if (
         fallback_action not in {"add-calendar-event", "delete-calendar-event", "edit-last-event"}
@@ -1218,6 +1156,72 @@ def apply_calendar_write_ownership_floor(
             "reason": (
                 "Deterministic Calendar write ownership floor: an explicit single-intent Calendar mutation cannot be swallowed by Focus or ordinary conversation. Execution still requires the capability-specific validator and guarded Calendar path."
             )
+        }
+    )
+
+
+def _is_valid_task_create_arguments(arguments: dict[str, Any]) -> bool:
+    if set(arguments) != {"title"}:
+        return False
+    title = arguments.get("title")
+    if not isinstance(title, str):
+        return False
+    title = re.sub(r"\s+", " ", title.strip())
+    return bool(title) and len(title) <= 240 and not re.search(r"[\x00-\x1f\x7f]", title)
+
+
+def _is_executable_task_create_tool_decision(decision: AgentShadowDecision) -> bool:
+    return (
+        decision.turnOwner == "tasks"
+        and decision.disposition == "tool"
+        and decision.proposedCapability == "tasks"
+        and canonical_action_id(decision.proposedAction) == "remember-task"
+        and _is_valid_task_create_arguments(decision.proposedArguments)
+    )
+
+
+def apply_task_create_ownership_floor(
+    request: AgentShadowRequest,
+    focus: dict[str, Any] | None,
+    decision: AgentShadowDecision,
+) -> AgentShadowDecision:
+    """Keep unmistakable single-task creation out of read-only conversation.
+
+    The model remains primary. This floor activates only when the conservative
+    fallback grammar identifies one explicit task/to-do container. It preserves a
+    valid model-proposed title when available; otherwise it uses only the literal
+    task body extracted from the current user request. It never executes state.
+    Frontend validation and the existing remember-task handler remain authoritative.
+    """
+    fallback = normalize_shadow_decision(_fallback_shadow_decision(request, focus))
+    if not (
+        fallback.turnOwner == "tasks"
+        and fallback.disposition == "tool"
+        and canonical_action_id(fallback.proposedAction) == "remember-task"
+        and fallback.confidence >= 0.95
+        and _is_valid_task_create_arguments(fallback.proposedArguments)
+    ):
+        return decision
+
+    if _is_executable_task_create_tool_decision(decision):
+        return decision
+
+    repaired_arguments = fallback.proposedArguments
+    if _is_valid_task_create_arguments(decision.proposedArguments):
+        repaired_arguments = {
+            "title": re.sub(
+                r"\s+",
+                " ",
+                str(decision.proposedArguments["title"]).strip(),
+            )
+        }
+
+    return fallback.model_copy(
+        update={
+            "proposedArguments": repaired_arguments,
+            "reason": (
+                "Deterministic Tasks creation ownership floor: an unmistakable request to place one item in tasks/to-do cannot be answered by the read-only conversation lane. The model's validated title is preserved when available; otherwise only the literal task body from the current request is used. Execution still requires frontend validation and the deterministic remember-task handler."
+            ),
         }
     )
 
@@ -1270,6 +1274,14 @@ def canonical_action_id(value: str) -> str | None:
 
 
 _CALENDAR_EDIT_ARGUMENT_KEYS = (
+    "day",
+    "query",
+    "currentTime",
+    "changeField",
+    "changeValue",
+)
+
+_LEGACY_CALENDAR_EDIT_ARGUMENT_KEYS = (
     "targetDay",
     "targetTitle",
     "targetTime",
@@ -1278,25 +1290,69 @@ _CALENDAR_EDIT_ARGUMENT_KEYS = (
     "newTime",
 )
 
-
 def _normalize_calendar_edit_argument_shape(
     arguments: dict[str, Any],
 ) -> dict[str, Any]:
-    """Canonicalize omission of nullable edit fields without inferring values.
+    """Canonicalize safe model-shape variation without resolving Calendar state.
 
-    Model JSON commonly omits keys whose semantic value is null. The promoted
-    Calendar edit contract is intentionally strict at the frontend boundary, so
-    fill only missing *known nullable* keys here. Unknown keys or a missing
-    targetDay are preserved as invalid input so capability validators still fail
-    closed.
+    targetDay always means the source day used for deterministic lookup. Missing
+    currentTime is equivalent to null. The immediately preceding `day`-key
+    contract is migrated to targetDay for compatibility. Legacy six-field
+    proposals are translated only when they contain exactly one supported
+    day/title/time change. Unknown keys or multiple changes remain invalid.
     """
     copied = dict(arguments)
-    allowed = set(_CALENDAR_EDIT_ARGUMENT_KEYS)
-    if not set(copied).issubset(allowed):
+    canonical_allowed = {
+        "targetDay",
+        "query",
+        "currentTime",
+        "changeField",
+        "changeValue",
+    }
+    if set(copied).issubset(canonical_allowed):
+        if not {"targetDay", "query", "changeField", "changeValue"}.issubset(copied):
+            return copied
+        return {
+            "targetDay": copied.get("targetDay"),
+            "query": copied.get("query"),
+            "currentTime": copied.get("currentTime"),
+            "changeField": copied.get("changeField"),
+            "changeValue": copied.get("changeValue"),
+        }
+
+    previous_allowed = {"day", "query", "currentTime", "changeField", "changeValue"}
+    if set(copied).issubset(previous_allowed):
+        if not {"day", "query", "changeField", "changeValue"}.issubset(copied):
+            return copied
+        return {
+            "targetDay": copied.get("day"),
+            "query": copied.get("query"),
+            "currentTime": copied.get("currentTime"),
+            "changeField": copied.get("changeField"),
+            "changeValue": copied.get("changeValue"),
+        }
+
+    legacy_allowed = set(_LEGACY_CALENDAR_EDIT_ARGUMENT_KEYS)
+    if not set(copied).issubset(legacy_allowed):
         return copied
-    if "targetDay" not in copied:
+    if "targetDay" not in copied or "targetTitle" not in copied:
         return copied
-    return {key: copied.get(key) for key in _CALENDAR_EDIT_ARGUMENT_KEYS}
+    requested = [
+        ("day", copied.get("newDay")),
+        ("title", copied.get("newTitle")),
+        ("time", copied.get("newTime")),
+    ]
+    requested = [(field, value) for field, value in requested if value is not None]
+    if len(requested) != 1:
+        return copied
+    change_field, change_value = requested[0]
+    return {
+        "targetDay": copied.get("targetDay"),
+        "query": copied.get("targetTitle"),
+        "currentTime": copied.get("targetTime"),
+        "changeField": change_field,
+        "changeValue": change_value,
+    }
 
 
 def normalize_shadow_decision(decision: AgentShadowDecision) -> AgentShadowDecision:
@@ -1315,12 +1371,7 @@ def normalize_shadow_decision(decision: AgentShadowDecision) -> AgentShadowDecis
     canonical = canonical_action_id(decision.proposedAction)
     if canonical is not None:
         updates: dict[str, Any] = {"proposedAction": canonical}
-        if (
-            decision.turnOwner == "calendar"
-            and decision.disposition == "tool"
-            and decision.proposedCapability == "calendar"
-            and canonical == "edit-last-event"
-        ):
+        if decision.disposition == "tool" and canonical == "edit-last-event":
             updates["proposedArguments"] = _normalize_calendar_edit_argument_shape(
                 decision.proposedArguments
             )
@@ -1810,6 +1861,7 @@ async def decide_agent_shadow(request: AgentShadowRequest) -> AgentShadowRespons
         model_decision or _fallback_shadow_decision(request, focus)
     )
     decision = apply_search_ownership_floor(request, focus, decision)
+    decision = apply_task_create_ownership_floor(request, focus, decision)
     decision = apply_calendar_write_ownership_floor(request, focus, decision)
     comparison = compare_shadow_to_legacy(decision, request.legacyObservation)
     turn_id = f"shadow-{uuid4().hex}"

@@ -104,7 +104,7 @@ class AgentCalendarReadToolPromotionPhase21BTests(unittest.TestCase):
         self.assertFalse(edit_schema["additionalProperties"])
         self.assertEqual(
             edit_schema["required"],
-            ["targetDay", "targetTitle", "targetTime", "newDay", "newTitle", "newTime"],
+            ["targetDay", "query", "currentTime", "changeField", "changeValue"],
         )
         self.assertEqual(
             edit_schema["properties"]["targetDay"]["enum"],
@@ -141,8 +141,10 @@ class AgentCalendarReadToolPromotionPhase21BTests(unittest.TestCase):
         self.assertIn("command: 'edit-last-event'", source)
         self.assertIn("hasExactlyKeys(argumentsValue, ['day', 'title', 'time'])", source)
         self.assertIn("'targetDay'", source)
-        self.assertIn("'newTime'", source)
-        self.assertIn("time: validated.time ?? 'Later'", source)
+        self.assertIn("'query'", source)
+        self.assertIn("'changeField'", source)
+        self.assertIn("'changeValue'", source)
+        self.assertIn("time: normalized.time ?? 'Later'", source)
         self.assertIn("calendarDeleteRoundTripsThroughCanonicalParser", source)
         self.assertIn("calendarEditRoundTripsThroughCanonicalParser", source)
         for forbidden_write in (
