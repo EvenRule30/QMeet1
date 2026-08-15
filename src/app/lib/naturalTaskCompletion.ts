@@ -9,6 +9,58 @@ type ScoredTask = {
 
 const COMPLETION_OPENING = /^(?:i|we)(?:\s+(?:have|had)|['’]ve)?\s+(?:already\s+|just\s+)?(?:checked|verified|confirmed|found|chose|chosen|picked|selected|decided|determined|wrote|written|drafted|created|made|used|incorporated|added|scheduled|booked|reviewed|tailored|adapted|customized|customised|adjusted|compared|researched|identified|set|planned|outlined|prepared|handled|fixed|resolved|sent|submitted|called|contacted|emailed|updated|tested|ran|built|implemented|finished|completed|did|got\s+through)\b/i;
 
+const COMPLETION_VERB_FORMS = [
+  'checked',
+  'verified',
+  'confirmed',
+  'found',
+  'chose',
+  'chosen',
+  'picked',
+  'selected',
+  'decided',
+  'determined',
+  'wrote',
+  'written',
+  'drafted',
+  'created',
+  'made',
+  'used',
+  'incorporated',
+  'added',
+  'scheduled',
+  'booked',
+  'reviewed',
+  'tailored',
+  'adapted',
+  'customized',
+  'customised',
+  'adjusted',
+  'compared',
+  'researched',
+  'identified',
+  'set',
+  'planned',
+  'outlined',
+  'prepared',
+  'handled',
+  'fixed',
+  'resolved',
+  'sent',
+  'submitted',
+  'called',
+  'contacted',
+  'emailed',
+  'updated',
+  'tested',
+  'ran',
+  'built',
+  'implemented',
+  'finished',
+  'completed',
+  'did',
+];
+
 const STOP_WORDS = new Set([
   'a',
   'an',
@@ -152,8 +204,86 @@ const TOKEN_ALIASES: Record<string, string> = {
   implementing: 'implement',
 };
 
-function normalizeToken(rawToken: string): string {
+function differsByAtMostOneEdit(left: string, right: string): boolean {
+  if (left === right) return true;
+  if (Math.abs(left.length - right.length) > 1) return false;
+
+  if (left.length === right.length) {
+    let differences = 0;
+    for (let index = 0; index < left.length; index += 1) {
+      if (left[index] !== right[index]) {
+        differences += 1;
+        if (differences > 1) return false;
+      }
+    }
+    return true;
+  }
+
+  const shorter = left.length < right.length ? left : right;
+  const longer = left.length < right.length ? right : left;
+  let shortIndex = 0;
+  let longIndex = 0;
+  let skipped = false;
+
+  while (shortIndex < shorter.length && longIndex < longer.length) {
+    if (shorter[shortIndex] === longer[longIndex]) {
+      shortIndex += 1;
+      longIndex += 1;
+      continue;
+    }
+    if (skipped) return false;
+    skipped = true;
+    longIndex += 1;
+  }
+
+  return true;
+}
+
+function canonicalCompletionVerb(rawToken: string): string | null {
   const token = rawToken.toLowerCase();
+  const exact = COMPLETION_VERB_FORMS.find((candidate) => candidate === token);
+  if (exact) return exact;
+  if (token.length < 5) return null;
+
+  return (
+    COMPLETION_VERB_FORMS.find(
+      (candidate) =>
+        candidate.length >= 5 &&
+        differsByAtMostOneEdit(token, candidate),
+    ) ?? null
+  );
+}
+
+function looksLikeCompletedWorkStatement(value: string): boolean {
+  if (COMPLETION_OPENING.test(value)) return true;
+
+  const passive = value.match(
+    /^(.+?)\s+(?:(?:has|have|had)\s+been|(?:was|were|is|are))\s+([a-z]+)\s*[.!?]*$/i,
+  );
+  if (passive?.[2] && canonicalCompletionVerb(passive[2])) {
+    return true;
+  }
+
+  const firstPersonFuzzy = value.match(
+    /^(?:i|we)(?:['’]ve|\s+have)?\s+(?:already\s+|just\s+)?([a-z]+)\b/i,
+  );
+  return Boolean(
+    firstPersonFuzzy?.[1] &&
+      canonicalCompletionVerb(firstPersonFuzzy[1]),
+  );
+}
+
+function normalizeToken(
+  rawToken: string,
+  tolerateCompletionVerbTypos = false,
+): string {
+  let token = rawToken.toLowerCase();
+
+  if (tolerateCompletionVerbTypos) {
+    const completionVerb = canonicalCompletionVerb(token);
+    if (completionVerb) token = completionVerb;
+  }
+
   if (TOKEN_ALIASES[token]) return TOKEN_ALIASES[token];
 
   if (/^[a-z]{5,}ies$/.test(token)) {
@@ -165,7 +295,10 @@ function normalizeToken(rawToken: string): string {
   return token;
 }
 
-function tokenize(value: string): string[] {
+function tokenize(
+  value: string,
+  options: { tolerateCompletionVerbTypos?: boolean } = {},
+): string[] {
   const normalized = value
     .toLowerCase()
     .replace(/(\d),(?=\d{3}\b)/g, '$1')
@@ -179,7 +312,12 @@ function tokenize(value: string): string[] {
     new Set(
       normalized
         .split(' ')
-        .map(normalizeToken)
+        .map((token) =>
+          normalizeToken(
+            token,
+            Boolean(options.tolerateCompletionVerbTypos),
+          ),
+        )
         .filter((token) => token.length > 1 || /^\d+$/.test(token))
         .filter((token) => !STOP_WORDS.has(token)),
     ),
@@ -212,7 +350,9 @@ function openFocusLinkedTasks(
 function scoreTask(statementTokens: string[], task: MemoryTask): ScoredTask {
   const taskTokens = tokenize(task.title);
   const taskTokenSet = new Set(taskTokens);
-  const matchedTokens = statementTokens.filter((token) => taskTokenSet.has(token));
+  const matchedTokens = statementTokens.filter((token) =>
+    taskTokenSet.has(token),
+  );
   const statementWeight = statementTokens.reduce(
     (total, token) => total + tokenWeight(token),
     0,
@@ -225,9 +365,10 @@ function scoreTask(statementTokens: string[], task: MemoryTask): ScoredTask {
     (total, token) => total + tokenWeight(token),
     0,
   );
-  const statementCoverage = statementWeight > 0 ? matchedWeight / statementWeight : 0;
+  const statementCoverage =
+    statementWeight > 0 ? matchedWeight / statementWeight : 0;
   const taskCoverage = taskWeight > 0 ? matchedWeight / taskWeight : 0;
-  const score = (statementCoverage * 0.75) + (taskCoverage * 0.25);
+  const score = statementCoverage * 0.75 + taskCoverage * 0.25;
 
   return {
     task,
@@ -243,12 +384,14 @@ export function resolveNaturalFocusTaskCompletionTarget(
   activeSession: ActiveSession | null,
 ): MemoryTask | null {
   const trimmed = statement.replace(/\s+/g, ' ').trim();
-  if (!trimmed || !COMPLETION_OPENING.test(trimmed)) return null;
+  if (!trimmed || !looksLikeCompletedWorkStatement(trimmed)) return null;
 
   const candidateTasks = openFocusLinkedTasks(tasks, activeSession);
   if (candidateTasks.length === 0) return null;
 
-  const statementTokens = tokenize(trimmed);
+  const statementTokens = tokenize(trimmed, {
+    tolerateCompletionVerbTypos: true,
+  });
   if (statementTokens.length === 0) return null;
 
   const scoredTasks = candidateTasks

@@ -58,6 +58,10 @@ import {
   type PromotedCalendarEditTargetCriteria,
 } from './lib/agentToolPromotion';
 import {
+  buildExplicitFocusTaskReadCommand,
+  isExplicitFocusTaskReadRequest,
+} from './lib/focusTaskRead';
+import {
   resolveExplicitCalendarWriteIntentBeforeAgent,
 } from './lib/calendarWriteIntent';
 import {
@@ -70,7 +74,7 @@ import {
   resolveGlobalTaskCompletionReference,
   resolveNaturalGlobalTaskCompletionRequest,
 } from './lib/taskCompletionResolver';
-import { formatOpenTasksReadout } from './lib/memoryReadSurface';
+import { formatFocusTaskReadout, formatOpenTasksReadout } from './lib/memoryReadSurface';
 import { createVerifiedGlobalTask } from './lib/verifiedTaskCreate';
 import {
   completeConfirmedTaskTargets,
@@ -673,6 +677,13 @@ export default function App() {
             parsedCommandMatch?.command ?? null,
           )
         : false;
+    const explicitFocusTaskReadRequest =
+      !forcedCommandMatch && commandRoute === 'exact'
+        ? isExplicitFocusTaskReadRequest(trimmed)
+        : false;
+    const explicitFocusTaskReadCommandMatch = explicitFocusTaskReadRequest
+      ? buildExplicitFocusTaskReadCommand()
+      : null;
     const explicitCalendarWriteIntent =
       !forcedCommandMatch && commandRoute === 'exact'
         ? resolveExplicitCalendarWriteIntentBeforeAgent({
@@ -683,7 +694,8 @@ export default function App() {
     const explicitDeterministicRoute =
       !forcedCommandMatch &&
       commandRoute === 'exact' &&
-      !explicitGlobalTaskReadRequest
+      !explicitGlobalTaskReadRequest &&
+      !explicitFocusTaskReadRequest
         ? resolveExplicitDeterministicRouteBeforeAgent({
             userMessage: trimmed,
             parsedCommand: parsedCommandMatch?.command ?? null,
@@ -692,7 +704,8 @@ export default function App() {
     const promotedSingleIntent =
       !forcedCommandMatch &&
       commandRoute === 'exact' &&
-      !explicitDeterministicRoute
+      !explicitDeterministicRoute &&
+      !explicitFocusTaskReadRequest
         ? await resolvePromotedSingleIntentDecision({
             shadowTurn,
             activeFocusId: routingActiveSession?.id ?? null,
@@ -734,7 +747,8 @@ export default function App() {
       promotedSingleIntent?.disposition === 'conversation' &&
       !explicitCalendarWriteIntent &&
       !explicitGlobalTaskReadRequest &&
-      !naturalGlobalTaskCompletionFallback;
+      !explicitFocusTaskReadRequest &&
+      !naturalGlobalTaskCompletionRequest;
     if (promotedSingleIntent?.disposition === 'conversation') {
       if (promotedConversationAllowed) {
         setPendingInterpreterCommand(null);
@@ -1494,6 +1508,7 @@ export default function App() {
       !forcedCommandMatch &&
       commandRoute === 'exact' &&
       (Boolean(parsedCommandMatch) ||
+        Boolean(explicitFocusTaskReadCommandMatch) ||
         Boolean(naturalTaskCompletionCommandMatch)) &&
       !Boolean(deferredExactFocusLifecycleMatch);
     const exactResumeLifecyclePreflight =
@@ -1522,10 +1537,12 @@ export default function App() {
       Boolean(deferredExactFocusLifecycleMatch);
     const commandMatch = deferredSemanticFocusLifecycleMessage
       ? null
-      : naturalTaskCompletionCommandMatch &&
-          parsedCommandMatch?.command === 'mark-task-done'
-        ? naturalTaskCompletionCommandMatch
-        : parsedCommandMatch ?? naturalTaskCompletionCommandMatch;
+      : explicitFocusTaskReadCommandMatch
+        ? explicitFocusTaskReadCommandMatch
+        : naturalTaskCompletionCommandMatch &&
+            parsedCommandMatch?.command === 'mark-task-done'
+          ? naturalTaskCompletionCommandMatch
+          : parsedCommandMatch ?? naturalTaskCompletionCommandMatch;
     if (commandMatch) {
       if (commandRoute === 'exact') {
         const requiresExactConfirmation =
@@ -1553,9 +1570,11 @@ export default function App() {
         pendingTaskCompletionTargetsRef.current = [];
       }
       setTrackedInputRoute(
-        naturalTaskCompletionTarget && commandRoute === 'exact'
-          ? 'Natural Focus task completion'
-          : getLocalCommandRouteLabel(commandRoute),
+        explicitFocusTaskReadCommandMatch && commandRoute === 'exact'
+          ? 'Deterministic Focus task read ownership floor'
+          : naturalTaskCompletionTarget && commandRoute === 'exact'
+            ? 'Natural Focus task completion'
+            : getLocalCommandRouteLabel(commandRoute),
         commandMatch.command,
       );
       if (commandRoute === 'exact') {
@@ -1563,9 +1582,11 @@ export default function App() {
         setLastInterpreterFrontendCommand('None');
         setLastInterpreterConfidence(null);
         setLastInterpreterReason(
-          naturalTaskCompletionTarget
-            ? 'Natural completed-work language matched one open task linked to the active Focus before semantic or fuzzy interpretation.'
-            : 'Exact frontend parser matched before the command interpreter was needed.',
+          explicitFocusTaskReadCommandMatch
+            ? 'An explicit Active Focus task read was routed to reconciled canonical Focus linkage before agent conversation could answer from recent history.'
+            : naturalTaskCompletionTarget
+              ? 'Natural completed-work language matched one open task linked to the active Focus before semantic or fuzzy interpretation.'
+              : 'Exact frontend parser matched before the command interpreter was needed.',
         );
       }
       const userMsg = createUserMessage(now, visibleUserText);
@@ -2071,7 +2092,59 @@ ${confirmedTaskCompletionResult.completedTasks
                       .map((task, index) => `${index + 1}. ${task.title}`)
                       .join('\n')}`,
               shouldSpeakConfirmation: voiceOutputEnabled,
+              continuationContext:
+                focusTaskProgressResult?.verified &&
+                confirmedFocusTaskTargets.length > 0
+                  ? 'qmeetScope=focus-linked-task. qmeetFocusRelationship=verified. This completion was verified against canonical Active Focus progress. It is safe to describe the completed task as linked to the Active Focus and to use only the Focus progress stated in the verified tool receipt.'
+                  : 'qmeetScope=global-tasks. qmeetFocusRelationship=none. This completion changed global task state only. No Active Focus task relationship or Focus progress was created or verified by this operation. Do not describe this completion as progress on or membership in the Active Focus.',
             }
+          : { handled: false };
+      const focusTaskReadCommandResult: SplitCommandResult =
+        commandMatch.command === 'read-memory' &&
+        commandMatch.payload === 'focus-task-read'
+          ? await (async () => {
+              try {
+                const canonicalFocusSession =
+                  await reconcileCanonicalFocusProjection(
+                    activeSession,
+                    recentFocusSessions,
+                  );
+                if (!canonicalFocusSession) {
+                  return {
+                    handled: true,
+                    confirmationContent: 'No active Focus is currently running.',
+                    shouldSpeakConfirmation: voiceOutputEnabled,
+                    continuationContext:
+                      'qmeetScope=focus-linked-tasks. qmeetFocusTaskReadVerified=true. Canonical Focus state verified that no Active Focus is currently running. Do not substitute global tasks or Focus history.',
+                  };
+                }
+
+                const authoritativeTasks = await getMemoryTasks();
+                return {
+                  handled: true,
+                  confirmationContent: formatFocusTaskReadout(
+                    canonicalFocusSession,
+                    authoritativeTasks.tasks ?? [],
+                  ),
+                  shouldSpeakConfirmation: voiceOutputEnabled,
+                  continuationContext:
+                    'qmeetScope=focus-linked-tasks. qmeetFocusTaskReadVerified=true. This read was rebuilt from canonical /api/focus/state linkage and authoritative /api/memory/tasks records. Describe only task ids linked to the current canonical Active Focus. Do not add, substitute, or recover task names from recent conversation, Focus history, or unrelated global tasks.',
+                };
+              } catch (error) {
+                console.warn(
+                  'Canonical Focus task read failed; refusing to substitute local or historical task state.',
+                  error,
+                );
+                return {
+                  handled: true,
+                  confirmationContent:
+                    'I could not verify the current Focus task list, so I did not substitute global or historical tasks. Make sure the QMeet backend is running and try again.',
+                  shouldSpeakConfirmation: voiceOutputEnabled,
+                  continuationContext:
+                    'qmeetScope=focus-linked-tasks. qmeetFocusTaskReadVerified=false. Canonical Focus linkage or authoritative task state could not be verified. Do not infer, reconstruct, or list Focus tasks from recent conversation, local projection, Focus history, or global task state.',
+                };
+              }
+            })()
           : { handled: false };
       const globalTaskReadCommandResult: SplitCommandResult =
         commandMatch.command === 'read-memory' &&
@@ -2084,7 +2157,7 @@ ${confirmedTaskCompletionResult.completedTasks
                 'qmeetScope=global-tasks. This verified read contains the global open task list only. Active Focus and Focus-linked task scope are excluded unless the user explicitly asks for Focus tasks.',
             }
           : { handled: false };
-      if (globalTaskReadCommandResult.handled) {
+      if (focusTaskReadCommandResult.handled || globalTaskReadCommandResult.handled) {
         setActivePanel('memory');
       }
       const verifiedTaskCreateCommandResult: SplitCommandResult =
@@ -2099,8 +2172,8 @@ ${confirmedTaskCompletionResult.completedTasks
                 confirmationContent: verifiedTaskCreate.message,
                 shouldSpeakConfirmation: voiceOutputEnabled,
                 continuationContext: verifiedTaskCreate.ok
-                  ? 'qmeetScope=global-tasks. This task creation was verified by the canonical backend task endpoint before QMeet reported success.'
-                  : 'qmeetScope=global-tasks. The canonical backend task creation failed, so no task was added.',
+                  ? 'qmeetScope=global-tasks. qmeetFocusRelationship=none. This task creation was verified by the canonical backend task endpoint and created one global task only. No Active Focus task relationship was created or verified by this operation. Do not describe this task as linked to or part of the Active Focus.'
+                  : 'qmeetScope=global-tasks. qmeetFocusRelationship=none. The canonical backend task creation failed, so no task was added and no Active Focus relationship was changed.',
               };
             })()
           : { handled: false };
@@ -2125,9 +2198,11 @@ ${confirmedTaskCompletionResult.completedTasks
         ? verifiedTaskCreateCommandResult
         : notesCommandResult.handled
           ? { handled: false }
-          : globalTaskReadCommandResult.handled
-            ? globalTaskReadCommandResult
-            : confirmedTaskCommandResult.handled
+          : focusTaskReadCommandResult.handled
+            ? focusTaskReadCommandResult
+            : globalTaskReadCommandResult.handled
+              ? globalTaskReadCommandResult
+              : confirmedTaskCommandResult.handled
               ? confirmedTaskCommandResult
               : await handleMemoryCommand(commandMatch, {
               voiceOutputEnabled,
@@ -2284,19 +2359,24 @@ ${confirmedTaskCompletionResult.completedTasks
         enabled: shouldSpeakConfirmation,
         rate: confirmationSpeechRate,
       });
-      await continueAfterVerifiedToolUpdate({
-        userMessage: continuationUserTextForTool,
-        command: commandMatch.command,
-        toolResult: confirmationContent,
-        toolContext: splitCommandResult.continuationContext,
-        recentMessages: messages,
-        activePanel,
-        voiceOutputEnabled,
-        setMessages,
-        setShowThinkingBubble,
-        setOrbState,
-        speakAssistantText,
-      });
+      const focusTaskReadToolCardIsComplete =
+        commandMatch.command === 'read-memory' &&
+        commandMatch.payload === 'focus-task-read';
+      if (!focusTaskReadToolCardIsComplete) {
+        await continueAfterVerifiedToolUpdate({
+          userMessage: continuationUserTextForTool,
+          command: commandMatch.command,
+          toolResult: confirmationContent,
+          toolContext: splitCommandResult.continuationContext,
+          recentMessages: messages,
+          activePanel,
+          voiceOutputEnabled,
+          setMessages,
+          setShowThinkingBubble,
+          setOrbState,
+          speakAssistantText,
+        });
+      }
       return;
     }
     if (displayText) {
@@ -2684,7 +2764,7 @@ ${confirmedTaskCompletionResult.completedTasks
       shadowTurn,
       routingActiveSession?.id ?? null,
     );
-  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveMemoryTask, memoryTasks, activeSession, reconcileFocusProjection, markMemoryTaskDone, clearCompletedTasks, getMemoryReadout, saveCalendarEvent, getCalendarReadout, deleteCalendarEvent, deleteLastCalendarEvent, deleteCalendarEventByCriteria, getCalendarEventsForDeleteCriteria, findCalendarEventForDeletion, findCalendarEventForChange, getNextCalendarEventForDeletion, getNextCalendarEventForChange, updateCalendarEvent, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, runWebSearch, clearSearchState, searchError, pushResultToast, addRecentAction, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents, messages, sendNormalChat]);
+  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveMemoryTask, memoryTasks, activeSession, recentFocusSessions, reconcileFocusProjection, markMemoryTaskDone, clearCompletedTasks, getMemoryReadout, saveCalendarEvent, getCalendarReadout, deleteCalendarEvent, deleteLastCalendarEvent, deleteCalendarEventByCriteria, getCalendarEventsForDeleteCriteria, findCalendarEventForDeletion, findCalendarEventForChange, getNextCalendarEventForDeletion, getNextCalendarEventForChange, updateCalendarEvent, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, runWebSearch, clearSearchState, searchError, pushResultToast, addRecentAction, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents, messages, sendNormalChat]);
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const handleLegacyFocusEndRequest = (event: Event) => {

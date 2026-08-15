@@ -16,34 +16,36 @@ class TaskCompletionResolverPhase21C5Tests(unittest.TestCase):
             "const contained = candidates.filter((task) =>",
             source,
         )
-        self.assertIn(
-            "if (contained.length === 1)",
-            source,
-        )
+        self.assertIn("if (contained.length === 1)", source)
         self.assertIn(
             "return { kind: 'likely', task: contained[0] };",
             source,
         )
-        self.assertIn(
-            "if (contained.length > 1)",
-            source,
-        )
-        self.assertIn(
-            "kind: 'ambiguous'",
-            source,
-        )
+        self.assertIn("if (contained.length > 1)", source)
+        self.assertIn("kind: 'ambiguous'", source)
 
-    def test_invoice_and_presentation_examples_are_documented_at_the_runtime_seam(self):
+    def test_partial_reference_matching_uses_normalized_runtime_tokens(self):
         source = RESOLVER.read_text(encoding="utf-8")
 
         self.assertIn(
-            '"invoice" -> "sending invoice"',
+            "const normalizedQuery = normalizedReference(query);",
             source,
         )
         self.assertIn(
-            '"presentation outline" -> "review presentation outline"',
+            "const queryTokens = tokenizeReference(query);",
             source,
         )
+        self.assertIn(
+            "const taskTokens = tokenizeReference(task.title);",
+            source,
+        )
+        self.assertIn(
+            "return queryTokens.every((token) => taskSet.has(token));",
+            source,
+        )
+        self.assertIn("sending: 'send'", source)
+        self.assertIn("reviewed: 'review'", source)
+        self.assertIn("reviewing: 'review'", source)
 
     def test_existing_natural_completion_path_stays_in_place(self):
         source = RESOLVER.read_text(encoding="utf-8")

@@ -13,11 +13,21 @@ class VerifiedTaskCreatePhase21C4Tests(unittest.TestCase):
             APP,
         )
         self.assertIn("commandMatch.command === 'remember-task'", APP)
-        self.assertIn("await createVerifiedGlobalTask(", APP)
-        self.assertIn(
-            "This task creation was verified by the canonical backend task endpoint before QMeet reported success.",
-            APP,
+
+        create_call = APP.index(
+            "const verifiedTaskCreate = await createVerifiedGlobalTask("
         )
+        success_branch = APP.index(
+            "continuationContext: verifiedTaskCreate.ok",
+            create_call,
+        )
+        canonical_verification_claim = APP.index(
+            "This task creation was verified by the canonical backend task endpoint",
+            success_branch,
+        )
+
+        self.assertLess(create_call, success_branch)
+        self.assertLess(success_branch, canonical_verification_claim)
 
     def test_verified_create_blocks_legacy_local_remember_task_execution(self):
         verified_result = APP.index("const verifiedTaskCreateCommandResult")
