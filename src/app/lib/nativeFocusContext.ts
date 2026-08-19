@@ -4,7 +4,6 @@ import {
   applyVerifiedFocusProjection,
   readVerifiedFocusProjection,
 } from './nativeFocusLifecycle';
-
 export type FocusContextField =
   | 'requirements'
   | 'constraints'
@@ -24,7 +23,6 @@ export type NativeFocusContextState = {
   knownFacts: string[];
   updatedAt: string;
 };
-
 type NativeFocusContextVerification = {
   activeFocusMatches?: unknown;
   objectivePreserved?: unknown;
@@ -62,7 +60,6 @@ export type VerifiedNativeFocusContextResult = {
   focusContext: NativeFocusContextState;
   message: string;
 };
-
 export class NativeFocusContextClientError extends Error {
   code: string;
   constructor(message: string, code = 'native_focus_context_failed') {
@@ -79,7 +76,6 @@ const CONTEXT_FIELDS = new Set<FocusContextField>([
   'decisions',
   'knownFacts',
 ]);
-
 function normalizeText(value: unknown): string {
   return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
 }
@@ -374,7 +370,6 @@ function compactContextTaskSubject(value: string, fallback: string): string {
   if (!cleaned) return fallback;
   return cleaned.length > 96 ? `${cleaned.slice(0, 93).trim()}...` : cleaned;
 }
-
 function uniqueContextTaskTitles(titles: string[]): string[] {
   const seen = new Set<string>();
   const unique: string[] = [];
@@ -388,7 +383,6 @@ function uniqueContextTaskTitles(titles: string[]): string[] {
   }
   return unique;
 }
-
 export function buildNativeFocusContextTaskTitles(
   context: NativeFocusContextState,
 ): string[] {
@@ -409,15 +403,11 @@ export function buildNativeFocusContextTaskTitles(
     context.preferences.map(
       (value) => `Find an option that matches this preference: ${value}`,
     ),
-    context.knownFacts.map(
-      (value) => `Use this known detail in the plan: ${value}`,
-    ),
   ];
-
   const selected: string[] = [];
-  // Prefer breadth across canonical context types before taking a second item
-  // from one category. This keeps the five-task Focus list useful rather than
-  // mechanically creating a task for every stored context value.
+  // Prefer breadth across actionable canonical context types before taking a
+  // second item from one category. knownFacts are observations, not work items,
+  // so they remain available to summaries/planning without becoming tasks.
   for (let itemIndex = 0; selected.length < 3; itemIndex += 1) {
     let addedAtThisDepth = false;
     for (const group of groups) {
@@ -429,7 +419,6 @@ export function buildNativeFocusContextTaskTitles(
     }
     if (!addedAtThisDepth) break;
   }
-
   return uniqueContextTaskTitles(selected).slice(0, 3);
 }
 export function describeNativeFocusContextFailure(error: unknown): string {

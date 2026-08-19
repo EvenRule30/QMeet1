@@ -35,15 +35,20 @@ class FocusContextAwareTasksAndRenderingPhase20NTests(unittest.TestCase):
         self.assertIn("selected.length < 3", self.context_client)
         self.assertIn("return uniqueContextTaskTitles(selected).slice(0, 3)", self.context_client)
 
-    def test_existing_context_task_categories_remain_available(self) -> None:
+    def test_actionable_context_task_categories_remain_available(self) -> None:
         for marker in (
             "Check the plan against this constraint:",
             "Make sure the result includes:",
             "Carry out the decision:",
             "Find an option that matches this preference:",
-            "Use this known detail in the plan:",
         ):
             self.assertIn(marker, self.context_client)
+
+    def test_known_facts_remain_context_but_are_not_promoted_to_tasks(self) -> None:
+        self.assertIn("knownFacts: string[]", self.context_client)
+        self.assertIn("section('Known details', context.knownFacts)", self.context_client)
+        self.assertNotIn("Use this known detail in the plan:", self.context_client)
+        self.assertNotIn("context.knownFacts.map(", self.context_client)
 
     def test_summary_can_surface_stakeholders(self) -> None:
         self.assertIn("section('Stakeholders', context.stakeholders ?? [])", self.context_client)
@@ -51,7 +56,6 @@ class FocusContextAwareTasksAndRenderingPhase20NTests(unittest.TestCase):
     def test_inline_number_normalization_does_not_treat_year_as_list_marker(self) -> None:
         self.assertIn(r".replace(/\s+([1-9]\d?[.)]\s+)/g, '\n$1')", self.chat_panel)
         self.assertNotIn(r".replace(/\s+(\d+[.)]\s+)/g, '\n$1')", self.chat_panel)
-
         sample = (
             "1. Decide the finished result\n"
             "2. Check the plan by August 8, 2026.\n"
