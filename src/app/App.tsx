@@ -58,6 +58,10 @@ import {
   type PromotedCalendarEditTargetCriteria,
 } from './lib/agentToolPromotion';
 import {
+  isPromotedDeviceUiToolDecision,
+  resolvePromotedDeviceUiToolCommand,
+} from './lib/agentDeviceUiPromotion';
+import {
   buildExplicitFocusTaskReadCommand,
   isExplicitFocusTaskReadRequest,
 } from './lib/focusTaskRead';
@@ -2068,6 +2072,69 @@ export default function App() {
         visibleUserText,
         'agent',
         promotedCalendarReadTool.commandMatch,
+        [],
+        visibleUserText,
+      );
+    }
+    const promotedDeviceUiCandidate =
+      isPromotedDeviceUiToolDecision(promotedSingleIntent);
+    const promotedDeviceUiTool =
+      resolvePromotedDeviceUiToolCommand(promotedSingleIntent);
+    if (promotedDeviceUiCandidate && !promotedDeviceUiTool) {
+      finishListening();
+      setShowThinkingBubble(false);
+      setPendingInterpreterCommand(null);
+      pendingTaskCompletionTargetsRef.current = [];
+      setTrackedInputRoute(
+        'Agent-promoted Device/UI action rejected',
+        promotedSingleIntent?.proposedAction ?? 'device-ui',
+        '',
+        'device_ui',
+        'tool',
+      );
+      setLastLocalCommand('Device/UI action not executed');
+      setLastInterpreterAction(
+        promotedSingleIntent?.proposedAction ?? 'device-ui',
+      );
+      setLastInterpreterFrontendCommand('None');
+      setLastInterpreterConfidence(promotedSingleIntent?.confidence ?? null);
+      setLastInterpreterReason(
+        'The unified agent claimed Device/UI ownership, but the proposed action failed deterministic frontend validation. No control was executed.',
+      );
+      if (!chatActive) setChatActive(true);
+      const now = Date.now();
+      const userMsg = createUserMessage(now, visibleUserText);
+      const assistantMsg = createAssistantMessage(
+        now,
+        'I understood this as a QMeet control, but I could not safely map it to one supported action. No control was changed.',
+      );
+      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      speakAssistantText(assistantMsg.content, {
+        enabled: voiceOutputEnabled,
+      });
+      return;
+    }
+    if (promotedDeviceUiTool) {
+      setPendingInterpreterCommand(null);
+      setTrackedInputRoute(
+        'Agent-promoted Device/UI action',
+        promotedDeviceUiTool.commandMatch.command,
+        promotedDeviceUiTool.action,
+        'device_ui',
+        'tool',
+      );
+      setLastLocalCommand('Agent-promoted Device/UI action');
+      setLastInterpreterAction(promotedDeviceUiTool.commandMatch.command);
+      setLastInterpreterFrontendCommand(promotedDeviceUiTool.action);
+      setLastInterpreterConfidence(promotedSingleIntent?.confidence ?? null);
+      setLastInterpreterReason(
+        'The unified agent proposed one supported Device/UI action and the deterministic frontend promotion gate validated it; existing local handlers remain authoritative.',
+      );
+      return handleSend(
+        visibleUserText,
+        visibleUserText,
+        'agent',
+        promotedDeviceUiTool.commandMatch,
         [],
         visibleUserText,
       );

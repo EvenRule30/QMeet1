@@ -5,7 +5,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 load_dotenv()
-
 from app.focus.canonical_work_context_source import (  # noqa: E402
     install_canonical_work_context_source,
 )
@@ -32,7 +31,6 @@ from app.routers import (  # noqa: E402
     tool_continuation,
     visual,
 )
-
 app = FastAPI(title="QMeet Agent Backend")
 # Middleware is registered inside-out. FocusShadowMiddleware remains outside the
 # native read router so it still owns shared turn planning, guarded comparison,
@@ -59,7 +57,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 @app.get("/health")
 async def health():
     return {
@@ -69,6 +66,9 @@ async def health():
 
 
 app.include_router(chat.router)
+# Phase 21E runtime wiring: agent-first promotion in the frontend calls this
+# decision endpoint before legacy/fuzzy routing. Keep the endpoint read-only;
+# deterministic capability handlers remain the sole mutation authority.
 app.include_router(agent_shadow.router)
 app.include_router(tool_continuation.router)
 app.include_router(command.router)

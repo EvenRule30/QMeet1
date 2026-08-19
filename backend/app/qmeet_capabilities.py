@@ -135,6 +135,27 @@ QMEET_ACTIONS: list[dict[str, Any]] = [
 
 ACTION_VOCABULARY_VERSION = "canonical-local-command-v1"
 
+PROMOTED_DEVICE_UI_ACTIONS: tuple[str, ...] = (
+    "open-menu",
+    "close-menu",
+    "open-settings",
+    "close-settings",
+    "go-home",
+    "show-status",
+    "close-status",
+    "hide-status",
+    "voice-output-on",
+    "voice-output-off",
+    "voice-output-toggle",
+    "voice-slower",
+    "voice-faster",
+    "voice-normal",
+    "stop-speaking",
+    "what-did-you-hear",
+    "close-generic",
+)
+
+
 CANONICAL_TOOL_ACTIONS_BY_OWNER: dict[str, tuple[str, ...]] = {
     "focus": (
         "start-focus-session",
@@ -416,6 +437,19 @@ GLOBAL_CAPABILITY_CONTRACT: list[dict[str, Any]] = [
         "owner": "device_ui",
         "authority": "deterministic frontend/device handlers",
         "actions": list(CANONICAL_TOOL_ACTIONS_BY_OWNER["device_ui"]),
+        "promotedActions": list(PROMOTED_DEVICE_UI_ACTIONS),
+        "argumentSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [],
+            "properties": {},
+        },
+        "promotionConstraint": (
+            "Single-intent, non-destructive QMeet panel/navigation and voice controls are agent-promotable. "
+            "The agent may choose only one promoted Device/UI action and must provide no arguments; deterministic frontend/device handlers remain the sole execution authority. "
+            "Help/identity, cancel-action, clear-chat, and end-chat remain on their existing deterministic or conversational paths in this slice. "
+            "Active Focus is context only and must not claim an unrelated Device/UI control turn."
+        ),
     },
     {
         "owner": "visual",

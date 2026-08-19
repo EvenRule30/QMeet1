@@ -1,8 +1,9 @@
-"""Phase 17C QMeet intent orchestrator.
+"""QMeet intent orchestrator with Phase 21E Device/UI delegation.
 
-The orchestrator is a thin model-backed router. It receives the user's message plus
-lightweight browser context and returns a normal CommandInterpretResponse-compatible
-payload. Existing deterministic frontend commands still execute the final action.
+The orchestrator remains a thin semantic router. Phase 21E delegates eligible fuzzy
+Device/UI action selection to the unified QMeet agent, while existing deterministic
+frontend commands still execute the final action. Other legacy routing behavior is
+preserved until its owning capability is promoted.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ except Exception:  # pragma: no cover
     AsyncOpenAI = None  # type: ignore[assignment]
 
 from app.qmeet_capabilities import QMEET_SYSTEM_PROMPT, capability_digest
+from app.qmeet_device_ui_promotion import resolve_promoted_device_ui_turn
 
 DEFAULT_MODEL = os.getenv("OPENAI_COMMAND_MODEL") or os.getenv("OPENAI_MODEL") or "gpt-4.1-mini"
 MIN_ORCHESTRATOR_CONFIDENCE = float(os.getenv("QMEET_ORCHESTRATOR_MIN_CONFIDENCE", "0.72"))
@@ -350,6 +352,38 @@ async def interpret_qmeet_orchestrator(
 ) -> dict[str, Any] | None:
     """Return a CommandInterpretResponse-compatible dict, or None to keep routing."""
     fallback = _fallback_orchestrator(message, ui_state=ui_state, client_context=client_context)
+
+    # Phase 21E3: capability ownership must outrank advisory Active Focus chat
+    # fallback. A Device/UI request remains independent even while a Focus is
+    # active, so give the unified Device/UI promotion bridge first chance before
+    # accepting a high-confidence Focus/help fallback.
+    #
+    # Phase 21E: when the unified agent claims Device/UI ownership, it becomes the
+    # semantic selector for this fuzzy route. The adapter accepts only a narrow
+    # non-destructive canonical action with no arguments. Existing frontend/device
+    # handlers still execute the command. A claimed-but-invalid Device/UI proposal
+    # is blocked instead of letting the older orchestrator choose a different action.
+    try:
+        device_ui_promotion = await resolve_promoted_device_ui_turn(
+            message,
+            ui_state=ui_state,
+            client_context=client_context,
+        )
+    except Exception:
+        device_ui_promotion = None
+
+    if device_ui_promotion is not None and device_ui_promotion.claimed:
+        if device_ui_promotion.executable:
+            return _command_response(
+                action=device_ui_promotion.action,
+                frontend_command=device_ui_promotion.frontend_command,
+                confidence=device_ui_promotion.confidence,
+                reason=device_ui_promotion.reason,
+            )
+        return _chat_response(
+            f"Unified agent claimed Device/UI ownership but the proposal was not eligible for Phase 21E execution: {device_ui_promotion.reason}",
+            max(0.35, min(1.0, device_ui_promotion.confidence)),
+        )
 
     if fallback and fallback.get("intent") == "chat" and float(fallback.get("confidence") or 0) >= 0.85:
         return fallback
