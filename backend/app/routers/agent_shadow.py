@@ -12,6 +12,7 @@ from app.qmeet_agent_shadow import (
     shadow_status,
 )
 from app.qmeet_device_ui_ownership import apply_device_ui_ownership_floor
+from app.qmeet_agent_composite import AgentCompositePlanResponse, plan_agent_composite
 
 
 router = APIRouter(prefix="/api/agent/shadow", tags=["agent-shadow"])
@@ -46,3 +47,8 @@ async def decide(req: AgentShadowRequest):
     if repaired_decision is response.decision:
         return response
     return response.model_copy(update={"decision": repaired_decision})
+
+@router.post("/plan", response_model=AgentCompositePlanResponse)
+async def plan_composite(req: AgentShadowRequest):
+    """Phase 21G1 observational composite plan; never executes plan steps."""
+    return await plan_agent_composite(req)
