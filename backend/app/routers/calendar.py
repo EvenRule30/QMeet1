@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
+from app.calendar_range_service import list_calendar_events_range
 from app.calendar_service import (
     CalendarIntegrationError,
     complete_calendar_auth,
@@ -157,6 +158,36 @@ async def calendar_events(
         raise HTTPException(
             status_code=500,
             detail="QMeet could not read Google Calendar events.",
+        )
+
+
+@router.get("/events/range")
+async def calendar_event_range(
+    start_date: str = Query(
+        alias="startDate",
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+    ),
+    end_date: str = Query(
+        alias="endDate",
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+    ),
+):
+    """Read one exact inclusive Calendar date window.
+
+    Natural-language interpretation does not happen here. Agent/frontend
+    callers must resolve user language to canonical absolute date keys first.
+    """
+    try:
+        return list_calendar_events_range(
+            start_date=start_date,
+            end_date=end_date,
+        )
+    except CalendarIntegrationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not read that Google Calendar date range.",
         )
 
 
