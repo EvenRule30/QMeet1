@@ -80,8 +80,13 @@ export type LocalCommand =
 
 export type ActivePanel = 'none' | 'menu' | 'settings' | 'status' | 'notes' | 'calendar' | 'search' | 'memory';
 
+export type CalendarCommandDay =
+  | 'today'
+  | 'tomorrow'
+  | `${number}-${number}-${number}`;
+
 export interface CalendarCommandPayload {
-  day: 'today' | 'tomorrow';
+  day: CalendarCommandDay;
   time: string;
   title: string;
 }
@@ -1611,12 +1616,26 @@ function normalizeCalendarTimeCandidate(rawTime: string | undefined): string {
   return cleanedTime;
 }
 
+function isAbsoluteCalendarCommandDay(value: string): value is `${number}-${number}-${number}` {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
 function makeCalendarCommandPayload(
   rawDay: string | undefined,
   rawTime: string | undefined,
   rawTitle: string | undefined
 ): CalendarCommandPayload | null {
-  const day = (rawDay?.toLowerCase() === 'tomorrow' ? 'tomorrow' : 'today') as 'today' | 'tomorrow';
+  const dayCandidate = rawDay?.trim().toLowerCase() ?? '';
+  const day: CalendarCommandDay =
+    dayCandidate === 'tomorrow'
+      ? 'tomorrow'
+      : dayCandidate === 'today'
+        ? 'today'
+        : isAbsoluteCalendarCommandDay(dayCandidate)
+          ? dayCandidate
+          : 'today';
   const explicitTime = normalizeCalendarTimeCandidate(rawTime);
   const titleParts = splitCalendarTitleAndTrailingTime(rawTitle ?? '');
   const title = titleParts.title;
@@ -1636,6 +1655,13 @@ function extractCalendarEventPayload(normalized: string): CalendarCommandPayload
     pattern: RegExp;
     read: (match: RegExpMatchArray) => CalendarCommandPayload | null;
   }> = [
+    // Phase 21F3 confirmation round-trip for one already-resolved absolute date.
+    // Natural date language is resolved by the agent/date interpreter before this
+    // parser; this only preserves the canonical YYYY-MM-DD identity across confirm.
+    {
+      pattern: /^(?:please\s+)?(?:add|create|schedule|make)\s+(?:an?\s+)?(?:(?:calendar|calender|calander)\s+)?(?:event|appointment|reminder|meeting)\s+(\d{4}-\d{2}-\d{2})\s+at\s+(.+?)\s+(?:called|named|titled|for|about)\s+(.+)$/i,
+      read: (match) => makeCalendarCommandPayload(match[1], match[2], match[3]),
+    },
     // "add event today called meeting at 5" / "add event today called meeting to at 5"
     // This must run before the broad "day/time called title" pattern below.
     {

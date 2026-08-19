@@ -1,6 +1,8 @@
 from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 from fastapi.responses import HTMLResponse
 
+from app.calendar_absolute_create_service import create_calendar_event_on_date
 from app.calendar_range_service import list_calendar_events_range
 from app.calendar_service import (
     CalendarIntegrationError,
@@ -26,6 +28,14 @@ from app.schemas import (
 )
 
 router = APIRouter(prefix="/api/calendar", tags=["calendar"])
+
+
+class CalendarAbsoluteCreateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=240)
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    time: str = Field(default="Later", max_length=32)
+    description: str = ""
+    location: str = ""
 
 
 @router.get("/status", response_model=CalendarStatusResponse)
@@ -188,6 +198,32 @@ async def calendar_event_range(
         raise HTTPException(
             status_code=500,
             detail="QMeet could not read that Google Calendar date range.",
+        )
+
+
+@router.post(
+    "/events/absolute",
+    response_model=CalendarCreateEventResponse,
+)
+async def calendar_create_event_absolute(req: CalendarAbsoluteCreateRequest):
+    """Create one event on an already-resolved canonical absolute date."""
+
+    try:
+        return CalendarCreateEventResponse(
+            **create_calendar_event_on_date(
+                title=req.title,
+                date_key=req.date,
+                time=req.time,
+                description=req.description,
+                location=req.location,
+            )
+        )
+    except CalendarIntegrationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        raise HTTPException(
+            status_code=500,
+            detail="QMeet could not create that Google Calendar event.",
         )
 
 

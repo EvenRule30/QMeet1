@@ -58,6 +58,21 @@ _WRITE_LEAD_RE = re.compile(
 )
 _LEGACY_DAY_RE = re.compile(r"\b(?:today|tomorrow)\b", re.IGNORECASE)
 
+_CREATE_LEAD_RE = re.compile(
+    r"^\s*(?:(?:please\s+)?|(?:can|could|would|will)\s+you\s+(?:please\s+)?|"
+    r"i\s+(?:want|need)\s+you\s+to\s+|i(?:'d|\s+would)\s+like\s+you\s+to\s+)"
+    r"(?:add|create|schedule|book)\b",
+    re.IGNORECASE,
+)
+_CREATE_TIME_RE = re.compile(
+    r"\b(?:at|by)\s+((?:\d{1,2})(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?|am|pm)?|noon|midnight)\b",
+    re.IGNORECASE,
+)
+_BROAD_CREATE_TITLE_RE = re.compile(
+    r"^(?:(?:my|our|the)\s+)?(?:day|schedule|agenda|plans?)$",
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True)
 class CalendarReadWindow:
@@ -364,3 +379,184 @@ def apply_calendar_range_read_ownership_floor(
             ),
         }
     )
+
+
+def looks_like_calendar_create_request(user_message: str) -> bool:
+    return bool(_CREATE_LEAD_RE.search(user_message or ""))
+
+
+def _validated_create_time(value: Any) -> str | None | object:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return _INVALID_CREATE_VALUE
+    cleaned = re.sub(r"\s+", " ", value.strip())
+    if not cleaned or len(cleaned) > 32 or re.search(r"[\x00-\x1f\x7f]", cleaned):
+        return _INVALID_CREATE_VALUE
+    normalized = cleaned.casefold().replace(".", "")
+    if normalized in {"noon", "midnight"}:
+        return cleaned
+    match = re.fullmatch(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", normalized)
+    if not match:
+        return _INVALID_CREATE_VALUE
+    hour = int(match.group(1))
+    minute = int(match.group(2) or "0")
+    meridiem = match.group(3)
+    if minute > 59:
+        return _INVALID_CREATE_VALUE
+    if meridiem and not 1 <= hour <= 12:
+        return _INVALID_CREATE_VALUE
+    if not meridiem and not 0 <= hour <= 23:
+        return _INVALID_CREATE_VALUE
+    return cleaned
+
+
+def _validated_create_title(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = re.sub(r"\s+", " ", value.strip()).strip(" ,.;:")
+    if (
+        not cleaned
+        or len(cleaned) > 240
+        or re.search(r"[\x00-\x1f\x7f]", cleaned)
+        or _BROAD_CREATE_TITLE_RE.fullmatch(cleaned)
+    ):
+        return None
+    return cleaned
+
+
+def _fallback_create_title(user_message: str) -> str | None:
+    """Conservatively extract one title before the explicit date phrase.
+
+    The model remains the preferred semantic title source. This fallback exists
+    only so an unmistakable one-event create does not fall back to conversation
+    when the old today/tomorrow prompt shape is returned for a farther date.
+    """
+
+    text = re.sub(r"\s+", " ", user_message.strip())
+    text = _CREATE_LEAD_RE.sub("", text, count=1).strip()
+    text = re.sub(r"^(?:a|an|the)\s+", "", text, flags=re.IGNORECASE)
+
+    date_patterns = [
+        r"\b\d{4}-\d{2}-\d{2}\b",
+        rf"\b(?:this|next)\s+{_WEEKDAY_PATTERN}\b",
+        rf"\b{_MONTH_PATTERN}\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s+\d{{4}})?\b",
+        rf"\b{_WEEKDAY_PATTERN}\b",
+    ]
+    date_match = None
+    for pattern in date_patterns:
+        candidate = re.search(pattern, text, flags=re.IGNORECASE)
+        if candidate and (date_match is None or candidate.start() < date_match.start()):
+            date_match = candidate
+    if not date_match:
+        return None
+
+    title = text[: date_match.start()].strip(" ,.;:")
+    title = re.sub(
+        r"^(?:an?\s+)?(?:calendar\s+)?(?:event|appointment|reminder)\s+(?:called|named|titled|for|about)\s+",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    )
+    title = re.sub(r"^(?:a|an|the)\s+", "", title, flags=re.IGNORECASE)
+    return _validated_create_title(title)
+
+
+_INVALID_CREATE_VALUE = object()
+
+
+def apply_calendar_absolute_create_ownership_floor(
+    user_message: str,
+    decision: Any,
+    *,
+    reference_date: date | None = None,
+) -> Any:
+    """Canonicalize one farther-date Calendar create to an absolute date.
+
+    This does not execute Calendar state. The returned title/time/date proposal
+    must still pass the frontend typed validator, the existing confirmation
+    gate, confirmation-time command round-trip, and the canonical backend write.
+    """
+
+    if not looks_like_calendar_create_request(user_message):
+        return decision
+
+    window = resolve_calendar_read_window(
+        user_message,
+        reference_date=reference_date,
+    )
+    if window is None:
+        return decision
+    if window.day_count != 1:
+        # A one-event Calendar create cannot safely choose one day from a
+        # recognized multi-day expression such as "next week". Do not return
+        # the model proposal unchanged here: it may contain a stale or invented
+        # legacy today/tomorrow value from recent conversation. Keep Calendar
+        # create ownership, but deliberately emit a non-executable range shape.
+        # The existing frontend Calendar-create candidate guard will reject it
+        # before legacy interpretation or confirmation can manufacture one day.
+        return decision.model_copy(
+            update={
+                "turnOwner": "calendar",
+                "focusRelevant": bool(getattr(decision, "focusRelevant", False)),
+                "disposition": "tool",
+                "proposedCapability": "calendar",
+                "proposedAction": "add-calendar-event",
+                "proposedArguments": {
+                    "startDate": window.start_date.isoformat(),
+                    "endDate": window.end_date.isoformat(),
+                },
+                "responsePlan": (
+                    "Ask the user to choose one specific date before creating a single Calendar event."
+                ),
+                "confidence": max(
+                    float(getattr(decision, "confidence", 0.0) or 0.0),
+                    0.99,
+                ),
+                "reason": (
+                    "Deterministic Calendar create range guard rejected a multi-day date expression for a one-event mutation. No single date may be inferred from the range."
+                ),
+            }
+        )
+
+    existing_arguments = getattr(decision, "proposedArguments", {}) or {}
+    if not isinstance(existing_arguments, dict):
+        existing_arguments = {}
+
+    title = _validated_create_title(existing_arguments.get("title"))
+    if title is None:
+        title = _fallback_create_title(user_message)
+    if title is None:
+        return decision
+
+    time_value = _validated_create_time(existing_arguments.get("time"))
+    time_match = _CREATE_TIME_RE.search(user_message)
+    if time_match and (time_value is None or time_value is _INVALID_CREATE_VALUE):
+        time_value = _validated_create_time(time_match.group(1))
+    elif time_value is _INVALID_CREATE_VALUE:
+        time_value = None
+    if time_value is _INVALID_CREATE_VALUE:
+        return decision
+
+    return decision.model_copy(
+        update={
+            "turnOwner": "calendar",
+            "focusRelevant": bool(getattr(decision, "focusRelevant", False)),
+            "disposition": "tool",
+            "proposedCapability": "calendar",
+            "proposedAction": "add-calendar-event",
+            "proposedArguments": {
+                "date": window.start_date.isoformat(),
+                "title": title,
+                "time": time_value,
+            },
+            "responsePlan": (
+                "Preview one Calendar event on the exact canonical date, require confirmation, then continue only from the verified write receipt."
+            ),
+            "confidence": max(float(getattr(decision, "confidence", 0.0) or 0.0), 0.97),
+            "reason": (
+                "Deterministic Calendar create date floor resolved one explicit farther-date expression to an absolute date; execution remains gated by typed frontend validation and confirmation."
+            ),
+        }
+    )
+

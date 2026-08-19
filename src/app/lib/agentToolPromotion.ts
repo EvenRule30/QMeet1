@@ -1,6 +1,7 @@
-import { parseCommand, type CommandMatch } from '../commands';
+import { parseCommand, type CalendarCommandDay, type CommandMatch } from '../commands';
 import type { PromotedSingleIntentDecision } from './agentShadowObserver';
 import { buildCalendarEditFrontendCommand } from './calendarUtils';
+import { isCanonicalCalendarDateKey } from './calendarAbsoluteCreate';
 import {
   encodeCalendarReadRangePayload,
   validateCalendarReadRange,
@@ -54,7 +55,7 @@ export type PromotedCalendarReadToolCommand =
 export type PromotedCalendarCreateDay = 'today' | 'tomorrow';
 
 export type PromotedCalendarCreateToolCommand = {
-  day: PromotedCalendarCreateDay;
+  day: CalendarCommandDay;
   title: string;
   time: string | null;
   commandMatch: CommandMatch;
@@ -264,16 +265,27 @@ function readValidatedCalendarCreateTime(rawTime: unknown): string | null | unde
 
 function readValidatedCalendarCreateArguments(
   argumentsValue: Record<string, unknown>,
-): { day: PromotedCalendarCreateDay; title: string; time: string | null } | null {
-  if (!hasExactlyKeys(argumentsValue, ['day', 'title', 'time'])) return null;
+): { day: CalendarCommandDay; title: string; time: string | null } | null {
+  const legacyShape = hasExactlyKeys(argumentsValue, ['day', 'title', 'time']);
+  const absoluteShape = hasExactlyKeys(argumentsValue, ['date', 'title', 'time']);
+  if (!legacyShape && !absoluteShape) return null;
 
-  const rawDay = argumentsValue.day;
-  if (
-    typeof rawDay !== 'string' ||
-    !PROMOTED_CALENDAR_CREATE_DAYS.has(rawDay as PromotedCalendarCreateDay)
-  ) {
-    return null;
+  let day: CalendarCommandDay;
+  if (legacyShape) {
+    const rawDay = argumentsValue.day;
+    if (
+      typeof rawDay !== 'string' ||
+      !PROMOTED_CALENDAR_CREATE_DAYS.has(rawDay as PromotedCalendarCreateDay)
+    ) {
+      return null;
+    }
+    day = rawDay as PromotedCalendarCreateDay;
+  } else {
+    const rawDate = argumentsValue.date;
+    if (!isCanonicalCalendarDateKey(rawDate)) return null;
+    day = rawDate as CalendarCommandDay;
   }
+
   const rawTitle = argumentsValue.title;
   if (typeof rawTitle !== 'string') return null;
   const title = rawTitle.trim();
@@ -288,11 +300,7 @@ function readValidatedCalendarCreateArguments(
 
   const time = readValidatedCalendarCreateTime(argumentsValue.time);
   if (time === undefined) return null;
-  return {
-    day: rawDay as PromotedCalendarCreateDay,
-    title,
-    time,
-  };
+  return { day, title, time };
 }
 
 function readValidatedCalendarDeleteArguments(
@@ -482,7 +490,7 @@ function calendarDeleteRoundTripsThroughCanonicalParser(options: {
 }
 
 function buildCalendarCreateFrontendCommand(options: {
-  day: PromotedCalendarCreateDay;
+  day: CalendarCommandDay;
   title: string;
   time: string | null;
 }): string {
@@ -490,7 +498,7 @@ function buildCalendarCreateFrontendCommand(options: {
 }
 
 function calendarCreateRoundTripsThroughCanonicalParser(options: {
-  day: PromotedCalendarCreateDay;
+  day: CalendarCommandDay;
   title: string;
   time: string | null;
 }): boolean {

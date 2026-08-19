@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.calendar_read_date_interpreter import (
+    apply_calendar_absolute_create_ownership_floor,
     apply_calendar_range_read_ownership_floor,
 )
 from app.qmeet_agent_shadow import (
@@ -28,6 +29,10 @@ async def decide(req: AgentShadowRequest):
     repaired_decision = apply_device_ui_ownership_floor(
         req.userMessage,
         response.decision,
+    )
+    repaired_decision = apply_calendar_absolute_create_ownership_floor(
+        req.userMessage,
+        repaired_decision,
     )
     repaired_decision = apply_calendar_range_read_ownership_floor(
         req.userMessage,

@@ -15,6 +15,11 @@ import {
   type CalendarDeleteCriteria,
 } from '../lib/calendarUtils';
 import {
+  createCalendarEventOnDate,
+  formatCalendarAbsoluteDate,
+  isCanonicalCalendarDateKey,
+} from '../lib/calendarAbsoluteCreate';
+import {
   decodeCalendarReadRangePayload,
   fetchCalendarEventsRange,
   filterCalendarEventsForRange,
@@ -87,8 +92,57 @@ export async function handleCalendarCommand(
     }
 
     case 'add-calendar-event': {
+      const targetDay = commandMatch.calendarEvent?.day ?? 'today';
+      if (isCanonicalCalendarDateKey(targetDay)) {
+        if (
+          !deps.googleCalendarStatus?.connected ||
+          !deps.googleCalendarStatus?.writeEnabled ||
+          !commandMatch.calendarEvent?.title?.trim()
+        ) {
+          const failure =
+            'I could not create that absolute-date Calendar event because Google Calendar write access is not available.';
+          return {
+            handled: true,
+            confirmationContent: failure,
+            shouldSpeakConfirmation: deps.voiceOutputEnabled,
+          };
+        }
+
+        try {
+          const response = await createCalendarEventOnDate({
+            title: commandMatch.calendarEvent.title,
+            date: targetDay,
+            time: commandMatch.calendarEvent.time || 'Later',
+          });
+          const addedEvent = response.event;
+          const confirmationContent = addedEvent
+            ? `Added Google Calendar event ${formatCalendarAbsoluteDate(targetDay)} at ${addedEvent.time}: ${addedEvent.title}.`
+            : 'Google Calendar did not return the created event.';
+          // Do not open the today/tomorrow Calendar panel for a farther-date
+          // event. The verified Tool receipt is the authoritative write result
+          // until the Calendar UI itself supports arbitrary date navigation.
+          return {
+            handled: true,
+            confirmationContent,
+            shouldSpeakConfirmation: deps.voiceOutputEnabled,
+            continuationContext: addedEvent ? confirmationContent : undefined,
+          };
+        } catch (error) {
+          console.error('Calendar absolute-date create error:', error);
+          const failure =
+            error instanceof Error && error.message.trim()
+              ? error.message
+              : 'I could not create that Google Calendar event.';
+          return {
+            handled: true,
+            confirmationContent: failure,
+            shouldSpeakConfirmation: deps.voiceOutputEnabled,
+          };
+        }
+      }
+
       const addedEvent = await deps.saveCalendarEvent(commandMatch.calendarEvent);
-      const targetView = commandMatch.calendarEvent?.day ?? 'today';
+      const targetView = targetDay;
       deps.setCalendarView(targetView);
       deps.setActivePanel('calendar');
       return {
