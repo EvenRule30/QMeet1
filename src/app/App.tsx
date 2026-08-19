@@ -2306,7 +2306,15 @@ export default function App() {
             day: promotedCalendarEditTargetCriteria.day,
           });
           const resolution = resolveCalendarEventReference(sourceEvents, {
-            day: promotedCalendarEditTargetCriteria.day,
+            // ISO-date targets were already bounded by getCalendarEventsForDeleteCriteria()
+            // through the canonical /events/range read. Do not re-interpret that absolute
+            // date through the legacy today/tomorrow resolver; only legacy relative views
+            // still need a day filter here.
+            day:
+              promotedCalendarEditTargetCriteria.day === 'today' ||
+              promotedCalendarEditTargetCriteria.day === 'tomorrow'
+                ? promotedCalendarEditTargetCriteria.day
+                : undefined,
             query: promotedCalendarEditTargetCriteria.query,
             time: promotedCalendarEditTargetCriteria.time,
           });
@@ -2393,7 +2401,10 @@ export default function App() {
         pendingTaskCompletionTargetsRef.current = [];
         pendingCalendarEditTargetIdRef.current = targetEditEvent.id;
         pendingCalendarEditChangesRef.current = resolvedCalendarEditChanges;
-        if (promotedCalendarEditTargetCriteria?.day) {
+        if (
+          promotedCalendarEditTargetCriteria?.day === 'today' ||
+          promotedCalendarEditTargetCriteria?.day === 'tomorrow'
+        ) {
           setCalendarView(promotedCalendarEditTargetCriteria.day);
         }
         setPendingInterpreterCommand({
@@ -2468,7 +2479,15 @@ export default function App() {
           : [];
         const targetedDeleteResolution = commandMatch.command === 'delete-calendar-event'
           ? resolveCalendarEventReference(targetedDeleteSourceEvents, {
-              day: commandMatch.calendarDelete?.day ?? calendarView,
+              // Absolute-date source events were already fetched from the exact
+              // canonical date window. Only today/tomorrow need a second day filter.
+              day:
+                commandMatch.calendarDelete?.day === 'today' ||
+                commandMatch.calendarDelete?.day === 'tomorrow'
+                  ? commandMatch.calendarDelete.day
+                  : commandMatch.calendarDelete?.day
+                    ? undefined
+                    : calendarView,
               query: commandMatch.calendarDelete?.title ?? null,
               time: commandMatch.calendarDelete?.time ?? null,
             })
@@ -2561,7 +2580,8 @@ export default function App() {
         if (
           commandMatch.command === 'delete-calendar-event' &&
           targetDeleteEvent &&
-          commandMatch.calendarDelete?.day
+          (commandMatch.calendarDelete?.day === 'today' ||
+            commandMatch.calendarDelete?.day === 'tomorrow')
         ) {
           setCalendarView(commandMatch.calendarDelete.day);
         }

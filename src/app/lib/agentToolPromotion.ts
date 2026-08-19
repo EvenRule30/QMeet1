@@ -62,20 +62,20 @@ export type PromotedCalendarCreateToolCommand = {
 };
 
 export type PromotedCalendarDeleteToolCommand = {
-  day: PromotedCalendarCreateDay;
+  day: CalendarCommandDay;
   title: string | null;
   time: string | null;
   commandMatch: CommandMatch;
 };
 
 export type PromotedCalendarEditTargetCriteria = {
-  day: PromotedCalendarCreateDay;
+  day: CalendarCommandDay;
   query: string;
   time: string | null;
 };
 
 export type PromotedCalendarEditChanges = {
-  day?: PromotedCalendarCreateDay;
+  day?: CalendarCommandDay;
   title?: string;
   time?: string;
 };
@@ -305,38 +305,33 @@ function readValidatedCalendarCreateArguments(
 
 function readValidatedCalendarDeleteArguments(
   argumentsValue: Record<string, unknown>,
-): { day: PromotedCalendarCreateDay; title: string | null; time: string | null } | null {
-  if (!hasExactlyKeys(argumentsValue, ['day', 'title', 'time'])) return null;
+): { day: CalendarCommandDay; title: string | null; time: string | null } | null {
+  const legacyShape = hasExactlyKeys(argumentsValue, ['day', 'title', 'time']);
+  const absoluteShape = hasExactlyKeys(argumentsValue, ['date', 'title', 'time']);
+  if (!legacyShape && !absoluteShape) return null;
 
-  const rawDay = argumentsValue.day;
-  if (
-    typeof rawDay !== 'string' ||
-    !PROMOTED_CALENDAR_CREATE_DAYS.has(rawDay as PromotedCalendarCreateDay)
-  ) {
-    return null;
-  }
+  const rawDay = legacyShape ? argumentsValue.day : argumentsValue.date;
+  if (typeof rawDay !== 'string') return null;
+  const day = PROMOTED_CALENDAR_CREATE_DAYS.has(rawDay as PromotedCalendarCreateDay)
+    ? (rawDay as PromotedCalendarCreateDay)
+    : isCanonicalCalendarDateKey(rawDay)
+      ? (rawDay as CalendarCommandDay)
+      : null;
+  if (!day) return null;
+
   const rawTitle = argumentsValue.title;
   let title: string | null = null;
   if (rawTitle !== null) {
     if (typeof rawTitle !== 'string') return null;
     title = rawTitle.trim();
-    if (
-      !title ||
-      title.length > MAX_PROMOTED_CALENDAR_TITLE_LENGTH ||
-      CONTROL_CHARACTER_RE.test(title)
-    ) {
+    if (!title || title.length > MAX_PROMOTED_CALENDAR_TITLE_LENGTH || CONTROL_CHARACTER_RE.test(title)) {
       return null;
     }
   }
-
   const time = readValidatedCalendarCreateTime(argumentsValue.time);
   if (time === undefined) return null;
   if (!title && !time) return null;
-  return {
-    day: rawDay as PromotedCalendarCreateDay,
-    title,
-    time,
-  };
+  return { day, title, time };
 }
 
 function readValidatedCalendarNullableTitle(rawTitle: unknown): string | null | undefined {
@@ -359,81 +354,51 @@ function readValidatedCalendarEditArguments(
   target: PromotedCalendarEditTargetCriteria;
   changes: PromotedCalendarEditChanges;
 } | null {
-  if (
-    !hasExactlyKeys(argumentsValue, [
-      'targetDay',
-      'query',
-      'currentTime',
-      'changeField',
-      'changeValue',
-    ])
-  ) {
-    return null;
-  }
-  const rawTargetDay = argumentsValue.targetDay;
-  if (
-    typeof rawTargetDay !== 'string' ||
-    !PROMOTED_CALENDAR_CREATE_DAYS.has(rawTargetDay as PromotedCalendarCreateDay)
-  ) {
-    return null;
-  }
+  const legacyShape = hasExactlyKeys(argumentsValue, [
+    'targetDay', 'query', 'currentTime', 'changeField', 'changeValue',
+  ]);
+  const absoluteShape = hasExactlyKeys(argumentsValue, [
+    'targetDate', 'query', 'currentTime', 'changeField', 'changeValue',
+  ]);
+  if (!legacyShape && !absoluteShape) return null;
+
+  const rawTargetDay = legacyShape ? argumentsValue.targetDay : argumentsValue.targetDate;
+  if (typeof rawTargetDay !== 'string') return null;
+  const targetDay = PROMOTED_CALENDAR_CREATE_DAYS.has(rawTargetDay as PromotedCalendarCreateDay)
+    ? (rawTargetDay as PromotedCalendarCreateDay)
+    : isCanonicalCalendarDateKey(rawTargetDay)
+      ? (rawTargetDay as CalendarCommandDay)
+      : null;
+  if (!targetDay) return null;
 
   const rawQuery = argumentsValue.query;
   if (typeof rawQuery !== 'string') return null;
   const query = rawQuery.trim();
-  if (
-    !query ||
-    query.length > MAX_PROMOTED_CALENDAR_TITLE_LENGTH ||
-    CONTROL_CHARACTER_RE.test(query)
-  ) {
-    return null;
-  }
+  if (!query || query.length > MAX_PROMOTED_CALENDAR_TITLE_LENGTH || CONTROL_CHARACTER_RE.test(query)) return null;
   const currentTime = readValidatedCalendarCreateTime(argumentsValue.currentTime);
   if (currentTime === undefined) return null;
+
   const changeField = argumentsValue.changeField;
   const changeValue = argumentsValue.changeValue;
   if (changeField === 'time') {
     const newTime = readValidatedCalendarCreateTime(changeValue);
     if (!newTime) return null;
-    return {
-      target: {
-        day: rawTargetDay as PromotedCalendarCreateDay,
-        query,
-        time: currentTime,
-      },
-      changes: { time: newTime },
-    };
+    return { target: { day: targetDay, query, time: currentTime }, changes: { time: newTime } };
   }
   if (changeField === 'title') {
     const newTitle = readValidatedCalendarNullableTitle(changeValue);
     if (!newTitle) return null;
-    return {
-      target: {
-        day: rawTargetDay as PromotedCalendarCreateDay,
-        query,
-        time: currentTime,
-      },
-      changes: { title: newTitle },
-    };
+    return { target: { day: targetDay, query, time: currentTime }, changes: { title: newTitle } };
   }
-  if (changeField === 'day') {
-    if (
-      typeof changeValue !== 'string' ||
-      !PROMOTED_CALENDAR_CREATE_DAYS.has(
-        changeValue as PromotedCalendarCreateDay,
-      ) ||
-      changeValue === rawTargetDay
-    ) {
-      return null;
-    }
-    return {
-      target: {
-        day: rawTargetDay as PromotedCalendarCreateDay,
-        query,
-        time: currentTime,
-      },
-      changes: { day: changeValue as PromotedCalendarCreateDay },
-    };
+  if (changeField === 'day' || changeField === 'date') {
+    if (typeof changeValue !== 'string') return null;
+    const destination = PROMOTED_CALENDAR_CREATE_DAYS.has(changeValue as PromotedCalendarCreateDay)
+      ? (changeValue as PromotedCalendarCreateDay)
+      : isCanonicalCalendarDateKey(changeValue)
+        ? (changeValue as CalendarCommandDay)
+        : null;
+    if (!destination || destination === targetDay) return null;
+    return { target: { day: targetDay, query, time: currentTime }, changes: { day: destination } };
   }
   return null;
 }
@@ -445,7 +410,8 @@ function calendarEditRoundTripsThroughCanonicalParser(
     changes.day &&
     !changes.time &&
     !changes.title &&
-    PROMOTED_CALENDAR_CREATE_DAYS.has(changes.day)
+    (PROMOTED_CALENDAR_CREATE_DAYS.has(changes.day as PromotedCalendarCreateDay) ||
+      isCanonicalCalendarDateKey(changes.day))
   ) {
     return true;
   }
@@ -462,7 +428,7 @@ function calendarEditRoundTripsThroughCanonicalParser(
 }
 
 function buildCalendarDeleteFrontendCommand(options: {
-  day: PromotedCalendarCreateDay;
+  day: CalendarCommandDay;
   title: string | null;
   time: string | null;
 }): string {
@@ -473,7 +439,7 @@ function buildCalendarDeleteFrontendCommand(options: {
 }
 
 function calendarDeleteRoundTripsThroughCanonicalParser(options: {
-  day: PromotedCalendarCreateDay;
+  day: CalendarCommandDay;
   title: string | null;
   time: string | null;
 }): boolean {

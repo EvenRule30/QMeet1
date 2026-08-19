@@ -560,3 +560,124 @@ def apply_calendar_absolute_create_ownership_floor(
         }
     )
 
+
+
+_EDIT_LEAD_RE = re.compile(r"^(?:please\s+)?(?:move|reschedule|change|edit|update)\b", re.IGNORECASE)
+_DELETE_LEAD_RE = re.compile(r"^(?:please\s+)?(?:delete|remove|cancel|erase)\b", re.IGNORECASE)
+_LOOKUP_TIME_RE = re.compile(r"\b(\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)|noon|midnight)\b", re.IGNORECASE)
+
+
+def _validated_lookup_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = re.sub(r"\s+", " ", value.strip()).strip(" ,.;:")
+    return cleaned if cleaned and len(cleaned) <= 240 else None
+
+
+def _fallback_event_query(user_message: str) -> str | None:
+    text = re.sub(r"\s+", " ", user_message.strip())
+    match = re.search(r"\b(?:meeting|appointment|event)\b", text, re.IGNORECASE)
+    return match.group(0).casefold() if match else None
+
+
+def apply_calendar_absolute_edit_delete_ownership_floor(
+    user_message: str,
+    decision: Any,
+    *,
+    reference_date: date | None = None,
+) -> Any:
+    """Resolve farther-date targeted delete and day-move edit semantics only.
+
+    This floor never resolves canonical event identity. It emits lookup criteria
+    and one requested date change; frontend Calendar state still resolves those
+    criteria to zero/one/multiple events and locks one event id across confirm.
+    """
+
+    text = re.sub(r"\s+", " ", user_message.strip())
+    is_delete = bool(_DELETE_LEAD_RE.search(text))
+    is_edit = bool(_EDIT_LEAD_RE.search(text))
+    if not (is_delete or is_edit):
+        return decision
+
+    existing_arguments = getattr(decision, "proposedArguments", {}) or {}
+    if not isinstance(existing_arguments, dict):
+        existing_arguments = {}
+
+    if is_edit:
+        split = re.split(r"\s+to\s+", text, maxsplit=1, flags=re.IGNORECASE)
+        if len(split) != 2:
+            return decision
+        source_window = resolve_calendar_read_window(
+            split[0], reference_date=reference_date
+        )
+        if source_window is None or source_window.day_count != 1:
+            return decision
+        destination_window = resolve_calendar_read_window(
+            split[1], reference_date=source_window.start_date
+        )
+        if destination_window is None or destination_window.day_count != 1:
+            return decision
+        if destination_window.start_date == source_window.start_date:
+            return decision
+
+        query = (
+            _validated_lookup_text(existing_arguments.get("query"))
+            or _fallback_event_query(user_message)
+        )
+        if not query:
+            return decision
+        current_time = _validated_create_time(existing_arguments.get("currentTime"))
+        explicit_time = _LOOKUP_TIME_RE.search(split[0])
+        if explicit_time:
+            current_time = _validated_create_time(explicit_time.group(1))
+        if current_time is _INVALID_CREATE_VALUE:
+            current_time = None
+
+        return decision.model_copy(update={
+            "turnOwner": "calendar",
+            "disposition": "tool",
+            "proposedCapability": "calendar",
+            "proposedAction": "edit-last-event",
+            "proposedArguments": {
+                "targetDate": source_window.start_date.isoformat(),
+                "query": query,
+                "currentTime": current_time,
+                "changeField": "date",
+                "changeValue": destination_window.start_date.isoformat(),
+            },
+            "responsePlan": "Resolve one real Calendar event on the source date, preview the absolute-date move, require confirmation, then update only the locked event identity.",
+            "confidence": max(float(getattr(decision, "confidence", 0.0) or 0.0), 0.98),
+            "reason": "Deterministic Calendar absolute-date edit floor resolved one source date and one destination date without resolving event identity.",
+        })
+
+    source_window = resolve_calendar_read_window(text, reference_date=reference_date)
+    if source_window is None or source_window.day_count != 1:
+        return decision
+    title = (
+        _validated_lookup_text(existing_arguments.get("title"))
+        or _validated_lookup_text(existing_arguments.get("query"))
+        or _fallback_event_query(user_message)
+    )
+    current_time = _validated_create_time(existing_arguments.get("time"))
+    explicit_time = _LOOKUP_TIME_RE.search(text)
+    if explicit_time:
+        current_time = _validated_create_time(explicit_time.group(1))
+    if current_time is _INVALID_CREATE_VALUE:
+        current_time = None
+    if not title and not current_time:
+        return decision
+
+    return decision.model_copy(update={
+        "turnOwner": "calendar",
+        "disposition": "tool",
+        "proposedCapability": "calendar",
+        "proposedAction": "delete-calendar-event",
+        "proposedArguments": {
+            "date": source_window.start_date.isoformat(),
+            "title": title,
+            "time": current_time,
+        },
+        "responsePlan": "Resolve one real Calendar event on the exact date, require confirmation, then delete only the locked event identity.",
+        "confidence": max(float(getattr(decision, "confidence", 0.0) or 0.0), 0.98),
+        "reason": "Deterministic Calendar absolute-date delete floor resolved one source date while leaving canonical event identity to authoritative Calendar state.",
+    })

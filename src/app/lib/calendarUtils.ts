@@ -1,17 +1,18 @@
 import type { CalendarEvent } from '../types';
+import type { CalendarCommandDay } from '../commands';
 import {
   isEventForCalendarView,
   type CalendarView,
 } from './dateUtils';
 
 export type CalendarDeleteCriteria = {
-  day?: CalendarView;
+  day?: CalendarCommandDay;
   time?: string;
   title?: string;
 };
 
 export function describeCalendarEditPayload(changes?: {
-  day?: CalendarView;
+  day?: CalendarCommandDay;
   time?: string;
   title?: string;
 }): string {
@@ -40,7 +41,7 @@ export function describeCalendarEditPayload(changes?: {
 }
 
 export function buildCalendarEditFrontendCommand(changes?: {
-  day?: CalendarView;
+  day?: CalendarCommandDay;
   time?: string;
   title?: string;
 }): string {
@@ -184,11 +185,11 @@ export function calendarEventMatchesDeleteCriteria(
 ): boolean {
   if (!criteria) return true;
 
-  if (
-    criteria.day &&
-    !isEventForCalendarView(event, criteria.day)
-  ) {
-    return false;
+  if (criteria.day) {
+    const dayMatches = criteria.day === 'today' || criteria.day === 'tomorrow'
+      ? isEventForCalendarView(event, criteria.day)
+      : event.dateKey === criteria.day;
+    if (!dayMatches) return false;
   }
 
   const targetTitle = normalizeCalendarTitleForComparison(

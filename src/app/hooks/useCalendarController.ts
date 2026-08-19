@@ -8,6 +8,7 @@ import {
   startCalendarAuth,
   updateGoogleCalendarEvent,
 } from '../api';
+import type { CalendarCommandDay } from '../commands';
 import {
   ActivePanel,
   CalendarBackendStatus,
@@ -23,6 +24,9 @@ import {
   calendarEventMatchesDeleteCriteria,
   type CalendarDeleteCriteria,
 } from '../lib/calendarUtils';
+import { fetchCalendarEventsRange } from '../lib/calendarReadRange';
+import { isCanonicalCalendarDateKey } from '../lib/calendarAbsoluteCreate';
+import { updateCalendarEventOnAbsoluteDate } from '../lib/calendarAbsoluteUpdate';
 
 const CALENDAR_EVENTS_STORAGE_KEY = 'qmeet-calendar-events';
 const LEGACY_CALENDAR_EVENTS_STORAGE_KEYS = [
@@ -32,7 +36,7 @@ const LEGACY_CALENDAR_EVENTS_STORAGE_KEYS = [
 ];
 
 type CalendarEventInput = {
-  day?: CalendarView;
+  day?: CalendarCommandDay;
   time?: string;
   title?: string;
 };
@@ -345,11 +349,18 @@ export function useCalendarController({
         setGoogleCalendarLoading(true);
         setGoogleCalendarError('');
         try {
-          const response = await updateGoogleCalendarEvent(googleEventId, {
-            ...(changes.title?.trim() ? { title: changes.title.trim() } : {}),
-            ...(changes.day ? { day: changes.day } : {}),
-            ...(changes.time?.trim() ? { time: changes.time.trim() } : {}),
-          });
+          const response = changes.day && isCanonicalCalendarDateKey(changes.day)
+            ? await updateCalendarEventOnAbsoluteDate({
+                eventId: googleEventId,
+                date: changes.day,
+                ...(changes.title?.trim() ? { title: changes.title.trim() } : {}),
+                ...(changes.time?.trim() ? { time: changes.time.trim() } : {}),
+              })
+            : await updateGoogleCalendarEvent(googleEventId, {
+                ...(changes.title?.trim() ? { title: changes.title.trim() } : {}),
+                ...(changes.day ? { day: changes.day } : {}),
+                ...(changes.time?.trim() ? { time: changes.time.trim() } : {}),
+              });
           if (response.event) {
             setGoogleCalendarEvents((previous) => [
               response.event as CalendarEvent,
@@ -392,7 +403,9 @@ export function useCalendarController({
         title: changes.title?.trim() || localEvent.title,
         time: changes.time?.trim() || localEvent.time,
         dateKey: changes.day
-          ? getDateKeyForCalendarView(changes.day)
+          ? isCanonicalCalendarDateKey(changes.day)
+            ? changes.day
+            : getDateKeyForCalendarView(changes.day)
           : localEvent.dateKey,
         source: localEvent.source ?? 'local',
       };
@@ -562,6 +575,19 @@ export function useCalendarController({
   const getCalendarEventsForDeleteCriteria = useCallback(
     async (criteria?: CalendarDeleteCriteria): Promise<CalendarEvent[]> => {
       if (googleCalendarStatus?.connected) {
+        if (criteria?.day && isCanonicalCalendarDateKey(criteria.day)) {
+          const response = await fetchCalendarEventsRange({
+            startDate: criteria.day,
+            endDate: criteria.day,
+          });
+          setGoogleCalendarEvents((previous) => [
+            ...response.events,
+            ...previous.filter(
+              (existing) => !response.events.some((event) => event.id === existing.id),
+            ),
+          ]);
+          return response.events;
+        }
         const targetView = criteria?.day ?? calendarView;
         return refreshGoogleCalendar(targetView);
       }

@@ -10,6 +10,7 @@ import {
   isEventForCalendarView,
   type CalendarView,
 } from '../lib/dateUtils';
+import { isCanonicalCalendarDateKey } from '../lib/calendarAbsoluteCreate';
 import {
   describeCalendarDeletePayload,
   type CalendarDeleteCriteria,
@@ -17,7 +18,6 @@ import {
 import {
   createCalendarEventOnDate,
   formatCalendarAbsoluteDate,
-  isCanonicalCalendarDateKey,
 } from '../lib/calendarAbsoluteCreate';
 import {
   decodeCalendarReadRangePayload,
@@ -244,8 +244,10 @@ export async function handleCalendarCommand(
     case 'delete-calendar-event': {
       const targetView = commandMatch.calendarDelete?.day ?? deps.calendarView;
       const deletedEvent = await deps.deleteCalendarEventByCriteria(commandMatch.calendarDelete);
-      deps.setCalendarView(targetView);
-      deps.setActivePanel('calendar');
+      if (!isCanonicalCalendarDateKey(targetView)) {
+        deps.setCalendarView(targetView);
+        deps.setActivePanel('calendar');
+      }
       return {
         handled: true,
         confirmationContent: deletedEvent

@@ -9,7 +9,7 @@ import {
 } from './calendarUtils';
 
 export type CalendarEventReferenceCriteria = {
-  day: CalendarView;
+  day?: CalendarView;
   query?: string | null;
   time?: string | null;
 };
@@ -135,24 +135,24 @@ export function resolveCalendarEventReference(
   events: CalendarEvent[],
   criteria: CalendarEventReferenceCriteria,
 ): CalendarEventReferenceResolution {
-  const dayCandidates = events.filter(
+  const scopedCandidates = events.filter(
     (event) =>
-      isEventForCalendarView(event, criteria.day) &&
+      (!criteria.day || isEventForCalendarView(event, criteria.day)) &&
       eventMatchesRequestedTime(event, criteria.time),
   );
 
   const query = normalizeReferenceTitle(criteria.query);
   if (!query) {
-    if (dayCandidates.length === 1) {
-      return { kind: 'exact', event: dayCandidates[0], score: 1 };
+    if (scopedCandidates.length === 1) {
+      return { kind: 'exact', event: scopedCandidates[0], score: 1 };
     }
-    if (dayCandidates.length > 1) {
-      return { kind: 'ambiguous', candidates: dayCandidates };
+    if (scopedCandidates.length > 1) {
+      return { kind: 'ambiguous', candidates: scopedCandidates };
     }
     return { kind: 'none', candidates: [] };
   }
 
-  const exactMatches = dayCandidates.filter(
+  const exactMatches = scopedCandidates.filter(
     (event) => normalizeReferenceTitle(event.title) === query,
   );
   if (exactMatches.length === 1) {
@@ -162,7 +162,7 @@ export function resolveCalendarEventReference(
     return { kind: 'ambiguous', candidates: exactMatches };
   }
 
-  const ranked = dayCandidates
+  const ranked = scopedCandidates
     .map((event) => ({
       event,
       score: titleSimilarity(query, normalizeReferenceTitle(event.title)),

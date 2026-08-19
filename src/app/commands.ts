@@ -92,13 +92,13 @@ export interface CalendarCommandPayload {
 }
 
 export interface CalendarEditCommandPayload {
-  day?: 'today' | 'tomorrow';
+  day?: CalendarCommandDay;
   time?: string;
   title?: string;
 }
 
 export interface CalendarDeleteCommandPayload {
-  day?: 'today' | 'tomorrow';
+  day?: CalendarCommandDay;
   time?: string;
   title?: string;
 }
@@ -1748,6 +1748,10 @@ function makeCalendarDeletePayload(
 }
 
 function extractCalendarDeletePayload(normalized: string): CalendarDeleteCommandPayload | null {
+  const absoluteDelete = normalized.match(/^delete event (\d{4}-\d{2}-\d{2})(?: at (.+?))?(?: called (.+))?$/i);
+  if (absoluteDelete) {
+    return makeCalendarDeletePayload(absoluteDelete[1], absoluteDelete[2], absoluteDelete[3]);
+  }
   const timeToken = String.raw`(?:\d{1,2})(?::\d{2})?\s*(?:a\.?\s*m\.?|p\.?\s*m\.?|am|pm)?|noon|midnight`;
   const calendarWord = String.raw`(?:calendar|calender|calander)`;
   const eventWord = String.raw`(?:(?:${calendarWord})\s+)?(?:event|appointment|meeting)`;
@@ -1846,8 +1850,8 @@ function normalizeCalendarEditTail(tail: string): string {
     .trim();
 }
 
-function isCalendarDay(value: string | undefined): value is 'today' | 'tomorrow' {
-  return value === 'today' || value === 'tomorrow';
+function isCalendarDay(value: string | undefined): value is CalendarCommandDay {
+  return value === 'today' || value === 'tomorrow' || Boolean(value && isAbsoluteCalendarCommandDay(value));
 }
 
 function extractCalendarEditPayload(normalized: string): CalendarEditCommandPayload | null {
