@@ -19,7 +19,6 @@ type ActiveFocusProjectionContext = {
   goal: string;
   mode: string;
 } | null;
-
 export type AgentShadowObserverOptions = {
   userMessage: string;
   recentMessages: Message[];
@@ -31,7 +30,6 @@ export type AgentShadowObserverOptions = {
   pendingCommand: PendingCommandContext;
   frontendFocusProjection: ActiveFocusProjectionContext;
 };
-
 export type LegacyShadowRouteObservation = {
   route: string;
   owner?: 'general_chat' | 'calendar' | 'search' | 'memory' | 'tasks' | 'notes' | 'focus' | 'device_ui' | 'visual' | 'other';
@@ -40,7 +38,6 @@ export type LegacyShadowRouteObservation = {
   disposition?: 'conversation' | 'tool' | 'clarify';
   sequence?: number;
 };
-
 export type AgentShadowDecision = {
   turnOwner: string;
   focusRelevant: boolean;
@@ -61,9 +58,6 @@ export type AgentShadowResponse = {
   decision: AgentShadowDecision;
 };
 
-
-
-
 export type PromotedConversationOwnershipHint = {
   source: 'agent-shadow';
   turnOwner: 'general_chat' | 'focus';
@@ -81,6 +75,21 @@ function waitForTimeout(milliseconds: number): Promise<null> {
   });
 }
 
+const AGENT_FIRST_SINGLE_INTENT_TIMEOUT = Symbol(
+  'agent-first-single-intent-timeout',
+);
+
+function waitForSingleIntentTimeout(
+  milliseconds: number,
+): Promise<typeof AGENT_FIRST_SINGLE_INTENT_TIMEOUT> {
+  return new Promise((resolve) => {
+    globalThis.setTimeout(
+      () => resolve(AGENT_FIRST_SINGLE_INTENT_TIMEOUT),
+      milliseconds,
+    );
+  });
+}
+
 export async function resolvePromotedConversationOwnership(options: {
   shadowTurn: Promise<AgentShadowResponse | null> | null;
   activeFocusId: string | null;
@@ -89,7 +98,6 @@ export async function resolvePromotedConversationOwnership(options: {
   if (!options.shadowTurn) return null;
 
   const timeoutMs = Math.max(0, options.timeoutMs ?? CONVERSATION_OWNERSHIP_WAIT_MS);
-
   try {
     const shadow = await Promise.race([
       options.shadowTurn,
@@ -100,7 +108,6 @@ export async function resolvePromotedConversationOwnership(options: {
     const decision = shadow.decision;
     if (decision.disposition !== 'conversation') return null;
     if (decision.confidence < CONVERSATION_OWNERSHIP_MIN_CONFIDENCE) return null;
-
     if (decision.turnOwner === 'general_chat' && decision.focusRelevant === false) {
       return {
         source: 'agent-shadow',
@@ -110,7 +117,6 @@ export async function resolvePromotedConversationOwnership(options: {
         turnId: shadow.turnId,
       };
     }
-
     if (
       decision.turnOwner === 'focus' &&
       decision.focusRelevant === true &&
@@ -124,7 +130,6 @@ export async function resolvePromotedConversationOwnership(options: {
         turnId: shadow.turnId,
       };
     }
-
     return null;
   } catch (error) {
     console.warn(
@@ -139,7 +144,6 @@ export type ExplicitDeterministicRouteBeforeAgent = {
   kind: 'exact-command' | 'focus-mutation';
   reason: string;
 };
-
 const EXPLICIT_COMMAND_LEAD = /^(?:please\s+)?(?:open|show|display|bring\s+up|pull\s+up|close|hide|go|return|take|read|list|search|look\s+up|find|add|create|schedule|delete|remove|erase|edit|change|update|mark|complete|save|clear|start|begin|resume|restart|end|stop|finish|rename|retitle|set|turn|enable|disable|mute|unmute|increase|decrease|summarize|recap|prepare|wrap|link)\b/i;
 const EXPLICIT_FOCUS_FIELD_ASSIGNMENT = /^(?:please\s+)?(?:(?:focus\s+)?(?:goal|objective|mode|title))\s*[:=]\s*\S/i;
 const EXPLICIT_FOCUS_LIFECYCLE_COMMANDS = new Set([
@@ -149,7 +153,6 @@ const EXPLICIT_FOCUS_LIFECYCLE_COMMANDS = new Set([
   'end-focus-session',
   'end-focus-with-summary',
 ]);
-
 /**
  * Phase 21B agent-first routing inspects an exact local parse before asking the
  * model to own the turn, but parsing alone is not authority to execute it.
@@ -164,7 +167,6 @@ export function resolveExplicitDeterministicRouteBeforeAgent(options: {
 }): ExplicitDeterministicRouteBeforeAgent | null {
   const text = options.userMessage.trim();
   if (!text) return null;
-
   if (EXPLICIT_FOCUS_FIELD_ASSIGNMENT.test(text)) {
     return {
       kind: 'focus-mutation',
@@ -182,13 +184,11 @@ export function resolveExplicitDeterministicRouteBeforeAgent(options: {
       reason: 'The user used explicit Focus lifecycle/update command syntax.',
     };
   }
-
   return {
     kind: 'exact-command',
     reason: 'The user used explicit deterministic command syntax.',
   };
 }
-
 export type PromotedSingleIntentDecision = {
   source: 'agent-shadow';
   turnOwner:
@@ -209,9 +209,8 @@ export type PromotedSingleIntentDecision = {
   confidence: number;
   turnId: string;
 };
-
 const AGENT_FIRST_SINGLE_INTENT_MIN_CONFIDENCE = 0.9;
-const AGENT_FIRST_SINGLE_INTENT_WAIT_MS = 2500;
+const AGENT_FIRST_SINGLE_INTENT_WAIT_MS = 7000;
 const PROMOTABLE_TOOL_OWNERS = new Set<PromotedSingleIntentDecision['turnOwner']>([
   'calendar',
   'search',
@@ -222,7 +221,6 @@ const PROMOTABLE_TOOL_OWNERS = new Set<PromotedSingleIntentDecision['turnOwner']
   'device_ui',
   'visual',
 ]);
-
 export async function resolvePromotedSingleIntentDecision(options: {
   shadowTurn: Promise<AgentShadowResponse | null> | null;
   activeFocusId: string | null;
@@ -234,12 +232,20 @@ export async function resolvePromotedSingleIntentDecision(options: {
     0,
     options.timeoutMs ?? AGENT_FIRST_SINGLE_INTENT_WAIT_MS,
   );
-
   try {
-    const shadow = await Promise.race([
+    const shadowOrTimeout = await Promise.race([
       options.shadowTurn,
-      waitForTimeout(timeoutMs),
+      waitForSingleIntentTimeout(timeoutMs),
     ]);
+    if (shadowOrTimeout === AGENT_FIRST_SINGLE_INTENT_TIMEOUT) {
+      console.warn('[QMeet agent-first timeout]', {
+        timeoutMs,
+        outcome: 'timed-out-before-promoted-decision',
+      });
+      return null;
+    }
+
+    const shadow = shadowOrTimeout;
     if (!shadow?.decision) return null;
 
     const decision = shadow.decision;
@@ -247,7 +253,6 @@ export async function resolvePromotedSingleIntentDecision(options: {
       return null;
     }
     if (decision.disposition === 'clarify') return null;
-
     if (decision.disposition === 'conversation') {
       if (
         decision.turnOwner === 'general_chat' &&
@@ -265,7 +270,6 @@ export async function resolvePromotedSingleIntentDecision(options: {
           turnId: shadow.turnId,
         };
       }
-
       if (
         decision.turnOwner === 'focus' &&
         decision.focusRelevant === true &&
@@ -283,7 +287,6 @@ export async function resolvePromotedSingleIntentDecision(options: {
           turnId: shadow.turnId,
         };
       }
-
       return null;
     }
 
@@ -297,7 +300,6 @@ export async function resolvePromotedSingleIntentDecision(options: {
     if (decision.turnOwner === 'focus' && decision.focusRelevant !== true) {
       return null;
     }
-
     return {
       source: 'agent-shadow',
       turnOwner: decision.turnOwner as PromotedSingleIntentDecision['turnOwner'],
@@ -317,7 +319,6 @@ export async function resolvePromotedSingleIntentDecision(options: {
     return null;
   }
 }
-
 export type AgentShadowFocusMutationGuardResult = {
   guarded: boolean;
   shadow: AgentShadowResponse | null;
@@ -336,20 +337,17 @@ function normalizeLifecycleText(message: string): string {
 function hasExplicitFocusStartIntent(message: string): boolean {
   const text = normalizeLifecycleText(message);
   if (!text) return false;
-
   return /^(?:please\s+)?(?:start|begin|create|open)\s+(?:(?:a|the|my|our|new)\s+)*(?:focus(?:\s+session)?|session)(?:\b|:)/.test(text);
 }
 
 function hasExplicitFocusTitleUpdateIntent(message: string): boolean {
   const text = normalizeLifecycleText(message);
   if (!text) return false;
-
   return (
     /^(?:please\s+)?(?:rename|retitle)\s+(?:(?:the|my|our|current|active)\s+)*(?:focus(?:\s+session)?|session)(?:\s+title)?\b/.test(text) ||
     /^(?:please\s+)?(?:set|change|update|switch)\s+(?:(?:the|my|our|current|active)\s+)*(?:focus(?:\s+session)?|session)(?:\s+title)?\s+(?:to|as|on|about|around)\b/.test(text)
   );
 }
-
 export function shouldGuardInferredActiveFocusReplacement(options: {
   userMessage: string;
   semanticKind: string;
@@ -359,7 +357,6 @@ export function shouldGuardInferredActiveFocusReplacement(options: {
   const guardableReplacement =
     options.semanticKind === 'start' ||
     (options.semanticKind === 'update' && options.mutationChangesTitle);
-
   if (!guardableReplacement) {
     return {
       guarded: false,
@@ -376,7 +373,6 @@ export function shouldGuardInferredActiveFocusReplacement(options: {
       reason: 'There is no active Focus to protect from inferred replacement.',
     };
   }
-
   const explicitMutation =
     options.semanticKind === 'start'
       ? hasExplicitFocusStartIntent(options.userMessage)
@@ -390,7 +386,6 @@ export function shouldGuardInferredActiveFocusReplacement(options: {
         'The user used explicit Focus lifecycle/title mutation language, so the verified canonical executor remains authoritative.',
     };
   }
-
   return {
     guarded: true,
     shadow: null,
@@ -398,7 +393,6 @@ export function shouldGuardInferredActiveFocusReplacement(options: {
       'An active Focus cannot be started over or retitled from inferred content language alone. Explicit Focus mutation intent is required.',
   };
 }
-
 // Compatibility export for the first guarded-veto slice. The live safety
 // decision is now deterministic and does not wait for or trust a shadow-model
 // response. Shadow remains observational for comparison and future promotion.
@@ -418,7 +412,6 @@ export async function shouldGuardInferredSemanticFocusMutationWithShadow(options
     activeFocusId: options.activeFocusId,
   });
 }
-
 function buildRecentConversation(messages: Message[]): ShadowConversationMessage[] {
   return messages
     .slice(-12)
@@ -429,7 +422,6 @@ function buildRecentConversation(messages: Message[]): ShadowConversationMessage
       if (message.role === 'assistant' && message.variant === 'tool') {
         return { role: 'tool', content };
       }
-
       return {
         role: message.role,
         content,
@@ -446,6 +438,7 @@ export async function observeAgentShadowTurn(
   const userMessage = options.userMessage.trim();
   if (!userMessage) return null;
 
+  const startedAt = Date.now();
   const requestBody = {
     userMessage,
     recentConversation: buildRecentConversation(options.recentMessages),
@@ -462,7 +455,6 @@ export async function observeAgentShadowTurn(
       frontendFocusProjection: options.frontendFocusProjection,
     },
   };
-
   try {
     const response = await fetch(`${QMEET_API_BASE_URL}/api/agent/shadow/decide`, {
       method: 'POST',
@@ -478,7 +470,6 @@ export async function observeAgentShadowTurn(
       );
       return null;
     }
-
     const payload = (await response.json()) as AgentShadowResponse;
     if (!payload?.ok || payload.mode !== 'shadow' || !payload.turnId) {
       console.warn(
@@ -486,7 +477,6 @@ export async function observeAgentShadowTurn(
       );
       return null;
     }
-
     console.debug('[QMeet agent shadow]', {
       turnId: payload.turnId,
       owner: payload.decision?.turnOwner,
@@ -494,6 +484,7 @@ export async function observeAgentShadowTurn(
       disposition: payload.decision?.disposition,
       proposedAction: payload.decision?.proposedAction,
       confidence: payload.decision?.confidence,
+      latencyMs: Date.now() - startedAt,
     });
     return payload;
   } catch (error) {
@@ -504,7 +495,6 @@ export async function observeAgentShadowTurn(
     return null;
   }
 }
-
 export async function reportAgentShadowLegacyRoute(
   shadowTurn: Promise<AgentShadowResponse | null> | null,
   observation: LegacyShadowRouteObservation,
@@ -517,7 +507,6 @@ export async function reportAgentShadowLegacyRoute(
   try {
     const shadow = await shadowTurn;
     if (!shadow?.turnId) return;
-
     const response = await fetch(`${QMEET_API_BASE_URL}/api/agent/shadow/compare`, {
       method: 'POST',
       headers: {
@@ -535,7 +524,6 @@ export async function reportAgentShadowLegacyRoute(
         },
       }),
     });
-
     if (!response.ok) {
       console.warn(
         `Agent shadow comparison failed with HTTP ${response.status}. Existing routing remains authoritative.`,
@@ -552,7 +540,6 @@ export async function reportAgentShadowLegacyRoute(
     };
 
     if (!payload?.ok || payload.foundDecision === false) return;
-
     if (payload.comparison?.disagreementSummary) {
       console.debug('[QMeet agent shadow disagreement]', {
         turnId: shadow.turnId,

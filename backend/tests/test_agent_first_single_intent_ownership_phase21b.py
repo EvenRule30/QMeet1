@@ -87,7 +87,7 @@ class AgentFirstSingleIntentOwnershipPhase21BTests(unittest.TestCase):
         self.assertNotIn("handleSend(", block)
 
     def test_ambiguous_single_intent_wait_is_bounded(self):
-        self.assertIn("AGENT_FIRST_SINGLE_INTENT_WAIT_MS = 2500", OBSERVER)
+        self.assertIn("AGENT_FIRST_SINGLE_INTENT_WAIT_MS = 7000", OBSERVER)
         start = OBSERVER.index("export async function resolvePromotedSingleIntentDecision")
         end = OBSERVER.index("export type AgentShadowFocusMutationGuardResult", start)
         block = OBSERVER[start:end]
