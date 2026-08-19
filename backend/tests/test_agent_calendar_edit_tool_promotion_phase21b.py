@@ -260,7 +260,10 @@ class AgentCalendarEditToolPromotionPhase21BTests(unittest.TestCase):
         self.assertIn("changeField === 'title'", source)
         self.assertIn("changeField === 'day'", source)
         self.assertIn("changes: { day: changeValue as PromotedCalendarCreateDay }", source)
-        self.assertIn("day-only move", source)
+        self.assertIn("changes.day &&", source)
+        self.assertIn("!changes.time &&", source)
+        self.assertIn("!changes.title &&", source)
+        self.assertIn("PROMOTED_CALENDAR_CREATE_DAYS.has(changes.day)", source)
         self.assertNotIn("eventId:", source)
 
     def test_app_resolves_source_day_and_locks_both_identity_and_changes(self) -> None:

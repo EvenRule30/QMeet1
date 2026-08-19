@@ -134,7 +134,9 @@ class CalendarWriteHandoffPhase21BTests(unittest.TestCase):
         self.assertIn("resolvePromotedCalendarEditToolCommand", source)
         self.assertIn("command: 'edit-last-event'", source)
         self.assertIn("resolveDeferredCalendarWriteAction", source)
-        self.assertIn("Calendar delete-last/clear remain unpromoted", source)
+        self.assertIn("const DEFERRED_CALENDAR_WRITE_ACTIONS", source)
+        self.assertIn("'delete-last-event'", source)
+        self.assertIn("'clear-calendar'", source)
         self.assertNotIn("command: 'delete-last-event'", source)
         self.assertNotIn("command: 'clear-calendar'", source)
 

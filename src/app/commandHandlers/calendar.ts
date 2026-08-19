@@ -15,16 +15,24 @@ import {
   type CalendarDeleteCriteria,
 } from '../lib/calendarUtils';
 import {
+  decodeCalendarReadRangePayload,
+  fetchCalendarEventsRange,
+  filterCalendarEventsForRange,
+  formatCalendarRangeReadout,
+} from '../lib/calendarReadRange';
+import {
   beginExplicitCalendarRead,
   clearExplicitCalendarRead,
   consumeLatestCalendarFocusResponse,
 } from '../lib/focusTurnHeaders';
+
 export type CalendarCommandResult = {
   handled: boolean;
   confirmationContent?: string;
   shouldSpeakConfirmation?: boolean;
   continuationContext?: string;
 };
+
 export async function handleCalendarCommand(
   commandMatch: CommandMatch,
   deps: {
@@ -51,6 +59,7 @@ export async function handleCalendarCommand(
       deps.setCalendarView('today');
       deps.setActivePanel('calendar');
       return { handled: true };
+
     case 'refresh-calendar': {
       const refreshedEvents = await deps.refreshGoogleCalendar(deps.calendarView);
       deps.setActivePanel('calendar');
@@ -62,6 +71,7 @@ export async function handleCalendarCommand(
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }
+
     case 'edit-last-event': {
       const updatedEvent = await deps.editLastCalendarEvent(commandMatch.calendarEdit);
       deps.setActivePanel('calendar');
@@ -75,6 +85,7 @@ export async function handleCalendarCommand(
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }
+
     case 'add-calendar-event': {
       const addedEvent = await deps.saveCalendarEvent(commandMatch.calendarEvent);
       const targetView = commandMatch.calendarEvent?.day ?? 'today';
@@ -90,7 +101,49 @@ export async function handleCalendarCommand(
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }
+
     case 'read-calendar': {
+      const calendarRange = decodeCalendarReadRangePayload(commandMatch.payload);
+      if (calendarRange) {
+        // Range reads intentionally do not switch the existing today/tomorrow
+        // panel. The verified Tool readout is the authoritative range surface
+        // until the Calendar UI itself gains arbitrary-range navigation.
+        consumeLatestCalendarFocusResponse();
+        let rangeEvents = filterCalendarEventsForRange(
+          deps.calendarEvents,
+          calendarRange,
+        );
+        let googleConnected = Boolean(deps.googleCalendarStatus?.connected);
+        if (googleConnected) {
+          try {
+            const response = await fetchCalendarEventsRange(calendarRange);
+            rangeEvents = response.events;
+            googleConnected = response.connected;
+          } catch (error) {
+            console.error('Calendar range read error:', error);
+            const failure = 'I could not read that Google Calendar date range. Check the Calendar connection and try again.';
+            return {
+              handled: true,
+              confirmationContent: failure,
+              shouldSpeakConfirmation: deps.voiceOutputEnabled,
+              continuationContext: failure,
+            };
+          }
+        }
+
+        const verifiedCalendarReadout = formatCalendarRangeReadout({
+          range: calendarRange,
+          events: rangeEvents,
+          googleConnected,
+        });
+        return {
+          handled: true,
+          confirmationContent: verifiedCalendarReadout,
+          shouldSpeakConfirmation: deps.voiceOutputEnabled,
+          continuationContext: verifiedCalendarReadout,
+        };
+      }
+
       const requestedCalendarView = commandMatch.calendarView ?? 'all';
       const remoteCalendarView: CalendarBackendView =
         requestedCalendarView === 'all' ? 'week' : requestedCalendarView;
@@ -133,6 +186,7 @@ export async function handleCalendarCommand(
         continuationContext: verifiedCalendarReadout,
       };
     }
+
     case 'delete-calendar-event': {
       const targetView = commandMatch.calendarDelete?.day ?? deps.calendarView;
       const deletedEvent = await deps.deleteCalendarEventByCriteria(commandMatch.calendarDelete);
@@ -148,6 +202,7 @@ export async function handleCalendarCommand(
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }
+
     case 'delete-last-event': {
       const deletedEvent = await deps.deleteLastCalendarEvent();
       deps.setActivePanel('calendar');
@@ -161,6 +216,7 @@ export async function handleCalendarCommand(
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
     }
+
     case 'clear-calendar':
       deps.clearCalendarEvents();
       try {
@@ -168,17 +224,18 @@ export async function handleCalendarCommand(
       } catch (error) {
         console.error('Reset conversation after clearing calendar error:', error);
       }
-
       deps.setActivePanel('calendar');
       return {
         handled: true,
         confirmationContent: 'Cleared all local calendar events.',
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
       };
+
     case 'show-today':
       deps.setCalendarView('today');
       deps.setActivePanel('calendar');
       return { handled: true };
+
     case 'show-tomorrow':
       deps.setCalendarView('tomorrow');
       deps.setActivePanel('calendar');
