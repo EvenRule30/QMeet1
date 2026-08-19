@@ -10,7 +10,6 @@ from app import memory_store
 from app.focus import store as focus_store
 from app.focus import summary as relationship_store
 from app.focus.models import FocusEvent, FocusEventType, FocusState, FocusStatus
-
 from app.focus.context_hygiene import (
     duplicate_values_to_remove,
     equivalent_values_to_remove,
@@ -133,6 +132,37 @@ def _now_iso() -> str:
 
 def _normalize_text(value: object) -> str:
     return " ".join(str(value or "").split()).strip()
+
+
+def _supports_question_clear_event() -> bool:
+    """Return whether the loaded Focus event vocabulary can clear a question.
+
+    The production Focus model supports QUESTION_CLEARED. Some historical test
+    harnesses intentionally provide a smaller fake FocusEventType so older
+    bridge behavior can be exercised in isolation. Capability-detect the event
+    rather than assuming every embedded compatibility vocabulary has it.
+    """
+
+    return getattr(FocusEventType, "QUESTION_CLEARED", None) is not None
+
+
+def _is_automatic_follow_up_question(focus_state: FocusState) -> bool:
+    """Return whether the pending question came from automatic response coaching."""
+
+    pending_question = focus_state.pendingQuestion
+    return (
+        pending_question is not None
+        and _normalize_text(pending_question.target).casefold() == "follow_up"
+    )
+
+
+def _should_repair_automatic_follow_up(focus_state: FocusState) -> bool:
+    """Repair auto follow-ups only when the canonical event vocabulary supports it."""
+
+    return (
+        _supports_question_clear_event()
+        and _is_automatic_follow_up_question(focus_state)
+    )
 
 
 def _restore_memory_unlocked(memory_before: dict) -> None:
@@ -323,7 +353,6 @@ def _hygiene_removal_events(
         for title in canonical_task_titles
         if title
     }
-
     for canonical_title in canonical_task_titles:
         for value in equivalent_values_to_remove(
             focus_state.completedMilestones,
@@ -384,14 +413,20 @@ def _build_progress_events(
         )
         for target in targets
     )
+
     if focus_state.pendingAction is not None:
         # MILESTONE_COMPLETED already preserves WAITING. Do not replace the
         # pending action or its canonical next step.
         return events
-    if focus_state.pendingQuestion is not None:
-        # MILESTONE_COMPLETED activates non-waiting Focuses. Restore the
-        # clarifying status without re-emitting QUESTION_SET, which would
-        # incorrectly change the question's askedAt timestamp.
+
+    if (
+        focus_state.pendingQuestion is not None
+        and not _should_repair_automatic_follow_up(focus_state)
+    ):
+        # Explicit Focus clarification remains durable and outranks task
+        # sequencing. MILESTONE_COMPLETED activates non-waiting Focuses, so
+        # restore CLARIFYING without re-emitting QUESTION_SET (and therefore
+        # without changing the question's askedAt timestamp).
         events.append(
             focus_store._new_event(
                 FocusEventType.FIELD_SET,
@@ -402,6 +437,22 @@ def _build_progress_events(
             )
         )
         return events
+
+    if _should_repair_automatic_follow_up(focus_state):
+        # A generic response-coaching follow-up is not canonical task lineage.
+        # Clear it before advancing to the next verified linked task. This also
+        # self-heals stale cross-scope follow-ups recorded before the lineage
+        # isolation guard was introduced.
+        events.append(
+            focus_store._new_event(
+                FocusEventType.QUESTION_CLEARED,
+                focus_id=focus_id,
+                payload={},
+                source_turn_id=source_turn_id,
+                source=_PROGRESS_SOURCE,
+            )
+        )
+
     events.append(
         focus_store._new_event(
             FocusEventType.NEXT_ACTION_SET,
@@ -422,12 +473,14 @@ def _verify_progress_unlocked(
     linked_task_ids: set[str],
     state_before: FocusState,
     expected_next_action: str,
+    repair_automatic_follow_up: bool = False,
 ) -> tuple[NativeFocusTaskProgressVerification, FocusState]:
     focus_document = focus_store._read_log_unlocked()
     focus_events = list(focus_document.events)
     focus_state = focus_store.reduce_events(focus_events)
     memory_after = memory_store._read_payload_unlocked()
     relationships_after = _read_relationships_unlocked()
+
     all_turn_events = [
         event for event in focus_events if event.sourceTurnId == source_turn_id
     ]
@@ -465,6 +518,11 @@ def _verify_progress_unlocked(
             for target in targets
         )
     )
+
+    repair_follow_up = (
+        repair_automatic_follow_up
+        and _should_repair_automatic_follow_up(state_before)
+    )
     if state_before.pendingAction is not None:
         focus_continuity_preserved = (
             focus_state.pendingAction == state_before.pendingAction
@@ -472,7 +530,7 @@ def _verify_progress_unlocked(
             and focus_state.nextAction == state_before.nextAction
             and focus_state.status == FocusStatus.WAITING
         )
-    elif state_before.pendingQuestion is not None:
+    elif state_before.pendingQuestion is not None and not repair_follow_up:
         focus_continuity_preserved = (
             focus_state.pendingQuestion == state_before.pendingQuestion
             and focus_state.pendingAction == state_before.pendingAction
@@ -489,6 +547,7 @@ def _verify_progress_unlocked(
                 FocusStatus.COMPLETE,
             }
         )
+
     source_turn_unique = (
         bool(bridge_events)
         and len(all_turn_events) == len(bridge_events)
@@ -559,6 +618,7 @@ def record_focus_task_progress_verified(
         focus_before = copy.deepcopy(focus_document)
         focus_events = list(focus_document.events)
         focus_state = focus_store.reduce_events(focus_events)
+
         if (
             focus_state.focusId != focus_id
             or focus_state.status in {FocusStatus.INACTIVE, FocusStatus.COMPLETE}
@@ -570,6 +630,7 @@ def record_focus_task_progress_verified(
             )
 
         lineage_ids = _focus_lineage_ids(focus_events, focus_id)
+
         with _RELATIONSHIP_LOCK:
             relationships = _read_relationships_unlocked()
             linked_task_ids = _lineage_linked_task_ids(
@@ -580,6 +641,7 @@ def record_focus_task_progress_verified(
                 relationships,
                 lineage_ids,
             )
+
             if _relationship_source_turn_matches(relationships, source_turn_id):
                 raise NativeFocusTaskProgressError(
                     "source_turn_conflict",
@@ -615,10 +677,13 @@ def record_focus_task_progress_verified(
                             "source_turn_conflict",
                             "This source turn already belongs to a different Focus operation.",
                         )
+
                     remaining = _remaining_open_linked_tasks(
                         memory_before["tasks"],
                         linked_task_ids,
                     )
+                    # Reused event groups keep the semantics they were originally
+                    # verified under. New writes below are the repair boundary.
                     expected_next_action = (
                         focus_state.nextAction
                         if focus_state.pendingQuestion is not None
@@ -676,6 +741,7 @@ def record_focus_task_progress_verified(
                     if task_id in snapshots_by_id
                     and _normalize_text(snapshots_by_id[task_id].get("title", ""))
                 ]
+
                 progress_events = _build_progress_events(
                     focus_id=focus_id,
                     targets=targets,
@@ -684,21 +750,31 @@ def record_focus_task_progress_verified(
                     next_action=next_action,
                     canonical_task_titles=canonical_task_titles,
                 )
+
                 try:
                     focus_document.events.extend(progress_events)
                     focus_store._atomic_write_unlocked(focus_document)
+                    repair_automatic_follow_up = (
+                        _should_repair_automatic_follow_up(focus_state)
+                        and focus_state.pendingAction is None
+                    )
+                    expected_next_action = (
+                        focus_state.nextAction
+                        if focus_state.pendingAction is not None
+                        or (
+                            focus_state.pendingQuestion is not None
+                            and not repair_automatic_follow_up
+                        )
+                        else next_action
+                    )
                     verification, verified_state = _verify_progress_unlocked(
                         expected_focus_id=focus_id,
                         targets=targets,
                         source_turn_id=source_turn_id,
                         linked_task_ids=linked_task_ids,
                         state_before=focus_state,
-                        expected_next_action=(
-                            focus_state.nextAction
-                            if focus_state.pendingQuestion is not None
-                            or focus_state.pendingAction is not None
-                            else next_action
-                        ),
+                        expected_next_action=expected_next_action,
+                        repair_automatic_follow_up=repair_automatic_follow_up,
                     )
                     if not _verification_passed(verification):
                         raise NativeFocusTaskProgressError(

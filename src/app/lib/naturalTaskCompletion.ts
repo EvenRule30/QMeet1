@@ -7,7 +7,7 @@ type ScoredTask = {
   matchedTokenCount: number;
 };
 
-const COMPLETION_OPENING = /^(?:i|we)(?:\s+(?:have|had)|['’]ve)?\s+(?:already\s+|just\s+)?(?:checked|verified|confirmed|found|chose|chosen|picked|selected|decided|determined|wrote|written|drafted|created|made|used|incorporated|added|scheduled|booked|reviewed|tailored|adapted|customized|customised|adjusted|compared|researched|identified|set|planned|outlined|prepared|handled|fixed|resolved|sent|submitted|called|contacted|emailed|updated|tested|ran|built|implemented|finished|completed|did|got\s+through)\b/i;
+const COMPLETION_OPENING = /^(?:i|we)(?:\s+(?:have|had)|['’]ve)?\s+(?:already\s+|just\s+)?(?:checked|verified|confirmed|found|chose|chosen|picked|selected|decided|determined|wrote|written|drafted|created|made|used|incorporated|added|scheduled|booked|reviewed|tailored|adapted|customized|customised|adjusted|compared|researched|identified|set|planned|outlined|prepared|handled|fixed|resolved|sent|submitted|called|contacted|emailed|asked|updated|tested|ran|built|implemented|finished|completed|did|got\s+through)\b/i;
 
 const COMPLETION_VERB_FORMS = [
   'checked',
@@ -51,6 +51,7 @@ const COMPLETION_VERB_FORMS = [
   'called',
   'contacted',
   'emailed',
+  'asked',
   'updated',
   'tested',
   'ran',
@@ -197,6 +198,8 @@ const TOKEN_ALIASES: Record<string, string> = {
   resolving: 'resolve',
   sent: 'send',
   submitted: 'submit',
+  asked: 'ask',
+  asking: 'ask',
   tested: 'test',
   testing: 'test',
   built: 'build',

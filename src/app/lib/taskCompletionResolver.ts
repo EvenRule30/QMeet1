@@ -47,6 +47,8 @@ const TOKEN_ALIASES: Record<string, string> = {
   resolving: 'resolve',
   fixed: 'fix',
   fixing: 'fix',
+  asked: 'ask',
+  asking: 'ask',
 };
 
 const COMPLETION_VERB_FORMS = [
@@ -58,6 +60,7 @@ const COMPLETION_VERB_FORMS = [
   'handled',
   'resolved',
   'fixed',
+  'asked',
 ];
 
 function differsByAtMostOneEdit(left: string, right: string): boolean {
@@ -280,7 +283,7 @@ function extractNaturalCompletionQuery(statement: string): string | null {
   if (markDone?.[1]) return cleanCompletionQuery(markDone[1]);
 
   const firstPerson = trimmed.match(
-    /^(?:i|we)(?:['’]ve|\s+have)?\s+(?:already\s+|just\s+)?(?:finished|completed|sent|submitted|reviewed|handled|resolved|fixed|did|got\s+through|took\s+care\s+of)\s+(.+?)\s*[.!?]*$/i,
+    /^(?:i|we)(?:['’]ve|\s+have)?\s+(?:already\s+|just\s+)?(?:finished|completed|sent|submitted|reviewed|handled|resolved|fixed|asked|did|got\s+through|took\s+care\s+of)\s+(.+?)\s*[.!?]*$/i,
   );
 
   if (firstPerson?.[1]) {

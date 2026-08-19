@@ -74,6 +74,14 @@ import {
   resolveGlobalTaskCompletionReference,
   resolveNaturalGlobalTaskCompletionRequest,
 } from './lib/taskCompletionResolver';
+import {
+  isPromotedTaskDeleteToolDecision,
+  resolveNaturalGlobalTaskDeletionRequest,
+  resolvePromotedTaskDeleteToolCommand,
+  resolveTaskDeletionClarificationReference,
+  resolveTaskDeletionReference,
+} from './lib/taskDeletionResolver';
+import { deleteVerifiedGlobalTask } from './lib/verifiedTaskDeletion';
 import { formatFocusTaskReadout, formatOpenTasksReadout } from './lib/memoryReadSurface';
 import { createVerifiedGlobalTask } from './lib/verifiedTaskCreate';
 import {
@@ -328,6 +336,11 @@ export default function App() {
   const [lastInterpreterReason, setLastInterpreterReason] = useState('No interpreter request has run yet.');
   const [pendingInterpreterCommand, setPendingInterpreterCommand] = useState<PendingInterpreterCommand | null>(null);
   const pendingTaskCompletionTargetsRef = useRef<ConfirmedTaskTarget[]>([]);
+  const pendingTaskDeleteTargetRef = useRef<ConfirmedTaskTarget | null>(null);
+  const pendingTaskDeleteClarificationRef = useRef<{
+    originalText: string;
+    candidates: ConfirmedTaskTarget[];
+  } | null>(null);
   const pendingCalendarDeleteTargetIdRef = useRef<string | null>(null);
   const pendingCalendarEditTargetIdRef = useRef<string | null>(null);
   const pendingCalendarEditChangesRef = useRef<PromotedCalendarEditChanges | null>(null);
@@ -354,6 +367,8 @@ export default function App() {
     setActivePanel('none');
     setPendingInterpreterCommand(null);
     pendingTaskCompletionTargetsRef.current = [];
+    pendingTaskDeleteTargetRef.current = null;
+    pendingTaskDeleteClarificationRef.current = null;
     pendingCalendarDeleteTargetIdRef.current = null;
     pendingCalendarEditTargetIdRef.current = null;
     pendingCalendarEditChangesRef.current = null;
@@ -485,6 +500,10 @@ export default function App() {
           if (isConfirmingPendingCommand(trimmed)) {
             const commandToRun = pendingInterpreterCommand;
             const resolvedTaskTargets = pendingTaskCompletionTargetsRef.current;
+            const resolvedTaskDeleteTarget =
+              commandToRun.action === 'delete-task'
+                ? pendingTaskDeleteTargetRef.current
+                : null;
             const resolvedCalendarDeleteTargetId =
               commandToRun.action === 'delete-calendar-event'
                 ? pendingCalendarDeleteTargetIdRef.current
@@ -499,9 +518,139 @@ export default function App() {
                 : null;
             setPendingInterpreterCommand(null);
             pendingTaskCompletionTargetsRef.current = [];
+            pendingTaskDeleteTargetRef.current = null;
+            pendingTaskDeleteClarificationRef.current = null;
             pendingCalendarDeleteTargetIdRef.current = null;
             pendingCalendarEditTargetIdRef.current = null;
             pendingCalendarEditChangesRef.current = null;
+            if (commandToRun.action === 'delete-task') {
+              finishListening();
+              setShowThinkingBubble(false);
+              setTrackedInputRoute(
+                'Confirmed targeted task delete',
+                commandToRun.action,
+                commandToRun.frontendCommand,
+                'tasks',
+                'tool',
+              );
+              setLastLocalCommand('Confirmed targeted task delete');
+              setLastInterpreterAction(commandToRun.action);
+              setLastInterpreterFrontendCommand(commandToRun.frontendCommand);
+              setLastInterpreterConfidence(commandToRun.confidence);
+              setLastInterpreterReason(
+                commandToRun.reason ||
+                  'User confirmed deletion of one previously resolved task identity.',
+              );
+              if (!chatActive) setChatActive(true);
+              const now = Date.now();
+              const userMsg = createUserMessage(now, visibleUserText);
+
+              if (!resolvedTaskDeleteTarget) {
+                const assistantMsg = createAssistantMessage(
+                  now,
+                  'I could not verify the exact task that was previously selected, so I did not delete anything. Please ask me to delete it again.',
+                );
+                setMessages((prev) => [...prev, userMsg, assistantMsg]);
+                pushResultToast({
+                  kind: 'warning',
+                  title: 'Task unchanged',
+                  detail: assistantMsg.content,
+                });
+                speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+                return;
+              }
+
+              let authoritativeDeleteTarget = null as
+                | (typeof memoryTasks)[number]
+                | null;
+              try {
+                const authoritativeTasks = await getMemoryTasks();
+                authoritativeDeleteTarget =
+                  (authoritativeTasks.tasks ?? []).find(
+                    (task) =>
+                      task.id === resolvedTaskDeleteTarget.id &&
+                      task.title.trim() === resolvedTaskDeleteTarget.title.trim(),
+                  ) ?? null;
+              } catch (error) {
+                console.warn(
+                  'Authoritative task refresh failed during targeted delete confirmation; QMeet refused to delete from stale local identity.',
+                  error,
+                );
+              }
+
+              if (!authoritativeDeleteTarget) {
+                const assistantMsg = createAssistantMessage(
+                  now,
+                  'The task changed or could not be verified after confirmation was requested, so I did not delete a different task. Please ask me to delete it again.',
+                );
+                setMessages((prev) => [...prev, userMsg, assistantMsg]);
+                pushResultToast({
+                  kind: 'warning',
+                  title: 'Task unchanged',
+                  detail: assistantMsg.content,
+                });
+                speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+                return;
+              }
+
+              const verifiedDeleteResult = await deleteVerifiedGlobalTask({
+                id: authoritativeDeleteTarget.id,
+                title: authoritativeDeleteTarget.title,
+              });
+              if (!verifiedDeleteResult.ok) {
+                const assistantMsg = createAssistantMessage(
+                  now,
+                  verifiedDeleteResult.message,
+                );
+                setMessages((prev) => [...prev, userMsg, assistantMsg]);
+                pushResultToast({
+                  kind: 'warning',
+                  title: 'Task unchanged',
+                  detail: assistantMsg.content,
+                });
+                speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+                return;
+              }
+
+              deleteMemoryTask(authoritativeDeleteTarget.id);
+              const confirmationContent = `Deleted task:
+- ${authoritativeDeleteTarget.title}`;
+              const confirmationMsg = createAssistantMessage(
+                now,
+                confirmationContent,
+                'tool',
+              );
+              setMessages((prev) => [...prev, userMsg, confirmationMsg]);
+              addRecentAction('Deleted task', authoritativeDeleteTarget.title);
+              pushResultToast({
+                kind: 'success',
+                title: 'Task deleted',
+                detail: authoritativeDeleteTarget.title,
+              });
+              speakAssistantText(confirmationContent, {
+                enabled: voiceOutputEnabled,
+              });
+              await continueAfterVerifiedToolUpdate({
+                userMessage: commandToRun.originalText,
+                // Compatibility command tag keeps this on the Tasks continuation
+                // surface while Phase 21D1 carries the precise targeted-delete
+                // semantics in verified tool context. State execution above is
+                // by exact id, never by "last task" behavior.
+                command: 'delete-last-task',
+                toolResult: confirmationContent,
+                toolContext:
+                  'qmeetTaskDeleteMode=targeted. One exact global task identity was re-read from authoritative task state after confirmation and then deleted through the canonical backend task-delete endpoint. Do not describe any other task as deleted. No Active Focus relationship was changed by this successful deletion.',
+                recentMessages: messages,
+                activePanel,
+                voiceOutputEnabled,
+                setMessages,
+                setShowThinkingBubble,
+                setOrbState,
+                speakAssistantText,
+              });
+              return;
+            }
+
             if (
               commandToRun.action === 'delete-calendar-event' &&
               !resolvedCalendarDeleteTargetId
@@ -621,6 +770,8 @@ export default function App() {
             setShowThinkingBubble(false);
             setPendingInterpreterCommand(null);
             pendingTaskCompletionTargetsRef.current = [];
+            pendingTaskDeleteTargetRef.current = null;
+            pendingTaskDeleteClarificationRef.current = null;
             pendingCalendarDeleteTargetIdRef.current = null;
             pendingCalendarEditTargetIdRef.current = null;
             pendingCalendarEditChangesRef.current = null;
@@ -642,10 +793,248 @@ export default function App() {
           }
           setPendingInterpreterCommand(null);
           pendingTaskCompletionTargetsRef.current = [];
+          pendingTaskDeleteTargetRef.current = null;
+          pendingTaskDeleteClarificationRef.current = null;
           pendingCalendarDeleteTargetIdRef.current = null;
           pendingCalendarEditTargetIdRef.current = null;
           pendingCalendarEditChangesRef.current = null;
         }
+    const pendingTaskDeleteClarification =
+      pendingTaskDeleteClarificationRef.current;
+    if (
+      !forcedCommandMatch &&
+      commandRoute === 'exact' &&
+      !pendingInterpreterCommand &&
+      pendingTaskDeleteClarification
+    ) {
+      if (isRejectingPendingCommand(trimmed)) {
+        finishListening();
+        setShowThinkingBubble(false);
+        pendingTaskDeleteClarificationRef.current = null;
+        pendingTaskDeleteTargetRef.current = null;
+        setTrackedInputRoute(
+          'Cancelled targeted task delete clarification',
+          'delete-task',
+          '',
+          'tasks',
+          'clarify',
+        );
+        setLastLocalCommand('Targeted task delete clarification cancelled');
+        setLastInterpreterAction('delete-task');
+        setLastInterpreterFrontendCommand('None');
+        setLastInterpreterConfidence(1);
+        setLastInterpreterReason(
+          'The user cancelled a pending targeted task deletion clarification; no task identity was selected.',
+        );
+        if (!chatActive) setChatActive(true);
+        const now = Date.now();
+        const userMsg = createUserMessage(now, visibleUserText);
+        const assistantMsg = createAssistantMessage(
+          now,
+          'Cancelled task deletion. No task was changed.',
+        );
+        setMessages((prev) => [...prev, userMsg, assistantMsg]);
+        speakAssistantText(assistantMsg.content, {
+          enabled: voiceOutputEnabled,
+        });
+        return;
+      }
+
+      let authoritativeClarificationCandidates = null as
+        | (typeof memoryTasks)
+        | null;
+      try {
+        const authoritativeTasks = await getMemoryTasks();
+        const authoritativeById = new Map(
+          (authoritativeTasks.tasks ?? []).map((task) => [task.id, task]),
+        );
+        authoritativeClarificationCandidates =
+          pendingTaskDeleteClarification.candidates
+            .map((candidate) => {
+              const authoritativeTask = authoritativeById.get(candidate.id);
+              return authoritativeTask &&
+                authoritativeTask.title.trim() === candidate.title.trim()
+                ? authoritativeTask
+                : null;
+            })
+            .filter(
+              (task): task is (typeof memoryTasks)[number] => Boolean(task),
+            );
+      } catch (error) {
+        console.warn(
+          'Authoritative task refresh failed during targeted delete clarification; QMeet refused to resolve against stale candidate identities.',
+          error,
+        );
+      }
+
+      if (!authoritativeClarificationCandidates) {
+        finishListening();
+        setShowThinkingBubble(false);
+        pendingTaskDeleteClarificationRef.current = null;
+        pendingTaskDeleteTargetRef.current = null;
+        setTrackedInputRoute(
+          'Targeted task delete clarification state could not be verified',
+          'delete-task',
+          trimmed,
+          'tasks',
+          'clarify',
+        );
+        setLastLocalCommand('Task deletion clarification unavailable');
+        setLastInterpreterAction('delete-task');
+        setLastInterpreterFrontendCommand('None');
+        setLastInterpreterConfidence(null);
+        setLastInterpreterReason(
+          'Authoritative task state could not be read while resolving the previously shown delete candidates.',
+        );
+        if (!chatActive) setChatActive(true);
+        const now = Date.now();
+        const userMsg = createUserMessage(now, visibleUserText);
+        const assistantMsg = createAssistantMessage(
+          now,
+          'I could not verify the tasks I previously asked you to choose between, so I did not delete anything. Please ask me to delete the task again.',
+        );
+        setMessages((prev) => [...prev, userMsg, assistantMsg]);
+        speakAssistantText(assistantMsg.content, {
+          enabled: voiceOutputEnabled,
+        });
+        return;
+      }
+
+      if (authoritativeClarificationCandidates.length === 0) {
+        finishListening();
+        setShowThinkingBubble(false);
+        pendingTaskDeleteClarificationRef.current = null;
+        pendingTaskDeleteTargetRef.current = null;
+        setTrackedInputRoute(
+          'Targeted task delete clarification candidates changed',
+          'delete-task',
+          trimmed,
+          'tasks',
+          'clarify',
+        );
+        setLastLocalCommand('Task deletion clarification expired');
+        setLastInterpreterAction('delete-task');
+        setLastInterpreterFrontendCommand('None');
+        setLastInterpreterConfidence(null);
+        setLastInterpreterReason(
+          'None of the previously shown task identities remained authoritative, so QMeet refused to substitute a different task.',
+        );
+        if (!chatActive) setChatActive(true);
+        const now = Date.now();
+        const userMsg = createUserMessage(now, visibleUserText);
+        const assistantMsg = createAssistantMessage(
+          now,
+          'The tasks I previously asked you to choose between changed, so I did not select or delete a different task. Please ask me to delete it again.',
+        );
+        setMessages((prev) => [...prev, userMsg, assistantMsg]);
+        speakAssistantText(assistantMsg.content, {
+          enabled: voiceOutputEnabled,
+        });
+        return;
+      }
+
+      const clarificationResolution =
+        resolveTaskDeletionClarificationReference(
+          trimmed,
+          authoritativeClarificationCandidates,
+        );
+
+      if (
+        clarificationResolution.kind === 'exact' ||
+        clarificationResolution.kind === 'likely'
+      ) {
+        const resolvedClarificationTarget = clarificationResolution.task;
+        pendingTaskDeleteClarificationRef.current = null;
+        pendingTaskDeleteTargetRef.current = {
+          id: resolvedClarificationTarget.id,
+          title: resolvedClarificationTarget.title,
+        };
+        setPendingInterpreterCommand({
+          originalText: pendingTaskDeleteClarification.originalText,
+          frontendCommand: `delete task ${resolvedClarificationTarget.title}`,
+          action: 'delete-task',
+          confidence: 1,
+          reason:
+            'The user clarified one candidate from a previously ambiguous targeted task delete. That exact authoritative identity is locked and still requires destructive confirmation.',
+        });
+        setTrackedInputRoute(
+          'Targeted task delete clarification resolved to confirmation',
+          'delete-task',
+          resolvedClarificationTarget.title,
+          'tasks',
+          'clarify',
+        );
+        setLastLocalCommand('Pending clarified targeted task delete');
+        setLastInterpreterAction('delete-task');
+        setLastInterpreterFrontendCommand(
+          `delete task ${resolvedClarificationTarget.title}`,
+        );
+        setLastInterpreterConfidence(1);
+        setLastInterpreterReason(
+          'The clarification resolved only against the previously shown authoritative candidate identities; deletion still requires confirmation.',
+        );
+        if (!chatActive) setChatActive(true);
+        const now = Date.now();
+        const userMsg = createUserMessage(now, visibleUserText);
+        const assistantMsg = createAssistantMessage(
+          now,
+          `I understood that as: delete task "${resolvedClarificationTarget.title}". Say "confirm" to delete it, or "cancel" to stop.`,
+        );
+        setMessages((prev) => [...prev, userMsg, assistantMsg]);
+        speakAssistantText(assistantMsg.content, {
+          enabled: voiceOutputEnabled,
+        });
+        return;
+      }
+
+      if (clarificationResolution.kind === 'ambiguous') {
+        pendingTaskDeleteClarificationRef.current = {
+          originalText: pendingTaskDeleteClarification.originalText,
+          candidates: clarificationResolution.candidates.map((task) => ({
+            id: task.id,
+            title: task.title,
+          })),
+        };
+        finishListening();
+        setShowThinkingBubble(false);
+        setTrackedInputRoute(
+          'Targeted task delete clarification remains ambiguous',
+          'delete-task',
+          trimmed,
+          'tasks',
+          'clarify',
+        );
+        setLastLocalCommand('Task deletion still needs clarification');
+        setLastInterpreterAction('delete-task');
+        setLastInterpreterFrontendCommand(trimmed);
+        setLastInterpreterConfidence(1);
+        setLastInterpreterReason(
+          'The clarification still matched multiple tasks from the previously shown authoritative candidate set.',
+        );
+        if (!chatActive) setChatActive(true);
+        const now = Date.now();
+        const userMsg = createUserMessage(now, visibleUserText);
+        const candidates = clarificationResolution.candidates
+          .map((task, index) => `${index + 1}. ${task.title}`)
+          .join(' ');
+        const assistantMsg = createAssistantMessage(
+          now,
+          `I still found ${clarificationResolution.candidates.length} possible tasks: ${candidates} Which one did you mean? No task was changed.`,
+        );
+        setMessages((prev) => [...prev, userMsg, assistantMsg]);
+        speakAssistantText(assistantMsg.content, {
+          enabled: voiceOutputEnabled,
+        });
+        return;
+      }
+
+      // A reply that does not identify any previously shown candidate is not
+      // allowed to mutate state. Drop the clarification ownership and let this
+      // message route normally as a fresh turn.
+      pendingTaskDeleteClarificationRef.current = null;
+      pendingTaskDeleteTargetRef.current = null;
+    }
+
     const routingActiveSession =
       !forcedCommandMatch && commandRoute === 'exact'
         ? await reconcileFocusProjection()
@@ -725,6 +1114,17 @@ export default function App() {
       !parsedCommandMatch
         ? resolveNaturalGlobalTaskCompletionRequest(trimmed, memoryTasks)
         : null;
+    const promotedTaskDeleteCandidate =
+      isPromotedTaskDeleteToolDecision(promotedSingleIntent);
+    const promotedTaskDeleteTool =
+      resolvePromotedTaskDeleteToolCommand(promotedSingleIntent);
+    const naturalGlobalTaskDeletionRequest =
+      !forcedCommandMatch &&
+      commandRoute === 'exact' &&
+      !explicitDeterministicRoute &&
+      !parsedCommandMatch
+        ? resolveNaturalGlobalTaskDeletionRequest(trimmed, memoryTasks)
+        : null;
     const naturalGlobalTaskCompletionCandidates =
       naturalGlobalTaskCompletionRequest?.resolution.kind === 'exact' ||
       naturalGlobalTaskCompletionRequest?.resolution.kind === 'likely'
@@ -748,7 +1148,8 @@ export default function App() {
       !explicitCalendarWriteIntent &&
       !explicitGlobalTaskReadRequest &&
       !explicitFocusTaskReadRequest &&
-      !naturalGlobalTaskCompletionRequest;
+      !naturalGlobalTaskCompletionRequest &&
+      !naturalGlobalTaskDeletionRequest;
     if (promotedSingleIntent?.disposition === 'conversation') {
       if (promotedConversationAllowed) {
         setPendingInterpreterCommand(null);
@@ -769,6 +1170,210 @@ export default function App() {
         return;
       }
     }
+    if (
+      promotedTaskDeleteCandidate &&
+      !promotedTaskDeleteTool &&
+      !naturalGlobalTaskDeletionRequest
+    ) {
+      finishListening();
+      setShowThinkingBubble(false);
+      setPendingInterpreterCommand(null);
+      pendingTaskDeleteTargetRef.current = null;
+      setTrackedInputRoute(
+        'Agent-promoted targeted task delete rejected',
+        'delete-task',
+        undefined,
+        'tasks',
+        'tool',
+      );
+      setLastLocalCommand('Task not deleted');
+      setLastInterpreterAction('delete-task');
+      setLastInterpreterFrontendCommand('None');
+      setLastInterpreterConfidence(promotedSingleIntent?.confidence ?? null);
+      setLastInterpreterReason(
+        'The unified agent proposed one targeted task deletion, but its global scope/query arguments failed deterministic frontend validation.',
+      );
+      if (!chatActive) setChatActive(true);
+      const now = Date.now();
+      const userMsg = createUserMessage(now, visibleUserText);
+      const assistantMsg = createAssistantMessage(
+        now,
+        'I understood this as deleting a task, but I could not safely validate one task reference. No task was changed.',
+      );
+      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      pushResultToast({
+        kind: 'warning',
+        title: 'Task unchanged',
+        detail: assistantMsg.content,
+      });
+      speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+      return;
+    }
+
+    const effectiveTaskDeleteQuery =
+      promotedTaskDeleteTool?.query ??
+      naturalGlobalTaskDeletionRequest?.query ??
+      null;
+    if (effectiveTaskDeleteQuery) {
+      finishListening();
+      setShowThinkingBubble(false);
+      setPendingInterpreterCommand(null);
+      pendingTaskDeleteTargetRef.current = null;
+
+      let authoritativeDeleteResolution = null as
+        | ReturnType<typeof resolveTaskDeletionReference>
+        | null;
+      try {
+        const authoritativeTasks = await getMemoryTasks();
+        authoritativeDeleteResolution = resolveTaskDeletionReference(
+          effectiveTaskDeleteQuery,
+          authoritativeTasks.tasks ?? [],
+        );
+      } catch (error) {
+        console.warn(
+          'Authoritative task refresh failed during targeted deletion resolution; QMeet refused to select a task from stale local state.',
+          error,
+        );
+      }
+
+      if (!authoritativeDeleteResolution) {
+        setTrackedInputRoute(
+          'Targeted task delete state could not be verified',
+          'delete-task',
+          effectiveTaskDeleteQuery,
+          'tasks',
+          'tool',
+        );
+        setLastLocalCommand('Task deletion state unavailable');
+        setLastInterpreterAction('delete-task');
+        setLastInterpreterFrontendCommand(effectiveTaskDeleteQuery);
+        setLastInterpreterConfidence(promotedSingleIntent?.confidence ?? null);
+        setLastInterpreterReason(
+          'Authoritative task state could not be read, so QMeet refused to resolve or confirm a destructive deletion from local state alone.',
+        );
+        if (!chatActive) setChatActive(true);
+        const now = Date.now();
+        const userMsg = createUserMessage(now, visibleUserText);
+        const assistantMsg = createAssistantMessage(
+          now,
+          `I couldn't verify the current task list while checking "${effectiveTaskDeleteQuery}". No task was changed.`,
+        );
+        setMessages((prev) => [...prev, userMsg, assistantMsg]);
+        speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+        return;
+      }
+
+      if (authoritativeDeleteResolution.kind === 'ambiguous') {
+        pendingTaskDeleteClarificationRef.current = {
+          originalText: visibleUserText,
+          candidates: authoritativeDeleteResolution.candidates
+            .slice(0, 5)
+            .map((task) => ({
+              id: task.id,
+              title: task.title,
+            })),
+        };
+        setTrackedInputRoute(
+          'Targeted task delete needs deterministic clarification',
+          'delete-task',
+          effectiveTaskDeleteQuery,
+          'tasks',
+          'clarify',
+        );
+        setLastLocalCommand('Task deletion needs a more specific target');
+        setLastInterpreterAction('delete-task');
+        setLastInterpreterFrontendCommand(effectiveTaskDeleteQuery);
+        setLastInterpreterConfidence(promotedSingleIntent?.confidence ?? 1);
+        setLastInterpreterReason(
+          'The deletion reference matched multiple real tasks, so QMeet refused to choose one.',
+        );
+        if (!chatActive) setChatActive(true);
+        const now = Date.now();
+        const userMsg = createUserMessage(now, visibleUserText);
+        const candidates = authoritativeDeleteResolution.candidates
+          .slice(0, 5)
+          .map((task, index) => `${index + 1}. ${task.title}`)
+          .join(' ');
+        const assistantMsg = createAssistantMessage(
+          now,
+          `I found ${authoritativeDeleteResolution.candidates.length} possible tasks for "${effectiveTaskDeleteQuery}": ${candidates} Which one did you mean? No task was changed.`,
+        );
+        setMessages((prev) => [...prev, userMsg, assistantMsg]);
+        speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+        return;
+      }
+
+      if (authoritativeDeleteResolution.kind === 'none') {
+        setTrackedInputRoute(
+          'Targeted task delete had no canonical target',
+          'delete-task',
+          effectiveTaskDeleteQuery,
+          'tasks',
+          'tool',
+        );
+        setLastLocalCommand('No matching task to delete');
+        setLastInterpreterAction('delete-task');
+        setLastInterpreterFrontendCommand(effectiveTaskDeleteQuery);
+        setLastInterpreterConfidence(promotedSingleIntent?.confidence ?? null);
+        setLastInterpreterReason(
+          'The validated deletion reference did not match a task in authoritative task state, so no confirmation was created.',
+        );
+        if (!chatActive) setChatActive(true);
+        const now = Date.now();
+        const userMsg = createUserMessage(now, visibleUserText);
+        const assistantMsg = createAssistantMessage(
+          now,
+          `I couldn't find a task matching "${effectiveTaskDeleteQuery}". No task was changed.`,
+        );
+        setMessages((prev) => [...prev, userMsg, assistantMsg]);
+        speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+        return;
+      }
+
+      const resolvedTaskDeleteTarget = authoritativeDeleteResolution.task;
+      pendingTaskDeleteClarificationRef.current = null;
+      pendingTaskDeleteTargetRef.current = {
+        id: resolvedTaskDeleteTarget.id,
+        title: resolvedTaskDeleteTarget.title,
+      };
+      setPendingInterpreterCommand({
+        originalText: visibleUserText,
+        frontendCommand: `delete task ${resolvedTaskDeleteTarget.title}`,
+        action: 'delete-task',
+        confidence: promotedSingleIntent?.confidence ?? 1,
+        reason:
+          'One canonical task identity was resolved from a deletion reference and locked across confirmation; the backend delete guard remains authoritative.',
+      });
+      setTrackedInputRoute(
+        promotedTaskDeleteTool
+          ? 'Agent-promoted targeted task delete needs safety confirmation'
+          : 'Deterministic targeted task delete needs safety confirmation',
+        'delete-task',
+        resolvedTaskDeleteTarget.title,
+        'tasks',
+        'tool',
+      );
+      setLastLocalCommand('Pending targeted task delete');
+      setLastInterpreterAction('delete-task');
+      setLastInterpreterFrontendCommand(
+        `delete task ${resolvedTaskDeleteTarget.title}`,
+      );
+      setLastInterpreterConfidence(promotedSingleIntent?.confidence ?? 1);
+      setLastInterpreterReason(
+        'One canonical task identity was resolved from authoritative task state and requires destructive confirmation before deletion.',
+      );
+      if (!chatActive) setChatActive(true);
+      const now = Date.now();
+      const userMsg = createUserMessage(now, visibleUserText);
+      const assistantMsg = createAssistantMessage(
+        now,
+        `I understood that as: delete task "${resolvedTaskDeleteTarget.title}". Say "confirm" to delete it, or "cancel" to stop.`,
+      );
+      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      speakAssistantText(assistantMsg.content, { enabled: voiceOutputEnabled });
+      return;
+    }
+
     const promotedSearchTool = resolvePromotedSearchToolCommand(
       promotedSingleIntent,
     );
@@ -2764,7 +3369,7 @@ ${confirmedTaskCompletionResult.completedTasks
       shadowTurn,
       routingActiveSession?.id ?? null,
     );
-  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveMemoryTask, memoryTasks, activeSession, recentFocusSessions, reconcileFocusProjection, markMemoryTaskDone, clearCompletedTasks, getMemoryReadout, saveCalendarEvent, getCalendarReadout, deleteCalendarEvent, deleteLastCalendarEvent, deleteCalendarEventByCriteria, getCalendarEventsForDeleteCriteria, findCalendarEventForDeletion, findCalendarEventForChange, getNextCalendarEventForDeletion, getNextCalendarEventForChange, updateCalendarEvent, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, runWebSearch, clearSearchState, searchError, pushResultToast, addRecentAction, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents, messages, sendNormalChat]);
+  }, [chatActive, activePanel, calendarView, calendarEvents, voiceOutputEnabled, speechRate, lastHeardTranscript, lastNormalizedTranscript, lastLocalCommand, pendingInterpreterCommand, handleEndChat, finishListening, closePanel, goHome, stopCurrentSpeech, cancelActiveResponse, speakAssistantText, setVoiceOutput, adjustSpeechRate, saveNote, getNotesReadout, deleteLastNote, clearNotes, saveMemoryTask, deleteMemoryTask, memoryTasks, activeSession, recentFocusSessions, reconcileFocusProjection, markMemoryTaskDone, clearCompletedTasks, getMemoryReadout, saveCalendarEvent, getCalendarReadout, deleteCalendarEvent, deleteLastCalendarEvent, deleteCalendarEventByCriteria, getCalendarEventsForDeleteCriteria, findCalendarEventForDeletion, findCalendarEventForChange, getNextCalendarEventForDeletion, getNextCalendarEventForChange, updateCalendarEvent, editLastCalendarEvent, clearCalendarEvents, refreshGoogleCalendar, runWebSearch, clearSearchState, searchError, pushResultToast, addRecentAction, googleCalendarStatus?.connected, googleCalendarStatus?.writeEnabled, googleCalendarEvents, messages, sendNormalChat]);
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const handleLegacyFocusEndRequest = (event: Event) => {

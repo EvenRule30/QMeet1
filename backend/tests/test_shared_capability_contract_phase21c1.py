@@ -20,20 +20,55 @@ class SharedCapabilityContractPhase21C1Tests(unittest.TestCase):
             qmeet_capabilities.ACTION_VOCABULARY_VERSION,
         )
 
-    def test_tasks_contract_promotes_only_create(self) -> None:
+    def test_tasks_contract_exposes_current_promoted_actions(self) -> None:
         tasks = next(
             item
             for item in qmeet_capabilities.GLOBAL_CAPABILITY_CONTRACT
             if item.get("owner") == "tasks"
         )
+
         self.assertEqual(tasks.get("promotedCreateAction"), "remember-task")
+        self.assertEqual(tasks.get("promotedReadAction"), "read-memory")
+        self.assertEqual(tasks.get("promotedCompleteAction"), "mark-task-done")
+        self.assertEqual(tasks.get("promotedDeleteAction"), "delete-task")
+
         self.assertEqual(
             tasks.get("createArgumentSchema", {}).get("required"),
             ["title"],
         )
+        self.assertEqual(
+            tasks.get("readArgumentSchema", {}).get("required"),
+            ["scope"],
+        )
+        self.assertEqual(
+            tasks.get("completeArgumentSchema", {}).get("required"),
+            ["scope", "query"],
+        )
+        self.assertEqual(
+            tasks.get("deleteArgumentSchema", {}).get("required"),
+            ["scope", "query"],
+        )
+
+        self.assertEqual(
+            tasks.get("readArgumentSchema", {})
+            .get("properties", {})
+            .get("scope", {})
+            .get("enum"),
+            ["global"],
+        )
+        self.assertEqual(
+            tasks.get("deleteArgumentSchema", {})
+            .get("properties", {})
+            .get("scope", {})
+            .get("enum"),
+            ["global"],
+        )
+
         constraint = str(tasks.get("promotionConstraint", ""))
-        self.assertIn("Only single-task creation", constraint)
-        self.assertIn("completion/deletion/clear", constraint)
+        self.assertIn("Single-task creation", constraint)
+        self.assertIn("one named/referenced completion", constraint)
+        self.assertIn("one targeted GLOBAL task deletion", constraint)
+        self.assertIn("Delete-last and clear-completed", constraint)
 
     def test_capability_digest_keeps_legacy_examples_and_adds_canonical_actions(self) -> None:
         digest = qmeet_capabilities.capability_digest()
@@ -41,6 +76,8 @@ class SharedCapabilityContractPhase21C1Tests(unittest.TestCase):
         self.assertIn("run_search", digest)
         self.assertIn("Canonical executable actions by owner", digest)
         self.assertIn("remember-task", digest)
+        self.assertIn("mark-task-done", digest)
+        self.assertIn("delete-task", digest)
         self.assertIn("edit-last-event", digest)
 
 

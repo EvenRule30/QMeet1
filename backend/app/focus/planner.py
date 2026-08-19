@@ -12,6 +12,7 @@ try:
     from openai import AsyncOpenAI
 except Exception:  # pragma: no cover - startup remains available in mock mode.
     AsyncOpenAI = None  # type: ignore[assignment]
+
 from app.focus.legacy import load_legacy_focus_seed
 from app.focus.route_bridge import (
     calendar_write_intent,
@@ -41,6 +42,7 @@ from app.focus.store import (
     record_chat_response_recovery_candidate,
     seed_from_legacy,
 )
+
 LOGGER = logging.getLogger("qmeet.focus")
 
 DEFAULT_MODEL = (
@@ -54,6 +56,7 @@ _PLANNER_SYSTEM_PROMPT = """
 You are QMeet's turn planner. You do not execute tools and you do not write the
 final assistant reply. You produce one strict TurnPlan that a deterministic
 executor can validate and apply.
+
 The focus system is event-sourced. Make the smallest truthful state changes that
 are supported by the user's actual words and current context.
 
@@ -64,9 +67,9 @@ Core rules:
 
 2. Use the pending question and pending action to interpret short replies such
    as "yes", "sure", "no", "that works", and voice corrections.
+
 3. Start a focus only for durable work that benefits from continuity. Do not
    start one for a single lookup, a tiny UI command, or casual conversation.
-
    Source matters:
    - source="search-request-shadow" means the user already triggered QMeet's
      real Search route and userMessage is the raw search query.
@@ -108,6 +111,7 @@ Core rules:
      attachToFocus=false, and no durable Focus operations. Starting, resuming,
      updating, task-generating, summary-saving, or ending a Focus is not
      focus_read.
+
 4. Distinguish focus continuation, correction, and replacement precisely:
    - Continue the current focus when the new turn advances the same objective.
    - Use rescope_focus only when the user is correcting, clarifying, narrowing,
@@ -117,6 +121,7 @@ Core rules:
    - Do not use rescope_focus merely because only one focus may be active.
    - The deterministic executor will end the previous focus before starting a
      replacement focus, so do not preserve an unrelated objective by rescoping it.
+
    Examples:
    - Active focus: diagnose car starting trouble.
      User: "I meant the battery light, not the oil light."
@@ -127,6 +132,7 @@ Core rules:
    - Active focus: plan QMeet's next phase.
      User: "The first priority is connecting real frontend turns."
      Result: update the current focus, not start_focus or rescope_focus.
+
 5. Use generic state fields. Prefer objective, deliverable, subject,
    stakeholders, requirements, constraints, preferences, decisions, knownFacts,
    milestones, and completedMilestones. Domain tags may help but must not create
@@ -141,9 +147,11 @@ Core rules:
    - knownFacts: observations or established context that are not instructions.
    - milestones: planned work items, priorities, checkpoints, or deliverables.
    - completedMilestones: work the user clearly reports as finished.
+
    Split one sentence into multiple operations when it contains facts with
    different meanings. Do not collapse a milestone and a constraint into one
    preference.
+
    Example:
    User: "The first priority is connecting real frontend turns to the new Focus
    system without changing visible legacy behavior."
@@ -151,12 +159,14 @@ Core rules:
    - add_list_item milestones: "Connect real frontend turns to the new Focus system."
    - add_list_item constraints: "Visible legacy behavior must remain unchanged."
    - clear the pending question that this answer resolves.
+
 6. Ask at most one useful follow-up. The follow-up must be atomic: it should
    request one fact, decision, observation, or action that the user can answer
    unambiguously. Do not combine independent questions with "or", "and", a
    slash, or multiple clauses. When several unknowns matter, ask only the
    highest-information question first and leave the others for later turns.
    Do not ask a question when enough context exists to help directly.
+
    Example:
    - Avoid: "Have you tested or replaced the battery, or do the lights dim?"
    - Prefer: "Do the dashboard lights dim when you try to start the car?"
@@ -165,6 +175,7 @@ Core rules:
    a Search tool call. Reading the user's own Google Calendar or answering what
    is scheduled on it requires calendar_read, not Search. Never fabricate tool
    results, calendar contents, free time, or claim a tool has completed.
+
    The planner input includes currentTime. Treat currentTime.localIso and its
    timezone/UTC offset as authoritative for temporal comparisons.
    - Distinguish upcoming, ongoing, and completed events.
@@ -179,6 +190,7 @@ Core rules:
      invent them when no verified Calendar items are loaded.
    - When duration or end time is unavailable, preserve uncertainty rather than
      claiming that an event is ongoing or completed.
+
 8. A tool request creates a pending action only when attachToFocus=true. Tool
    completion will arrive later as a separate event from deterministic code.
    Transient tool calls are still logged for turn tracing but must not change
@@ -186,6 +198,7 @@ Core rules:
 
 9. Do not mark a focus complete merely because a draft exists. Mark complete
    only when the user clearly reports the real-world result or asks to finish.
+
 10. If the user asks to end or close the focus, plan the end_focus or
     save_focus_summary tool. Do not merely say it is closed.
 
@@ -194,26 +207,31 @@ Core rules:
 
 12. Do not store greetings, acknowledgements, assistant prose, or malformed
     transcription fragments as facts.
+
 13. Preserve accepted intent across prerequisite turns. If the user already
     requested or accepted instructions, an explanation, a draft, or another
     deliverable, and later turns only answer prerequisite questions, do not ask
     permission for the same deliverable again. Deliver it once the prerequisite
     is satisfied. If one prerequisite is still missing, ask only that atomic
     prerequisite and keep answerDirectly=false.
+
 14. answerDirectly=true means responseIntent.guidance must contain the requested
     answer or deliverable now. Do not merely promise that it will be provided,
     and do not replace delivery with "Would you like..." or "Do you want..."
     after the user has already requested it.
+
 15. The recent event context distinguishes canonical planning evidence from the
     legacy visible response. Treat turn_planned, response_candidate, focus state
     mutations, and tool results as planning evidence. An assistant_replied audit
     may report legacy mismatches, but legacy visible wording is not authoritative
     and must not override the canonical pending question or prior user intent.
+
 16. Set responseIntent.attachToFocus=true only when the proposed visible reply
     directly advances, answers, summarizes, or closes the active durable Focus,
     including a direct answer that continues accepted intent from prior turns.
     Set it false for casual conversation, unrelated questions, transient lookups,
     and replies that should not be allowed to replace general legacy chat.
+
     Examples:
     - Active Focus: diagnose car starting trouble. User: "Repeat the jump-start
       instructions." Result: attachToFocus=true.
@@ -223,6 +241,7 @@ Core rules:
       the newly started Focus.
 
 Operation guidance:
+
 - start_focus: use for a new durable objective; include title, objective, and
   optional tags.
 - rescope_focus: use only for a correction or reframing of the same intended
@@ -235,6 +254,7 @@ Operation guidance:
 - set_pending_action: only for a non-tool waiting state.
 - record_progress / complete_milestone: use only for work actually completed.
 - mark_focus_complete: use when the outcome itself is complete.
+
 Tool-call guidance:
 
 - attachToFocus=false: one-off or unrelated tool use; log it without changing
@@ -249,7 +269,6 @@ Examples:
   source: search-request-shadow
   User query: "why my dog left me"
   Result: Search tool call with attachToFocus=false; no focusOperations.
-
 - Active Focus: choose a machine-learning laptop under $4,000.
   source: search-request-shadow
   User query: "current RTX laptops under $4,000"
@@ -259,12 +278,12 @@ Examples:
   User request: "Read my calendar for today."
   Result: calendar_read with attachToFocus=true because the verified events
   directly advance meeting preparation.
-
 - Active Focus: diagnose car trouble.
   source: calendar-read-shadow
   User request: "What's on my calendar today?"
   Result: calendar_read with attachToFocus=false; do not let the calendar reply
   replace the unrelated car-trouble Focus response.
+
 Tool names available in this first slice:
 
 - search
@@ -281,7 +300,6 @@ Tool names available in this first slice:
 - end_focus
 - save_focus_summary
 """.strip()
-
 
 _QUESTION_COORDINATOR_PATTERN = re.compile(r"\b(?:and|or)\b|[/;]", re.IGNORECASE)
 
@@ -301,6 +319,7 @@ def _question_is_atomic(question: str) -> bool:
     normalized = _normalize_question(question)
     if not normalized:
         return True
+
     if not normalized.endswith("?") or normalized.count("?") != 1:
         return False
 
@@ -317,6 +336,7 @@ def _plan_question_errors(plan: TurnPlan) -> list[str]:
     response_question = _normalize_question(plan.responseIntent.askQuestion)
     if response_question:
         questions.append(response_question)
+
     for operation in plan.focusOperations:
         if operation.kind != FocusOperationKind.SET_PENDING_QUESTION:
             continue
@@ -337,11 +357,11 @@ def _plan_question_errors(plan: TurnPlan) -> list[str]:
         unique_questions.append(question)
 
     errors: list[str] = []
-
     if len(unique_questions) > 1:
         errors.append(
             "The plan contains more than one distinct follow-up question."
         )
+
     for question in unique_questions:
         if question == "<empty pending question>":
             errors.append("A set_pending_question operation has no question.")
@@ -358,6 +378,7 @@ def _strip_invalid_follow_up(
     errors: list[str],
 ) -> TurnPlan:
     """Preserve valid state changes while omitting an unsafe follow-up."""
+
     repaired = plan.model_copy(deep=True)
     repaired.focusOperations = [
         operation
@@ -369,6 +390,7 @@ def _strip_invalid_follow_up(
     suffix = " Follow-up omitted after atomic-question validation."
     if suffix.strip() not in repaired.reason:
         repaired.reason = f"{repaired.reason.rstrip()}{suffix}".strip()
+
     LOGGER.warning(
         "Focus planner follow-up omitted after validation: %s",
         "; ".join(errors),
@@ -386,9 +408,9 @@ async def _parse_plan(
         response_format=TurnPlan,
     )
     parsed = completion.choices[0].message.parsed
-
     if isinstance(parsed, TurnPlan):
         return parsed
+
     refusal = completion.choices[0].message.refusal or ""
     raise ValueError(
         "Structured planner response did not include a TurnPlan. "
@@ -415,6 +437,7 @@ async def _repair_non_atomic_plan(
             "If no useful atomic follow-up is needed, remove it from both locations.",
         ],
     }
+
     return await _parse_plan(
         client,
         [
@@ -461,6 +484,7 @@ def _planner_system_prompt(mode: str | None = None) -> str:
             "and the legacy QMeet path retain visible ownership unless a guarded "
             "takeover is explicitly approved."
         )
+
     return f"{_PLANNER_SYSTEM_PROMPT}\n\n{suffix}".strip()
 
 
@@ -498,6 +522,7 @@ def _compact_recent_event_payload(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     """Keep canonical continuity without replaying untrusted legacy prose."""
+
     if event_type == "turn_planned":
         plan = payload.get("plan", {})
         response_intent = plan.get("responseIntent", {})
@@ -519,6 +544,7 @@ def _compact_recent_event_payload(
                 "askQuestion": response_intent.get("askQuestion", ""),
             },
         }
+
     if event_type == "response_candidate":
         return {
             "text": payload.get("text", ""),
@@ -526,6 +552,7 @@ def _compact_recent_event_payload(
             "eligibility": payload.get("eligibility", {}),
             "toolEvidence": payload.get("toolEvidence", {}),
         }
+
     if event_type == "assistant_replied":
         audit = payload.get("audit", {})
         return {
@@ -540,6 +567,7 @@ def _compact_recent_event_payload(
                 ],
             }
         }
+
     if event_type in {
         "list_item_added",
         "field_set",
@@ -557,9 +585,22 @@ def _compact_recent_event_payload(
     return {}
 
 
-def _recent_event_summary() -> list[dict[str, Any]]:
+def _recent_event_summary(focus_id: str = "") -> list[dict[str, Any]]:
+    """Return compact planning evidence scoped to one canonical Focus lineage.
+
+    Transient tool turns remain in the event log for diagnostics, but their
+    blank or unrelated focusId must not become semantic evidence for whatever
+    Focus happens to be active later. Passing an empty focus_id preserves the
+    historical unscoped helper behavior for explicit diagnostics/tests.
+    """
+
+    normalized_focus_id = focus_id.strip()
     summary: list[dict[str, Any]] = []
+
     for event in list_events(limit=24):
+        if normalized_focus_id and event.focusId != normalized_focus_id:
+            continue
+
         event_type = event.type.value
         compact_payload = _compact_recent_event_payload(
             event_type,
@@ -578,6 +619,7 @@ def _recent_event_summary() -> list[dict[str, Any]]:
                 "createdAt": event.createdAt,
             }
         )
+
     return summary[-16:]
 
 
@@ -588,7 +630,7 @@ def _planner_input(message: str, state: FocusState, source: str) -> str:
         "currentTime": _current_time_context(),
         "userMessage": message,
         "activeFocus": state.model_dump(mode="json"),
-        "recentFocusEvents": _recent_event_summary(),
+        "recentFocusEvents": _recent_event_summary(state.focusId),
     }
 
     return json.dumps(payload, ensure_ascii=False, indent=2)
@@ -615,6 +657,7 @@ def _calendar_view_from_message(message: str) -> str:
 def _calendar_focus_is_relevant(state: FocusState) -> bool:
     if not state.focusId.strip() or state.status.value in {"inactive", "complete"}:
         return False
+
     durable_context = " ".join(
         [
             state.title,
@@ -645,6 +688,7 @@ def _normalize_focus_read_plan(
     read_intent = focus_read_intent(message)
     if read_intent is None:
         return plan
+
     arguments = [
         ToolArgument(key="mode", value=read_intent.mode),
     ]
@@ -652,6 +696,7 @@ def _normalize_focus_read_plan(
         arguments.append(
             ToolArgument(key="timeframe", value=read_intent.timeframe)
         )
+
     return plan.model_copy(
         update={
             "route": TurnRoute.TOOL,
@@ -695,11 +740,13 @@ def _normalize_memory_mutation_plan(
     mutation = memory_mutation_intent(message)
     if mutation is None:
         return plan
+
     arguments = [
         ToolArgument(key="operation", value=mutation.operation),
     ]
     if mutation.payload:
         arguments.append(ToolArgument(key="value", value=mutation.payload))
+
     return plan.model_copy(
         update={
             "route": TurnRoute.TOOL,
@@ -743,11 +790,13 @@ def _normalize_memory_read_plan(
     read_intent = memory_read_intent(message)
     if read_intent is None:
         return plan
+
     tool = (
         ToolName.NOTES_READ
         if read_intent.surface == "notes"
         else ToolName.TASKS_READ
     )
+
     return plan.model_copy(
         update={
             "route": TurnRoute.TOOL,
@@ -794,9 +843,11 @@ def _normalize_visual_mutation_plan(
 
     if source != "command-interpret-shadow":
         return plan
+
     mutation = visual_mutation_intent(message)
     if mutation is None:
         return plan
+
     return plan.model_copy(
         update={
             "route": TurnRoute.TOOL,
@@ -841,12 +892,14 @@ def _normalize_visual_read_plan(
     agree with the legacy command class. It must not capture an image, mutate
     visual memory, attach to the durable Focus, or create a pending tool action.
     """
+
     if source != "command-interpret-shadow":
         return plan
 
     read_intent = visual_read_intent(message)
     if read_intent is None:
         return plan
+
     return plan.model_copy(
         update={
             "route": TurnRoute.TOOL,
@@ -891,12 +944,14 @@ def _normalize_calendar_write_plan(
     for a read result that will never arrive. The frontend remains authoritative
     for confirmation and execution of the real write.
     """
+
     if source != "command-interpret-shadow":
         return plan
 
     write_intent = calendar_write_intent(message)
     if write_intent is None:
         return plan
+
     return plan.model_copy(
         update={
             "route": TurnRoute.TOOL,
@@ -938,12 +993,14 @@ def _normalize_calendar_read_plan(
     message: str,
 ) -> TurnPlan:
     """Deterministically record Calendar reads and repair Focus attachment.
+
     The endpoint itself is already executing a Calendar read. The planner may
     describe that read imperfectly, but the event log must still contain one
     calendar_read tool request. Attachment is repaired from durable Focus
     context so a meeting-preparation Focus cannot silently fall back merely
     because the model omitted attachToFocus.
     """
+
     plan = _normalize_focus_read_plan(
         plan,
         source=source,
@@ -974,8 +1031,10 @@ def _normalize_calendar_read_plan(
         source=source,
         message=message,
     )
+
     if source != "calendar-read-shadow":
         return plan
+
     should_attach = _calendar_focus_is_relevant(state)
     view = _calendar_view_from_message(message)
     normalized_calls: list[PlannedToolCall] = []
@@ -987,6 +1046,7 @@ def _normalize_calendar_read_plan(
             continue
         if found_calendar_read:
             continue
+
         found_calendar_read = True
         normalized_calls.append(
             tool_call.model_copy(
@@ -997,6 +1057,7 @@ def _normalize_calendar_read_plan(
                 }
             )
         )
+
     if not found_calendar_read:
         normalized_calls.append(
             PlannedToolCall(
@@ -1007,6 +1068,7 @@ def _normalize_calendar_read_plan(
                 attachToFocus=should_attach,
             )
         )
+
     return plan.model_copy(
         update={
             "route": TurnRoute.TOOL,
@@ -1017,14 +1079,15 @@ def _normalize_calendar_read_plan(
 
 def _fallback_plan(message: str, state: FocusState, reason: str) -> TurnPlan:
     """Safe fallback that does not recreate the old phrase-matching system."""
-    stripped = " ".join(message.split()).strip()
 
+    stripped = " ".join(message.split()).strip()
     if not stripped:
         return TurnPlan(
             route=TurnRoute.NOOP,
             confidence=0.0,
             reason=reason,
         )
+
     return TurnPlan(
         route=TurnRoute.RESPOND,
         responseIntent=ResponseIntent(answerDirectly=True),
@@ -1040,6 +1103,7 @@ async def preview_turn_plan(
 ) -> TurnPlan:
     seed_from_legacy(load_legacy_focus_seed())
     state = get_state()
+
     if not planner_enabled() or AsyncOpenAI is None:
         return _normalize_calendar_read_plan(
             _fallback_plan(
@@ -1074,6 +1138,7 @@ async def preview_turn_plan(
             source=source,
             message=message,
         )
+
     question_errors = _plan_question_errors(parsed)
     if not question_errors:
         return _normalize_calendar_read_plan(
@@ -1102,6 +1167,7 @@ async def preview_turn_plan(
             source=source,
             message=message,
         )
+
     repaired_errors = _plan_question_errors(repaired)
     if repaired_errors:
         return _normalize_calendar_read_plan(
@@ -1126,6 +1192,7 @@ async def observe_turn(
 ) -> tuple[TurnPlan, FocusState]:
     effective_turn_id = turn_id or f"focus-turn-{uuid4().hex}"
     seed_from_legacy(load_legacy_focus_seed())
+
     if has_turn(effective_turn_id):
         if (
             request.source == "chat-request-shadow"
@@ -1141,6 +1208,7 @@ async def observe_turn(
                     source_turn_id=effective_turn_id,
                 )
             return plan, get_state()
+
         return (
             TurnPlan(
                 route=TurnRoute.NOOP,

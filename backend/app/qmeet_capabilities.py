@@ -174,6 +174,7 @@ CANONICAL_TOOL_ACTIONS_BY_OWNER: dict[str, tuple[str, ...]] = {
     "tasks": (
         "remember-task",
         "mark-task-done",
+        "delete-task",
         "delete-last-task",
         "clear-done-tasks",
         "read-memory",
@@ -364,11 +365,26 @@ GLOBAL_CAPABILITY_CONTRACT: list[dict[str, Any]] = [
                 "Exactly one real open task must be deterministically resolved before confirmation."
             ),
         },
+        "promotedDeleteAction": "delete-task",
+        "deleteArgumentSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["scope", "query"],
+            "properties": {
+                "scope": {"type": "string", "enum": ["global"]},
+                "query": {"type": "string", "minLength": 1, "maxLength": 240},
+            },
+            "constraint": (
+                "query is semantic lookup language only and never task identity. "
+                "Deterministic task state must resolve zero, one, or multiple candidates before confirmation. "
+                "Active Focus-linked task deletion remains prohibited by the canonical backend guard."
+            ),
+        },
         "promotionConstraint": (
-            "Only single-task creation was agent-promotable in Phase 21C1; Phase 21C3 additionally promotes authoritative GLOBAL open-task reads. "
-            "Phase 21C4 promotes the semantic front door for one named/referenced task completion, but Task completion remains on QMeet's existing deterministic identity/confirmation execution path. "
-            "The model may provide only scope=global plus a lookup query; zero matches do nothing, multiple plausible matches require clarification, and one resolved task identity is locked across confirmation. "
-            "Focus-linked task questions remain Focus-owned. Historical completion/deletion/clear safeguards remain authoritative; deletion/clear operations stay on their existing guarded paths."
+            "Single-task creation, authoritative GLOBAL open-task reads, one named/referenced completion, and one targeted GLOBAL task deletion are agent-promotable. "
+            "For completion or targeted deletion the model may provide only scope=global plus a lookup query; zero matches do nothing, multiple plausible matches require clarification, and one resolved task identity is locked across confirmation. "
+            "Completion still verifies canonical Focus progress when the task is Focus-linked. Targeted deletion executes only through the existing canonical Memory task-delete endpoint, which remains authoritative for refusing active Focus-linked task deletion. "
+            "Focus-linked task reads remain Focus-owned. Delete-last and clear-completed keep their existing guarded paths."
         ),
     },
     {
