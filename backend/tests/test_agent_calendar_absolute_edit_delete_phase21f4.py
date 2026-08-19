@@ -64,7 +64,7 @@ class AgentCalendarAbsoluteEditDeletePhase21F4Tests(unittest.TestCase):
         )
         self.assertNotIn("eventId", result.proposedArguments)
 
-    def test_range_mutation_does_not_choose_one_source_date(self) -> None:
+    def test_range_mutation_fails_closed_instead_of_choosing_one_source_date(self) -> None:
         original = self._decision(
             "delete-calendar-event",
             {"day": "tomorrow", "title": "meeting", "time": None},
@@ -74,7 +74,19 @@ class AgentCalendarAbsoluteEditDeletePhase21F4Tests(unittest.TestCase):
             original,
             reference_date=date(2026, 8, 19),
         )
-        self.assertIs(result, original)
+
+        self.assertEqual(result.turnOwner, "calendar")
+        self.assertEqual(result.proposedAction, "delete-calendar-event")
+        self.assertEqual(
+            result.proposedArguments,
+            {
+                "startDate": "2026-08-24",
+                "endDate": "2026-08-30",
+            },
+        )
+        self.assertNotIn("day", result.proposedArguments)
+        self.assertNotIn("date", result.proposedArguments)
+        self.assertIn("multi-day source range", result.reason)
 
     def test_absolute_update_route_is_registered(self) -> None:
         paths = app.openapi().get("paths", {})

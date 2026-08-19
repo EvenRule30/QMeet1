@@ -38,6 +38,44 @@ export type CalendarCommandResult = {
   continuationContext?: string;
 };
 
+function formatVerifiedCalendarEvent(event: CalendarEvent): string {
+  const dateLabel = isCanonicalCalendarDateKey(event.dateKey)
+    ? formatCalendarAbsoluteDate(event.dateKey)
+    : event.dateKey;
+  return `${dateLabel} at ${event.time}: ${event.title}`;
+}
+
+function buildVerifiedCalendarEditContinuationContext(
+  event: CalendarEvent,
+): string {
+  return [
+    'qmeetScope=calendar.',
+    'qmeetCalendarWriteVerified=true.',
+    'qmeetCalendarWriteAction=edit.',
+    `verifiedEventDate=${event.dateKey}.`,
+    `verifiedEventTime=${event.time}.`,
+    `verifiedEventTitle=${JSON.stringify(event.title)}.`,
+    'These fields are the authoritative post-write Calendar state returned by deterministic execution.',
+    'Any continuation claim about the updated event date, time, or title must use these verified values.',
+    'Do not reconstruct or shorten the destination date from the original user wording.',
+  ].join(' ');
+}
+
+function buildVerifiedCalendarDeleteContinuationContext(
+  event: CalendarEvent,
+): string {
+  return [
+    'qmeetScope=calendar.',
+    'qmeetCalendarWriteVerified=true.',
+    'qmeetCalendarWriteAction=delete.',
+    `verifiedDeletedEventDate=${event.dateKey}.`,
+    `verifiedDeletedEventTime=${event.time}.`,
+    `verifiedDeletedEventTitle=${JSON.stringify(event.title)}.`,
+    'These fields identify the exact Calendar event that deterministic execution deleted.',
+    'Do not reconstruct a different date, time, or title from recent conversation.',
+  ].join(' ');
+}
+
 export async function handleCalendarCommand(
   commandMatch: CommandMatch,
   deps: {
@@ -80,14 +118,18 @@ export async function handleCalendarCommand(
     case 'edit-last-event': {
       const updatedEvent = await deps.editLastCalendarEvent(commandMatch.calendarEdit);
       deps.setActivePanel('calendar');
+      const confirmationContent = updatedEvent
+        ? `Updated ${updatedEvent.source === 'google' ? 'Google Calendar' : 'local'} event ${formatVerifiedCalendarEvent(updatedEvent)}.`
+        : deps.googleCalendarStatus?.connected
+          ? 'I could not update the Google Calendar event. Check the Calendar panel status.'
+          : 'No local calendar events to update.';
       return {
         handled: true,
-        confirmationContent: updatedEvent
-          ? `Updated ${updatedEvent.source === 'google' ? 'Google Calendar' : 'local'} event: ${updatedEvent.time}: ${updatedEvent.title}.`
-          : deps.googleCalendarStatus?.connected
-            ? 'I could not update the Google Calendar event. Check the Calendar panel status.'
-            : 'No local calendar events to update.',
+        confirmationContent,
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
+        continuationContext: updatedEvent
+          ? buildVerifiedCalendarEditContinuationContext(updatedEvent)
+          : undefined,
       };
     }
 
@@ -248,14 +290,18 @@ export async function handleCalendarCommand(
         deps.setCalendarView(targetView);
         deps.setActivePanel('calendar');
       }
+      const confirmationContent = deletedEvent
+        ? `Deleted ${deletedEvent.source === 'google' ? 'Google Calendar' : 'local'} event ${formatVerifiedCalendarEvent(deletedEvent)}.`
+        : deps.googleCalendarStatus?.connected
+          ? `No Google Calendar event matched ${describeCalendarDeletePayload(commandMatch.calendarDelete)}.`
+          : `No local calendar event matched ${describeCalendarDeletePayload(commandMatch.calendarDelete)}.`;
       return {
         handled: true,
-        confirmationContent: deletedEvent
-          ? `Deleted ${deletedEvent.source === 'google' ? 'Google Calendar' : 'local'} event: ${deletedEvent.time}: ${deletedEvent.title}.`
-          : deps.googleCalendarStatus?.connected
-            ? `No Google Calendar event matched ${describeCalendarDeletePayload(commandMatch.calendarDelete)}.`
-            : `No local calendar event matched ${describeCalendarDeletePayload(commandMatch.calendarDelete)}.`,
+        confirmationContent,
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
+        continuationContext: deletedEvent
+          ? buildVerifiedCalendarDeleteContinuationContext(deletedEvent)
+          : undefined,
       };
     }
 

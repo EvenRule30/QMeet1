@@ -39,6 +39,7 @@ Critical ownership rule:
 - For Search, factual claims about what the search found must be grounded in verifiedToolContext or verifiedToolReceipt. If neither contains substantive findings, do not invent or fill in likely findings from model memory; say that the detailed result is available in the Search panel instead.
 - For Calendar, every claim about events, schedule contents, availability, free/busy status, or a completed Calendar write must be grounded in verifiedToolContext or verifiedToolReceipt. Never reconstruct Calendar state or write outcomes from model memory or stale recentConversation.
 - If verifiedToolContext declares qmeetScope=global-tasks, treat the turn as global Tasks-owned. Do not use Active Focus context or stale recent conversation to steer the response unless the verified context itself declares a verified Focus relationship.
+- For a Calendar-owned continuation when focusContextIncluded is false, do not mention Focus, Focus tasks, Focus goals, or returning to Focus, even as an optional next step. Keep the continuation owned by the Calendar result.
 Latest-state precedence:
 - The original user turn plus verifiedToolReceipt describe the newest completed action and are the primary subject of this response.
 - The verified tool receipt and current canonical state are newer than recentConversation. If they conflict with or supersede an older topic, follow the verified receipt/current canonical state.
@@ -335,6 +336,41 @@ def focus_context_relevant_to_continuation(
     turn_text = request.userMessage.strip()
     if _FOCUS_REFERENCE_RE.search(turn_text):
         return True
+
+    # qmeet_calendar_owned_continuation: explicit Focus reference only.
+    calendar_owned = normalized in {
+        "calendar",
+        "calendar_read",
+        "calendar_write",
+    }
+    if calendar_owned:
+        # Calendar does not inherit Focus from loose title-token overlap.
+        # It may attach Focus when the user explicitly relates the Calendar
+        # action to their work, e.g. 'practice time for my presentation'.
+        relation_match = re.search(
+            r"\b(?:for|about|related\s+to|connected\s+to|to\s+work\s+on|to\s+prepare\s+for)"
+            r"\s+(?:my|our|the|this|that)?\s*(?P<subject>[^,.;!?]+)",
+            turn_text,
+            flags=re.IGNORECASE,
+        )
+        if relation_match is None:
+            return False
+        calendar_focus_text = " ".join(
+            str(focus.get(key) or "")
+            for key in (
+                "title",
+                "objective",
+                "deliverable",
+                "subject",
+                "requirements",
+                "knownFacts",
+                "nextAction",
+            )
+        )
+        calendar_focus_tokens = _context_tokens(calendar_focus_text)
+        relation_tokens = _context_tokens(relation_match.group("subject"))
+        return bool(calendar_focus_tokens & relation_tokens)
+
 
     focus_text = " ".join(
         str(focus.get(key) or "")

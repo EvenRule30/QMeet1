@@ -452,8 +452,23 @@ def _target_date_for_day(
         microsecond=0,
     )
 
-    if (day or "").strip().lower() == "tomorrow":
+    raw_day = (day or "").strip().lower()
+    if raw_day == "tomorrow":
         start += timedelta(days=1)
+    elif raw_day not in {"", "today"}:
+        # Internal update paths may preserve an already-resolved event date by
+        # passing its canonical YYYY-MM-DD dateKey. Public relative-day callers
+        # keep the established today/tomorrow behavior.
+        try:
+            absolute_date = datetime.strptime(raw_day, "%Y-%m-%d").date()
+        except ValueError:
+            absolute_date = None
+        if absolute_date is not None:
+            start = start.replace(
+                year=absolute_date.year,
+                month=absolute_date.month,
+                day=absolute_date.day,
+            )
 
     return start
 
@@ -732,32 +747,10 @@ def update_calendar_event(
             target_day = clean_day
 
             if not target_day:
+                # A time-only edit must preserve the event's exact existing
+                # Calendar date. Never reduce a farther-date event to tomorrow.
                 existing_start = existing.get("start", {})
-                existing_start_text = (
-                    existing_start.get("dateTime")
-                    or existing_start.get("date")
-                )
-
-                if existing_start_text:
-                    try:
-                        existing_start_dt = datetime.fromisoformat(
-                            existing_start_text.replace("Z", "+00:00")
-                        ).astimezone(_get_timezone(config))
-                        today_key = _target_date_for_day(
-                            "today",
-                            config,
-                        ).date().isoformat()
-                        target_day = (
-                            "today"
-                            if existing_start_dt.date().isoformat()
-                            == today_key
-                            else "tomorrow"
-                        )
-                    except Exception:
-                        target_day = "today"
-                else:
-                    target_day = "today"
-
+                target_day = _date_key_from_start(existing_start, config)
             start_body, end_body = _event_body_for_time(
                 target_day or "today",
                 clean_time or "Later",

@@ -562,7 +562,18 @@ def apply_calendar_absolute_create_ownership_floor(
 
 
 
-_EDIT_LEAD_RE = re.compile(r"^(?:please\s+)?(?:move|reschedule|change|edit|update)\b", re.IGNORECASE)
+_EDIT_LEAD_RE = re.compile(
+    r"^(?:please\s+)?(?:move|reschedule|change|edit|update|rename|retitle)\b",
+    re.IGNORECASE,
+)
+_RENAME_LEAD_RE = re.compile(
+    r"^(?:please\s+)?(?:rename|retitle)\b",
+    re.IGNORECASE,
+)
+_EXPLICIT_TITLE_EDIT_RE = re.compile(
+    r"\b(?:rename|retitle|change\s+(?:the\s+)?title(?:\s+of)?)\b",
+    re.IGNORECASE,
+)
 _DELETE_LEAD_RE = re.compile(r"^(?:please\s+)?(?:delete|remove|cancel|erase)\b", re.IGNORECASE)
 _LOOKUP_TIME_RE = re.compile(r"\b(\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)|noon|midnight)\b", re.IGNORECASE)
 
@@ -580,17 +591,160 @@ def _fallback_event_query(user_message: str) -> str | None:
     return match.group(0).casefold() if match else None
 
 
+def _poison_multi_day_calendar_mutation(
+    decision: Any,
+    *,
+    action: str,
+    source_window: CalendarReadWindow,
+) -> Any:
+    """Keep a recognized multi-day mutation from collapsing to one model-picked day.
+
+    The frontend already treats a claimed Calendar edit/delete whose typed
+    arguments fail deterministic validation as terminal and non-mutating. Keep
+    the owning action, but return a deliberately non-executable range shape so
+    legacy/model fallback cannot silently choose one day from the range.
+    """
+
+    return decision.model_copy(update={
+        "turnOwner": "calendar",
+        "disposition": "tool",
+        "proposedCapability": "calendar",
+        "proposedAction": action,
+        "proposedArguments": {
+            "startDate": source_window.start_date.isoformat(),
+            "endDate": source_window.end_date.isoformat(),
+        },
+        "responsePlan": "Refuse to choose one Calendar event date from a multi-day mutation request; ask the user for one specific day.",
+        "confidence": max(float(getattr(decision, "confidence", 0.0) or 0.0), 0.99),
+        "reason": "Deterministic Calendar mutation safety floor recognized a multi-day source range, so one event cannot be safely targeted without a specific day.",
+    })
+
+
+def _calendar_source_date_selector(source_clause: str) -> str | None:
+    """Return the explicit source-date phrase that owns Calendar targeting.
+
+    The query/title criterion must not duplicate a date selector that is already
+    represented by targetDate/targetDay. Prefer the same specific date forms the
+    Calendar window resolver recognizes before falling back to a bare weekday.
+    """
+
+    patterns = [
+        r"\b\d{4}-\d{2}-\d{2}\b",
+        rf"\b{_MONTH_PATTERN}\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s+\d{{4}})?\b",
+        rf"\b(?:this|next)\s+{_WEEKDAY_PATTERN}\b",
+        r"\b(?:today|tomorrow)\b",
+        rf"\b{_WEEKDAY_PATTERN}\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, source_clause, flags=re.IGNORECASE)
+        if match:
+            return match.group(0)
+    return None
+
+
+def _strip_calendar_query_selector(
+    proposed_query: str,
+    selector: str,
+) -> str:
+    pattern = re.escape(selector)
+    pattern = pattern.replace(r"\ ", r"\s+")
+    cleaned = re.sub(
+        pattern,
+        " ",
+        proposed_query,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"\b(?:at|from|on|for)\b\s*$",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(r"\s+", " ", cleaned).strip(" ,.;:")
+
+
+def _calendar_edit_query(
+    source_clause: str,
+    user_message: str,
+    existing_arguments: dict[str, Any],
+) -> str | None:
+    """Return title/query criteria with temporal selectors kept separate.
+
+    Agent proposals may redundantly include source selectors in the free-text
+    query, for example query="4 PM Project Review August 29" while currentTime
+    and targetDate already carry those selectors. Strip only selectors that are
+    explicitly present in the user's source clause, preserving the event-title
+    words used for authoritative Calendar identity resolution.
+    """
+
+    proposed_query = (
+        _validated_lookup_text(existing_arguments.get("query"))
+        or _validated_lookup_text(existing_arguments.get("title"))
+    )
+    if proposed_query:
+        cleaned_query = proposed_query
+        explicit_time = _LOOKUP_TIME_RE.search(source_clause)
+        if explicit_time:
+            cleaned_query = _strip_calendar_query_selector(
+                cleaned_query,
+                explicit_time.group(0),
+            )
+
+        source_date_selector = _calendar_source_date_selector(source_clause)
+        if source_date_selector:
+            cleaned_query = _strip_calendar_query_selector(
+                cleaned_query,
+                source_date_selector,
+            )
+
+        validated_cleaned_query = _validated_lookup_text(cleaned_query)
+        if validated_cleaned_query:
+            return validated_cleaned_query
+        return _fallback_event_query(user_message)
+
+    return _fallback_event_query(user_message)
+
+
+def _calendar_edit_current_time(
+    source_clause: str,
+    existing_arguments: dict[str, Any],
+) -> str | None:
+    current_time = _validated_create_time(existing_arguments.get("currentTime"))
+    explicit_time = _LOOKUP_TIME_RE.search(source_clause)
+    if explicit_time:
+        current_time = _validated_create_time(explicit_time.group(1))
+    if current_time is _INVALID_CREATE_VALUE:
+        return None
+    return current_time
+
+
+def _validated_title_change_value(value: str) -> str | None:
+    cleaned = re.sub(
+        r"^(?:called|named|titled)\s+",
+        "",
+        value.strip(),
+        flags=re.IGNORECASE,
+    )
+    return _validated_lookup_text(cleaned)
+
+
 def apply_calendar_absolute_edit_delete_ownership_floor(
     user_message: str,
     decision: Any,
     *,
     reference_date: date | None = None,
 ) -> Any:
-    """Resolve farther-date targeted delete and day-move edit semantics only.
+    """Resolve farther-date targeted edit/delete semantics without event identity.
 
-    This floor never resolves canonical event identity. It emits lookup criteria
-    and one requested date change; frontend Calendar state still resolves those
-    criteria to zero/one/multiple events and locks one event id across confirm.
+    Supported arbitrary-date edits:
+    - day/date moves, e.g. "move my meeting next Friday to Saturday"
+    - time changes, e.g. "move my meeting next Saturday from 3 PM to 4 PM"
+    - title changes, e.g. "rename my meeting next Saturday to Project Review"
+
+    This floor never resolves canonical event identity. It emits exact source-date
+    lookup criteria plus one requested change; authoritative Calendar state still
+    resolves zero/one/multiple events and locks one event id across confirmation.
     """
 
     text = re.sub(r"\s+", " ", user_message.strip())
@@ -607,52 +761,138 @@ def apply_calendar_absolute_edit_delete_ownership_floor(
         split = re.split(r"\s+to\s+", text, maxsplit=1, flags=re.IGNORECASE)
         if len(split) != 2:
             return decision
-        source_window = resolve_calendar_read_window(
-            split[0], reference_date=reference_date
-        )
-        if source_window is None or source_window.day_count != 1:
-            return decision
-        destination_window = resolve_calendar_read_window(
-            split[1], reference_date=source_window.start_date
-        )
-        if destination_window is None or destination_window.day_count != 1:
-            return decision
-        if destination_window.start_date == source_window.start_date:
-            return decision
 
-        query = (
-            _validated_lookup_text(existing_arguments.get("query"))
-            or _fallback_event_query(user_message)
-        )
+        source_clause, destination_clause = split[0], split[1].strip()
+
+        # Calendar reads intentionally leave today/tomorrow to the legacy view
+        # contract, so resolve_calendar_read_window() returns None for them.
+        # Mutations need a slightly different bridge: preserve a legacy relative
+        # source selector as targetDay while still resolving an arbitrary
+        # destination to a canonical absolute date.
+        legacy_source_match = _LEGACY_DAY_RE.search(source_clause)
+        if legacy_source_match:
+            legacy_source_day = legacy_source_match.group(0).casefold()
+            source_date = reference_date or _calendar_reference_date()
+            if legacy_source_day == "tomorrow":
+                source_date += timedelta(days=1)
+            source_window = _bounded_window(source_date, source_date)
+            source_target_arguments: dict[str, str] = {
+                "targetDay": legacy_source_day,
+            }
+        else:
+            source_window = resolve_calendar_read_window(
+                source_clause,
+                reference_date=reference_date,
+            )
+            if source_window is None:
+                return decision
+            source_target_arguments = {
+                "targetDate": source_window.start_date.isoformat(),
+            }
+
+        if source_window is None:
+            return decision
+        if source_window.day_count != 1:
+            return _poison_multi_day_calendar_mutation(
+                decision,
+                action="edit-last-event",
+                source_window=source_window,
+            )
+
+        query = _calendar_edit_query(source_clause, user_message, existing_arguments)
         if not query:
             return decision
-        current_time = _validated_create_time(existing_arguments.get("currentTime"))
-        explicit_time = _LOOKUP_TIME_RE.search(split[0])
-        if explicit_time:
-            current_time = _validated_create_time(explicit_time.group(1))
-        if current_time is _INVALID_CREATE_VALUE:
-            current_time = None
+        current_time = _calendar_edit_current_time(
+            source_clause,
+            existing_arguments,
+        )
 
-        return decision.model_copy(update={
-            "turnOwner": "calendar",
-            "disposition": "tool",
-            "proposedCapability": "calendar",
-            "proposedAction": "edit-last-event",
-            "proposedArguments": {
-                "targetDate": source_window.start_date.isoformat(),
-                "query": query,
-                "currentTime": current_time,
-                "changeField": "date",
-                "changeValue": destination_window.start_date.isoformat(),
-            },
-            "responsePlan": "Resolve one real Calendar event on the source date, preview the absolute-date move, require confirmation, then update only the locked event identity.",
-            "confidence": max(float(getattr(decision, "confidence", 0.0) or 0.0), 0.98),
-            "reason": "Deterministic Calendar absolute-date edit floor resolved one source date and one destination date without resolving event identity.",
-        })
+        # Explicit rename/retitle/title-change wording owns the suffix as a title,
+        # even when the requested title happens to contain a weekday or time token.
+        if _RENAME_LEAD_RE.search(text) or _EXPLICIT_TITLE_EDIT_RE.search(text):
+            new_title = _validated_title_change_value(destination_clause)
+            if not new_title:
+                return decision
+            return decision.model_copy(update={
+                "turnOwner": "calendar",
+                "disposition": "tool",
+                "proposedCapability": "calendar",
+                "proposedAction": "edit-last-event",
+                "proposedArguments": {
+                    **source_target_arguments,
+                    "query": query,
+                    "currentTime": current_time,
+                    "changeField": "title",
+                    "changeValue": new_title,
+                },
+                "responsePlan": "Resolve one real Calendar event on the exact source date, preview the title change, require confirmation, then update only the locked event identity.",
+                "confidence": max(float(getattr(decision, "confidence", 0.0) or 0.0), 0.98),
+                "reason": "Deterministic Calendar absolute-date edit floor resolved one source date and one requested title change without resolving event identity.",
+            })
 
-    source_window = resolve_calendar_read_window(text, reference_date=reference_date)
-    if source_window is None or source_window.day_count != 1:
+        destination_window = resolve_calendar_read_window(
+            destination_clause,
+            reference_date=source_window.start_date,
+        )
+        if destination_window is not None:
+            if destination_window.day_count != 1:
+                return decision
+            if destination_window.start_date == source_window.start_date:
+                return decision
+            return decision.model_copy(update={
+                "turnOwner": "calendar",
+                "disposition": "tool",
+                "proposedCapability": "calendar",
+                "proposedAction": "edit-last-event",
+                "proposedArguments": {
+                    **source_target_arguments,
+                    "query": query,
+                    "currentTime": current_time,
+                    "changeField": "date",
+                    "changeValue": destination_window.start_date.isoformat(),
+                },
+                "responsePlan": "Resolve one real Calendar event on the source date, preview the absolute-date move, require confirmation, then update only the locked event identity.",
+                "confidence": max(float(getattr(decision, "confidence", 0.0) or 0.0), 0.98),
+                "reason": "Deterministic Calendar absolute-date edit floor resolved one source date and one destination date without resolving event identity.",
+            })
+
+        new_time_match = _LOOKUP_TIME_RE.search(destination_clause)
+        if new_time_match:
+            new_time = _validated_create_time(new_time_match.group(1))
+            if new_time is _INVALID_CREATE_VALUE or new_time is None:
+                return decision
+            return decision.model_copy(update={
+                "turnOwner": "calendar",
+                "disposition": "tool",
+                "proposedCapability": "calendar",
+                "proposedAction": "edit-last-event",
+                "proposedArguments": {
+                    **source_target_arguments,
+                    "query": query,
+                    "currentTime": current_time,
+                    "changeField": "time",
+                    "changeValue": new_time,
+                },
+                "responsePlan": "Resolve one real Calendar event on the exact source date, preview the time change, require confirmation, then update only the locked event identity.",
+                "confidence": max(float(getattr(decision, "confidence", 0.0) or 0.0), 0.98),
+                "reason": "Deterministic Calendar absolute-date edit floor resolved one source date and one requested time change without resolving event identity.",
+            })
+
         return decision
+
+    source_window = resolve_calendar_read_window(
+        text,
+        reference_date=reference_date,
+    )
+    if source_window is None:
+        return decision
+    if source_window.day_count != 1:
+        return _poison_multi_day_calendar_mutation(
+            decision,
+            action="delete-calendar-event",
+            source_window=source_window,
+        )
+
     title = (
         _validated_lookup_text(existing_arguments.get("title"))
         or _validated_lookup_text(existing_arguments.get("query"))
@@ -681,3 +921,4 @@ def apply_calendar_absolute_edit_delete_ownership_floor(
         "confidence": max(float(getattr(decision, "confidence", 0.0) or 0.0), 0.98),
         "reason": "Deterministic Calendar absolute-date delete floor resolved one source date while leaving canonical event identity to authoritative Calendar state.",
     })
+
