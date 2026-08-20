@@ -85,13 +85,20 @@ export type CompositeImmediateExecutionResult = {
 };
 
 export type CompositeConfirmationMode = 'none' | 'required';
+export type CompositeConfirmationAuthority =
+  | 'validated-plan'
+  | 'canonical-current-turn';
 
 export type CompositeResumableStepCandidate =
   CompositePreflightStepCandidate & {
     confirmationMode: CompositeConfirmationMode;
+    confirmationAuthority?: CompositeConfirmationAuthority;
     calendarEditTargetCriteria?: PromotedCalendarEditTargetCriteria;
   };
 
+export type CompositeResumablePreflightOptions = {
+  deferFirstCalendarConfirmationToCanonicalRoute?: boolean;
+};
 export type CompositeResumablePreflightFailureReason =
   | CompositeImmediatePreflightFailureReason
   | 'unsupported-confirmation-action'
@@ -144,6 +151,10 @@ const CONFIRMATION_PAUSE_ACTIONS = new Set([
 
 const G3A_RESUMABLE_CONFIRMATION_ACTIONS = new Set([
   'add-calendar-event',
+  'edit-last-event',
+  'delete-calendar-event',
+]);
+const G3B_CANONICAL_PRIMARY_CONFIRMATION_ACTIONS = new Set([
   'edit-last-event',
   'delete-calendar-event',
 ]);
@@ -650,6 +661,7 @@ export async function executePreflightedCompositeImmediatePlan(options: {
  */
 export function preflightCompositeResumablePlan(
   plan: AgentCompositePlanResponse | null,
+  options: CompositeResumablePreflightOptions = {},
 ): CompositeResumablePreflight {
   if (!plan?.plan.isComposite) {
     return {
@@ -675,7 +687,7 @@ export function preflightCompositeResumablePlan(
   const candidates: CompositeResumableStepCandidate[] = [];
   const priorSteps = new Map<string, AgentCompositeStep>();
 
-  for (const step of plan.plan.steps) {
+  for (const [index, step] of plan.plan.steps.entries()) {
     if (G3A_RESUMABLE_CONFIRMATION_ACTIONS.has(step.proposedAction)) {
       if (step.dependsOn.length > 0 || step.inputBindings.length > 0) {
         return {
@@ -688,6 +700,28 @@ export function preflightCompositeResumablePlan(
         };
       }
 
+      if (
+        options.deferFirstCalendarConfirmationToCanonicalRoute &&
+        index === 0 &&
+        step.turnOwner === 'calendar' &&
+        step.proposedCapability === 'calendar' &&
+        G3B_CANONICAL_PRIMARY_CONFIRMATION_ACTIONS.has(step.proposedAction)
+      ) {
+        candidates.push({
+          stepId: step.stepId,
+          turnOwner: step.turnOwner,
+          focusRelevant: step.focusRelevant,
+          proposedCapability: step.proposedCapability,
+          proposedAction: step.proposedAction,
+          proposedArguments: { ...step.proposedArguments },
+          inputBindings: [],
+          commandMatch: null,
+          confirmationMode: 'required',
+          confirmationAuthority: 'canonical-current-turn',
+        });
+        priorSteps.set(step.stepId, step);
+        continue;
+      }
       const confirmationCandidate =
         resolveResumableConfirmationCandidate(plan, step);
       if (!confirmationCandidate) {
@@ -812,7 +846,10 @@ async function executeResumableCandidates(options: {
     const plannedCandidate = options.preflight.candidates[index];
 
     if (plannedCandidate.confirmationMode === 'required') {
-      if (!plannedCandidate.commandMatch) {
+      if (
+        !plannedCandidate.commandMatch &&
+        plannedCandidate.confirmationAuthority !== 'canonical-current-turn'
+      ) {
         return {
           ok: false,
           status: 'failed',

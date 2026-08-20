@@ -11,7 +11,6 @@ FOCUS_TASK_READ = ROOT / "src" / "app" / "lib" / "focusTaskRead.ts"
 class FocusTaskReadPromotionPhase21C6CTests(unittest.TestCase):
     def test_focus_task_read_has_dedicated_deterministic_scope_detector(self):
         source = FOCUS_TASK_READ.read_text(encoding="utf-8")
-
         self.assertIn("export function isExplicitFocusTaskReadRequest", source)
         self.assertIn("FOCUS_TASK_READ_NOUN", source)
         self.assertIn("FOCUS_TASK_READ_VERB", source)
@@ -22,10 +21,9 @@ class FocusTaskReadPromotionPhase21C6CTests(unittest.TestCase):
 
     def test_explicit_focus_task_read_cannot_fall_through_to_agent_conversation(self):
         source = APP.read_text(encoding="utf-8")
-        promoted = source.index("const promotedSingleIntent =")
-        promoted_end = source.index("const promotedTaskCompletionCandidate", promoted)
+        promoted = source.index("const observedPromotedSingleIntent =")
+        promoted_end = source.index("const promotedSingleIntent =", promoted)
         block = source[promoted:promoted_end]
-
         self.assertIn("!explicitFocusTaskReadRequest", block)
         self.assertIn(
             "const explicitFocusTaskReadCommandMatch = explicitFocusTaskReadRequest",
@@ -41,7 +39,6 @@ class FocusTaskReadPromotionPhase21C6CTests(unittest.TestCase):
         focus_read = source.index("const focusTaskReadCommandResult")
         global_read = source.index("const globalTaskReadCommandResult", focus_read)
         block = source[focus_read:global_read]
-
         self.assertIn(
             "await reconcileCanonicalFocusProjection(",
             block,
@@ -64,7 +61,6 @@ class FocusTaskReadPromotionPhase21C6CTests(unittest.TestCase):
         focus_read = source.index("const focusTaskReadCommandResult")
         global_read = source.index("const globalTaskReadCommandResult", focus_read)
         block = source[focus_read:global_read]
-
         self.assertIn("} catch (error) {", block)
         self.assertIn(
             "refusing to substitute local or historical task state",

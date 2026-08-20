@@ -25,7 +25,7 @@ class FocusTerminalPreflightPrecedenceTests(unittest.TestCase):
             "const directFocusTerminalCommandMatch ="
         )
         parse_index = source.index(
-            "const parsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);"
+            "const rawParsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);"
         )
         natural_completion_index = source.index(
             "const naturalTaskCompletionTarget ="

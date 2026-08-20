@@ -33,7 +33,7 @@ class SemanticLifecycleRoutePrecedenceTests(unittest.TestCase):
         self.assertIn("parsedCommandMatch", selected_command_sources)
 
         parse_position = app.index(
-            "const parsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);"
+            "const rawParsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);"
         )
         defer_position = app.index("const deferredExactFocusLifecycleMatch =")
         command_selection_position = (
@@ -79,7 +79,7 @@ class SemanticLifecycleRoutePrecedenceTests(unittest.TestCase):
         self.assertIn("getDirectFocusTerminalCommandMatch", app)
         direct_position = app.index("const directFocusTerminalCommandMatch =")
         parse_position = app.index(
-            "const parsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);"
+            "const rawParsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);"
         )
         interpreter_position = app.index(
             "const interpretedCommand = await interpretCommandIntent(trimmed);"

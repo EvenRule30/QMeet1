@@ -472,12 +472,16 @@ export default function App() {
     const continuationUserTextForTool =
       (continuationUserText ?? visibleUserText).trim() || visibleUserText;
     const compositeAtomicExecution = Boolean(compositeStepId);
+    let compositeResumeForCanonicalRoute = compositeResumeToArm;
     const armPendingCompositeResumeForAction = (action: string) => {
       if (
-        compositeResumeToArm &&
-        matchesPendingCompositeConfirmationAction(compositeResumeToArm, action)
+        compositeResumeForCanonicalRoute &&
+        matchesPendingCompositeConfirmationAction(
+          compositeResumeForCanonicalRoute,
+          action,
+        )
       ) {
-        pendingCompositeResumeRef.current = compositeResumeToArm;
+        pendingCompositeResumeRef.current = compositeResumeForCanonicalRoute;
       }
     };
     const shadowTurn = commandRoute === 'exact' && !forcedCommandMatch
@@ -1313,7 +1317,9 @@ export default function App() {
         compositePreflight.reason === 'confirmation-pause-required'
       ) {
         const resumablePreflight =
-          preflightCompositeResumablePlan(observedCompositePlan);
+          preflightCompositeResumablePlan(observedCompositePlan, {
+            deferFirstCalendarConfirmationToCanonicalRoute: true,
+          });
 
         if (resumablePreflight.ok) {
           const confirmationCandidates = resumablePreflight.candidates
@@ -1326,6 +1332,8 @@ export default function App() {
           const g3bLiveEligible =
             confirmationCandidates.length === 1 &&
             livePause?.index === 0 &&
+            livePause?.candidate.confirmationAuthority ===
+              'canonical-current-turn' &&
             (livePauseAction === 'edit-last-event' ||
               livePauseAction === 'delete-calendar-event');
 
@@ -1354,7 +1362,8 @@ export default function App() {
 
               if (
                 pendingCompositeResume &&
-                pausedCandidate?.commandMatch
+                pausedCandidate?.confirmationAuthority ===
+                  'canonical-current-turn'
               ) {
                 setTrackedInputRoute(
                   'Agent-promoted resumable Calendar composite',
@@ -1376,48 +1385,43 @@ export default function App() {
                   observedCompositePlan?.plan.confidence ?? null,
                 );
                 setLastInterpreterReason(
-                  'Phase 21G3B promoted one first-step Calendar mutation into the existing confirmation path. Canonical Calendar identity remains owned by the existing target refs; trailing composite work may resume only from a matching successful verified receipt.',
+                  'Phase 21G3B.3 preserved the validated composite tail but deferred the first Calendar mutation to the ordinary current-turn Calendar route. Planner Calendar arguments are observation-only; canonical Calendar target identity and executable changes must be resolved independently before the resume checkpoint can arm.',
                 );
 
-                return handleSend(
-                  visibleUserText,
-                  visibleUserText,
-                  'agent',
-                  pausedCandidate.commandMatch,
-                  [],
-                  visibleUserText,
-                  null,
-                  null,
-                  pausedCandidate.calendarEditTargetCriteria ?? null,
-                  null,
-                  null,
-                  pendingCompositeResume,
-                );
+                compositeResumeForCanonicalRoute = pendingCompositeResume;
               }
             }
 
-            finishListening();
-            setShowThinkingBubble(false);
-            if (!chatActive) setChatActive(true);
-            const now = Date.now();
-            const userMsg = createUserMessage(now, visibleUserText);
-            const assistantMsg = createAssistantMessage(
-              now,
-              'I recognized the multi-step Calendar request, but I could not create one safe resumable confirmation checkpoint. No composite mutation was started.',
-            );
-            setMessages((prev) => [...prev, userMsg, assistantMsg]);
-            speakAssistantText(assistantMsg.content, {
-              enabled: voiceOutputEnabled,
-            });
-            setOrbState('idle');
-            return;
+            if (!compositeResumeForCanonicalRoute) {
+              finishListening();
+              setShowThinkingBubble(false);
+              if (!chatActive) setChatActive(true);
+              const now = Date.now();
+              const userMsg = createUserMessage(now, visibleUserText);
+              const assistantMsg = createAssistantMessage(
+                now,
+                'I recognized the multi-step Calendar request, but I could not create one safe resumable confirmation checkpoint. No composite mutation was started.',
+              );
+              setMessages((prev) => [...prev, userMsg, assistantMsg]);
+              speakAssistantText(assistantMsg.content, {
+                enabled: voiceOutputEnabled,
+              });
+              setOrbState('idle');
+              return;
+            }
           }
         }
       }
     }
 
+    const expectedCompositeCalendarAction =
+      (getPendingCompositePausedCandidate(
+        compositeResumeForCanonicalRoute,
+      )?.proposedAction as DeferredCalendarWriteAction | undefined) ?? null;
     const directFocusTerminalCommandMatch =
-      !forcedCommandMatch && commandRoute === 'exact'
+      !expectedCompositeCalendarAction &&
+      !forcedCommandMatch &&
+      commandRoute === 'exact'
         ? getDirectFocusTerminalCommandMatch(trimmed)
         : null;
     if (directFocusTerminalCommandMatch) {
@@ -1435,29 +1439,46 @@ export default function App() {
         directFocusTerminalCommandMatch,
       );
     }
-    const parsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);
+    const rawParsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);
+    const parsedCommandMatch =
+      expectedCompositeCalendarAction &&
+      rawParsedCommandMatch?.command !== expectedCompositeCalendarAction
+        ? null
+        : rawParsedCommandMatch;
     const explicitGlobalTaskReadRequest =
-      !forcedCommandMatch && commandRoute === 'exact'
+      !expectedCompositeCalendarAction &&
+      !forcedCommandMatch &&
+      commandRoute === 'exact'
         ? isExplicitGlobalTaskReadRequest(
             trimmed,
             parsedCommandMatch?.command ?? null,
           )
         : false;
     const explicitFocusTaskReadRequest =
-      !forcedCommandMatch && commandRoute === 'exact'
+      !expectedCompositeCalendarAction &&
+      !forcedCommandMatch &&
+      commandRoute === 'exact'
         ? isExplicitFocusTaskReadRequest(trimmed)
         : false;
     const explicitFocusTaskReadCommandMatch = explicitFocusTaskReadRequest
       ? buildExplicitFocusTaskReadCommand()
       : null;
-    const explicitCalendarWriteIntent =
+    const explicitCalendarWriteIntentCandidate =
       !forcedCommandMatch && commandRoute === 'exact'
         ? resolveExplicitCalendarWriteIntentBeforeAgent({
             userMessage: trimmed,
             parsedCommand: parsedCommandMatch,
           })
         : null;
+    const explicitCalendarWriteIntent =
+      expectedCompositeCalendarAction &&
+      explicitCalendarWriteIntentCandidate &&
+      explicitCalendarWriteIntentCandidate.expectedAction !==
+        expectedCompositeCalendarAction
+        ? null
+        : explicitCalendarWriteIntentCandidate;
     const explicitDeterministicRoute =
+      !expectedCompositeCalendarAction &&
       !forcedCommandMatch &&
       commandRoute === 'exact' &&
       !explicitGlobalTaskReadRequest &&
@@ -1467,7 +1488,7 @@ export default function App() {
             parsedCommand: parsedCommandMatch?.command ?? null,
           })
         : null;
-    const promotedSingleIntent =
+    const observedPromotedSingleIntent =
       !forcedCommandMatch &&
       commandRoute === 'exact' &&
       !explicitDeterministicRoute &&
@@ -1480,11 +1501,34 @@ export default function App() {
               : undefined,
           })
         : null;
+    const promotedSingleIntentMatchesCompositePrimary =
+      !expectedCompositeCalendarAction ||
+      (observedPromotedSingleIntent?.disposition === 'tool' &&
+        observedPromotedSingleIntent.turnOwner === 'calendar' &&
+        observedPromotedSingleIntent.proposedAction ===
+          expectedCompositeCalendarAction &&
+        (expectedCompositeCalendarAction === 'edit-last-event'
+          ? Boolean(
+              resolvePromotedCalendarEditToolCommand(
+                observedPromotedSingleIntent,
+              ),
+            )
+          : expectedCompositeCalendarAction === 'delete-calendar-event'
+            ? Boolean(
+                resolvePromotedCalendarDeleteToolCommand(
+                  observedPromotedSingleIntent,
+                ),
+              )
+            : false));
+    const promotedSingleIntent = promotedSingleIntentMatchesCompositePrimary
+      ? observedPromotedSingleIntent
+      : null;
     const promotedTaskCompletionCandidate =
       isPromotedTaskCompletionToolDecision(promotedSingleIntent);
     const promotedTaskCompletionTool =
       resolvePromotedTaskCompletionToolCommand(promotedSingleIntent);
     const naturalGlobalTaskCompletionRequest =
+      !expectedCompositeCalendarAction &&
       !forcedCommandMatch &&
       commandRoute === 'exact' &&
       !explicitDeterministicRoute &&
@@ -1496,6 +1540,7 @@ export default function App() {
     const promotedTaskDeleteTool =
       resolvePromotedTaskDeleteToolCommand(promotedSingleIntent);
     const naturalGlobalTaskDeletionRequest =
+      !expectedCompositeCalendarAction &&
       !forcedCommandMatch &&
       commandRoute === 'exact' &&
       !explicitDeterministicRoute &&
@@ -2345,6 +2390,12 @@ export default function App() {
         promotedCalendarDeleteTool.commandMatch,
         [],
         visibleUserText,
+        null,
+        null,
+        null,
+        null,
+        null,
+        compositeResumeForCanonicalRoute,
       );
     }
     const promotedCalendarEditCandidate =
@@ -2414,6 +2465,9 @@ export default function App() {
         null,
         null,
         promotedCalendarEditTool.target,
+        null,
+        null,
+        compositeResumeForCanonicalRoute,
       );
     }
     const promotedCalendarReadTool =
@@ -2421,6 +2475,7 @@ export default function App() {
     const deferredCalendarWriteAction =
       resolveDeferredCalendarWriteAction(promotedSingleIntent) ??
       explicitCalendarWriteIntent?.expectedAction ??
+      expectedCompositeCalendarAction ??
       null;
     if (promotedCalendarReadTool) {
       setPendingInterpreterCommand(null);
@@ -2512,9 +2567,10 @@ export default function App() {
         visibleUserText,
       );
     }
-    const promotedNonFocusToolOwner =
-      promotedSingleIntent?.disposition === 'tool' &&
-      promotedSingleIntent.turnOwner !== 'focus'
+    const promotedNonFocusToolOwner = expectedCompositeCalendarAction
+      ? 'calendar'
+      : promotedSingleIntent?.disposition === 'tool' &&
+          promotedSingleIntent.turnOwner !== 'focus'
         ? promotedSingleIntent.turnOwner
         : explicitCalendarWriteIntent
           ? 'calendar'
@@ -3736,6 +3792,15 @@ ${confirmedTaskCompletionResult.completedTasks
             interpretedCommand.frontendCommand,
             visibleUserText,
             'interpreter',
+            undefined,
+            [],
+            visibleUserText,
+            null,
+            null,
+            null,
+            null,
+            null,
+            compositeResumeForCanonicalRoute,
           );
         }
         finishListening();
@@ -3780,7 +3845,20 @@ ${confirmedTaskCompletionResult.completedTasks
         setLastInterpreterFrontendCommand(interpretedCommand.frontendCommand);
         setLastInterpreterConfidence(interpretedCommand.confidence);
         setLastInterpreterReason(interpretedCommand.reason || 'Interpreter mapped fuzzy input to a frontend command.');
-        return handleSend(interpretedCommand.frontendCommand, visibleUserText, 'interpreter');
+        return handleSend(
+          interpretedCommand.frontendCommand,
+          visibleUserText,
+          'interpreter',
+          undefined,
+          [],
+          visibleUserText,
+          null,
+          null,
+          null,
+          null,
+          null,
+          compositeResumeForCanonicalRoute,
+        );
       }
       if (
         interpretedCommand.intent === 'command' &&

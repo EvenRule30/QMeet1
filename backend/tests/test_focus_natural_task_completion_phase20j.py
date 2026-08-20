@@ -62,7 +62,7 @@ class FocusNaturalTaskCompletionPhase20JTests(unittest.TestCase):
     def test_natural_completion_runs_after_exact_parser_before_preflight(self) -> None:
         terminal_index = self.app_source.index("const directFocusTerminalCommandMatch =")
         parser_index = self.app_source.index(
-            "const parsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);"
+            "const rawParsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);"
         )
         natural_index = self.app_source.index("const naturalTaskCompletionTarget =")
         preflight_index = self.app_source.index(

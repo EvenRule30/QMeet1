@@ -38,7 +38,7 @@ class FocusCanonicalResumeReconciliationPhase20J0ATests(unittest.TestCase):
     def test_resume_still_uses_deferred_verified_command_path(self) -> None:
         app = self.app_source
         parse_position = app.index(
-            "const parsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);"
+            "const rawParsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);"
         )
         defer_position = app.index("const deferredExactFocusLifecycleMatch =")
         resume_preflight_position = app.index("const exactResumeLifecyclePreflight =")
@@ -77,7 +77,7 @@ class FocusCanonicalResumeReconciliationPhase20J0ATests(unittest.TestCase):
         app = self.app_source
         terminal_position = app.index("const directFocusTerminalCommandMatch =")
         parser_position = app.index(
-            "const parsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);"
+            "const rawParsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);"
         )
         resume_position = app.index("const exactResumeLifecyclePreflight =")
         self.assertLess(terminal_position, parser_position)

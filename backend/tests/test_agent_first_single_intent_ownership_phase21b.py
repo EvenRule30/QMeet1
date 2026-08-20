@@ -27,8 +27,8 @@ class AgentFirstSingleIntentOwnershipPhase21BTests(unittest.TestCase):
         self.assertNotIn("handleCalendarCommand", block)
 
     def test_explicit_command_syntax_skips_agent_wait(self):
-        start = APP.index("const promotedSingleIntent =")
-        end = APP.index("if (promotedSingleIntent?.disposition === 'conversation')", start)
+        start = APP.index("const observedPromotedSingleIntent =")
+        end = APP.index("const promotedSingleIntent =", start)
         block = APP[start:end]
         self.assertIn("!explicitDeterministicRoute", block)
         self.assertIn("resolvePromotedSingleIntentDecision", block)

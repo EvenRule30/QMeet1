@@ -76,7 +76,7 @@ class FocusCanonicalReadReconciliationPhase20J0Tests(unittest.TestCase):
         reconcile_position = app.index("const routingActiveSession =")
         terminal_position = app.index("const directFocusTerminalCommandMatch =")
         parser_position = app.index(
-            "const parsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);"
+            "const rawParsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);"
         )
         self.assertLess(reconcile_position, terminal_position)
         self.assertLess(terminal_position, parser_position)

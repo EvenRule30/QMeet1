@@ -159,12 +159,12 @@ class AgentCalendarReadToolPromotionPhase21BTests(unittest.TestCase):
 
         explicit_index = source.index("resolveExplicitDeterministicRouteBeforeAgent({")
         single_intent_index = source.index("await resolvePromotedSingleIntentDecision({")
-        search_index = source.index("resolvePromotedSearchToolCommand(")
-        calendar_create_index = source.index("resolvePromotedCalendarCreateToolCommand(")
-        calendar_delete_index = source.index("resolvePromotedCalendarDeleteToolCommand(")
-        calendar_edit_index = source.index("resolvePromotedCalendarEditToolCommand(")
-        calendar_read_index = source.index("resolvePromotedCalendarReadToolCommand(")
-        generic_tool_index = source.index("const promotedNonFocusToolOwner =")
+        search_index = source.index("const promotedSearchTool =")
+        calendar_create_index = source.index("const promotedCalendarCreateTool =", search_index)
+        calendar_delete_index = source.index("const promotedCalendarDeleteTool =", calendar_create_index)
+        calendar_edit_index = source.index("const promotedCalendarEditTool =", calendar_delete_index)
+        calendar_read_index = source.index("const promotedCalendarReadTool =", calendar_edit_index)
+        generic_tool_index = source.index("const promotedNonFocusToolOwner =", calendar_read_index)
 
         self.assertLess(explicit_index, single_intent_index)
         self.assertLess(single_intent_index, search_index)

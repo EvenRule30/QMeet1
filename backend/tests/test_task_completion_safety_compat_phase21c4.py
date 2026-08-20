@@ -26,7 +26,7 @@ class TaskCompletionSafetyCompatPhase21C4Tests(unittest.TestCase):
 
     def test_exact_deterministic_commands_still_outrank_natural_fallback(self) -> None:
         parser_index = APP.index(
-            "const parsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);"
+            "const rawParsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);"
         )
         explicit_index = APP.index("const explicitDeterministicRoute =")
         fallback_index = APP.index("const naturalGlobalTaskCompletionRequest =")
