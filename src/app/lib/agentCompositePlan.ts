@@ -258,6 +258,23 @@ export function validateAgentCompositePlanResponse(
   };
 }
 
+
+const COMPOSITE_STRUCTURE_HINT =
+  /(?:[,;]|\b(?:and|then|also|plus|after(?:wards?)?|before)\b)/i;
+
+/**
+ * Cheap observation gate only; never decides that a turn is composite.
+ *
+ * The model planner remains authoritative for decomposition, but single-clause
+ * turns do not need a second planning request. False positives are safe because
+ * an observed non-composite plan falls through to normal single-intent routing.
+ */
+export function shouldObserveAgentCompositePlan(userMessage: string): boolean {
+  const text = userMessage.replace(/\s+/g, ' ').trim();
+  if (text.length < 8) return false;
+  return COMPOSITE_STRUCTURE_HINT.test(text);
+}
+
 export async function observeAgentCompositePlan(
   options: AgentCompositePlanObserverOptions,
 ): Promise<AgentCompositePlanResponse | null> {

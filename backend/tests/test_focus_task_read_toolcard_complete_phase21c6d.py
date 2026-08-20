@@ -43,7 +43,7 @@ class FocusTaskReadToolCardCompletePhase21C6DTests(unittest.TestCase):
             block,
         )
         self.assertIn(
-            "if (!focusTaskReadToolCardIsComplete)",
+            "if (!focusTaskReadToolCardIsComplete && !compositeAtomicExecution)",
             block,
         )
 

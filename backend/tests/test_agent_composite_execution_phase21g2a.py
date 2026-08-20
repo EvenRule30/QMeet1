@@ -74,12 +74,26 @@ class AgentCompositeExecutionPhase21G2ATests(unittest.TestCase):
         self.assertIn("receipts.push(receipt)", source)
         self.assertIn("status: 'completed'", source)
 
-    def test_g2a_does_not_wire_live_composite_execution_into_app(self) -> None:
+    def test_g2a_core_does_not_own_resumable_composite_state(self) -> None:
+        execution_source = self._read("src/app/lib/agentCompositeExecution.ts")
         app_source = self._read("src/app/App.tsx")
 
-        self.assertNotIn("observeAgentCompositePlan", app_source)
-        self.assertNotIn("executePreflightedCompositeImmediatePlan", app_source)
+        # Phase 21G2B may wire the G2A observer/coordinator into App, but G2A
+        # itself still must not introduce a resumable pending-plan state or
+        # bypass confirmation-pausing actions.
+        self.assertIn("preflightCompositeImmediatePlan", execution_source)
+        self.assertIn("executePreflightedCompositeImmediatePlan", execution_source)
+        self.assertIn("'confirmation-pause-required'", execution_source)
+        self.assertIn("'dependency-not-yet-promoted'", execution_source)
+        self.assertNotIn("pendingCompositePlan", execution_source)
+        self.assertNotIn("setPendingCompositePlan", execution_source)
+
+        # Live G2B wiring is allowed, but resumable confirmation sequencing
+        # remains intentionally absent from App until a later phase.
+        self.assertIn("observeAgentCompositePlan", app_source)
+        self.assertIn("executePreflightedCompositeImmediatePlan", app_source)
         self.assertNotIn("pendingCompositePlan", app_source)
+        self.assertNotIn("setPendingCompositePlan", app_source)
 
 
 if __name__ == "__main__":

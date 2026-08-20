@@ -31,6 +31,15 @@ import {
   shouldGuardInferredSemanticFocusMutationWithShadow,
 } from './lib/agentShadowObserver';
 import {
+  observeAgentCompositePlan,
+  shouldObserveAgentCompositePlan,
+} from './lib/agentCompositePlan';
+import {
+  executePreflightedCompositeImmediatePlan,
+  preflightCompositeImmediatePlan,
+  type CompositeImmediateStepReceipt,
+} from './lib/agentCompositeExecution';
+import {
   isPromotedCalendarCreateToolDecision,
   isPromotedCalendarDeleteToolDecision,
   isPromotedCalendarEditToolDecision,
@@ -348,6 +357,7 @@ export default function App() {
   const pendingCalendarDeleteTargetIdRef = useRef<string | null>(null);
   const pendingCalendarEditTargetIdRef = useRef<string | null>(null);
   const pendingCalendarEditChangesRef = useRef<PromotedCalendarEditChanges | null>(null);
+  const compositeStepReceiptRef = useRef<CompositeImmediateStepReceipt | null>(null);
   const orbAreaRef = useRef<HTMLDivElement | null>(null);
   const {
     listeningTranscript,
@@ -439,12 +449,13 @@ export default function App() {
       speakAssistantText,
     });
   }, [activePanel, activeSession?.id, messages, speakAssistantText, voiceOutputEnabled]);
-  const handleSend = useCallback(async (text: string, displayText?: string, commandRoute: CommandRoute = 'exact', forcedCommandMatch?: CommandMatch, confirmedTaskTargets: ConfirmedTaskTarget[] = [], continuationUserText?: string, confirmedCalendarDeleteTargetId: string | null = null, confirmedCalendarEditTargetId: string | null = null, promotedCalendarEditTargetCriteria: PromotedCalendarEditTargetCriteria | null = null, promotedTaskCompletionTarget: ConfirmedTaskTarget | null = null) => {
+  const handleSend = useCallback(async (text: string, displayText?: string, commandRoute: CommandRoute = 'exact', forcedCommandMatch?: CommandMatch, confirmedTaskTargets: ConfirmedTaskTarget[] = [], continuationUserText?: string, confirmedCalendarDeleteTargetId: string | null = null, confirmedCalendarEditTargetId: string | null = null, promotedCalendarEditTargetCriteria: PromotedCalendarEditTargetCriteria | null = null, promotedTaskCompletionTarget: ConfirmedTaskTarget | null = null, compositeStepId: string | null = null) => {
     const trimmed = text.trim();
     if (!trimmed) return;
     const visibleUserText = (displayText ?? trimmed).trim() || trimmed;
     const continuationUserTextForTool =
       (continuationUserText ?? visibleUserText).trim() || visibleUserText;
+    const compositeAtomicExecution = Boolean(compositeStepId);
     const shadowTurn = commandRoute === 'exact' && !forcedCommandMatch
       ? observeAgentShadowTurn({
           userMessage: visibleUserText,
@@ -471,6 +482,35 @@ export default function App() {
             : null,
         })
       : null;
+    const compositePlanTurn =
+      commandRoute === 'exact' &&
+      !forcedCommandMatch &&
+      shouldObserveAgentCompositePlan(visibleUserText)
+        ? observeAgentCompositePlan({
+            userMessage: visibleUserText,
+            recentMessages: messages,
+            activePanel,
+            chatActive,
+            calendarView,
+            googleCalendarConnected: Boolean(googleCalendarStatus?.connected),
+            googleCalendarWriteEnabled: Boolean(googleCalendarStatus?.writeEnabled),
+            pendingCommand: pendingInterpreterCommand
+              ? {
+                  originalText: pendingInterpreterCommand.originalText,
+                  action: pendingInterpreterCommand.action,
+                  frontendCommand: pendingInterpreterCommand.frontendCommand,
+                }
+              : null,
+            frontendFocusProjection: activeSession
+              ? {
+                  id: activeSession.id,
+                  title: activeSession.title,
+                  goal: activeSession.goal,
+                  mode: activeSession.mode,
+                }
+              : null,
+          })
+        : null;
     let shadowRouteSequence = 0;
     const setTrackedInputRoute = (
       route: string,
@@ -1043,6 +1083,102 @@ export default function App() {
       !forcedCommandMatch && commandRoute === 'exact'
         ? await reconcileFocusProjection()
         : activeSession;
+    if (compositePlanTurn) {
+      const observedCompositePlan = await compositePlanTurn;
+      const compositePreflight =
+        preflightCompositeImmediatePlan(observedCompositePlan);
+
+      if (compositePreflight.ok) {
+        finishListening();
+        setPendingInterpreterCommand(null);
+        pendingTaskCompletionTargetsRef.current = [];
+        pendingTaskDeleteTargetRef.current = null;
+        pendingTaskDeleteClarificationRef.current = null;
+        pendingCalendarDeleteTargetIdRef.current = null;
+        pendingCalendarEditTargetIdRef.current = null;
+        pendingCalendarEditChangesRef.current = null;
+        setTrackedInputRoute(
+          'Agent-promoted immediate composite plan',
+          'composite-plan',
+          observedCompositePlan?.planId ?? '',
+          'other',
+          'tool',
+        );
+        setLastLocalCommand('Agent-promoted composite');
+        setLastInterpreterAction('composite-plan');
+        setLastInterpreterFrontendCommand(
+          compositePreflight.candidates
+            .map((candidate) => candidate.commandMatch.command)
+            .join(' -> '),
+        );
+        setLastInterpreterConfidence(
+          observedCompositePlan?.plan.confidence ?? null,
+        );
+        setLastInterpreterReason(
+          'Every atomic step passed Phase 21G2B preflight through its existing single-intent validator; no step requires confirmation or dependent result binding.',
+        );
+
+        if (!chatActive) setChatActive(true);
+        const compositeUserMessage = createUserMessage(
+          `composite-${Date.now()}`,
+          visibleUserText,
+        );
+        setMessages((prev) => [...prev, compositeUserMessage]);
+
+        const compositeResult =
+          await executePreflightedCompositeImmediatePlan({
+            preflight: compositePreflight,
+            executeStep: async (candidate) => {
+              compositeStepReceiptRef.current = null;
+              await handleSend(
+                visibleUserText,
+                visibleUserText,
+                'agent',
+                candidate.commandMatch,
+                [],
+                visibleUserText,
+                null,
+                null,
+                null,
+                null,
+                candidate.stepId,
+              );
+              return (
+                compositeStepReceiptRef.current ?? {
+                  stepId: candidate.stepId,
+                  ok: false,
+                  toolResult:
+                    'The atomic command returned without one verified composite receipt.',
+                }
+              );
+            },
+          });
+
+        compositeStepReceiptRef.current = null;
+        setShowThinkingBubble(false);
+
+        const completedCount = compositeResult.receipts.length;
+        const compositeSummary = compositeResult.ok
+          ? completedCount === 2
+            ? 'Done — both requested actions completed successfully.'
+            : `Done — all ${completedCount} requested actions completed successfully.`
+          : completedCount > 0
+            ? `I completed ${completedCount} requested action${completedCount === 1 ? '' : 's'}, then stopped because the next action did not verify. The completed Tool updates remain valid.`
+            : 'I could not verify the composite actions safely, so I did not run the plan.';
+
+        const compositeSummaryMessage = createAssistantMessage(
+          `composite-summary-${Date.now()}`,
+          compositeSummary,
+        );
+        setMessages((prev) => [...prev, compositeSummaryMessage]);
+        speakAssistantText(compositeSummary, {
+          enabled: voiceOutputEnabled,
+        });
+        setOrbState('idle');
+        return;
+      }
+    }
+
     const directFocusTerminalCommandMatch =
       !forcedCommandMatch && commandRoute === 'exact'
         ? getDirectFocusTerminalCommandMatch(trimmed)
@@ -3033,7 +3169,13 @@ ${confirmedTaskCompletionResult.completedTasks
       speechConfirmationContent = getBriefToolSpeech(commandMatch.command, confirmationContent);
       const confirmationMsg = createAssistantMessage(now, confirmationContent, 'tool');
       if (replaceMessages) {
-        setMessages([userMsg, confirmationMsg]);
+        setMessages(
+          compositeAtomicExecution
+            ? [confirmationMsg]
+            : [userMsg, confirmationMsg],
+        );
+      } else if (compositeAtomicExecution) {
+        setMessages((prev) => [...prev, confirmationMsg]);
       } else {
         setMessages((prev) => [...prev, userMsg, confirmationMsg]);
       }
@@ -3047,14 +3189,16 @@ ${confirmedTaskCompletionResult.completedTasks
         );
       }
       pushResultToast(getResultToastForCommand(commandMatch.command, confirmationContent));
-      speakAssistantText(speechConfirmationContent, {
-        enabled: shouldSpeakConfirmation,
-        rate: confirmationSpeechRate,
-      });
+      if (!compositeAtomicExecution) {
+        speakAssistantText(speechConfirmationContent, {
+          enabled: shouldSpeakConfirmation,
+          rate: confirmationSpeechRate,
+        });
+      }
       const focusTaskReadToolCardIsComplete =
         commandMatch.command === 'read-memory' &&
         commandMatch.payload === 'focus-task-read';
-      if (!focusTaskReadToolCardIsComplete) {
+      if (!focusTaskReadToolCardIsComplete && !compositeAtomicExecution) {
         await continueAfterVerifiedToolUpdate({
           userMessage: continuationUserTextForTool,
           command: commandMatch.command,
@@ -3068,6 +3212,16 @@ ${confirmedTaskCompletionResult.completedTasks
           setOrbState,
           speakAssistantText,
         });
+      }
+      if (compositeStepId) {
+        compositeStepReceiptRef.current = {
+          stepId: compositeStepId,
+          ok: !hasFailureLanguage(confirmationContent),
+          toolResult: confirmationContent,
+          ...(splitCommandResult.continuationContext
+            ? { toolContext: splitCommandResult.continuationContext }
+            : {}),
+        };
       }
       return;
     }

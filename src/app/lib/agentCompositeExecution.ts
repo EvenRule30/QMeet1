@@ -22,6 +22,7 @@ export type CompositeImmediateStepCandidate = {
 
 export type CompositeImmediatePreflightFailureReason =
   | 'not-composite'
+  | 'confidence-below-promotion-threshold'
   | 'dependency-not-yet-promoted'
   | 'confirmation-pause-required'
   | 'unsupported-owner-or-action'
@@ -56,6 +57,8 @@ export type CompositeImmediateExecutionResult = {
   failedStepId: string | null;
   reason: string;
 };
+
+const COMPOSITE_IMMEDIATE_MIN_CONFIDENCE = 0.9;
 
 const CONFIRMATION_PAUSE_ACTIONS = new Set([
   'add-calendar-event',
@@ -183,6 +186,17 @@ export function preflightCompositeImmediatePlan(
       reason: 'not-composite',
       stepId: null,
       detail: 'The observed turn did not contain a validated composite plan.',
+    };
+  }
+
+  if (plan.plan.confidence < COMPOSITE_IMMEDIATE_MIN_CONFIDENCE) {
+    return {
+      ok: false,
+      planId: plan.planId,
+      reason: 'confidence-below-promotion-threshold',
+      stepId: null,
+      detail:
+        'The composite plan did not meet the live promotion confidence threshold.',
     };
   }
 

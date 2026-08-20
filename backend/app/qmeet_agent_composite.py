@@ -93,10 +93,21 @@ Important:
   other backend identity may appear in step arguments.
 - Calendar/task target arguments are semantic lookup criteria only. Existing
   deterministic capability code must later resolve real identities.
-- Preserve the user's requested order unless a later step clearly depends on an
-  earlier one.
-- A dependency means the later step should not run if the required earlier step
-  fails or is cancelled.
+- Preserve the user's requested order.
+- dependsOn is ONLY for a real verified-output/data dependency: use it when a
+  later step cannot have its final executable arguments determined from the
+  original user turn alone and therefore needs verified output from an earlier
+  step.
+- Do NOT add dependsOn merely because two actions discuss the same subject, the
+  user says "and" or "then", or it would be preferable for one action to happen
+  first.
+- If the user explicitly supplies all arguments for a later action, that step is
+  dependency-free even when it is thematically related to an earlier step.
+- Example: "search for Framework Laptop reviews and add a task called Compare
+  Framework options" has two dependency-free steps because the task title is
+  already explicit in the original turn.
+- Example: "search Framework reviews and save a note with the result" has a real
+  dependency because the note content requires the verified Search output.
 - This contract does not create a transaction. Every future step must still pass
   its capability-specific validator, existing confirmation policy, canonical
   execution path, and verified receipt before a dependent step may proceed.
@@ -104,9 +115,10 @@ Important:
   because a Focus exists.
 
 Examples:
-- "Move my 3 PM meeting Friday to Saturday and make a task to prepare for it"
-  is composite: Calendar edit, then Tasks create. The task step should depend on
-  the Calendar step because "it" refers to the requested meeting workflow.
+- "Move my 3 PM meeting Friday to Saturday and make a task called Prepare for
+  the meeting" is composite with two dependency-free steps because both final
+  actions are fully specified by the original turn. Calendar confirmation may
+  still block live promotion in later execution phases.
 - "Rename my 4 PM Project Review August 29 to Final Project Review" is one
   Calendar edit, not composite.
 - "Search Framework reviews and save a note with the result" is composite only
