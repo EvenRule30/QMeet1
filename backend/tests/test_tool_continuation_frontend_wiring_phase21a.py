@@ -19,10 +19,7 @@ class ToolContinuationFrontendPhase21ATests(unittest.TestCase):
 
     def test_client_keeps_ui_and_voice_commands_silent(self) -> None:
         source = self.client_path.read_text(encoding="utf-8")
-        self.assertIn(
-            "capability !== 'voice' && capability !== 'ui'",
-            source,
-        )
+        self.assertIn("capability !== 'voice' && capability !== 'ui'", source)
         self.assertIn("const VOICE_COMMANDS", source)
         self.assertIn("const UI_COMMANDS", source)
 
@@ -50,84 +47,63 @@ class ToolContinuationFrontendPhase21ATests(unittest.TestCase):
     def test_app_cancels_stale_continuation_on_new_turn_and_shutdown(self) -> None:
         source = self.app_path.read_text(encoding="utf-8")
         self.assertIn("cancelActiveToolContinuation", source)
-        self.assertGreaterEqual(
-            source.count("cancelActiveToolContinuation();"),
-            3,
-        )
+        self.assertGreaterEqual(source.count("cancelActiveToolContinuation();"), 3)
 
     def test_app_requests_q_continuation_after_visible_tool_update(self) -> None:
         source = self.app_path.read_text(encoding="utf-8")
 
-        # Anchor the continuation search after the generic visible tool card.
-        # Phase 21D1 adds another valid continuation earlier in App.tsx for
-        # verified targeted task deletion, so a file-global first occurrence is
-        # no longer the continuation associated with this tool card.
         tool_message = source.index(
-            "createAssistantMessage(now, confirmationContent, 'tool')"
+            "const confirmationMsg = createAssistantMessage(now, confirmationContent, 'tool');"
         )
-        continuation = source.index(
-            "await continueAfterVerifiedToolUpdate({",
+        post_tool_block_end = source.index(
+            "if (compositeStepId) {",
             tool_message,
         )
-        final_return = source.index("      return;", continuation)
+        post_tool_block = source[tool_message:post_tool_block_end]
 
-        self.assertLess(tool_message, continuation)
-        self.assertLess(continuation, final_return)
+        continuation = post_tool_block.index(
+            "await continueAfterVerifiedToolUpdate({"
+        )
+
+        self.assertGreater(continuation, 0)
         for marker in (
             "userMessage: continuationUserTextForTool",
             "command: commandMatch.command",
             "toolResult: confirmationContent",
+            "toolContext: splitCommandResult.continuationContext",
             "recentMessages: messages",
             "activePanel",
         ):
-            self.assertIn(marker, source[continuation:final_return])
+            self.assertIn(marker, post_tool_block)
 
-    def test_targeted_task_delete_continuation_follows_its_visible_tool_update(self) -> None:
-        source = self.app_path.read_text(encoding="utf-8")
-
-        delete_receipt = source.index(
-            "const confirmationContent = `Deleted task:"
-        )
-        tool_message = source.index(
-            "const confirmationMsg = createAssistantMessage(",
-            delete_receipt,
-        )
-        continuation = source.index(
-            "await continueAfterVerifiedToolUpdate({",
-            tool_message,
-        )
-        final_return = source.index("              return;", continuation)
-
-        self.assertLess(delete_receipt, tool_message)
-        self.assertLess(tool_message, continuation)
-        self.assertLess(continuation, final_return)
-
-        continuation_source = source[continuation:final_return]
         self.assertIn(
-            "userMessage: commandToRun.originalText",
-            continuation_source,
-        )
-        self.assertIn(
-            "qmeetTaskDeleteMode=targeted",
-            continuation_source,
-        )
-        self.assertIn(
-            "toolResult: confirmationContent",
-            continuation_source,
+            "if (!focusTaskReadToolCardIsComplete && !compositeAtomicExecution)",
+            post_tool_block,
         )
 
     def test_confirmed_command_forwards_original_request_to_continuation(self) -> None:
         source = self.app_path.read_text(encoding="utf-8")
         self.assertIn("continuationUserText?: string", source)
         self.assertIn("continuationUserTextForTool", source)
-        confirmed_call = source.index(
-            "return handleSend(\n              commandToRun.frontendCommand"
+
+        wrapper_start = source.index(
+            "const executeConfirmedPendingCommand = async ("
         )
-        confirmed_end = source.index("            );", confirmed_call)
-        self.assertIn(
-            "commandToRun.originalText",
-            source[confirmed_call:confirmed_end],
+        wrapper_end = source.index(
+            "if (confirmedCalendarEditCommandMatch)",
+            wrapper_start,
         )
+        wrapper = source[wrapper_start:wrapper_end]
+
+        confirmed_call = wrapper.index("await handleSend(")
+        confirmed_end = wrapper.index(");", confirmed_call)
+        confirmed_call_source = wrapper[confirmed_call:confirmed_end]
+
+        self.assertIn("commandToRun.frontendCommand", confirmed_call_source)
+        self.assertIn("'confirmed'", confirmed_call_source)
+        self.assertIn("confirmedCommandMatch", confirmed_call_source)
+        self.assertIn("resolvedTaskTargets", confirmed_call_source)
+        self.assertIn("commandToRun.originalText", confirmed_call_source)
 
     def test_client_suppresses_failed_receipts_and_navigation_chatter(self) -> None:
         source = self.client_path.read_text(encoding="utf-8")

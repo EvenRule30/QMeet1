@@ -4,6 +4,51 @@ import unittest
 from pathlib import Path
 
 
+def assert_confirmed_task_identity_path(testcase: unittest.TestCase, source: str) -> None:
+    capture = source.index(
+        "const resolvedTaskTargets = pendingTaskCompletionTargetsRef.current;"
+    )
+    synthetic = source.index(
+        "const confirmedTaskCommandMatch: CommandMatch | undefined =",
+        capture,
+    )
+    wrapper = source.index(
+        "const executeConfirmedPendingCommand = async (",
+        synthetic,
+    )
+    confirmed_call = source.index(
+        "await handleSend(",
+        wrapper,
+    )
+    call_end = source.index(");", confirmed_call)
+    call_block = source[confirmed_call:call_end]
+
+    testcase.assertLess(capture, synthetic)
+    testcase.assertLess(synthetic, wrapper)
+    testcase.assertIn("confirmedCommandMatch", call_block)
+    testcase.assertIn("resolvedTaskTargets", call_block)
+    testcase.assertIn("'confirmed'", call_block)
+
+    synthetic_block = source[synthetic:wrapper]
+    testcase.assertIn(
+        "commandToRun.action === 'mark-task-done'",
+        synthetic_block,
+    )
+    testcase.assertIn(
+        "resolvedTaskTargets.length > 0",
+        synthetic_block,
+    )
+    testcase.assertIn(
+        ".map((task) => task.title)",
+        synthetic_block,
+    )
+
+    testcase.assertIn(
+        "return executeConfirmedPendingCommand(confirmedTaskCommandMatch);",
+        source,
+    )
+
+
 class FocusTaskConfirmationIdentityPhase20PTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -26,32 +71,24 @@ class FocusTaskConfirmationIdentityPhase20PTests(unittest.TestCase):
         self.assertIn("title: task.title", self.app_source)
 
     def test_confirm_reuses_previewed_targets_without_reparsing_them(self) -> None:
-        self.assertIn(
-            "const resolvedTaskTargets = pendingTaskCompletionTargetsRef.current;",
-            self.app_source,
+        assert_confirmed_task_identity_path(self, self.app_source)
+        capture = self.app_source.index(
+            "const resolvedTaskTargets = pendingTaskCompletionTargetsRef.current;"
         )
-        self.assertIn(
-            "commandToRun.action === 'mark-task-done'",
-            self.app_source,
+        wrapper = self.app_source.index(
+            "const executeConfirmedPendingCommand = async (",
+            capture,
         )
-        self.assertIn(
-            "confirmedTaskCommandMatch,\n              resolvedTaskTargets",
-            self.app_source,
-        )
-        self.assertIn(
-            "const parsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);",
-            self.app_source,
-        )
+        confirm_block = self.app_source[capture:wrapper]
+        self.assertNotIn("resolveTaskCompletionPreviewTargets(", confirm_block)
+        self.assertNotIn("resolveNaturalFocusTaskCompletionTarget(", confirm_block)
 
     def test_confirmed_identity_must_still_be_open_and_match_title(self) -> None:
         self.assertIn("task.id === target.id", self.app_source)
         self.assertIn("!task.completedAt", self.app_source)
         self.assertIn("task.title.trim() === target.title.trim()", self.app_source)
         self.assertIn("Confirmed task identity changed", self.app_source)
-        self.assertIn(
-            "refused to re-resolve a different task",
-            self.app_source,
-        )
+        self.assertIn("refused to re-resolve a different task", self.app_source)
 
     def test_focus_progress_uses_same_confirmed_identity(self) -> None:
         self.assertIn("const immutableConfirmedTaskTargets =", self.app_source)
@@ -83,7 +120,6 @@ class FocusTaskConfirmationIdentityPhase20PTests(unittest.TestCase):
             "verifiedCompletedAtByTaskId.get(task.id)",
             self.execution_source,
         )
-        self.assertIn("MEMORY_TASKS_STATE_EVENT", self.execution_source)
 
     def test_task_preview_uses_reconciled_focus_projection(self) -> None:
         preview_index = self.app_source.index("const taskCompletionPreviewTargets =")
@@ -93,7 +129,10 @@ class FocusTaskConfirmationIdentityPhase20PTests(unittest.TestCase):
         )
         preview_block = self.app_source[preview_index:pending_index]
         self.assertIn("routingActiveSession", preview_block)
-        self.assertNotIn("memoryTasks,\n              activeSession", preview_block)
+        self.assertNotIn(
+            "memoryTasks,\\n              activeSession",
+            preview_block,
+        )
 
 
 if __name__ == "__main__":

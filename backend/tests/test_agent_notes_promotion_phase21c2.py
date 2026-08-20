@@ -6,6 +6,7 @@ import types
 import unittest
 from pathlib import Path
 
+
 ROOT = Path(__file__).resolve().parents[2]
 AGENT = ROOT / "backend" / "app" / "qmeet_agent_shadow.py"
 CAPABILITIES = ROOT / "backend" / "app" / "qmeet_capabilities.py"
@@ -23,9 +24,9 @@ class AgentNotesPromotionPhase21C2Tests(unittest.TestCase):
     def test_agent_contract_has_typed_notes_rules(self):
         source = AGENT.read_text(encoding="utf-8")
         self.assertIn("Notes ownership rule:", source)
-        self.assertIn('proposedAction=save-note', source)
-        self.assertIn('proposedAction=read-notes', source)
-        self.assertIn('proposedArguments={}', source)
+        self.assertIn("proposedAction=save-note", source)
+        self.assertIn("proposedAction=read-notes", source)
+        self.assertIn("proposedArguments={}", source)
         self.assertIn("apply_notes_ownership_floor", source)
 
     def test_frontend_promotes_notes_through_existing_commands(self):
@@ -34,8 +35,14 @@ class AgentNotesPromotionPhase21C2Tests(unittest.TestCase):
         self.assertIn("resolvePromotedNoteReadToolCommand", source)
         self.assertIn("command: 'save-note'", source)
         self.assertIn("command: 'read-notes'", source)
-        self.assertIn("keys.length !== 1 || keys[0] !== 'content'", source)
-        self.assertIn("Object.keys(argumentsValue).length === 0", source)
+        self.assertIn(
+            "keys.length !== 1 || keys[0] !== 'content'",
+            source,
+        )
+        self.assertIn(
+            "Object.keys(argumentsValue).length === 0",
+            source,
+        )
 
     def test_app_routes_promoted_notes_before_calendar(self):
         source = APP.read_text(encoding="utf-8")
@@ -49,7 +56,6 @@ class AgentNotesPromotionPhase21C2Tests(unittest.TestCase):
 
     def test_existing_notes_handler_remains_authoritative(self):
         source = APP.read_text(encoding="utf-8")
-
         notes_result = source.index(
             "const notesCommandResult: SplitCommandResult ="
         )
@@ -61,10 +67,8 @@ class AgentNotesPromotionPhase21C2Tests(unittest.TestCase):
             "const memoryCommandResult: SplitCommandResult =",
             notes_handler,
         )
-
         self.assertLess(notes_result, notes_handler)
         self.assertLess(notes_handler, memory_result)
-
         notes_block = source[notes_result:memory_result]
         self.assertIn("handleNotesCommand(commandMatch", notes_block)
         self.assertIn("saveNote,", notes_block)
@@ -76,7 +80,22 @@ class AgentNotesPromotionPhase21C2Tests(unittest.TestCase):
             "const confirmedTaskCommandMatch: CommandMatch | undefined =",
             source,
         )
-        self.assertIn("confirmedTaskCommandMatch,", source)
+        self.assertIn(
+            "return executeConfirmedPendingCommand(confirmedTaskCommandMatch);",
+            source,
+        )
+
+        wrapper_start = source.index(
+            "const executeConfirmedPendingCommand = async ("
+        )
+        wrapper_end = source.index(
+            "if (confirmedCalendarEditCommandMatch)",
+            wrapper_start,
+        )
+        wrapper = source[wrapper_start:wrapper_end]
+        self.assertIn("confirmedCommandMatch", wrapper)
+        self.assertIn("resolvedTaskTargets", wrapper)
+        self.assertIn("'confirmed'", wrapper)
 
 
 if __name__ == "__main__":

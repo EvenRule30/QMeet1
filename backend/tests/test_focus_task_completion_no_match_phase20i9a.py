@@ -4,6 +4,51 @@ import unittest
 from pathlib import Path
 
 
+def assert_confirmed_task_identity_path(testcase: unittest.TestCase, source: str) -> None:
+    capture = source.index(
+        "const resolvedTaskTargets = pendingTaskCompletionTargetsRef.current;"
+    )
+    synthetic = source.index(
+        "const confirmedTaskCommandMatch: CommandMatch | undefined =",
+        capture,
+    )
+    wrapper = source.index(
+        "const executeConfirmedPendingCommand = async (",
+        synthetic,
+    )
+    confirmed_call = source.index(
+        "await handleSend(",
+        wrapper,
+    )
+    call_end = source.index(");", confirmed_call)
+    call_block = source[confirmed_call:call_end]
+
+    testcase.assertLess(capture, synthetic)
+    testcase.assertLess(synthetic, wrapper)
+    testcase.assertIn("confirmedCommandMatch", call_block)
+    testcase.assertIn("resolvedTaskTargets", call_block)
+    testcase.assertIn("'confirmed'", call_block)
+
+    synthetic_block = source[synthetic:wrapper]
+    testcase.assertIn(
+        "commandToRun.action === 'mark-task-done'",
+        synthetic_block,
+    )
+    testcase.assertIn(
+        "resolvedTaskTargets.length > 0",
+        synthetic_block,
+    )
+    testcase.assertIn(
+        ".map((task) => task.title)",
+        synthetic_block,
+    )
+
+    testcase.assertIn(
+        "return executeConfirmedPendingCommand(confirmedTaskCommandMatch);",
+        source,
+    )
+
+
 class FocusTaskCompletionNoMatchPhase20I9ATests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -19,7 +64,11 @@ class FocusTaskCompletionNoMatchPhase20I9ATests(unittest.TestCase):
             self.app_source,
         )
         self.assertIn(
-            'I couldn\'t find an open task matching "${target}". No task was changed.',
+            "I couldn't find an open task matching",
+            self.preview_source,
+        )
+        self.assertIn(
+            "No task was changed.",
             self.preview_source,
         )
         self.assertIn(
@@ -41,59 +90,30 @@ class FocusTaskCompletionNoMatchPhase20I9ATests(unittest.TestCase):
         self.assertNotIn("setPendingInterpreterCommand({", branch_source)
 
     def test_no_match_records_that_no_open_task_was_resolved(self) -> None:
-        self.assertIn(
-            "setTrackedInputRoute('Task completion command had no target'",
-            self.app_source,
-        )
-        self.assertIn(
-            "setLastInputRoute(route);",
-            self.app_source,
-        )
-        self.assertIn(
-            "setLastLocalCommand('No matching open task to complete')",
-            self.app_source,
-        )
+        self.assertIn("Task completion command had no target", self.app_source)
+        self.assertIn("No matching open task to complete", self.app_source)
         self.assertIn(
             "Task completion reference did not resolve to an open task, so no confirmation was created.",
             self.app_source,
         )
 
     def test_resolved_targets_still_receive_exact_confirmation(self) -> None:
-        self.assertIn(
-            "taskCompletionPreviewDescription",
-            self.app_source,
-        )
+        self.assertIn("taskCompletionPreviewDescription", self.app_source)
         self.assertIn(
             "I understood that as: ${taskCompletionPreviewDescription}.",
             self.app_source,
         )
-        self.assertIn(
-            "This changes local task data.",
-            self.app_source,
-        )
+        self.assertIn("This changes local task data.", self.app_source)
 
     def test_confirmed_execution_path_is_unchanged(self) -> None:
         self.assertIn(
             "? `mark task ${taskCompletionTarget} done`",
             self.app_source,
         )
-        self.assertIn(
-            "const resolvedTaskTargets = pendingTaskCompletionTargetsRef.current;",
-            self.app_source,
-        )
-        self.assertIn(
-            "const confirmedTaskCommandMatch: CommandMatch | undefined =",
-            self.app_source,
-        )
-        self.assertIn(
-            "confirmedTaskCommandMatch,\n              resolvedTaskTargets",
-            self.app_source,
-        )
+        assert_confirmed_task_identity_path(self, self.app_source)
 
     def test_phase20i8_routing_order_remains_intact(self) -> None:
-        terminal_index = self.app_source.index(
-            "const directFocusTerminalCommandMatch ="
-        )
+        terminal_index = self.app_source.index("const directFocusTerminalCommandMatch =")
         parse_index = self.app_source.index("const parsedCommandMatch =")
         preflight_index = self.app_source.index(
             "const semanticLifecyclePreflightBeforeCommandRouting ="

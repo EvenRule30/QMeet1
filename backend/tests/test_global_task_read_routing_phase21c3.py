@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+
 ROOT = Path(__file__).resolve().parents[2]
 APP = (ROOT / "src" / "app" / "App.tsx").read_text(encoding="utf-8")
 PROMOTION = (
@@ -14,6 +15,32 @@ CONTINUATION = (
 CAPS = (
     ROOT / "backend" / "app" / "qmeet_capabilities.py"
 ).read_text(encoding="utf-8")
+
+
+def assert_confirmed_task_identity_path(
+    testcase: unittest.TestCase,
+    source: str,
+) -> None:
+    capture = source.index(
+        "const resolvedTaskTargets = pendingTaskCompletionTargetsRef.current;"
+    )
+    synthetic = source.index(
+        "const confirmedTaskCommandMatch: CommandMatch | undefined =",
+        capture,
+    )
+    wrapper = source.index(
+        "const executeConfirmedPendingCommand = async (",
+        synthetic,
+    )
+    confirmed_call = source.index("await handleSend(", wrapper)
+    confirmed_end = source.index(");", confirmed_call)
+    call_block = source[confirmed_call:confirmed_end]
+
+    testcase.assertLess(capture, synthetic)
+    testcase.assertLess(synthetic, wrapper)
+    testcase.assertIn("confirmedCommandMatch", call_block)
+    testcase.assertIn("resolvedTaskTargets", call_block)
+    testcase.assertIn("'confirmed'", call_block)
 
 
 class GlobalTaskReadRoutingPhase21C3Tests(unittest.TestCase):
@@ -33,60 +60,51 @@ class GlobalTaskReadRoutingPhase21C3Tests(unittest.TestCase):
         self.assertIn("qmeetScope=global-tasks", APP)
         self.assertIn("'tool'", APP)
 
-    def test_continuation_excludes_focus_for_verified_global_task_scope(self) -> None:
-        # Phase 21C3 introduced read-only global-task isolation. Phase 21D1B
-        # broadens the same ownership rule to verified global task
-        # create/read/complete/delete continuations. Keep the historical helper
-        # as a compatibility wrapper, but assert the stronger scope invariant.
+    def test_continuation_excludes_focus_for_global_task_scope(self) -> None:
         self.assertIn(
             "def _is_explicit_global_task_continuation",
             CONTINUATION,
         )
         self.assertIn(
+            'return "qmeetScope=global-tasks" in request.toolContext',
+            CONTINUATION,
+        )
+        self.assertIn(
+            "if _is_explicit_global_task_continuation(request):",
+            CONTINUATION,
+        )
+        self.assertIn(
+            "global_tasks_owned = _is_explicit_global_task_continuation(request)",
+            CONTINUATION,
+        )
+        self.assertIn(
+            "if global_tasks_owned:",
+            CONTINUATION,
+        )
+
+        global_block_start = CONTINUATION.index("if global_tasks_owned:")
+        global_block_end = CONTINUATION.index(
+            "elif isolate_stale_conversation:",
+            global_block_start,
+        )
+        global_block = CONTINUATION[global_block_start:global_block_end]
+        self.assertIn("pass", global_block)
+        self.assertNotIn("_request_recent_history(request)", global_block)
+        self.assertNotIn("_request_recent_tool_updates(request)", global_block)
+
+    def test_backward_compatible_read_detector_still_exists(self) -> None:
+        self.assertIn(
             "def _is_global_task_read_continuation",
             CONTINUATION,
         )
         self.assertIn(
-            "and _is_explicit_global_task_continuation(request)",
+            'request.action.strip().casefold() == "read-memory"',
             CONTINUATION,
         )
-
-        focus_relevance = CONTINUATION.index(
-            "def focus_context_relevant_to_continuation("
-        )
-        recent_history = CONTINUATION.index(
-            "def _fallback_recent_history()",
-            focus_relevance,
-        )
-        focus_block = CONTINUATION[focus_relevance:recent_history]
         self.assertIn(
-            "if _is_explicit_global_task_continuation(request):",
-            focus_block,
+            "_is_explicit_global_task_continuation(request)",
+            CONTINUATION,
         )
-        self.assertIn("return False", focus_block)
-
-        build_input = CONTINUATION.index(
-            "def build_tool_continuation_input("
-        )
-        record_history = CONTINUATION.index(
-            "def _record_history(",
-            build_input,
-        )
-        build_block = CONTINUATION[build_input:record_history]
-        self.assertIn(
-            "global_tasks_owned = _is_explicit_global_task_continuation(request)",
-            build_block,
-        )
-        self.assertIn("if global_tasks_owned:", build_block)
-
-        # Global Tasks must not inherit stale recent conversation or prior tool
-        # cards after deterministic scope explicitly says qmeetScope=global-tasks.
-        global_branch = build_block[
-            build_block.index("if global_tasks_owned:"):
-            build_block.index("elif isolate_stale_conversation:")
-        ]
-        self.assertNotIn("_request_recent_history(request)", global_branch)
-        self.assertNotIn("_request_recent_tool_updates(request)", global_branch)
 
     def test_shared_contract_documents_global_task_read(self) -> None:
         self.assertIn('"promotedReadAction": "read-memory"', CAPS)
@@ -96,11 +114,7 @@ class GlobalTaskReadRoutingPhase21C3Tests(unittest.TestCase):
         )
 
     def test_focus_task_completion_compatibility_seam_remains(self) -> None:
-        self.assertIn(
-            "const confirmedTaskCommandMatch: CommandMatch | undefined =",
-            APP,
-        )
-        self.assertIn("confirmedTaskCommandMatch,", APP)
+        assert_confirmed_task_identity_path(self, APP)
 
 
 if __name__ == "__main__":

@@ -103,9 +103,16 @@ Important:
   first.
 - If the user explicitly supplies all arguments for a later action, that step is
   dependency-free even when it is thematically related to an earlier step.
+- A literal task title supplied by the user is self-contained. Never make a
+  remember-task step depend on an earlier Calendar/Search/Notes action merely
+  because the title mentions the same meeting, project, person, or subject.
 - Example: "search for Framework Laptop reviews and add a task called Compare
   Framework options" has two dependency-free steps because the task title is
   already explicit in the original turn.
+- Example: "move my 3 PM Project meeting on August 21 to August 22 and add a
+  task called Prepare for meeting" has two dependency-free steps. "Prepare for
+  meeting" is already the complete Task title; it does not require the verified
+  Calendar receipt to become executable.
 - Example: "search Framework reviews and save a note with the result" has a real
   dependency because the note content requires the verified Search output.
 - Phase 21G2C supports one typed verified-result binding only:
@@ -296,6 +303,73 @@ def _normalize_dependency_numbers(
     return normalized
 
 
+
+def _normalize_grounded_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value.strip()).casefold()
+
+
+def _explicit_task_title_is_grounded_in_user_turn(
+    user_message: str,
+    arguments: dict[str, Any],
+) -> bool:
+    """Return whether one proposed task title is literally grounded in the turn.
+
+    This is intentionally stricter than semantic similarity. Phase 21G3B may
+    repair a model's mistaken sequencing dependency only when the downstream
+    Task's complete executable argument already appears in the current request.
+    It must never turn an invented/model-derived title into an independent
+    mutation.
+    """
+
+    if set(arguments) != {"title"}:
+        return False
+    raw_title = arguments.get("title")
+    if not isinstance(raw_title, str):
+        return False
+
+    title = _normalize_grounded_text(raw_title)
+    turn = _normalize_grounded_text(user_message)
+    if not title or len(title) > 240 or not turn:
+        return False
+    if re.search(r"[\x00-\x1f\x7f]", raw_title):
+        return False
+
+    return title in turn
+
+
+def _can_repair_spurious_sequencing_dependency(
+    *,
+    user_message: str,
+    owner: CompositeOwner,
+    action: str,
+    arguments: dict[str, Any],
+    raw_bindings: Any,
+    dependencies: list[str],
+) -> bool:
+    """Repair only a self-contained explicit Task create dependency.
+
+    G2C correctly requires every real data dependency to have one typed binding.
+    G3B adds a narrow normalization for a common planner mistake: treating
+    requested order / same-subject wording as data dependency even though the
+    user supplied the complete Task title.
+
+    No other action is repaired here. In particular, Calendar/Notes/Search
+    dependencies and any task title not literally present in the current user
+    turn continue to fail closed.
+    """
+
+    if not dependencies:
+        return False
+    if raw_bindings not in (None, []):
+        return False
+    if owner != "tasks" or action != "remember-task":
+        return False
+    return _explicit_task_title_is_grounded_in_user_turn(
+        user_message,
+        arguments,
+    )
+
+
 def _normalize_input_bindings(
     raw_bindings: Any,
     *,
@@ -373,7 +447,11 @@ def _invalid_plan(reason: str) -> AgentCompositePlan:
     )
 
 
-def sanitize_composite_plan(value: dict[str, Any] | None) -> AgentCompositePlan:
+def sanitize_composite_plan(
+    value: dict[str, Any] | None,
+    *,
+    user_message: str = "",
+) -> AgentCompositePlan:
     """Validate a model-produced composite plan without granting execution authority."""
 
     if not isinstance(value, dict) or value.get("isComposite") is not True:
@@ -425,8 +503,21 @@ def sanitize_composite_plan(value: dict[str, Any] | None) -> AgentCompositePlan:
                 "A composite dependency must reference an earlier step only."
             )
 
+        raw_input_bindings = raw_step.get("inputBindings")
+        repaired_spurious_dependency = False
+        if _can_repair_spurious_sequencing_dependency(
+            user_message=user_message,
+            owner=owner,
+            action=action,
+            arguments=arguments,
+            raw_bindings=raw_input_bindings,
+            dependencies=dependencies,
+        ):
+            dependencies = []
+            repaired_spurious_dependency = True
+
         input_bindings = _normalize_input_bindings(
-            raw_step.get("inputBindings"),
+            raw_input_bindings,
             step_number=index,
             owner=owner,
             action=action,
@@ -449,7 +540,18 @@ def sanitize_composite_plan(value: dict[str, Any] | None) -> AgentCompositePlan:
                 proposedArguments=dict(arguments),
                 dependsOn=dependencies,
                 inputBindings=input_bindings,
-                reason=str(raw_step.get("reason") or "").strip()[:500],
+                reason=(
+                    (
+                        str(raw_step.get("reason") or "").strip()
+                        + (
+                            " Dependency metadata was normalized away because "
+                            "the complete Task title was explicitly grounded in "
+                            "the current user turn."
+                            if repaired_spurious_dependency
+                            else ""
+                        )
+                    ).strip()[:500]
+                ),
             )
         )
 
@@ -520,7 +622,10 @@ async def _generate_model_plan(
         parsed = _json_object_from_text(content or "")
         if parsed is None:
             return None
-        return sanitize_composite_plan(parsed)
+        return sanitize_composite_plan(
+            parsed,
+            user_message=request.userMessage,
+        )
     except Exception:
         return None
 

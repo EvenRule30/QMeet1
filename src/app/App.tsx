@@ -36,9 +36,19 @@ import {
 } from './lib/agentCompositePlan';
 import {
   executePreflightedCompositeImmediatePlan,
+  executePreflightedCompositeResumablePlan,
   preflightCompositeImmediatePlan,
+  preflightCompositeResumablePlan,
+  resumePreflightedCompositeAfterConfirmation,
   type CompositeImmediateStepReceipt,
 } from './lib/agentCompositeExecution';
+import {
+  createPendingCompositeResume,
+  getPendingCompositePausedCandidate,
+  matchesPendingCompositeConfirmationAction,
+  validatePendingCompositeConfirmedReceipt,
+  type PendingCompositeResume,
+} from './lib/agentCompositeResume';
 import {
   isPromotedCalendarCreateToolDecision,
   isPromotedCalendarDeleteToolDecision,
@@ -361,6 +371,7 @@ export default function App() {
   const pendingCalendarEditTargetIdRef = useRef<string | null>(null);
   const pendingCalendarEditChangesRef = useRef<PromotedCalendarEditChanges | null>(null);
   const compositeStepReceiptRef = useRef<CompositeImmediateStepReceipt | null>(null);
+  const pendingCompositeResumeRef = useRef<PendingCompositeResume | null>(null);
   const orbAreaRef = useRef<HTMLDivElement | null>(null);
   const {
     listeningTranscript,
@@ -389,6 +400,8 @@ export default function App() {
     pendingCalendarDeleteTargetIdRef.current = null;
     pendingCalendarEditTargetIdRef.current = null;
     pendingCalendarEditChangesRef.current = null;
+    pendingCompositeResumeRef.current = null;
+    compositeStepReceiptRef.current = null;
     clearResultToasts();
     setChatActive(false);
     clearMessages();
@@ -452,13 +465,21 @@ export default function App() {
       speakAssistantText,
     });
   }, [activePanel, activeSession?.id, messages, speakAssistantText, voiceOutputEnabled]);
-  const handleSend = useCallback(async (text: string, displayText?: string, commandRoute: CommandRoute = 'exact', forcedCommandMatch?: CommandMatch, confirmedTaskTargets: ConfirmedTaskTarget[] = [], continuationUserText?: string, confirmedCalendarDeleteTargetId: string | null = null, confirmedCalendarEditTargetId: string | null = null, promotedCalendarEditTargetCriteria: PromotedCalendarEditTargetCriteria | null = null, promotedTaskCompletionTarget: ConfirmedTaskTarget | null = null, compositeStepId: string | null = null) => {
+  const handleSend = useCallback(async (text: string, displayText?: string, commandRoute: CommandRoute = 'exact', forcedCommandMatch?: CommandMatch, confirmedTaskTargets: ConfirmedTaskTarget[] = [], continuationUserText?: string, confirmedCalendarDeleteTargetId: string | null = null, confirmedCalendarEditTargetId: string | null = null, promotedCalendarEditTargetCriteria: PromotedCalendarEditTargetCriteria | null = null, promotedTaskCompletionTarget: ConfirmedTaskTarget | null = null, compositeStepId: string | null = null, compositeResumeToArm: PendingCompositeResume | null = null) => {
     const trimmed = text.trim();
     if (!trimmed) return;
     const visibleUserText = (displayText ?? trimmed).trim() || trimmed;
     const continuationUserTextForTool =
       (continuationUserText ?? visibleUserText).trim() || visibleUserText;
     const compositeAtomicExecution = Boolean(compositeStepId);
+    const armPendingCompositeResumeForAction = (action: string) => {
+      if (
+        compositeResumeToArm &&
+        matchesPendingCompositeConfirmationAction(compositeResumeToArm, action)
+      ) {
+        pendingCompositeResumeRef.current = compositeResumeToArm;
+      }
+    };
     const shadowTurn = commandRoute === 'exact' && !forcedCommandMatch
       ? observeAgentShadowTurn({
           userMessage: visibleUserText,
@@ -546,6 +567,16 @@ export default function App() {
     if (pendingInterpreterCommand) {
           if (isConfirmingPendingCommand(trimmed)) {
             const commandToRun = pendingInterpreterCommand;
+            const pendingCompositeResume = pendingCompositeResumeRef.current;
+            const confirmedCompositeResume =
+              pendingCompositeResume &&
+              matchesPendingCompositeConfirmationAction(
+                pendingCompositeResume,
+                commandToRun.action,
+              )
+                ? pendingCompositeResume
+                : null;
+            pendingCompositeResumeRef.current = null;
             const resolvedTaskTargets = pendingTaskCompletionTargetsRef.current;
             const resolvedTaskDeleteTarget =
               commandToRun.action === 'delete-task'
@@ -789,32 +820,126 @@ export default function App() {
                     calendarEdit: { ...resolvedCalendarEditChanges },
                   }
                 : undefined;
-            if (confirmedCalendarEditCommandMatch) {
-              return handleSend(
+
+            const executeConfirmedPendingCommand = async (
+              confirmedCommandMatch?: CommandMatch,
+            ) => {
+              if (confirmedCompositeResume) {
+                compositeStepReceiptRef.current = null;
+                const confirmUserMessage = createUserMessage(
+                  `composite-confirm-${Date.now()}`,
+                  visibleUserText,
+                );
+                setMessages((prev) => [...prev, confirmUserMessage]);
+              }
+
+              await handleSend(
                 commandToRun.frontendCommand,
                 visibleUserText,
                 'confirmed',
-                confirmedCalendarEditCommandMatch,
+                confirmedCommandMatch,
                 resolvedTaskTargets,
                 commandToRun.originalText,
                 resolvedCalendarDeleteTargetId,
                 resolvedCalendarEditTargetId,
+                null,
+                null,
+                confirmedCompositeResume?.pause.pausedStepId ?? null,
+                null,
+              );
+
+              if (!confirmedCompositeResume) return;
+
+              const confirmedReceipt = compositeStepReceiptRef.current;
+              compositeStepReceiptRef.current = null;
+              if (
+                !validatePendingCompositeConfirmedReceipt(
+                  confirmedCompositeResume,
+                  confirmedReceipt,
+                )
+              ) {
+                setShowThinkingBubble(false);
+                const stoppedMessage =
+                  'The confirmed Calendar change did not produce a successful verified receipt, so I stopped before the remaining requested actions.';
+                const assistantMsg = createAssistantMessage(
+                  `composite-confirm-failed-${Date.now()}`,
+                  stoppedMessage,
+                );
+                setMessages((prev) => [...prev, assistantMsg]);
+                speakAssistantText(stoppedMessage, {
+                  enabled: voiceOutputEnabled,
+                });
+                setOrbState('idle');
+                return;
+              }
+
+              const resumedComposite =
+                await resumePreflightedCompositeAfterConfirmation({
+                  preflight: confirmedCompositeResume.preflight,
+                  pause: confirmedCompositeResume.pause,
+                  confirmedReceipt,
+                  executeStep: async (candidate) => {
+                    compositeStepReceiptRef.current = null;
+                    await handleSend(
+                      confirmedCompositeResume.originalUserText,
+                      confirmedCompositeResume.originalUserText,
+                      'agent',
+                      candidate.commandMatch,
+                      [],
+                      confirmedCompositeResume.originalUserText,
+                      null,
+                      null,
+                      null,
+                      null,
+                      candidate.stepId,
+                      null,
+                    );
+                    return (
+                      compositeStepReceiptRef.current ?? {
+                        stepId: candidate.stepId,
+                        ok: false,
+                        toolResult:
+                          'The resumed atomic command returned without one verified composite receipt.',
+                      }
+                    );
+                  },
+                });
+
+              compositeStepReceiptRef.current = null;
+              setShowThinkingBubble(false);
+              const completedCount = resumedComposite.receipts.length;
+              const compositeSummary = resumedComposite.ok
+                ? completedCount === 2
+                  ? 'Done — both requested actions completed successfully.'
+                  : `Done — all ${completedCount} requested actions completed successfully.`
+                : resumedComposite.status === 'paused'
+                  ? 'I completed the confirmed Calendar action, but another confirmation would be required. I stopped before that additional mutation.'
+                  : completedCount > 0
+                    ? `I completed ${completedCount} requested action${completedCount === 1 ? '' : 's'}, then stopped because the next action did not verify. The completed Tool updates remain valid.`
+                    : 'I could not safely resume the remaining composite actions.';
+              const compositeSummaryMessage = createAssistantMessage(
+                `composite-resume-summary-${Date.now()}`,
+                compositeSummary,
+              );
+              setMessages((prev) => [...prev, compositeSummaryMessage]);
+              speakAssistantText(compositeSummary, {
+                enabled: voiceOutputEnabled,
+              });
+              setOrbState('idle');
+            };
+
+            if (confirmedCalendarEditCommandMatch) {
+              return executeConfirmedPendingCommand(
+                confirmedCalendarEditCommandMatch,
               );
             }
-            return handleSend(
-              commandToRun.frontendCommand,
-              visibleUserText,
-              'confirmed',
-              confirmedTaskCommandMatch,
-              resolvedTaskTargets,
-              commandToRun.originalText,
-              resolvedCalendarDeleteTargetId,
-              resolvedCalendarEditTargetId,
-            );
+            return executeConfirmedPendingCommand(confirmedTaskCommandMatch);
           }
           if (isRejectingPendingCommand(trimmed)) {
             finishListening();
             setShowThinkingBubble(false);
+            pendingCompositeResumeRef.current = null;
+            compositeStepReceiptRef.current = null;
             setPendingInterpreterCommand(null);
             pendingTaskCompletionTargetsRef.current = [];
             pendingTaskDeleteTargetRef.current = null;
@@ -845,6 +970,8 @@ export default function App() {
           pendingCalendarDeleteTargetIdRef.current = null;
           pendingCalendarEditTargetIdRef.current = null;
           pendingCalendarEditChangesRef.current = null;
+          pendingCompositeResumeRef.current = null;
+          compositeStepReceiptRef.current = null;
         }
     const pendingTaskDeleteClarification =
       pendingTaskDeleteClarificationRef.current;
@@ -1179,6 +1306,113 @@ export default function App() {
         });
         setOrbState('idle');
         return;
+      }
+
+      if (
+        compositePreflight.ok === false &&
+        compositePreflight.reason === 'confirmation-pause-required'
+      ) {
+        const resumablePreflight =
+          preflightCompositeResumablePlan(observedCompositePlan);
+
+        if (resumablePreflight.ok) {
+          const confirmationCandidates = resumablePreflight.candidates
+            .map((candidate, index) => ({ candidate, index }))
+            .filter(
+              ({ candidate }) => candidate.confirmationMode === 'required',
+            );
+          const livePause = confirmationCandidates[0] ?? null;
+          const livePauseAction = livePause?.candidate.proposedAction ?? '';
+          const g3bLiveEligible =
+            confirmationCandidates.length === 1 &&
+            livePause?.index === 0 &&
+            (livePauseAction === 'edit-last-event' ||
+              livePauseAction === 'delete-calendar-event');
+
+          if (g3bLiveEligible) {
+            const resumableResult =
+              await executePreflightedCompositeResumablePlan({
+                preflight: resumablePreflight,
+                executeStep: async () => {
+                  throw new Error(
+                    'Phase 21G3B live promotion requires the single confirmation step to be first, so no pre-pause atomic step may execute.',
+                  );
+                },
+              });
+
+            if (
+              resumableResult.status === 'paused' &&
+              resumableResult.pause
+            ) {
+              const pendingCompositeResume = createPendingCompositeResume({
+                originalUserText: visibleUserText,
+                preflight: resumablePreflight,
+                pause: resumableResult.pause,
+              });
+              const pausedCandidate =
+                getPendingCompositePausedCandidate(pendingCompositeResume);
+
+              if (
+                pendingCompositeResume &&
+                pausedCandidate?.commandMatch
+              ) {
+                setTrackedInputRoute(
+                  'Agent-promoted resumable Calendar composite',
+                  pausedCandidate.proposedAction,
+                  observedCompositePlan?.planId ?? '',
+                  'calendar',
+                  'tool',
+                );
+                setLastLocalCommand(
+                  'Agent-promoted resumable Calendar composite',
+                );
+                setLastInterpreterAction(pausedCandidate.proposedAction);
+                setLastInterpreterFrontendCommand(
+                  resumablePreflight.candidates
+                    .map((candidate) => candidate.proposedAction)
+                    .join(' -> '),
+                );
+                setLastInterpreterConfidence(
+                  observedCompositePlan?.plan.confidence ?? null,
+                );
+                setLastInterpreterReason(
+                  'Phase 21G3B promoted one first-step Calendar mutation into the existing confirmation path. Canonical Calendar identity remains owned by the existing target refs; trailing composite work may resume only from a matching successful verified receipt.',
+                );
+
+                return handleSend(
+                  visibleUserText,
+                  visibleUserText,
+                  'agent',
+                  pausedCandidate.commandMatch,
+                  [],
+                  visibleUserText,
+                  null,
+                  null,
+                  pausedCandidate.calendarEditTargetCriteria ?? null,
+                  null,
+                  null,
+                  pendingCompositeResume,
+                );
+              }
+            }
+
+            finishListening();
+            setShowThinkingBubble(false);
+            if (!chatActive) setChatActive(true);
+            const now = Date.now();
+            const userMsg = createUserMessage(now, visibleUserText);
+            const assistantMsg = createAssistantMessage(
+              now,
+              'I recognized the multi-step Calendar request, but I could not create one safe resumable confirmation checkpoint. No composite mutation was started.',
+            );
+            setMessages((prev) => [...prev, userMsg, assistantMsg]);
+            speakAssistantText(assistantMsg.content, {
+              enabled: voiceOutputEnabled,
+            });
+            setOrbState('idle');
+            return;
+          }
+        }
       }
     }
 
@@ -2417,6 +2651,7 @@ export default function App() {
           const frontendCommand = `add event ${targetView} at ${targetTime} called ${targetTitle}`;
           const confirmationPrompt = `I understood that as: create a Google Calendar event ${targetView} ${isAllDay ? 'all day' : `at ${targetTime}`}: ${targetTitle}. Say "confirm" to create it, or "cancel" to stop.`;
           pendingTaskCompletionTargetsRef.current = [];
+          armPendingCompositeResumeForAction(commandMatch.command);
           setPendingInterpreterCommand({
             originalText: visibleUserText,
             frontendCommand,
@@ -2540,6 +2775,7 @@ export default function App() {
         pendingTaskCompletionTargetsRef.current = [];
         pendingCalendarEditTargetIdRef.current = targetEditEvent.id;
         pendingCalendarEditChangesRef.current = resolvedCalendarEditChanges;
+        armPendingCompositeResumeForAction(commandMatch.command);
         if (
           promotedCalendarEditTargetCriteria?.day === 'today' ||
           promotedCalendarEditTargetCriteria?.day === 'tomorrow'
@@ -2728,6 +2964,7 @@ export default function App() {
           commandMatch.command === 'delete-calendar-event' && targetDeleteEvent
             ? targetDeleteEvent.id
             : null;
+        armPendingCompositeResumeForAction(commandMatch.command);
         setPendingInterpreterCommand({
           originalText: visibleUserText,
           frontendCommand,

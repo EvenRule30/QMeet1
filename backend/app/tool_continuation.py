@@ -40,6 +40,7 @@ Critical ownership rule:
 - For Calendar, every claim about events, schedule contents, availability, free/busy status, or a completed Calendar write must be grounded in verifiedToolContext or verifiedToolReceipt. Never reconstruct Calendar state or write outcomes from model memory or stale recentConversation.
 - If verifiedToolContext declares qmeetScope=global-tasks, treat the turn as global Tasks-owned. Do not use Active Focus context or stale recent conversation to steer the response unless the verified context itself declares a verified Focus relationship.
 - For a Calendar-owned continuation when focusContextIncluded is false, do not mention Focus, Focus tasks, Focus goals, or returning to Focus, even as an optional next step. Keep the continuation owned by the Calendar result.
+- For Search- or Calendar-owned continuations, do not claim that a task, note, Calendar event, or other state is currently present merely because an older conversation/tool update said it once existed. Only the current verifiedToolReceipt/current verifiedToolContext may establish state for this continuation.
 Latest-state precedence:
 - The original user turn plus verifiedToolReceipt describe the newest completed action and are the primary subject of this response.
 - The verified tool receipt and current canonical state are newer than recentConversation. If they conflict with or supersede an older topic, follow the verified receipt/current canonical state.
@@ -504,7 +505,15 @@ def build_tool_continuation_input(
         # Active Focus after deterministic execution explicitly excluded it.
         pass
     elif isolate_stale_conversation:
-        messages.extend(_request_recent_tool_updates(request))
+        # Search/Calendar continuations are grounded in the current original
+        # turn plus the current verified receipt/context. Older Tool cards can
+        # describe state that has since changed through another UI/action, so
+        # carrying them forward can create stale cross-capability claims (for
+        # example, an old "Saved task" receipt after that task was deleted).
+        #
+        # Keep this isolation fail-closed: do not include stale conversation or
+        # stale Tool updates for these ownership lanes.
+        pass
     else:
         messages.extend(_request_recent_history(request))
 

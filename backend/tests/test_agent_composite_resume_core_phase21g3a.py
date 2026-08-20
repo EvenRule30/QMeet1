@@ -87,14 +87,20 @@ class AgentCompositeResumeCorePhase21G3ATests(unittest.TestCase):
         self.assertIn("validatePendingCompositeConfirmedReceipt", source)
         self.assertIn("receipt.stepId === pending.pause.pausedStepId", source)
 
-    def test_g3a_is_not_live_wired_into_app_yet(self) -> None:
+    def test_g3a_core_is_now_consumed_by_g3b_without_owning_calendar_identity(self) -> None:
         source = self._read("src/app/App.tsx")
+        resume_source = self._read("src/app/lib/agentCompositeResume.ts")
 
-        self.assertNotIn("preflightCompositeResumablePlan", source)
-        self.assertNotIn("executePreflightedCompositeResumablePlan", source)
-        self.assertNotIn("resumePreflightedCompositeAfterConfirmation", source)
-        self.assertNotIn("PendingCompositeResume", source)
-        self.assertNotIn("pendingCompositeResume", source)
+        self.assertIn("preflightCompositeResumablePlan", source)
+        self.assertIn("executePreflightedCompositeResumablePlan", source)
+        self.assertIn("resumePreflightedCompositeAfterConfirmation", source)
+        self.assertIn("PendingCompositeResume", source)
+        self.assertIn("pendingCompositeResumeRef", source)
+        self.assertIn("pendingCalendarEditTargetIdRef", source)
+        self.assertIn("pendingCalendarDeleteTargetIdRef", source)
+        self.assertNotIn("eventId:", resume_source)
+        self.assertNotIn("taskId:", resume_source)
+        self.assertNotIn("focusId:", resume_source)
 
 
 if __name__ == "__main__":

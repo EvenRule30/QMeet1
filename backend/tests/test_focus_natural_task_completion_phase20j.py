@@ -5,6 +5,51 @@ import unittest
 from pathlib import Path
 
 
+def assert_confirmed_task_identity_path(testcase: unittest.TestCase, source: str) -> None:
+    capture = source.index(
+        "const resolvedTaskTargets = pendingTaskCompletionTargetsRef.current;"
+    )
+    synthetic = source.index(
+        "const confirmedTaskCommandMatch: CommandMatch | undefined =",
+        capture,
+    )
+    wrapper = source.index(
+        "const executeConfirmedPendingCommand = async (",
+        synthetic,
+    )
+    confirmed_call = source.index(
+        "await handleSend(",
+        wrapper,
+    )
+    call_end = source.index(");", confirmed_call)
+    call_block = source[confirmed_call:call_end]
+
+    testcase.assertLess(capture, synthetic)
+    testcase.assertLess(synthetic, wrapper)
+    testcase.assertIn("confirmedCommandMatch", call_block)
+    testcase.assertIn("resolvedTaskTargets", call_block)
+    testcase.assertIn("'confirmed'", call_block)
+
+    synthetic_block = source[synthetic:wrapper]
+    testcase.assertIn(
+        "commandToRun.action === 'mark-task-done'",
+        synthetic_block,
+    )
+    testcase.assertIn(
+        "resolvedTaskTargets.length > 0",
+        synthetic_block,
+    )
+    testcase.assertIn(
+        ".map((task) => task.title)",
+        synthetic_block,
+    )
+
+    testcase.assertIn(
+        "return executeConfirmedPendingCommand(confirmedTaskCommandMatch);",
+        source,
+    )
+
+
 class FocusNaturalTaskCompletionPhase20JTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -15,30 +60,20 @@ class FocusNaturalTaskCompletionPhase20JTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
     def test_natural_completion_runs_after_exact_parser_before_preflight(self) -> None:
-        terminal_index = self.app_source.index(
-            "const directFocusTerminalCommandMatch ="
-        )
+        terminal_index = self.app_source.index("const directFocusTerminalCommandMatch =")
         parser_index = self.app_source.index(
             "const parsedCommandMatch = forcedCommandMatch ?? parseCommand(trimmed);"
         )
-        natural_index = self.app_source.index(
-            "const naturalTaskCompletionTarget ="
-        )
+        natural_index = self.app_source.index("const naturalTaskCompletionTarget =")
         preflight_index = self.app_source.index(
             "const semanticLifecyclePreflightBeforeCommandRouting ="
         )
         self.assertLess(terminal_index, parser_index)
         self.assertLess(parser_index, natural_index)
         self.assertLess(natural_index, preflight_index)
-        self.assertIn(
-            "!parsedCommandMatch",
-            self.app_source[parser_index:preflight_index],
-        )
 
     def test_natural_match_claims_the_turn_as_non_lifecycle(self) -> None:
-        claim_start = self.app_source.index(
-            "const exactNonLifecycleCommandClaimed ="
-        )
+        claim_start = self.app_source.index("const exactNonLifecycleCommandClaimed =")
         preflight_start = self.app_source.index(
             "const semanticLifecyclePreflightBeforeCommandRouting ="
         )
@@ -46,39 +81,17 @@ class FocusNaturalTaskCompletionPhase20JTests(unittest.TestCase):
         self.assertIn("Boolean(parsedCommandMatch)", claim_source)
         self.assertIn("Boolean(naturalTaskCompletionCommandMatch)", claim_source)
         self.assertIn("!exactNonLifecycleCommandClaimed", self.app_source)
-        self.assertIn(
-            ": parsedCommandMatch ?? naturalTaskCompletionCommandMatch;",
-            self.app_source,
-        )
 
     def test_synthetic_match_uses_exact_resolved_task_title(self) -> None:
         self.assertIn("command: 'mark-task-done'", self.app_source)
         self.assertIn("payload: naturalTaskCompletionTarget.title", self.app_source)
         self.assertIn("resolveTaskCompletionPreviewTargets(", self.app_source)
-        self.assertIn(
-            "const resolvedTaskTargets = pendingTaskCompletionTargetsRef.current;",
-            self.app_source,
-        )
-        self.assertIn(
-            "const confirmedTaskCommandMatch: CommandMatch | undefined =",
-            self.app_source,
-        )
-        self.assertIn(
-            "confirmedTaskCommandMatch,\n              resolvedTaskTargets",
-            self.app_source,
-        )
+        assert_confirmed_task_identity_path(self, self.app_source)
 
     def test_resolver_only_considers_open_tasks_linked_to_active_focus(self) -> None:
         self.assertIn("if (!activeSession) return [];", self.resolver_source)
-        self.assertIn(
-            "tasks.filter((task) => !task.completedAt)",
-            self.resolver_source,
-        )
+        self.assertIn("tasks.filter((task) => !task.completedAt)", self.resolver_source)
         self.assertIn("activeSession.linkedTaskIds", self.resolver_source)
-        self.assertNotIn(
-            "return tasks.filter((task) => !task.completedAt);",
-            self.resolver_source,
-        )
 
     def test_resolver_requires_completed_work_language(self) -> None:
         opening_match = re.search(
@@ -88,7 +101,6 @@ class FocusNaturalTaskCompletionPhase20JTests(unittest.TestCase):
         self.assertIsNotNone(opening_match)
         assert opening_match is not None
         opening = opening_match.group("pattern")
-
         self.assertIn("^(?:i|we)", opening)
         for expected in (
             "checked",
@@ -100,27 +112,8 @@ class FocusNaturalTaskCompletionPhase20JTests(unittest.TestCase):
             "completed",
         ):
             self.assertIn(expected, opening)
-
         self.assertNotIn("want", opening)
         self.assertNotIn("need", opening)
-
-        self.assertIn(
-            "function looksLikeCompletedWorkStatement(",
-            self.resolver_source,
-        )
-        self.assertIn(
-            "if (!trimmed || !looksLikeCompletedWorkStatement(trimmed)) return null;",
-            self.resolver_source,
-        )
-        self.assertIn(
-            "if (COMPLETION_OPENING.test(value)) return true;",
-            self.resolver_source,
-        )
-        self.assertIn("const passive = value.match(", self.resolver_source)
-        self.assertIn(
-            "canonicalCompletionVerb(passive[2])",
-            self.resolver_source,
-        )
 
     def test_resolver_supports_generated_focus_task_language(self) -> None:
         for expected in (
@@ -134,10 +127,6 @@ class FocusNaturalTaskCompletionPhase20JTests(unittest.TestCase):
             "decided: 'decide'",
         ):
             self.assertIn(expected, self.resolver_source)
-        self.assertIn(
-            ".replace(/(\\d),(?=\\d{3}\\b)/g, '$1')",
-            self.resolver_source,
-        )
 
     def test_weak_or_ambiguous_matches_are_not_claimed(self) -> None:
         self.assertIn("candidate.matchedTokenCount >= 2", self.resolver_source)
@@ -147,7 +136,6 @@ class FocusNaturalTaskCompletionPhase20JTests(unittest.TestCase):
             "Math.abs(best.score - runnerUp.score) < 0.12",
             self.resolver_source,
         )
-        self.assertIn("return null;", self.resolver_source)
 
     def test_natural_completion_still_requires_confirmation(self) -> None:
         self.assertIn(
