@@ -1,0 +1,351 @@
+.memory-remaster-body {
+  gap: 0.72rem;
+  padding-bottom: 1rem;
+}
+
+.memory-remaster-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.1rem 0.05rem 0;
+}
+
+.memory-remaster-kicker,
+.memory-remaster-section-label {
+  color: rgba(148, 163, 184, 0.78);
+  font-size: 0.62rem;
+  font-weight: 760;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.memory-remaster-title {
+  margin-top: 0.18rem;
+  max-width: 33rem;
+  color: rgba(241, 245, 249, 0.96);
+  font-size: 0.95rem;
+  font-weight: 680;
+  line-height: 1.35;
+}
+
+.memory-remaster-sync {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.38rem;
+  flex: 0 0 auto;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.54);
+  color: rgba(203, 213, 225, 0.92);
+  padding: 0.34rem 0.56rem;
+  font-size: 0.66rem;
+  font-weight: 720;
+}
+
+.memory-remaster-sync-dot {
+  width: 0.42rem;
+  height: 0.42rem;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0.5rem currentColor;
+}
+
+.memory-remaster-sync-synced {
+  color: rgba(94, 234, 212, 0.96);
+}
+
+.memory-remaster-sync-syncing {
+  color: rgba(125, 211, 252, 0.96);
+}
+
+.memory-remaster-sync-error {
+  color: rgba(251, 113, 133, 0.96);
+}
+
+.memory-remaster-overview {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) repeat(3, minmax(0, 0.8fr));
+  gap: 0.5rem;
+}
+
+.memory-remaster-stat {
+  min-width: 0;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 0.82rem;
+  background: rgba(8, 20, 32, 0.42);
+  padding: 0.58rem 0.64rem;
+}
+
+.memory-remaster-stat-focus {
+  border-color: rgba(45, 212, 191, 0.24);
+  background: linear-gradient(
+    135deg,
+    rgba(20, 184, 166, 0.12),
+    rgba(8, 20, 32, 0.42)
+  );
+}
+
+.memory-remaster-stat span {
+  display: block;
+  color: rgba(148, 163, 184, 0.76);
+  font-size: 0.58rem;
+  font-weight: 720;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.memory-remaster-stat strong {
+  display: block;
+  margin-top: 0.18rem;
+  overflow: hidden;
+  color: rgba(241, 245, 249, 0.96);
+  font-size: 0.88rem;
+  font-weight: 760;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memory-remaster-card,
+.memory-remaster-details {
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 0.92rem;
+  background: rgba(8, 20, 32, 0.38);
+  overflow: hidden;
+}
+
+.memory-remaster-card {
+  padding: 0.72rem;
+}
+
+.memory-remaster-focus-card {
+  border-color: rgba(45, 212, 191, 0.22);
+  background: linear-gradient(
+    135deg,
+    rgba(13, 148, 136, 0.09),
+    rgba(8, 20, 32, 0.42)
+  );
+}
+
+.memory-remaster-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.memory-remaster-section-head-compact {
+  align-items: center;
+}
+
+.memory-remaster-section-title {
+  margin-top: 0.14rem;
+  color: rgba(241, 245, 249, 0.98);
+  font-size: 0.98rem;
+  font-weight: 760;
+}
+
+.memory-remaster-pill {
+  flex: 0 0 auto;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.48);
+  color: rgba(203, 213, 225, 0.86);
+  padding: 0.3rem 0.5rem;
+  font-size: 0.63rem;
+  font-weight: 680;
+}
+
+.memory-remaster-focus-goal {
+  margin: 0.58rem 0 0;
+  border-left: 2px solid rgba(45, 212, 191, 0.5);
+  color: rgba(226, 232, 240, 0.86);
+  padding-left: 0.62rem;
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.memory-remaster-actions,
+.memory-remaster-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.42rem;
+  margin-top: 0.62rem;
+}
+
+.memory-remaster-end-btn {
+  border: 1px solid rgba(251, 113, 133, 0.24);
+  border-radius: 0.68rem;
+  background: rgba(127, 29, 29, 0.12);
+  color: rgba(254, 202, 202, 0.9);
+  padding: 0.44rem 0.62rem;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.memory-remaster-empty-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+  color: rgba(203, 213, 225, 0.78);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.memory-remaster-task-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.48rem;
+  margin-top: 0.62rem;
+}
+
+.memory-remaster-list {
+  display: grid;
+  gap: 0.42rem;
+  margin-top: 0.56rem;
+}
+
+.memory-remaster-task,
+.memory-remaster-history {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem;
+  min-width: 0;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 0.75rem;
+  background: rgba(15, 23, 42, 0.35);
+  padding: 0.55rem 0.62rem;
+}
+
+.memory-remaster-task-complete {
+  opacity: 0.78;
+}
+
+.memory-remaster-task-copy {
+  min-width: 0;
+}
+
+.memory-remaster-task-title {
+  overflow: hidden;
+  color: rgba(241, 245, 249, 0.94);
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+}
+
+.memory-remaster-meta {
+  margin-top: 0.13rem;
+  color: rgba(148, 163, 184, 0.78);
+  font-size: 0.66rem;
+  line-height: 1.35;
+}
+
+.memory-remaster-task-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 0.35rem;
+}
+
+.memory-remaster-empty {
+  margin-top: 0.56rem;
+  border: 1px dashed rgba(148, 163, 184, 0.16);
+  border-radius: 0.72rem;
+  color: rgba(148, 163, 184, 0.82);
+  padding: 0.62rem;
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+
+.memory-remaster-details summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem;
+  cursor: pointer;
+  list-style: none;
+  color: rgba(226, 232, 240, 0.9);
+  padding: 0.62rem 0.72rem;
+  font-size: 0.76rem;
+  font-weight: 720;
+}
+
+.memory-remaster-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.memory-remaster-details summary span:last-child {
+  color: rgba(148, 163, 184, 0.74);
+  font-size: 0.64rem;
+  font-weight: 680;
+}
+
+.memory-remaster-details[open] summary {
+  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.memory-remaster-details-body {
+  padding: 0.66rem 0.72rem 0.72rem;
+}
+
+.memory-remaster-history {
+  display: block;
+}
+
+.memory-remaster-history-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.7rem;
+}
+
+.memory-remaster-history-goal {
+  margin-top: 0.34rem;
+  color: rgba(203, 213, 225, 0.82);
+  font-size: 0.72rem;
+  line-height: 1.42;
+}
+
+.memory-remaster-maintenance {
+  background: rgba(15, 23, 42, 0.26);
+}
+
+.memory-remaster-maintenance-status {
+  display: grid;
+  gap: 0.16rem;
+  color: rgba(148, 163, 184, 0.78);
+  font-size: 0.66rem;
+}
+
+.memory-remaster-maintenance-status strong {
+  color: rgba(203, 213, 225, 0.9);
+  font-size: 0.72rem;
+  font-weight: 620;
+  line-height: 1.4;
+}
+
+.memory-remaster-warning {
+  margin-top: 0.52rem;
+  border: 1px solid rgba(251, 191, 36, 0.16);
+  border-radius: 0.7rem;
+  background: rgba(120, 53, 15, 0.1);
+  color: rgba(254, 243, 199, 0.8);
+  padding: 0.52rem 0.58rem;
+  font-size: 0.69rem;
+  line-height: 1.4;
+}
+
+@media (max-width: 820px) {
+  .memory-remaster-overview {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .memory-remaster-empty-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
