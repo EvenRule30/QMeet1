@@ -1,6 +1,14 @@
+const SUCCESSFUL_EMPTY_CALENDAR_READ_RE =
+  /^No (?:Google Calendar|local calendar|calendar) events saved for .+\.$/i;
+
 export function hasFailureLanguage(text: string): boolean {
+  const trimmed = text.trim();
+  if (SUCCESSFUL_EMPTY_CALENDAR_READ_RE.test(trimmed)) {
+    return false;
+  }
+
   return /\b(?:could not|did not|failed|error|not connected|not supported|no |none|missing|unavailable|denied)\b/i.test(
-    text,
+    trimmed,
   );
 }
 
@@ -10,7 +18,6 @@ export function getBriefToolSpeech(command: string, fullText: string): string {
   if (hasFailureLanguage(trimmed)) {
     return trimmed;
   }
-
   switch (command) {
     case 'open-menu':
       return 'Menu open.';
@@ -69,7 +76,6 @@ export function getBriefToolSpeech(command: string, fullText: string): string {
       return trimmed;
     case 'prepare-calendar-focus':
       return 'Preparing calendar focus and tasks.';
-
     case 'enhanced-focus-recap':
       return trimmed;
     case 'create-visual-observation':
@@ -151,7 +157,6 @@ export function compactToastDetail(text: string, maxLength = 88): string {
     .replace(/\s+/g, ' ')
     .replace(/^I understood that as:\s*/i, '')
     .trim();
-
   if (cleaned.length <= maxLength) return cleaned;
 
   return `${cleaned.slice(0, maxLength - 1).trim()}…`;
@@ -171,7 +176,6 @@ export function getResultToastForCommand(
       detail: compactToastDetail(trimmed, 96),
     };
   }
-
   switch (command) {
     case 'save-note':
       return {
@@ -484,6 +488,5 @@ export function getResultToastForCommand(
         detail: 'Conversation reset locally.',
       };
   }
-
   return null;
 }
