@@ -33,7 +33,7 @@ CompositeOwner = Literal[
     "device_ui",
 ]
 
-COMPOSITE_PLAN_SCHEMA_VERSION = "phase21g1-v1"
+COMPOSITE_PLAN_SCHEMA_VERSION = "phase21g2c-v1"
 DEFAULT_MODEL = (
     os.getenv("OPENAI_AGENT_MODEL")
     or os.getenv("OPENAI_COMMAND_MODEL")
@@ -108,6 +108,16 @@ Important:
   already explicit in the original turn.
 - Example: "search Framework reviews and save a note with the result" has a real
   dependency because the note content requires the verified Search output.
+- Phase 21G2C supports one typed verified-result binding only:
+  Search run-search -> Notes save-note content.
+- For that exact case, the Notes step must leave proposedArguments.content absent,
+  set dependsOn to the Search step number, and declare one inputBindings item:
+  {"targetArgument":"content","sourceStep":1,"sourceField":"search.resultText"}.
+- Never copy, paraphrase, summarize, template, or invent a dependent value in the
+  plan. The runtime will fill the target argument only from the earlier verified
+  tool receipt, then rerun the normal downstream deterministic validator.
+- Do not declare any other sourceField, targetArgument, source/target action pair,
+  or free-form JSON path.
 - This contract does not create a transaction. Every future step must still pass
   its capability-specific validator, existing confirmation policy, canonical
   execution path, and verified receipt before a dependent step may proceed.
@@ -137,6 +147,13 @@ Return compact JSON only:
       "proposedAction": one exact allowed action,
       "proposedArguments": object with semantic arguments only,
       "dependsOn": zero or more earlier 1-based step numbers,
+      "inputBindings": [
+        {
+          "targetArgument": "content",
+          "sourceStep": earlier 1-based step number,
+          "sourceField": "search.resultText"
+        }
+      ],
       "reason": short sentence
     }
   ],
@@ -147,6 +164,14 @@ Return compact JSON only:
 
 If the request is not clearly composite, return isComposite=false and steps=[].
 """.strip()
+
+
+class AgentCompositeInputBinding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    targetArgument: Literal["content"]
+    sourceStepId: str
+    sourceField: Literal["search.resultText"]
 
 
 class AgentCompositeStep(BaseModel):
@@ -160,6 +185,10 @@ class AgentCompositeStep(BaseModel):
     proposedAction: str
     proposedArguments: dict[str, Any] = Field(default_factory=dict)
     dependsOn: list[str] = Field(default_factory=list, max_length=3)
+    inputBindings: list[AgentCompositeInputBinding] = Field(
+        default_factory=list,
+        max_length=1,
+    )
     reason: str = Field(default="", max_length=500)
 
 
@@ -267,6 +296,73 @@ def _normalize_dependency_numbers(
     return normalized
 
 
+def _normalize_input_bindings(
+    raw_bindings: Any,
+    *,
+    step_number: int,
+    owner: CompositeOwner,
+    action: str,
+    arguments: dict[str, Any],
+    dependencies: list[str],
+    prior_steps: list[AgentCompositeStep],
+) -> list[AgentCompositeInputBinding] | None:
+    if raw_bindings is None:
+        raw_bindings = []
+    if not isinstance(raw_bindings, list) or len(raw_bindings) > 1:
+        return None
+
+    if not raw_bindings:
+        # In G2C a real dependency must be represented by a typed verified-result
+        # binding. Same-topic/order-only relationships should have no dependsOn.
+        return [] if not dependencies else None
+
+    if owner != "notes" or action != "save-note":
+        return None
+    if "content" in arguments:
+        # The model must not pre-fill a value that the runtime is supposed to
+        # source from a verified receipt.
+        return None
+    if len(raw_bindings) != 1:
+        return None
+
+    raw_binding = raw_bindings[0]
+    if not isinstance(raw_binding, dict):
+        return None
+    if set(raw_binding) != {"targetArgument", "sourceStep", "sourceField"}:
+        return None
+    if raw_binding.get("targetArgument") != "content":
+        return None
+    if raw_binding.get("sourceField") != "search.resultText":
+        return None
+
+    try:
+        source_step_number = int(raw_binding.get("sourceStep"))
+    except (TypeError, ValueError):
+        return None
+    if source_step_number < 1 or source_step_number >= step_number:
+        return None
+
+    source_step_id = f"step-{source_step_number}"
+    if dependencies != [source_step_id]:
+        return None
+
+    source_step = prior_steps[source_step_number - 1]
+    if (
+        source_step.turnOwner != "search"
+        or source_step.proposedCapability != "search"
+        or source_step.proposedAction != "run-search"
+    ):
+        return None
+
+    return [
+        AgentCompositeInputBinding(
+            targetArgument="content",
+            sourceStepId=source_step_id,
+            sourceField="search.resultText",
+        )
+    ]
+
+
 def _invalid_plan(reason: str) -> AgentCompositePlan:
     return AgentCompositePlan(
         isComposite=False,
@@ -329,6 +425,20 @@ def sanitize_composite_plan(value: dict[str, Any] | None) -> AgentCompositePlan:
                 "A composite dependency must reference an earlier step only."
             )
 
+        input_bindings = _normalize_input_bindings(
+            raw_step.get("inputBindings"),
+            step_number=index,
+            owner=owner,
+            action=action,
+            arguments=arguments,
+            dependencies=dependencies,
+            prior_steps=steps,
+        )
+        if input_bindings is None:
+            return _invalid_plan(
+                "A composite dependency used an unsupported or untyped verified-result binding."
+            )
+
         steps.append(
             AgentCompositeStep(
                 stepId=f"step-{index}",
@@ -338,6 +448,7 @@ def sanitize_composite_plan(value: dict[str, Any] | None) -> AgentCompositePlan:
                 proposedAction=action,
                 proposedArguments=dict(arguments),
                 dependsOn=dependencies,
+                inputBindings=input_bindings,
                 reason=str(raw_step.get("reason") or "").strip()[:500],
             )
         )

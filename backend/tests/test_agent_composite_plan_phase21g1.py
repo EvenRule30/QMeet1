@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class AgentCompositePlanPhase21G1Tests(unittest.TestCase):
-    def test_calendar_then_task_plan_is_atomic_and_dependency_ordered(self) -> None:
+    def test_calendar_then_explicit_task_plan_is_atomic_and_dependency_free(self) -> None:
         plan = sanitize_composite_plan(
             {
                 "isComposite": True,
@@ -44,8 +44,9 @@ class AgentCompositePlanPhase21G1Tests(unittest.TestCase):
                         "proposedArguments": {
                             "title": "Prepare for the meeting",
                         },
-                        "dependsOn": [1],
-                        "reason": "Create the requested preparation task after the move succeeds.",
+                        "dependsOn": [],
+                        "inputBindings": [],
+                        "reason": "Create the explicitly named preparation task.",
                     },
                 ],
                 "responsePlan": "Execute each validated step and then summarize verified results.",
@@ -69,7 +70,8 @@ class AgentCompositePlanPhase21G1Tests(unittest.TestCase):
             plan.steps[1].proposedAction,
             "remember-task",
         )
-        self.assertEqual(plan.steps[1].dependsOn, ["step-1"])
+        self.assertEqual(plan.steps[1].dependsOn, [])
+        self.assertEqual(plan.steps[1].inputBindings, [])
         self.assertEqual(plan.executionPolicy, "sequential-verified")
         self.assertEqual(
             plan.confirmationPolicy,

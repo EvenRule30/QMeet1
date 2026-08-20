@@ -9,6 +9,12 @@ export type AgentCompositeOwner =
   | 'notes'
   | 'device_ui';
 
+export type AgentCompositeInputBinding = {
+  targetArgument: 'content';
+  sourceStepId: string;
+  sourceField: 'search.resultText';
+};
+
 export type AgentCompositeStep = {
   stepId: string;
   turnOwner: AgentCompositeOwner;
@@ -18,6 +24,7 @@ export type AgentCompositeStep = {
   proposedAction: string;
   proposedArguments: Record<string, unknown>;
   dependsOn: string[];
+  inputBindings: AgentCompositeInputBinding[];
   reason: string;
 };
 
@@ -126,7 +133,7 @@ function buildRecentConversation(
 function validateCompositeStep(
   value: unknown,
   index: number,
-  earlierStepIds: Set<string>,
+  earlierSteps: Map<string, AgentCompositeStep>,
 ): AgentCompositeStep | null {
   if (!isRecord(value)) return null;
 
@@ -138,6 +145,7 @@ function validateCompositeStep(
   const proposedAction = value.proposedAction;
   const proposedArguments = value.proposedArguments;
   const dependsOn = value.dependsOn;
+  const inputBindings = value.inputBindings;
   const reason = value.reason;
 
   if (typeof stepId !== 'string' || stepId !== `step-${index + 1}`) return null;
@@ -162,11 +170,59 @@ function validateCompositeStep(
   if (
     dependsOn.some(
       (dependency) =>
-        typeof dependency !== 'string' || !earlierStepIds.has(dependency),
+        typeof dependency !== 'string' || !earlierSteps.has(dependency),
     )
   ) {
     return null;
   }
+  if (!Array.isArray(inputBindings) || inputBindings.length > 1) return null;
+
+  const validatedBindings: AgentCompositeInputBinding[] = [];
+  for (const binding of inputBindings) {
+    if (!isRecord(binding)) return null;
+    if (binding.targetArgument !== 'content') return null;
+    if (binding.sourceField !== 'search.resultText') return null;
+    if (
+      typeof binding.sourceStepId !== 'string' ||
+      !earlierSteps.has(binding.sourceStepId)
+    ) {
+      return null;
+    }
+    if (owner !== 'notes' || proposedAction !== 'save-note') return null;
+    if (Object.prototype.hasOwnProperty.call(proposedArguments, 'content')) {
+      return null;
+    }
+
+    const sourceStep = earlierSteps.get(binding.sourceStepId);
+    if (
+      !sourceStep ||
+      sourceStep.turnOwner !== 'search' ||
+      sourceStep.proposedCapability !== 'search' ||
+      sourceStep.proposedAction !== 'run-search'
+    ) {
+      return null;
+    }
+
+    validatedBindings.push({
+      targetArgument: 'content',
+      sourceStepId: binding.sourceStepId,
+      sourceField: 'search.resultText',
+    });
+  }
+
+  const bindingDependencies = validatedBindings.map(
+    (binding) => binding.sourceStepId,
+  );
+  if (dependsOn.length !== bindingDependencies.length) return null;
+  if (
+    dependsOn.some(
+      (dependency, dependencyIndex) =>
+        dependency !== bindingDependencies[dependencyIndex],
+    )
+  ) {
+    return null;
+  }
+
   if (typeof reason !== 'string') return null;
 
   return {
@@ -178,6 +234,7 @@ function validateCompositeStep(
     proposedAction,
     proposedArguments: { ...proposedArguments },
     dependsOn: [...dependsOn] as string[],
+    inputBindings: validatedBindings,
     reason,
   };
 }
@@ -226,17 +283,17 @@ export function validateAgentCompositePlanResponse(
     return null;
   }
 
-  const earlierStepIds = new Set<string>();
+  const earlierSteps = new Map<string, AgentCompositeStep>();
   const steps: AgentCompositeStep[] = [];
   for (let index = 0; index < rawPlan.steps.length; index += 1) {
     const step = validateCompositeStep(
       rawPlan.steps[index],
       index,
-      earlierStepIds,
+      earlierSteps,
     );
     if (!step) return null;
     steps.push(step);
-    earlierStepIds.add(step.stepId);
+    earlierSteps.set(step.stepId, step);
   }
 
   return {

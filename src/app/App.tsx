@@ -171,6 +171,9 @@ type SplitCommandResult = {
   shouldSpeakConfirmation?: boolean;
   confirmationSpeechRate?: number;
   continuationContext?: string;
+  compositeBindings?: {
+    searchResultText?: string;
+  };
 };
 const AGENT_FIRST_EXPLICIT_CALENDAR_WRITE_WAIT_MS = 7000;
 
@@ -1108,7 +1111,7 @@ export default function App() {
         setLastInterpreterAction('composite-plan');
         setLastInterpreterFrontendCommand(
           compositePreflight.candidates
-            .map((candidate) => candidate.commandMatch.command)
+            .map((candidate) => candidate.proposedAction)
             .join(' -> '),
         );
         setLastInterpreterConfidence(
@@ -3220,6 +3223,9 @@ ${confirmedTaskCompletionResult.completedTasks
           toolResult: confirmationContent,
           ...(splitCommandResult.continuationContext
             ? { toolContext: splitCommandResult.continuationContext }
+            : {}),
+          ...(splitCommandResult.compositeBindings
+            ? { verifiedBindings: splitCommandResult.compositeBindings }
             : {}),
         };
       }

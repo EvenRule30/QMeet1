@@ -6,31 +6,114 @@ export type SearchCommandResult = {
   confirmationContent?: string;
   shouldSpeakConfirmation?: boolean;
   continuationContext?: string;
+  compositeBindings?: {
+    searchResultText?: string;
+  };
 };
 
-function compactText(value: unknown, maxLength: number): string {
-  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
-  if (text.length <= maxLength) return text;
-  return `${text.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+function cleanSearchText(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
 }
 
-function buildSearchContinuationContext(response: SearchResponse): string {
+function verifiedSearchSteps(searchResponse: SearchResponse): string[] {
+  return (searchResponse.steps ?? [])
+    .map((step) => cleanSearchText(step))
+    .filter(Boolean);
+}
+
+function verifiedSearchSources(searchResponse: SearchResponse) {
+  return (searchResponse.sources ?? [])
+    .map((source) => ({
+      title: cleanSearchText(source.title),
+      domain: cleanSearchText(source.domain),
+      url: cleanSearchText(source.url),
+    }))
+    .filter((source) => source.title || source.domain || source.url);
+}
+
+/**
+ * Build one deterministic, portable text representation from the successful
+ * SearchResponse returned by QMeet's existing Search backend.
+ *
+ * Phase 21G2C may expose this exact value as a verified composite binding. The
+ * composite planner never writes or rewrites it.
+ */
+export function buildVerifiedSearchResultText(
+  searchResponse: SearchResponse,
+): string {
+  if (!searchResponse.ok) return '';
+
+  const query = cleanSearchText(searchResponse.query);
+  const summary =
+    cleanSearchText(searchResponse.summary) ||
+    cleanSearchText(searchResponse.focusResponse?.text);
+  const recommendation = cleanSearchText(searchResponse.recommendation);
+  const steps = verifiedSearchSteps(searchResponse);
+  const sources = verifiedSearchSources(searchResponse);
+
+  const sections: string[] = [];
+  if (query) {
+    sections.push(`Search: ${query}`);
+  }
+  if (summary) {
+    sections.push(summary);
+  }
+  if (recommendation && recommendation !== summary) {
+    sections.push(`Recommendation: ${recommendation}`);
+  }
+  if (steps.length > 0) {
+    sections.push(
+      `Action steps: ${steps
+        .map((step, index) => `${index + 1}. ${step}`)
+        .join('; ')}`,
+    );
+  }
+  if (sources.length > 0) {
+    sections.push(
+      `Sources: ${sources
+        .map((source) => {
+          const label = source.title || source.domain || source.url;
+          const metadata = [source.domain, source.url]
+            .filter(
+              (value, index, values) =>
+                value && values.indexOf(value) === index,
+            )
+            .join(' — ');
+          return metadata ? `- ${label} (${metadata})` : `- ${label}`;
+        })
+        .join('; ')}`,
+    );
+  }
+
+  // Existing Notes promotion rejects content above 6000 characters. Leave a
+  // small margin while preserving only deterministic Search output.
+  return sections.join(' | ').replace(/\s+/g, ' ').trim().slice(0, 5900);
+}
+
+/**
+ * Preserve the Phase 21B verified Search -> tool-continuation contract.
+ *
+ * The continuation model receives structured data copied only from the actual
+ * successful SearchResponse. It must not reconstruct Search findings from
+ * conversation history or model memory.
+ */
+export function buildVerifiedSearchContinuationContext(
+  searchResponse: SearchResponse,
+): string {
+  if (!searchResponse.ok) return '';
+
+  const resultText = buildVerifiedSearchResultText(searchResponse);
+  if (!resultText) return '';
+
   return JSON.stringify({
-    query: compactText(response.query, 500),
-    summary: compactText(response.summary, 4000),
-    recommendation: compactText(response.recommendation, 1800),
-    steps: (response.steps ?? []).slice(0, 6).map((step) => compactText(step, 700)),
-    cards: (response.cards ?? []).slice(0, 6).map((card) => ({
-      title: compactText(card.title, 240),
-      detail: compactText(card.detail, 900),
-    })),
-    sources: (response.sources ?? []).slice(0, 8).map((source) => ({
-      title: compactText(source.title, 240),
-      url: compactText(source.url, 1200),
-      domain: compactText(source.domain, 200),
-      usedFor: compactText(source.usedFor, 500),
-    })),
-    provider: compactText(response.provider, 120),
+    qmeetScope: 'search',
+    qmeetSearchResultVerified: true,
+    query: cleanSearchText(searchResponse.query),
+    summary: cleanSearchText(searchResponse.summary),
+    recommendation: cleanSearchText(searchResponse.recommendation),
+    steps: verifiedSearchSteps(searchResponse),
+    sources: verifiedSearchSources(searchResponse),
+    resultText,
   });
 }
 
@@ -49,42 +132,60 @@ export async function handleSearchCommand(
     case 'open-search':
       deps.setActivePanel('search');
       return { handled: true };
+
     case 'run-search': {
       const preparedSearchQuery = commandMatch.payload?.trim() ?? '';
       deps.setActivePanel('search');
       let confirmationContent = 'Opening search.';
       let continuationContext: string | undefined;
+      let compositeBindings: SearchCommandResult['compositeBindings'];
 
       if (preparedSearchQuery) {
         const searchResponse = await deps.runWebSearch(preparedSearchQuery);
 
         if (searchResponse?.ok) {
-          continuationContext = buildSearchContinuationContext(searchResponse);
           const guardedText = searchResponse.focusResponse?.text?.trim() ?? '';
           if (guardedText) {
             confirmationContent = guardedText;
           } else {
             const sourceCount = searchResponse.sources?.length ?? 0;
             const stepCount = searchResponse.steps?.length ?? 0;
-            const sourceText = sourceCount > 0
-              ? ` ${sourceCount} source${sourceCount === 1 ? '' : 's'} added.`
-              : '';
-            const stepText = stepCount > 0
-              ? ` ${stepCount} action step${stepCount === 1 ? '' : 's'} included.`
-              : '';
-            confirmationContent = `Search complete.\nI put the full result in the Search panel.${stepText}${sourceText}`;
+            const sourceText =
+              sourceCount > 0
+                ? ` ${sourceCount} source${sourceCount === 1 ? '' : 's'} added.`
+                : '';
+            const stepText =
+              stepCount > 0
+                ? ` ${stepCount} action step${stepCount === 1 ? '' : 's'} included.`
+                : '';
+            confirmationContent = `Search complete.
+
+I put the full result in the Search panel.${stepText}${sourceText}`;
+          }
+
+          continuationContext =
+            buildVerifiedSearchContinuationContext(searchResponse);
+
+          const searchResultText = buildVerifiedSearchResultText(searchResponse);
+          if (searchResultText) {
+            compositeBindings = {
+              searchResultText,
+            };
           }
         } else {
-          confirmationContent = searchResponse?.message
-            || deps.searchError
-            || 'Web search failed.';
+          confirmationContent =
+            searchResponse?.message ||
+            deps.searchError ||
+            'Web search failed.';
         }
       }
+
       return {
         handled: true,
         confirmationContent,
         shouldSpeakConfirmation: deps.voiceOutputEnabled,
-        continuationContext,
+        ...(continuationContext ? { continuationContext } : {}),
+        ...(compositeBindings ? { compositeBindings } : {}),
       };
     }
 

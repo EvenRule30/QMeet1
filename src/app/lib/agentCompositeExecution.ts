@@ -1,6 +1,7 @@
 import type { CommandMatch } from '../commands';
 import type { PromotedSingleIntentDecision } from './agentShadowObserver';
 import type {
+  AgentCompositeInputBinding,
   AgentCompositePlanResponse,
   AgentCompositeStep,
 } from './agentCompositePlan';
@@ -13,17 +14,36 @@ import {
   resolvePromotedTaskReadToolCommand,
 } from './agentToolPromotion';
 
+export type CompositeVerifiedBindings = {
+  searchResultText?: string;
+};
+
 export type CompositeImmediateStepCandidate = {
   stepId: string;
   turnOwner: AgentCompositeStep['turnOwner'];
+  focusRelevant: boolean;
+  proposedCapability: string;
   proposedAction: string;
+  proposedArguments: Record<string, unknown>;
   commandMatch: CommandMatch;
+};
+
+export type CompositePreflightStepCandidate = {
+  stepId: string;
+  turnOwner: AgentCompositeStep['turnOwner'];
+  focusRelevant: boolean;
+  proposedCapability: string;
+  proposedAction: string;
+  proposedArguments: Record<string, unknown>;
+  inputBindings: AgentCompositeInputBinding[];
+  commandMatch: CommandMatch | null;
 };
 
 export type CompositeImmediatePreflightFailureReason =
   | 'not-composite'
   | 'confidence-below-promotion-threshold'
   | 'dependency-not-yet-promoted'
+  | 'unsupported-result-binding'
   | 'confirmation-pause-required'
   | 'unsupported-owner-or-action'
   | 'deterministic-validation-failed';
@@ -32,7 +52,8 @@ export type CompositeImmediatePreflight =
   | {
       ok: true;
       planId: string;
-      candidates: CompositeImmediateStepCandidate[];
+      confidence: number;
+      candidates: CompositePreflightStepCandidate[];
     }
   | {
       ok: false;
@@ -47,6 +68,7 @@ export type CompositeImmediateStepReceipt = {
   ok: boolean;
   toolResult: string;
   toolContext?: string;
+  verifiedBindings?: CompositeVerifiedBindings;
 };
 
 export type CompositeImmediateExecutionResult = {
@@ -73,6 +95,7 @@ const CONFIRMATION_PAUSE_ACTIONS = new Set([
 function toPromotedAtomicDecision(
   plan: AgentCompositePlanResponse,
   step: AgentCompositeStep,
+  proposedArguments: Record<string, unknown> = step.proposedArguments,
 ): PromotedSingleIntentDecision {
   return {
     source: 'agent-shadow',
@@ -81,7 +104,7 @@ function toPromotedAtomicDecision(
     disposition: 'tool',
     proposedCapability: step.proposedCapability,
     proposedAction: step.proposedAction,
-    proposedArguments: { ...step.proposedArguments },
+    proposedArguments: { ...proposedArguments },
     confidence: plan.plan.confidence,
     turnId: `${plan.planId}:${step.stepId}`,
   };
@@ -99,7 +122,10 @@ function resolveImmediateCandidate(
       ? {
           stepId: step.stepId,
           turnOwner: step.turnOwner,
+          focusRelevant: step.focusRelevant,
+          proposedCapability: step.proposedCapability,
           proposedAction: step.proposedAction,
+          proposedArguments: { ...step.proposedArguments },
           commandMatch: resolved.commandMatch,
         }
       : null;
@@ -111,7 +137,10 @@ function resolveImmediateCandidate(
       ? {
           stepId: step.stepId,
           turnOwner: step.turnOwner,
+          focusRelevant: step.focusRelevant,
+          proposedCapability: step.proposedCapability,
           proposedAction: step.proposedAction,
+          proposedArguments: { ...step.proposedArguments },
           commandMatch: resolved.commandMatch,
         }
       : null;
@@ -123,7 +152,10 @@ function resolveImmediateCandidate(
       ? {
           stepId: step.stepId,
           turnOwner: step.turnOwner,
+          focusRelevant: step.focusRelevant,
+          proposedCapability: step.proposedCapability,
           proposedAction: step.proposedAction,
+          proposedArguments: { ...step.proposedArguments },
           commandMatch: resolved.commandMatch,
         }
       : null;
@@ -135,7 +167,10 @@ function resolveImmediateCandidate(
       ? {
           stepId: step.stepId,
           turnOwner: step.turnOwner,
+          focusRelevant: step.focusRelevant,
+          proposedCapability: step.proposedCapability,
           proposedAction: step.proposedAction,
+          proposedArguments: { ...step.proposedArguments },
           commandMatch: resolved.commandMatch,
         }
       : null;
@@ -147,7 +182,10 @@ function resolveImmediateCandidate(
       ? {
           stepId: step.stepId,
           turnOwner: step.turnOwner,
+          focusRelevant: step.focusRelevant,
+          proposedCapability: step.proposedCapability,
           proposedAction: step.proposedAction,
+          proposedArguments: { ...step.proposedArguments },
           commandMatch: resolved.commandMatch,
         }
       : null;
@@ -159,7 +197,87 @@ function resolveImmediateCandidate(
       ? {
           stepId: step.stepId,
           turnOwner: step.turnOwner,
+          focusRelevant: step.focusRelevant,
+          proposedCapability: step.proposedCapability,
           proposedAction: step.proposedAction,
+          proposedArguments: { ...step.proposedArguments },
+          commandMatch: resolved.commandMatch,
+        }
+      : null;
+  }
+
+  return null;
+}
+
+function isSupportedVerifiedResultBinding(
+  step: AgentCompositeStep,
+  binding: AgentCompositeInputBinding,
+  priorSteps: Map<string, AgentCompositeStep>,
+): boolean {
+  if (step.turnOwner !== 'notes' || step.proposedAction !== 'save-note') {
+    return false;
+  }
+  if (binding.targetArgument !== 'content') return false;
+  if (binding.sourceField !== 'search.resultText') return false;
+  if (Object.prototype.hasOwnProperty.call(step.proposedArguments, 'content')) {
+    return false;
+  }
+
+  const sourceStep = priorSteps.get(binding.sourceStepId);
+  return Boolean(
+    sourceStep &&
+      sourceStep.turnOwner === 'search' &&
+      sourceStep.proposedCapability === 'search' &&
+      sourceStep.proposedAction === 'run-search',
+  );
+}
+
+function resolveBoundCandidate(
+  candidate: CompositePreflightStepCandidate,
+  receiptsByStepId: Map<string, CompositeImmediateStepReceipt>,
+  confidence: number,
+  planId: string,
+): CompositeImmediateStepCandidate | null {
+  if (candidate.inputBindings.length !== 1) return null;
+  const binding = candidate.inputBindings[0];
+  const sourceReceipt = receiptsByStepId.get(binding.sourceStepId);
+  if (!sourceReceipt?.ok) return null;
+
+  let boundValue = '';
+  if (binding.sourceField === 'search.resultText') {
+    boundValue = sourceReceipt.verifiedBindings?.searchResultText?.trim() ?? '';
+  }
+  if (!boundValue) return null;
+
+  const boundArguments = {
+    ...candidate.proposedArguments,
+    [binding.targetArgument]: boundValue,
+  };
+  const decision: PromotedSingleIntentDecision = {
+    source: 'agent-shadow',
+    turnOwner: candidate.turnOwner,
+    focusRelevant: candidate.focusRelevant,
+    disposition: 'tool',
+    proposedCapability: candidate.proposedCapability,
+    proposedAction: candidate.proposedAction,
+    proposedArguments: boundArguments,
+    confidence,
+    turnId: `${planId}:${candidate.stepId}:bound`,
+  };
+
+  if (
+    candidate.turnOwner === 'notes' &&
+    candidate.proposedAction === 'save-note'
+  ) {
+    const resolved = resolvePromotedNoteSaveToolCommand(decision);
+    return resolved
+      ? {
+          stepId: candidate.stepId,
+          turnOwner: candidate.turnOwner,
+          focusRelevant: candidate.focusRelevant,
+          proposedCapability: candidate.proposedCapability,
+          proposedAction: candidate.proposedAction,
+          proposedArguments: boundArguments,
           commandMatch: resolved.commandMatch,
         }
       : null;
@@ -169,12 +287,12 @@ function resolveImmediateCandidate(
 }
 
 /**
- * Phase 21G2A deliberately preflights the whole plan before any step can run.
+ * Phase 21G2C preflights the whole plan before any step can run.
  *
- * Only dependency-free atomic steps whose existing single-intent validators
- * produce a CommandMatch are eligible. This prevents a plan from partially
- * mutating state before discovering that a later step requires confirmation or
- * untyped result binding.
+ * Immediate steps must pass their existing single-intent validators now.
+ * A dependent step is allowed only for the one Phase 21G2C typed binding:
+ * verified Search resultText -> Notes save-note content. The bound Notes
+ * command is revalidated only after the source receipt exists.
  */
 export function preflightCompositeImmediatePlan(
   plan: AgentCompositePlanResponse | null,
@@ -200,20 +318,10 @@ export function preflightCompositeImmediatePlan(
     };
   }
 
-  const candidates: CompositeImmediateStepCandidate[] = [];
+  const candidates: CompositePreflightStepCandidate[] = [];
+  const priorSteps = new Map<string, AgentCompositeStep>();
 
   for (const step of plan.plan.steps) {
-    if (step.dependsOn.length > 0) {
-      return {
-        ok: false,
-        planId: plan.planId,
-        reason: 'dependency-not-yet-promoted',
-        stepId: step.stepId,
-        detail:
-          'Phase 21G2A does not execute dependent steps because verified result binding is not typed yet.',
-      };
-    }
-
     if (CONFIRMATION_PAUSE_ACTIONS.has(step.proposedAction)) {
       return {
         ok: false,
@@ -223,6 +331,41 @@ export function preflightCompositeImmediatePlan(
         detail:
           'This atomic action must preserve its existing user-confirmation pause before execution.',
       };
+    }
+
+    if (step.dependsOn.length > 0 || step.inputBindings.length > 0) {
+      if (
+        step.dependsOn.length !== 1 ||
+        step.inputBindings.length !== 1 ||
+        step.dependsOn[0] !== step.inputBindings[0].sourceStepId ||
+        !isSupportedVerifiedResultBinding(
+          step,
+          step.inputBindings[0],
+          priorSteps,
+        )
+      ) {
+        return {
+          ok: false,
+          planId: plan.planId,
+          reason: 'unsupported-result-binding',
+          stepId: step.stepId,
+          detail:
+            'The dependent step did not use the promoted verified Search resultText to Notes content binding.',
+        };
+      }
+
+      candidates.push({
+        stepId: step.stepId,
+        turnOwner: step.turnOwner,
+        focusRelevant: step.focusRelevant,
+        proposedCapability: step.proposedCapability,
+        proposedAction: step.proposedAction,
+        proposedArguments: { ...step.proposedArguments },
+        inputBindings: [...step.inputBindings],
+        commandMatch: null,
+      });
+      priorSteps.set(step.stepId, step);
+      continue;
     }
 
     const candidate = resolveImmediateCandidate(plan, step);
@@ -243,26 +386,31 @@ export function preflightCompositeImmediatePlan(
         stepId: step.stepId,
         detail: potentiallySupportedOwner
           ? 'The atomic proposal did not pass its existing single-intent deterministic validator.'
-          : 'This owner/action is not in the Phase 21G2A immediate execution allowlist.',
+          : 'This owner/action is not in the Phase 21G2C execution allowlist.',
       };
     }
 
-    candidates.push(candidate);
+    candidates.push({
+      ...candidate,
+      inputBindings: [],
+    });
+    priorSteps.set(step.stepId, step);
   }
 
   return {
     ok: true,
     planId: plan.planId,
+    confidence: plan.plan.confidence,
     candidates,
   };
 }
 
 /**
- * Coordination primitive for G2B.
+ * Coordination primitive for G2C.
  *
- * This function owns only ordering and stop behavior. The supplied executor must
- * run each CommandMatch through QMeet's existing canonical command path and
- * return a verified receipt. G2A itself never writes state.
+ * This function owns ordering, verified-result binding, and stop behavior. The
+ * supplied executor still runs every resolved CommandMatch through QMeet's
+ * existing canonical command path and returns a verified receipt.
  */
 export async function executePreflightedCompositeImmediatePlan(options: {
   preflight: CompositeImmediatePreflight;
@@ -270,20 +418,51 @@ export async function executePreflightedCompositeImmediatePlan(options: {
     candidate: CompositeImmediateStepCandidate,
   ) => Promise<CompositeImmediateStepReceipt>;
 }): Promise<CompositeImmediateExecutionResult> {
-  if (!options.preflight.ok) {
+  const preflight = options.preflight;
+  if (preflight.ok === false) {
     return {
       ok: false,
       status: 'not-executed',
-      planId: options.preflight.planId,
+      planId: preflight.planId,
       receipts: [],
-      failedStepId: options.preflight.stepId,
-      reason: options.preflight.detail,
+      failedStepId: preflight.stepId,
+      reason: preflight.detail,
     };
   }
 
   const receipts: CompositeImmediateStepReceipt[] = [];
+  const receiptsByStepId = new Map<string, CompositeImmediateStepReceipt>();
 
-  for (const candidate of options.preflight.candidates) {
+  for (const plannedCandidate of preflight.candidates) {
+    const candidate = plannedCandidate.commandMatch
+      ? {
+          stepId: plannedCandidate.stepId,
+          turnOwner: plannedCandidate.turnOwner,
+          focusRelevant: plannedCandidate.focusRelevant,
+          proposedCapability: plannedCandidate.proposedCapability,
+          proposedAction: plannedCandidate.proposedAction,
+          proposedArguments: { ...plannedCandidate.proposedArguments },
+          commandMatch: plannedCandidate.commandMatch,
+        }
+      : resolveBoundCandidate(
+          plannedCandidate,
+          receiptsByStepId,
+          preflight.confidence,
+          preflight.planId,
+        );
+
+    if (!candidate) {
+      return {
+        ok: false,
+        status: 'failed',
+        planId: preflight.planId,
+        receipts,
+        failedStepId: plannedCandidate.stepId,
+        reason:
+          'A dependent composite step could not bind one required value from its verified source receipt.',
+      };
+    }
+
     let receipt: CompositeImmediateStepReceipt;
     try {
       receipt = await options.executeStep(candidate);
@@ -291,7 +470,7 @@ export async function executePreflightedCompositeImmediatePlan(options: {
       return {
         ok: false,
         status: 'failed',
-        planId: options.preflight.planId,
+        planId: preflight.planId,
         receipts,
         failedStepId: candidate.stepId,
         reason:
@@ -309,7 +488,7 @@ export async function executePreflightedCompositeImmediatePlan(options: {
       return {
         ok: false,
         status: 'failed',
-        planId: options.preflight.planId,
+        planId: preflight.planId,
         receipts,
         failedStepId: candidate.stepId,
         reason:
@@ -318,15 +497,16 @@ export async function executePreflightedCompositeImmediatePlan(options: {
     }
 
     receipts.push(receipt);
+    receiptsByStepId.set(receipt.stepId, receipt);
   }
 
   return {
     ok: true,
     status: 'completed',
-    planId: options.preflight.planId,
+    planId: preflight.planId,
     receipts,
     failedStepId: null,
     reason:
-      'Every preflighted atomic step returned one successful verified receipt in plan order.',
+      'Every atomic step returned one successful verified receipt in plan order, including any downstream step bound only from an earlier verified receipt.',
   };
 }

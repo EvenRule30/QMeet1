@@ -112,12 +112,14 @@ class AgentCompositeLivePromotionPhase21G2BTests(unittest.TestCase):
             source,
         )
 
-    def test_confirmation_and_dependency_plans_still_fall_through(self) -> None:
+    def test_confirmation_and_unsupported_dependency_plans_still_fall_through(self) -> None:
         execution = self._read("src/app/lib/agentCompositeExecution.ts")
         app = self._read("src/app/App.tsx")
 
         self.assertIn("'confirmation-pause-required'", execution)
         self.assertIn("'dependency-not-yet-promoted'", execution)
+        self.assertIn("'unsupported-result-binding'", execution)
+        self.assertIn("isSupportedVerifiedResultBinding", execution)
         self.assertIn("if (compositePreflight.ok)", app)
 
         branch_start = app.index("if (compositePlanTurn) {")

@@ -23,7 +23,7 @@ class AgentCompositeExecutionPhase21G2ATests(unittest.TestCase):
         source = self._read("src/app/lib/agentCompositePlan.ts")
 
         self.assertIn("stepId !== `step-${index + 1}`", source)
-        self.assertIn("earlierStepIds.has(dependency)", source)
+        self.assertIn("earlierSteps.has(dependency)", source)
         self.assertIn("FORBIDDEN_IDENTITY_KEY", source)
         self.assertIn("containsForbiddenIdentity(proposedArguments)", source)
 
@@ -58,12 +58,15 @@ class AgentCompositeExecutionPhase21G2ATests(unittest.TestCase):
         self.assertIn("'confirmation-pause-required'", source)
         self.assertIn("preflights the whole plan before any step can run", source)
 
-    def test_dependencies_are_blocked_until_verified_result_binding_is_typed(self) -> None:
+    def test_untyped_dependencies_stay_blocked_but_g2c_typed_binding_is_promoted(self) -> None:
         source = self._read("src/app/lib/agentCompositeExecution.ts")
 
-        self.assertIn("step.dependsOn.length > 0", source)
         self.assertIn("'dependency-not-yet-promoted'", source)
-        self.assertIn("verified result binding is not typed yet", source)
+        self.assertIn("'unsupported-result-binding'", source)
+        self.assertIn("isSupportedVerifiedResultBinding", source)
+        self.assertIn("binding.sourceField !== 'search.resultText'", source)
+        self.assertIn("resolveBoundCandidate", source)
+        self.assertIn("resolvePromotedNoteSaveToolCommand(decision)", source)
 
     def test_coordinator_requires_one_matching_verified_receipt_per_step(self) -> None:
         source = self._read("src/app/lib/agentCompositeExecution.ts")
