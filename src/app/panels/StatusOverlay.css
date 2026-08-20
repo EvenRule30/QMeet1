@@ -1,0 +1,392 @@
+/* Phase 21H3 — streamlined everyday system status surface */
+.status-remaster-panel {
+  padding-bottom: 18px;
+}
+
+.status-remaster-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.status-remaster-hero,
+.status-remaster-section {
+  border: 1px solid rgba(0, 180, 255, 0.14);
+  background: rgba(8, 17, 40, 0.74);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
+}
+
+.status-remaster-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 15px 16px;
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at 0% 0%, rgba(0, 212, 255, 0.12), transparent 52%),
+    radial-gradient(circle at 100% 0%, rgba(170, 85, 255, 0.08), transparent 46%),
+    rgba(8, 17, 40, 0.78);
+}
+
+.status-remaster-hero-copy {
+  min-width: 0;
+}
+
+.status-remaster-kicker,
+.status-remaster-section-kicker,
+.status-remaster-card-label {
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-weight: 700;
+  color: rgba(110, 134, 165, 0.9);
+}
+
+.status-remaster-kicker {
+  margin-bottom: 4px;
+  font-size: 10px;
+}
+
+.status-remaster-title {
+  color: #f3f8ff;
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.status-remaster-subtitle {
+  margin-top: 5px;
+  color: #6e86a5;
+  font-size: 11px;
+}
+
+.status-remaster-health {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 11px;
+  border-radius: 999px;
+  border: 1px solid rgba(110, 134, 165, 0.2);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.status-remaster-health-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.status-remaster-health-good {
+  color: #00ffb3;
+  border-color: rgba(0, 255, 179, 0.26);
+  background: rgba(0, 255, 179, 0.055);
+}
+
+.status-remaster-health-good .status-remaster-health-dot {
+  background: #00ffb3;
+  box-shadow: 0 0 9px rgba(0, 255, 179, 0.7);
+}
+
+.status-remaster-health-warn {
+  color: #ff6688;
+  border-color: rgba(255, 68, 102, 0.26);
+  background: rgba(255, 68, 102, 0.055);
+}
+
+.status-remaster-health-warn .status-remaster-health-dot {
+  background: #ff4466;
+  box-shadow: 0 0 9px rgba(255, 68, 102, 0.68);
+}
+
+.status-remaster-section {
+  padding: 13px 14px;
+  border-radius: 14px;
+}
+
+.status-remaster-section-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.status-remaster-section-kicker {
+  margin-bottom: 2px;
+  font-size: 9px;
+}
+
+.status-remaster-section-title {
+  color: #dbe8f8;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.status-remaster-section-note {
+  max-width: 44%;
+  color: #6e86a5;
+  font-size: 10px;
+  line-height: 1.25;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-remaster-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.status-remaster-card {
+  min-width: 0;
+  min-height: 74px;
+  padding: 10px;
+  border: 1px solid rgba(0, 180, 255, 0.09);
+  border-radius: 11px;
+  background: rgba(0, 180, 255, 0.026);
+}
+
+.status-remaster-card-good {
+  border-color: rgba(0, 255, 179, 0.16);
+  background: rgba(0, 255, 179, 0.035);
+}
+
+.status-remaster-card-warn {
+  border-color: rgba(255, 68, 102, 0.2);
+  background: rgba(255, 68, 102, 0.04);
+}
+
+.status-remaster-card-label {
+  margin-bottom: 6px;
+  font-size: 8px;
+}
+
+.status-remaster-card-value {
+  color: #f3f8ff;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-remaster-card-meta {
+  margin-top: 5px;
+  color: #6e86a5;
+  font-size: 9px;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-remaster-workspace {
+  display: grid;
+  grid-template-columns: 0.85fr 0.85fr 1.5fr;
+  gap: 8px;
+}
+
+.status-remaster-stat {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  column-gap: 8px;
+  row-gap: 2px;
+  padding: 10px 11px;
+  border: 1px solid rgba(0, 180, 255, 0.08);
+  border-radius: 11px;
+  background: rgba(0, 180, 255, 0.022);
+}
+
+.status-remaster-stat-value {
+  grid-row: 1 / span 2;
+  color: #00d4ff;
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.status-remaster-stat-label,
+.status-remaster-stat-inline-value {
+  min-width: 0;
+  color: #dbe8f8;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.status-remaster-stat-inline-value {
+  color: #00d4ff;
+}
+
+.status-remaster-stat-meta {
+  min-width: 0;
+  color: #6e86a5;
+  font-size: 9px;
+}
+
+.status-remaster-stat-wide {
+  grid-template-columns: auto 1fr;
+}
+
+.status-remaster-stat-wide .status-remaster-stat-meta {
+  grid-column: 1 / -1;
+}
+
+.status-remaster-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-remaster-pending-chip {
+  flex: 0 0 auto;
+  padding: 5px 8px;
+  border: 1px solid rgba(255, 210, 90, 0.22);
+  border-radius: 999px;
+  background: rgba(255, 210, 90, 0.055);
+  color: #ffd25a;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.status-remaster-activity-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.status-remaster-activity-row {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-height: 29px;
+  border-bottom: 1px solid rgba(0, 180, 255, 0.06);
+}
+
+.status-remaster-activity-row:last-child {
+  border-bottom: none;
+}
+
+.status-remaster-activity-row span {
+  color: #6e86a5;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.status-remaster-activity-row strong {
+  min-width: 0;
+  color: #dbe8f8;
+  font-size: 10px;
+  font-weight: 600;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-remaster-activity-pending strong {
+  color: #ffd25a;
+}
+
+@media (max-width: 1100px), (max-height: 650px) {
+  .status-remaster-panel {
+    padding-bottom: 12px;
+  }
+
+  .status-remaster-body {
+    gap: 8px;
+  }
+
+  .status-remaster-hero {
+    padding: 10px 12px;
+    border-radius: 12px;
+  }
+
+  .status-remaster-title {
+    font-size: 15px;
+  }
+
+  .status-remaster-subtitle {
+    font-size: 9px;
+  }
+
+  .status-remaster-health {
+    padding: 6px 9px;
+    font-size: 9px;
+  }
+
+  .status-remaster-section {
+    padding: 9px 10px;
+    border-radius: 11px;
+  }
+
+  .status-remaster-section-header {
+    margin-bottom: 7px;
+  }
+
+  .status-remaster-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .status-remaster-card {
+    min-height: 58px;
+    padding: 8px;
+    border-radius: 9px;
+  }
+
+  .status-remaster-card-label {
+    margin-bottom: 4px;
+  }
+
+  .status-remaster-card-value {
+    font-size: 12px;
+  }
+
+  .status-remaster-card-meta {
+    margin-top: 4px;
+    font-size: 8px;
+  }
+
+  .status-remaster-workspace {
+    gap: 6px;
+  }
+
+  .status-remaster-stat {
+    padding: 8px 9px;
+    border-radius: 9px;
+  }
+
+  .status-remaster-stat-value {
+    font-size: 20px;
+  }
+
+  .status-remaster-activity-row {
+    min-height: 25px;
+  }
+}
+
+@media (max-width: 760px) {
+  .status-remaster-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .status-remaster-workspace {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .status-remaster-stat-wide {
+    grid-column: 1 / -1;
+  }
+}

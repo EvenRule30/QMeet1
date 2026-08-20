@@ -1,5 +1,5 @@
 import type { BackendStatus, OrbState } from '../types';
-import { FocusResponseHealth } from '../components/FocusResponseHealth';
+import './StatusOverlay.css';
 
 type StatusOverlayProps = {
   activePanelLabel: string;
@@ -36,29 +36,43 @@ type StatusOverlayProps = {
   onClose: () => void;
 };
 
+function sentenceCase(value: string): string {
+  const normalized = value.trim();
+  if (!normalized) return 'Unknown';
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+
+function cleanDiagnosticValue(value: string): string {
+  const normalized = value.trim();
+  if (!normalized || normalized === 'None' || normalized === 'Not used') {
+    return 'None';
+  }
+  return normalized;
+}
+
 export function StatusOverlay({
   activePanelLabel,
   backendStatus,
   orbState,
   voiceInputSupported,
   lastHeardTranscript,
-  lastNormalizedTranscript,
+  lastNormalizedTranscript: _lastNormalizedTranscript,
   lastLocalCommand,
   lastInputRoute,
-  lastInterpreterAction,
-  lastInterpreterFrontendCommand,
-  interpreterConfidenceLabel,
-  interpreterReasonLabel,
+  lastInterpreterAction: _lastInterpreterAction,
+  lastInterpreterFrontendCommand: _lastInterpreterFrontendCommand,
+  interpreterConfidenceLabel: _interpreterConfidenceLabel,
+  interpreterReasonLabel: _interpreterReasonLabel,
   pendingInterpreterLabel,
   voiceOutputEnabled,
   speechRate,
   chatActive,
-  messagesCount,
+  messagesCount: _messagesCount,
   statusNotesCount,
   statusOpenTasksCount,
   statusCompletedTasksCount,
   memorySyncState,
-  calendarEventsCount,
+  calendarEventsCount: _calendarEventsCount,
   statusTodayEventsCount,
   statusTomorrowEventsCount,
   statusGoogleCalendarLabel,
@@ -70,231 +84,172 @@ export function StatusOverlay({
   statusTimeLabel,
   onClose,
 }: StatusOverlayProps) {
+  const backendOnline = Boolean(backendStatus?.ok);
+  const pendingAction = cleanDiagnosticValue(pendingInterpreterLabel);
+  const lastRoute = cleanDiagnosticValue(lastInputRoute);
+  const lastCommand = cleanDiagnosticValue(lastLocalCommand);
+  const lastHeard = lastHeardTranscript.trim();
+  const calendarBusy = googleCalendarLoading ? 'Refreshing' : statusGoogleCalendarLabel;
+  const voiceState = voiceOutputEnabled ? 'Ready' : 'Muted';
+
   return (
     <div className="panel-overlay">
-      <div className="panel-content panel-content-status">
-        <div className="panel-header">System Status</div>
-        <div className="panel-body status-panel-body">
-          <div className="status-hero">
-            <div>
-              <div className="status-kicker">QMeet Prototype</div>
-              <div className="status-title">Local tablet assistant dashboard</div>
+      <div className="panel-content panel-content-status status-remaster-panel">
+        <div className="panel-header">Status</div>
+
+        <div className="panel-body status-remaster-body">
+          <section className="status-remaster-hero">
+            <div className="status-remaster-hero-copy">
+              <div className="status-remaster-kicker">QMeet system</div>
+              <div className="status-remaster-title">
+                {backendOnline ? 'Ready to help' : 'Backend unavailable'}
+              </div>
+              <div className="status-remaster-subtitle">
+                {statusDateLabel} · {statusTimeLabel}
+              </div>
             </div>
             <div
-              className={`status-health-chip ${
-                backendStatus?.ok ? 'status-health-good' : 'status-health-warn'
+              className={`status-remaster-health ${
+                backendOnline
+                  ? 'status-remaster-health-good'
+                  : 'status-remaster-health-warn'
               }`}
             >
-              {backendStatus?.ok ? 'Online' : 'Offline'}
+              <span className="status-remaster-health-dot" />
+              {backendOnline ? 'Online' : 'Offline'}
             </div>
-          </div>
-          <div className="status-grid">
-            <div className="status-card">
-              <div className="status-card-title">Orb</div>
-              <div className="status-card-value">
-                {orbState.charAt(0).toUpperCase() + orbState.slice(1)}
+          </section>
+
+          <section className="status-remaster-section">
+            <div className="status-remaster-section-header">
+              <div>
+                <div className="status-remaster-section-kicker">System</div>
+                <div className="status-remaster-section-title">At a glance</div>
               </div>
-              <div className="status-card-meta">Current interaction state</div>
-            </div>
-            <div className="status-card">
-              <div className="status-card-title">Active Panel</div>
-              <div className="status-card-value">{activePanelLabel}</div>
-              <div className="status-card-meta">Current UI surface</div>
-            </div>
-            <div
-              className={`status-card ${
-                backendStatus?.ok ? 'status-card-good' : 'status-card-warn'
-              }`}
-            >
-              <div className="status-card-title">Backend</div>
-              <div className="status-card-value">
-                {backendStatus?.ok ? 'Connected' : 'Disconnected'}
-              </div>
-              <div className="status-card-meta">FastAPI agent service</div>
-            </div>
-            <div className="status-card">
-              <div className="status-card-title">Provider</div>
-              <div className="status-card-value">
-                {backendStatus?.provider || 'Unknown'}
-              </div>
-              <div className="status-card-meta">
-                Model: {backendStatus?.model || 'Unknown'}
+              <div className="status-remaster-section-note">
+                {chatActive ? 'Conversation active' : 'Standing by'}
               </div>
             </div>
-            <div className="status-card">
-              <div className="status-card-title">Voice Input</div>
-              <div className="status-card-value">
-                {voiceInputSupported ? 'Supported' : 'Unavailable'}
+
+            <div className="status-remaster-grid">
+              <div className="status-remaster-card">
+                <div className="status-remaster-card-label">QMeet</div>
+                <div className="status-remaster-card-value">
+                  {sentenceCase(orbState)}
+                </div>
+                <div className="status-remaster-card-meta">
+                  {activePanelLabel === 'None'
+                    ? 'Home interface'
+                    : `${activePanelLabel} panel open`}
+                </div>
               </div>
-              <div className="status-card-meta">Browser speech recognition</div>
-            </div>
-            <div className="status-card">
-              <div className="status-card-title">Last Heard</div>
-              <div className="status-card-value">
-                {lastHeardTranscript || 'None'}
+
+              <div
+                className={`status-remaster-card ${
+                  backendOnline
+                    ? 'status-remaster-card-good'
+                    : 'status-remaster-card-warn'
+                }`}
+              >
+                <div className="status-remaster-card-label">Backend</div>
+                <div className="status-remaster-card-value">
+                  {backendOnline ? 'Connected' : 'Disconnected'}
+                </div>
+                <div className="status-remaster-card-meta">
+                  {backendStatus?.provider || 'Unknown provider'}
+                  {backendStatus?.model ? ` · ${backendStatus.model}` : ''}
+                </div>
               </div>
-              <div className="status-card-meta">
-                {lastNormalizedTranscript
-                  ? `Normalized: ${lastNormalizedTranscript}`
-                  : 'Last voice transcript'}
+
+              <div className="status-remaster-card">
+                <div className="status-remaster-card-label">Voice</div>
+                <div className="status-remaster-card-value">{voiceState}</div>
+                <div className="status-remaster-card-meta">
+                  {voiceInputSupported ? 'Mic supported' : 'Mic unavailable'} ·{' '}
+                  {speechRate.toFixed(2)}×
+                </div>
               </div>
-            </div>
-            <div className="status-card">
-              <div className="status-card-title">Last Command</div>
-              <div className="status-card-value">{lastLocalCommand}</div>
-              <div className="status-card-meta">Last local command matched</div>
-            </div>
-            <div className="status-card">
-              <div className="status-card-title">Input Route</div>
-              <div className="status-card-value">{lastInputRoute}</div>
-              <div className="status-card-meta">
-                Exact parser, interpreter, or chat
-              </div>
-            </div>
-            <div className="status-card">
-              <div className="status-card-title">Interpreter</div>
-              <div className="status-card-value">{lastInterpreterAction}</div>
-              <div className="status-card-meta">
-                Confidence: {interpreterConfidenceLabel}
-              </div>
-            </div>
-            <div className="status-card">
-              <div className="status-card-title">Mapped Command</div>
-              <div className="status-card-value">
-                {lastInterpreterFrontendCommand}
-              </div>
-              <div className="status-card-meta">{interpreterReasonLabel}</div>
-            </div>
-            <div className="status-card">
-              <div className="status-card-title">Pending Confirm</div>
-              <div className="status-card-value">{pendingInterpreterLabel}</div>
-              <div className="status-card-meta">
-                Destructive fuzzy commands wait for confirm
-              </div>
-            </div>
-            <div className="status-card">
-              <div className="status-card-title">Voice Output</div>
-              <div className="status-card-value">
-                {voiceOutputEnabled ? 'On' : 'Muted'}
-              </div>
-              <div className="status-card-meta">
-                Speed: {speechRate.toFixed(2)}×
+
+              <div className="status-remaster-card">
+                <div className="status-remaster-card-label">Calendar</div>
+                <div className="status-remaster-card-value">{calendarBusy}</div>
+                <div className="status-remaster-card-meta">
+                  Today {statusTodayEventsCount} · Tomorrow {statusTomorrowEventsCount}
+                  {statusGoogleEventsCount > 0
+                    ? ` · ${statusGoogleEventsCount} Google loaded`
+                    : ''}
+                </div>
               </div>
             </div>
-            <div className="status-card">
-              <div className="status-card-title">Chat</div>
-              <div className="status-card-value">
-                {chatActive ? 'Active' : 'Idle'}
+          </section>
+
+          <section className="status-remaster-section">
+            <div className="status-remaster-section-header">
+              <div>
+                <div className="status-remaster-section-kicker">Workspace</div>
+                <div className="status-remaster-section-title">What QMeet is holding</div>
               </div>
-              <div className="status-card-meta">Messages: {messagesCount}</div>
+              <div className="status-remaster-section-note">{memorySyncState}</div>
             </div>
-            <div className="status-card">
-              <div className="status-card-title">Notes</div>
-              <div className="status-card-value">{statusNotesCount}</div>
-              <div className="status-card-meta">Saved locally</div>
-            </div>
-            <div className="status-card">
-              <div className="status-card-title">Open Tasks</div>
-              <div className="status-card-value">{statusOpenTasksCount}</div>
-              <div className="status-card-meta">
-                {statusCompletedTasksCount} completed · {memorySyncState}
+
+            <div className="status-remaster-workspace">
+              <div className="status-remaster-stat">
+                <span className="status-remaster-stat-value">{statusOpenTasksCount}</span>
+                <span className="status-remaster-stat-label">Open tasks</span>
+                <span className="status-remaster-stat-meta">
+                  {statusCompletedTasksCount} completed
+                </span>
               </div>
-            </div>
-            <div className="status-card">
-              <div className="status-card-title">Calendar</div>
-              <div className="status-card-value">{calendarEventsCount}</div>
-              <div className="status-card-meta">Local events total</div>
-            </div>
-            <div className="status-card">
-              <div className="status-card-title">Today</div>
-              <div className="status-card-value">{statusTodayEventsCount}</div>
-              <div className="status-card-meta">Events saved for today</div>
-            </div>
-            <div className="status-card">
-              <div className="status-card-title">Tomorrow</div>
-              <div className="status-card-value">{statusTomorrowEventsCount}</div>
-              <div className="status-card-meta">Events saved for tomorrow</div>
-            </div>
-            <div className="status-card">
-              <div className="status-card-title">Google Calendar</div>
-              <div className="status-card-value">
-                {statusGoogleCalendarLabel}
+              <div className="status-remaster-stat">
+                <span className="status-remaster-stat-value">{statusNotesCount}</span>
+                <span className="status-remaster-stat-label">Notes</span>
+                <span className="status-remaster-stat-meta">Saved context</span>
               </div>
-              <div className="status-card-meta">
-                {statusGoogleEventsCount} loaded ·{' '}
-                {googleCalendarLoading ? 'Loading' : 'Idle'}
+              <div className="status-remaster-stat status-remaster-stat-wide">
+                <span className="status-remaster-stat-label">Search</span>
+                <span className="status-remaster-stat-inline-value">
+                  {searchStatusLabel}
+                </span>
+                <span className="status-remaster-stat-meta status-remaster-ellipsis">
+                  {searchStatusMeta || 'No active search'}
+                </span>
               </div>
             </div>
-            <div className="status-card">
-              <div className="status-card-title">Search</div>
-              <div className="status-card-value">{searchStatusLabel}</div>
-              <div className="status-card-meta">{searchStatusMeta}</div>
+          </section>
+
+          <section className="status-remaster-section status-remaster-activity-section">
+            <div className="status-remaster-section-header">
+              <div>
+                <div className="status-remaster-section-kicker">Recent activity</div>
+                <div className="status-remaster-section-title">Last interaction</div>
+              </div>
+              {pendingAction !== 'None' && (
+                <div className="status-remaster-pending-chip">Awaiting confirmation</div>
+              )}
             </div>
-          </div>
-          <div className="panel-section status-detail-section">
-            <div className="panel-section-title">Backend Details</div>
-            <div className="status-detail-list">
-              <div className="status-detail-row">
-                <span>OpenAI key</span>
-                <strong>
-                  {backendStatus?.hasOpenAIKey ? 'Configured' : 'Missing / Unknown'}
-                </strong>
+
+            <div className="status-remaster-activity-list">
+              <div className="status-remaster-activity-row">
+                <span>Last heard</span>
+                <strong>{lastHeard || 'No voice input yet'}</strong>
               </div>
-              <div className="status-detail-row">
-                <span>Max output tokens</span>
-                <strong>{backendStatus?.maxOutputTokens ?? 'Unknown'}</strong>
+              <div className="status-remaster-activity-row">
+                <span>Last route</span>
+                <strong>{lastRoute}</strong>
               </div>
-              <div className="status-detail-row">
-                <span>Status refresh</span>
-                <strong>Every 10 seconds</strong>
+              <div className="status-remaster-activity-row">
+                <span>Last command</span>
+                <strong>{lastCommand}</strong>
               </div>
+              {pendingAction !== 'None' && (
+                <div className="status-remaster-activity-row status-remaster-activity-pending">
+                  <span>Pending</span>
+                  <strong>{pendingAction}</strong>
+                </div>
+              )}
             </div>
-          </div>
-          <FocusResponseHealth />
-          <div className="panel-section status-detail-section">
-            <div className="panel-section-title">Interface</div>
-            <div className="status-detail-list">
-              <div className="status-detail-row">
-                <span>Date</span>
-                <strong>{statusDateLabel}</strong>
-              </div>
-              <div className="status-detail-row">
-                <span>Time snapshot</span>
-                <strong>{statusTimeLabel}</strong>
-              </div>
-              <div className="status-detail-row">
-                <span>Display target</span>
-                <strong>1024×600</strong>
-              </div>
-            </div>
-          </div>
-          <div className="panel-section status-detail-section">
-            <div className="panel-section-title">Local Storage</div>
-            <div className="status-detail-list">
-              <div className="status-detail-row">
-                <span>Voice output preference</span>
-                <strong>Saved</strong>
-              </div>
-              <div className="status-detail-row">
-                <span>Voice speed preference</span>
-                <strong>Saved</strong>
-              </div>
-              <div className="status-detail-row">
-                <span>Notes and calendar events</span>
-                <strong>Saved locally</strong>
-              </div>
-            </div>
-          </div>
-          <div className="panel-section">
-            <div className="panel-section-title">Supported Status Commands</div>
-            <p className="panel-section-text">
-              Say “show status,” “system status,” “diagnostics,” “what did you
-              hear,” “read my notes,” “what was I working on,” “what's on my
-              calendar,” “close status,” or “go home.” This panel also shows
-              whether the last input used the exact parser, fuzzy command
-              interpreter, or normal chat.
-            </p>
-          </div>
+          </section>
+
           <button className="close-panel-btn" onClick={onClose}>
             Close
           </button>
