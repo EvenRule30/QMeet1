@@ -264,7 +264,11 @@ class ToolContinuationPhase21ATests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(continuation_allowed_for_capability(capability))
 
     def test_recent_tool_card_is_data_not_developer_instruction(self) -> None:
-        request = self._request(capability="focus").model_copy(
+        # Phase 21H5 intentionally isolates Focus-owned continuations from older
+        # cross-capability history. Use a non-isolated Memory continuation here
+        # to preserve this test's original security contract: when an older Tool
+        # card is included, it remains user-priority data, never developer text.
+        request = self._request(capability="memory").model_copy(
             update={
                 "recentConversation": [
                     ContinuationMessage(

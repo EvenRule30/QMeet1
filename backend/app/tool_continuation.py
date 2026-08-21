@@ -487,6 +487,11 @@ def build_tool_continuation_input(
     ]
 
     normalized_capability = _normalize_capability(request.capability)
+    focus_owned = (
+        normalized_capability in _FOCUS_CAPABILITY_ALIASES
+        or normalized_capability.startswith("focus_")
+        or _is_verified_focus_task_continuation(request)
+    )
     search_owned = normalized_capability in {"search", "web_search"}
     calendar_owned = normalized_capability in {
         "calendar",
@@ -503,6 +508,13 @@ def build_tool_continuation_input(
         # self-contained in originalUserTurn + verified receipt/context. Do not
         # send stale chat or older tool cards that can reintroduce an unrelated
         # Active Focus after deterministic execution explicitly excluded it.
+        pass
+    elif focus_owned:
+        # Phase 21H5: Focus-owned continuations are self-contained in the
+        # current original turn, current verified receipt/context, and the
+        # current canonical Focus snapshot when one remains active. Older
+        # cross-capability chat/tool cards must not outrank the newest
+        # verified Focus action (for example, 'open memory' before 'end focus').
         pass
     elif isolate_stale_conversation:
         # Search/Calendar continuations are grounded in the current original
