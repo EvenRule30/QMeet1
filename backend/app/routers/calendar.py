@@ -1,7 +1,8 @@
+from html import escape
+
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from fastapi.responses import HTMLResponse
-
 from app.calendar_absolute_create_service import create_calendar_event_on_date
 from app.calendar_absolute_update_service import update_calendar_event_on_absolute_date
 from app.calendar_range_service import list_calendar_events_range
@@ -27,7 +28,6 @@ from app.schemas import (
     CalendarUpdateEventRequest,
     CalendarUpdateEventResponse,
 )
-
 router = APIRouter(prefix="/api/calendar", tags=["calendar"])
 
 
@@ -37,7 +37,6 @@ class CalendarAbsoluteUpdateRequest(BaseModel):
     date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     title: str = Field(default="", max_length=240)
     time: str = Field(default="", max_length=32)
-
 
 class CalendarAbsoluteCreateRequest(BaseModel):
     title: str = Field(min_length=1, max_length=240)
@@ -51,7 +50,6 @@ class CalendarAbsoluteCreateRequest(BaseModel):
 async def calendar_status():
     return CalendarStatusResponse(**get_calendar_status())
 
-
 @router.post("/auth/start", response_model=CalendarAuthStartResponse)
 async def calendar_auth_start():
     try:
@@ -63,7 +61,6 @@ async def calendar_auth_start():
             status_code=500,
             detail="QMeet could not start Google Calendar authorization.",
         )
-
 
 @router.get("/auth/callback")
 async def calendar_auth_callback(
@@ -77,14 +74,13 @@ async def calendar_auth_callback(
             <html>
               <body style="font-family: system-ui; background: #080a18; color: white; padding: 32px;">
                 <h1>Google Calendar was not connected</h1>
-                <p>{error}</p>
+                <p>{escape(error)}</p>
                 <p>You can close this tab and try again from QMeet.</p>
               </body>
             </html>
             """,
             status_code=400,
         )
-
     if not code:
         return HTMLResponse(
             """
@@ -97,7 +93,6 @@ async def calendar_auth_callback(
             """,
             status_code=400,
         )
-
     try:
         complete_calendar_auth(
             code=code,
@@ -120,7 +115,7 @@ async def calendar_auth_callback(
             <html>
               <body style="font-family: system-ui; background: #080a18; color: white; padding: 32px;">
                 <h1>Google Calendar connection failed</h1>
-                <p>{str(exc)}</p>
+                <p>{escape(str(exc))}</p>
                 <p>You can close this tab and try again from QMeet.</p>
               </body>
             </html>
@@ -130,18 +125,17 @@ async def calendar_auth_callback(
     except Exception as exc:
         print(f"Unexpected Google OAuth callback error: {exc}")
         return HTMLResponse(
-            f"""
+            """
             <html>
               <body style="font-family: system-ui; background: #080a18; color: white; padding: 32px;">
                 <h1>Google Calendar connection failed</h1>
                 <p>QMeet hit an unexpected OAuth callback error.</p>
-                <pre style="white-space: pre-wrap; color: #ffb4c2;">{str(exc)}</pre>
+                <p>Check the backend log for technical details.</p>
               </body>
             </html>
             """,
             status_code=500,
         )
-
 
 @router.post("/auth/reset", response_model=CalendarAuthResetResponse)
 async def calendar_auth_reset():
@@ -152,7 +146,6 @@ async def calendar_auth_reset():
             status_code=500,
             detail="QMeet could not reset Google Calendar authorization.",
         )
-
 
 @router.get("/events", response_model=CalendarEventsResponse)
 async def calendar_events(
@@ -179,7 +172,6 @@ async def calendar_events(
             detail="QMeet could not read Google Calendar events.",
         )
 
-
 @router.get("/events/range")
 async def calendar_event_range(
     start_date: str = Query(
@@ -192,7 +184,6 @@ async def calendar_event_range(
     ),
 ):
     """Read one exact inclusive Calendar date window.
-
     Natural-language interpretation does not happen here. Agent/frontend
     callers must resolve user language to canonical absolute date keys first.
     """
@@ -209,14 +200,12 @@ async def calendar_event_range(
             detail="QMeet could not read that Google Calendar date range.",
         )
 
-
 @router.post(
     "/events/absolute",
     response_model=CalendarCreateEventResponse,
 )
 async def calendar_create_event_absolute(req: CalendarAbsoluteCreateRequest):
     """Create one event on an already-resolved canonical absolute date."""
-
     try:
         return CalendarCreateEventResponse(
             **create_calendar_event_on_date(
@@ -234,7 +223,6 @@ async def calendar_create_event_absolute(req: CalendarAbsoluteCreateRequest):
             status_code=500,
             detail="QMeet could not create that Google Calendar event.",
         )
-
 
 @router.post("/events", response_model=CalendarCreateEventResponse)
 async def calendar_create_event(req: CalendarCreateEventRequest):
@@ -255,7 +243,6 @@ async def calendar_create_event(req: CalendarCreateEventRequest):
             status_code=500,
             detail="QMeet could not create the Google Calendar event.",
         )
-
 
 @router.patch(
     "/events/{event_id}/absolute",
@@ -281,7 +268,6 @@ async def calendar_update_event_absolute(
             status_code=500,
             detail="QMeet could not update that Google Calendar event.",
         )
-
 
 @router.patch(
     "/events/{event_id}",
@@ -309,7 +295,6 @@ async def calendar_update_event(
             status_code=500,
             detail="QMeet could not update the Google Calendar event.",
         )
-
 
 @router.delete(
     "/events/{event_id}",
