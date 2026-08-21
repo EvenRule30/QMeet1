@@ -425,6 +425,28 @@ def _validated_create_title(value: Any) -> str | None:
     return cleaned
 
 
+def _explicit_create_title(user_message: str) -> str | None:
+    """Return a Calendar title only when the user explicitly names it.
+
+    Explicit ``called``, ``named``, and ``titled`` clauses are user-grounded
+    execution data and therefore outrank a model-proposed title. Ordinary
+    Calendar creates still preserve the model's semantic title when the user
+    did not provide one of these explicit naming markers.
+    """
+    text = re.sub(r"\s+", " ", user_message.strip())
+    match = re.search(
+        r"\b(?:called|named|titled)\s+(.+?)\s*$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+
+    title = match.group(1).strip()
+    title = re.sub(r"^[\"'`]+|[\"'`]+$", "", title).strip()
+    return _validated_create_title(title)
+
+
 def _fallback_create_title(user_message: str) -> str | None:
     """Conservatively extract one title before the explicit date phrase.
 
@@ -523,7 +545,9 @@ def apply_calendar_absolute_create_ownership_floor(
     if not isinstance(existing_arguments, dict):
         existing_arguments = {}
 
-    title = _validated_create_title(existing_arguments.get("title"))
+    title = _explicit_create_title(user_message)
+    if title is None:
+        title = _validated_create_title(existing_arguments.get("title"))
     if title is None:
         title = _fallback_create_title(user_message)
     if title is None:
