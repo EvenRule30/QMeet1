@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from app.agent import (
@@ -8,8 +10,13 @@ from app.agent import (
     sse_event,
     stream_reply,
 )
-from app.conversation_lane import ConversationLaneRequest, stream_conversation_lane
+from app.conversation_lane import (
+    ConversationLaneRequest,
+    _record_visible_history,
+    stream_conversation_lane,
+)
 from app.daily_brief import generate_daily_brief, is_daily_brief_request, stream_daily_brief
+from app.focus_proposal import accept_pending_focus_next_action
 from app.schemas import ChatRequest, ChatResponse
 from app.work_context import (
     WorkContextError,
@@ -49,6 +56,11 @@ async def chat(req: ChatRequest):
     if not message:
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
     try:
+        proposal_result = await asyncio.to_thread(accept_pending_focus_next_action, message)
+        if proposal_result is not None:
+            _record_visible_history(message, proposal_result.message)
+            return ChatResponse(reply=proposal_result.message, state="speaking")
+
         if is_daily_brief_request(message):
             reply = await generate_daily_brief(
                 ConversationLaneRequest(userMessage=message)
@@ -79,6 +91,14 @@ async def chat_stream(req: ChatRequest):
     async def event_generator():
         assistant_reply_parts: list[str] = []
         try:
+            proposal_result = await asyncio.to_thread(accept_pending_focus_next_action, message)
+            if proposal_result is not None:
+                _record_visible_history(message, proposal_result.message)
+                yield sse_event("start", {"ok": True})
+                yield sse_event("chunk", {"text": proposal_result.message})
+                yield sse_event("done", {"ok": True})
+                return
+
             if is_daily_brief_request(message):
                 yield sse_event("start", {"ok": True})
                 async for chunk in stream_daily_brief(
@@ -127,6 +147,17 @@ async def conversation_stream(req: ConversationLaneRequest):
 
     async def event_generator():
         try:
+            proposal_result = await asyncio.to_thread(
+                accept_pending_focus_next_action,
+                req.userMessage,
+            )
+            if proposal_result is not None:
+                _record_visible_history(req.userMessage, proposal_result.message)
+                yield sse_event("start", {"ok": True})
+                yield sse_event("chunk", {"text": proposal_result.message})
+                yield sse_event("done", {"ok": True})
+                return
+
             yield sse_event("start", {"ok": True})
             streamer = (
                 stream_daily_brief

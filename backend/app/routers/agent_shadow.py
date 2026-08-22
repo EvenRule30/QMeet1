@@ -6,6 +6,7 @@ from app.calendar_read_date_interpreter import (
     apply_calendar_range_read_ownership_floor,
 )
 from app.daily_brief_ownership import apply_daily_brief_ownership_floor
+from app.focus_proposal_ownership import apply_focus_proposal_ownership_floor
 from app.qmeet_agent_shadow import (
     AgentShadowRequest,
     AgentShadowResponse,
@@ -52,6 +53,13 @@ async def decide(req: AgentShadowRequest):
     # Apply this after the ordinary single-capability repair floors so an
     # over-eager Tasks/Calendar proposal cannot collapse Daily Brief to one read.
     repaired_decision = apply_daily_brief_ownership_floor(
+        req.userMessage,
+        repaired_decision,
+    )
+
+    # Phase 21I4: a fresh one-turn acceptance of QMeet's own Daily Brief
+    # proposal stays Focus-owned. Any unrelated next turn expires that proposal.
+    repaired_decision = apply_focus_proposal_ownership_floor(
         req.userMessage,
         repaired_decision,
     )

@@ -6,6 +6,7 @@ import {
   readStoredMemoryTasks,
 } from '../lib/memoryReadSurface';
 import { consumeNativeReadSurface } from '../lib/nativeReadSurfaceBridge';
+import { readCanonicalFocusReadout } from '../lib/canonicalFocusReadout';
 import type { Note } from '../types';
 import {
   addNativeFocusContextVerified,
@@ -66,10 +67,12 @@ type NativeFocusSummaryDeps = Parameters<typeof handleMemoryCommandCore>[1] & {
   saveNote: (content: string) => Note | null;
   deleteNote: (noteId: string) => Note | null | void;
 };
+
 type NativeFocusEndCommandEnvelope = {
   sourceTurnId?: unknown;
   disposition?: unknown;
 };
+
 function parseNativeFocusEndCommand(payload: string | undefined): {
   sourceTurnId?: string;
   disposition: 'ended' | 'completed';
@@ -91,11 +94,13 @@ function parseNativeFocusEndCommand(payload: string | undefined): {
     return { disposition: 'ended' };
   }
 }
+
 type NativeFocusContextCommandEnvelope = {
   sourceTurnId?: unknown;
   contextField?: unknown;
   contextValue?: unknown;
 };
+
 function parseNativeFocusContextCommand(
   payload: string | undefined,
 ): {
@@ -139,6 +144,7 @@ function parseNativeFocusContextCommand(
     return null;
   }
 }
+
 function hasSavedFocusSummary(
   activeSession: NonNullable<ReturnType<typeof readVerifiedFocusProjection>>,
 ): boolean {
@@ -147,6 +153,7 @@ function hasSavedFocusSummary(
     Boolean(activeSession.summary?.trim())
   );
 }
+
 function shouldGuardNativeFocusEnd(
   activeSession: NonNullable<ReturnType<typeof readVerifiedFocusProjection>>,
 ): boolean {
@@ -157,6 +164,7 @@ function shouldGuardNativeFocusEnd(
     activeSession.title.trim().toLowerCase() !== 'focus session'
   );
 }
+
 function describeNativeFocusEndGuard(
   activeSession: NonNullable<ReturnType<typeof readVerifiedFocusProjection>>,
   disposition: 'ended' | 'completed',
@@ -181,6 +189,7 @@ function describeNativeFocusEndGuard(
       : 'say "end Focus anyway" to end it without saving';
   return `You have an active Focus with no saved summary note: ${activeSession.title}.${goalText}${taskText} Save the Focus summary first, ${terminalInstruction}, or say "cancel" to keep it running.`;
 }
+
 function describeRetiredLegacyLifecycleBlock(command: MemoryCommandName): string {
   if (command === 'wrap-up-meeting-focus') {
     return (
@@ -194,6 +203,7 @@ function describeRetiredLegacyLifecycleBlock(command: MemoryCommandName): string
     'No Focus change was made.'
   );
 }
+
 export async function handleMemoryCommand(
   commandMatch: Parameters<typeof handleMemoryCommandCore>[0],
   deps: NativeFocusSummaryDeps,
@@ -202,6 +212,7 @@ export async function handleMemoryCommand(
     commandMatch.command === 'read-memory'
       ? consumeNativeReadSurface()
       : null;
+
   if (commandMatch.command === 'read-memory') {
     const tasks = readStoredMemoryTasks();
     const activeSession = readVerifiedFocusProjection();
@@ -214,6 +225,7 @@ export async function handleMemoryCommand(
       shouldSpeakConfirmation: deps.voiceOutputEnabled,
     };
   }
+
   if (nativeReadSurface === 'tasks') {
     deps.setActivePanel('memory');
     return {
@@ -222,6 +234,25 @@ export async function handleMemoryCommand(
       shouldSpeakConfirmation: deps.voiceOutputEnabled,
     };
   }
+
+  if (commandMatch.command === 'read-focus-session') {
+    deps.setActivePanel('memory');
+    try {
+      return {
+        handled: true,
+        confirmationContent: await readCanonicalFocusReadout(),
+        shouldSpeakConfirmation: deps.voiceOutputEnabled,
+      };
+    } catch (error) {
+      console.warn(
+        'Canonical Focus readout unavailable; falling back to the verified display projection:',
+        error,
+      );
+      const fallbackResult = handleMemoryCommandCore(commandMatch, deps);
+      return fallbackResult;
+    }
+  }
+
   if (commandMatch.command === 'start-focus-session') {
     const requestedTitle =
       commandMatch.focusSession?.title?.trim() ||
@@ -254,6 +285,7 @@ export async function handleMemoryCommand(
       };
     }
   }
+
   if (commandMatch.command === 'update-focus-session') {
     const contextCommand = parseNativeFocusContextCommand(commandMatch.payload);
     if (contextCommand) {
@@ -333,9 +365,9 @@ export async function handleMemoryCommand(
       };
     }
   }
+
   if (commandMatch.command === 'resume-last-focus-session') {
     const requestedMode = commandMatch.focusSession?.mode;
-
     try {
       const result = await resumeNativeFocusVerified({
         ...(requestedMode ? { mode: requestedMode } : {}),
@@ -438,7 +470,6 @@ export async function handleMemoryCommand(
       };
     }
   }
-
 
   if (commandMatch.command === 'create-meeting-follow-up-tasks') {
     const activeSession = readVerifiedFocusProjection();
@@ -571,6 +602,7 @@ export async function handleMemoryCommand(
       shouldSpeakConfirmation: deps.voiceOutputEnabled,
     };
   }
+
   if (commandMatch.command === 'end-focus-with-summary') {
     deps.setActivePanel('memory');
     return {
@@ -580,6 +612,7 @@ export async function handleMemoryCommand(
       shouldSpeakConfirmation: deps.voiceOutputEnabled,
     };
   }
+
   if (commandMatch.command === 'end-focus-session') {
     const activeSession = readVerifiedFocusProjection();
     deps.setActivePanel('memory');
@@ -624,6 +657,7 @@ export async function handleMemoryCommand(
       };
     }
   }
+
   if (RETIRED_LEGACY_FOCUS_OWNERSHIP_COMMANDS.has(commandMatch.command)) {
     console.error(
       'Retired legacy Focus ownership command reached the memoryCore fallback:',

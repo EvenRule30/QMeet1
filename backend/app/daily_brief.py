@@ -21,6 +21,10 @@ from app.conversation_lane import (
 )
 from app.memory_store import list_memory_tasks
 from app.tool_continuation import active_focus_snapshot
+from app.focus_proposal import (
+    clear_pending_focus_proposal,
+    remember_focus_next_action_proposal,
+)
 
 
 DAILY_BRIEF_PROMPT = """
@@ -33,6 +37,8 @@ Authority and safety:
 
 How to reason from the context:
 - If an active Focus exists, weigh its current objective and nextAction heavily. Prefer a concrete nextAction when one exists. If activeFocus is null, simply omit Focus from the recommendation rather than making it the subject.
+- Phase 21I4 proposal rule: when activeFocus exists AND its nextAction is blank, make the FIRST recommendation exactly one concrete Focus step and phrase the first recommendation as "I'd start by <one action>." Do not use "or", alternatives, or multiple actions inside that first recommendation. This lets QMeet safely remember one proposal for a natural next-turn acceptance such as "okay, let's do it".
+- When activeFocus.nextAction is already populated, do not create or imply a replacement proposal; treat the stored nextAction as current guidance.
 - Global tasks are simple open task records. They have no stored due date or priority unless such information is literally present in the task title. Never invent deadlines, urgency, priority, duration, or Focus linkage. If tasks.available is false, do not claim that the user has no open tasks.
 - When choosing among otherwise unranked tasks, phrase it as a recommendation such as "I'd start with...", not as a stored or objective priority.
 - Do not infer urgency, importance, deadlines, or imminence from task wording alone. Words such as "meeting", "invoice", "review", "prepare", or "final" are not evidence that a task is time-sensitive unless verified context actually provides timing.
@@ -305,6 +311,7 @@ async def stream_daily_brief(
 ) -> AsyncGenerator[str, None]:
     """Stream one verified, read-only cross-capability Daily Brief."""
 
+    clear_pending_focus_proposal()
     context = await asyncio.to_thread(collect_daily_brief_context)
     config = get_agent_config()
 
@@ -314,6 +321,7 @@ async def stream_daily_brief(
             yield word + " "
             await asyncio.sleep(0)
         _record_visible_history(request.userMessage, reply)
+        remember_focus_next_action_proposal(context, reply)
         return
 
     if config.provider != "openai":
@@ -368,6 +376,7 @@ async def stream_daily_brief(
     if not full_reply:
         raise AgentUserFacingError("The model returned an empty Daily Brief response.")
     _record_visible_history(request.userMessage, full_reply)
+    remember_focus_next_action_proposal(context, full_reply)
 
 
 async def generate_daily_brief(request: ConversationLaneRequest) -> str:
