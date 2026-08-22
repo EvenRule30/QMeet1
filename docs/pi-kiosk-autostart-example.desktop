@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
 Name=QMeet Kiosk
-Exec=/home/pi/QMeet1-1/scripts/pi-kiosk-start.sh
+Exec=/usr/bin/env QMEET_URL=http://YOUR_HOST_IP:5173 /home/pi/QMeet1/scripts/pi-kiosk-start.sh
 Terminal=false
 X-GNOME-Autostart-enabled=true

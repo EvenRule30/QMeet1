@@ -1,567 +1,462 @@
-# QMeet Architecture Snapshot
+# QMeet Architecture
 
-This document describes the current QMeet architecture after Phase 15C visual-focus and UI polish work. QMeet is still a prototype: the frontend owns the tablet/orb experience and the backend owns LLM calls, search, Google Calendar integration, fuzzy command routing, visual analysis, and backend-local persistent memory.
+This document describes the current runtime architecture of QMeet as audited against `main` on August 21, 2026. It replaces the older Phase 15-era architecture snapshot.
 
-## High-level architecture
+QMeet architectural direction: use model reasoning to understand intent and conversational context, while keeping deterministic feature code and canonical backend state authoritative for actions that read or change real application state.
+
+## Core design rules
+
+The most important rules are:
+
+1. **Reasoning and execution are separate.** The model can classify a turn, choose a capability, propose arguments, and plan a response. It does not prove that a state change happened.
+2. **Deterministic systems remain authoritative.** Calendar, tasks, Focus, device/UI, and other promoted capabilities validate and execute through their existing deterministic paths.
+3. **Verified receipts outrank model assumptions.** After an action runs, the visible continuation is grounded in the actual execution result rather than a predicted result.
+4. **Active Focus is context, not universal ownership.** An active Focus may help answer a related request, but unrelated Calendar, Search, task, Memory, device, or general-chat turns stay with their own capability.
+5. **Canonical Focus state is authoritative.** Legacy Memory/session projections may remain for compatibility, but they cannot decide whether a Focus exists or mutate Focus independently.
+6. **State-changing behavior should fail closed.** Ambiguous targets, stale identity, failed verification, or unavailable canonical state should block or clarify rather than fabricate success.
+
+These rules are more durable than individual phase names and should be preserved as the system moves toward a more unified QMeet agent.
+
+## Runtime overview
 
 ```text
 User
-├─ taps/types/speaks into React UI
-│
-Frontend
-├─ Orb and chat interface
-├─ discreet chat-log toggle
-├─ local exact command parser
-├─ fuzzy command interpreter client
-├─ panels for notes, memory, calendar, search, settings, status, menu
-├─ camera capture/upload overlay
-├─ hooks for backend status, memory, search, calendar, speech, chat streaming
-├─ active focus/session UI and recent focus history
-├─ visual context UI and visual-focus linking
-├─ focus nudges and clickable focus actions
-├─ command/result toast system
-└─ typed API client for FastAPI
-│
-Backend
-├─ FastAPI app
-├─ feature routers
-├─ OpenAI chat/search/command interpreter service
-├─ OpenAI vision snapshot analysis endpoint
-├─ Google Calendar service
-└─ local JSON memory store
-│
+  |
+  v
+React / Vite tablet UI
+  |- orb, chat, panels, voice, camera
+  |- exact local command compatibility paths
+  |- promoted agent-routing paths
+  |- confirmation UX and feature handlers
+  |
+  v
+FastAPI backend
+  |
+  +--> unified-agent semantic decision
+  |      |- turn owner
+  |      |- Focus relevance
+  |      |- conversation / tool / clarify disposition
+  |      `- proposed capability, action, and semantic arguments
+  |
+  +--> deterministic ownership floors and capability validation
+  |
+  +--> canonical feature execution
+  |      |- Focus
+  |      |- Calendar
+  |      |- tasks / notes / Memory
+  |      |- Search
+  |      |- device/UI
+  |      `- visual analysis
+  |
+  +--> verified result / receipt
+  |
+  `--> tool continuation or normal chat response
+
 External services
-├─ OpenAI API
-└─ Google Calendar API
+  |- OpenAI API
+  `- Google Calendar API
 ```
+
+QMeet is in a staged unified-agent transition. Some compatibility command paths still exist, but many natural-language paths already use the unified agent to decide semantic ownership before deterministic execution.
 
 ## Frontend responsibilities
 
-The frontend owns the tablet user experience. It handles visual state, orb state, panel state, camera overlay state, speech recognition, speech synthesis, streaming response display, local command execution, confirmation gates, workflow memory controls, visual-context controls, and fallback browser state.
+The frontend under `src/app/` owns the tablet experience and the client-side orchestration needed to present deterministic tool results naturally.
+
+Important areas include:
 
 ```text
 src/app/
-├─ App.tsx
-│  └─ top-level orchestration and remaining command flow
-├─ api.ts
-│  └─ typed client for FastAPI endpoints, chat SSE parsing, visual analysis upload
-├─ commands.ts
-│  └─ exact local command parser
-├─ types.ts
-│  └─ shared frontend request/response/UI types
-├─ camera/
-│  └─ CameraCaptureOverlay.tsx
-├─ components/
-│  ├─ ChatLogToggle.tsx
-│  └─ reusable UI components
-├─ hooks/
-│  └─ feature state controllers
-├─ commandHandlers/
-│  └─ command execution branches grouped by feature
-├─ lib/
-│  └─ pure helper utilities
-└─ panels/
-   └─ overlay wrappers for panel UI
+|- App.tsx
+|  `- top-level QMeet interaction and panel/orb orchestration
+|- api.ts
+|  `- typed FastAPI requests and streaming helpers
+|- commands.ts
+|  `- exact local command compatibility parser
+|- commandHandlers/
+|  `- deterministic feature execution adapters
+|- hooks/
+|  `- feature state and backend synchronization
+|- lib/
+|  `- shared routing/readout/helper utilities
+|- components/
+|  `- reusable UI and Calendar components
+|- panels/
+|  `- Memory, Search, Settings, Status, and other overlays
+`- camera/
+   `- browser camera/snapshot UI
 ```
 
-## Important frontend hooks and components
+The exact parser is still useful for stable local interactions and compatibility, but it is no longer the only semantic layer. Promoted natural requests can be owned by the agent and then passed into the existing handlers.
+
+### Canonical Focus readout
+
+`src/app/lib/canonicalFocusReadout.ts` reads `GET /api/focus/state` and formats the authoritative Focus state for the user. The `read-focus-session` behavior in `commandHandlers/memory.ts` attempts this canonical read before falling back to older display/read compatibility behavior.
+
+That distinction matters because the frontend Memory projection may lag fields such as `nextAction`; it is not allowed to become the source of truth for Focus ownership.
+
+## Backend entry point and middleware
+
+`backend/app/main.py` creates the FastAPI application and installs canonical Focus compatibility before the middleware stack is imported.
+
+The important startup rule is:
 
 ```text
-useBackendStatus
-└─ polls /api/status and exposes backend connection state
-
-useResultToasts
-└─ owns command/result toast list, dismissal, and auto-timeouts
-
-useMemoryContext
-├─ loads backend memory context
-├─ syncs tasks, notes, recent actions, activeSession, recentFocusSessions, and visualContext
-├─ keeps localStorage fallback active
-├─ prevents stale fallback state from overwriting initialized backend memory
-├─ handles memory import/export/reset controls
-├─ exposes task/note/focus/history/visual actions
-└─ mirrors active focus and visual state for immediate UI readback
-
-useSearchController
-├─ owns search query/result/loading/error state
-└─ runs and clears web searches
-
-useCalendarController
-├─ owns local calendar state
-├─ owns Google Calendar state/status/error/loading
-├─ handles Google auth start/reset
-├─ reads Google Calendar events
-├─ creates/edits/deletes calendar events
-└─ refreshes connected Google Calendar state before cold-start edit/delete target resolution
-
-useSpeechOutput
-├─ owns voice output enabled state
-├─ owns speech rate state
-├─ persists voice settings
-└─ speaks/stops assistant text
-
-useChatStreamController
-├─ owns chat messages
-├─ owns streaming abort state
-├─ sends normal streaming chat
-├─ injects active focus context into chat when relevant
-├─ injects latest visual observation context when available
-├─ supports LLM-enhanced recap requests from memory commands
-├─ cancels active responses
-└─ surfaces backend/SSE errors through the chat UI
-
-useSpeechRecognitionController
-├─ starts browser speech recognition
-├─ manages listening transcript preview
-├─ handles silence timeout
-├─ handles microphone/browser errors
-└─ sends final transcript to App command routing
-
-CameraCaptureOverlay
-├─ browser getUserMedia preview
-├─ one-shot webcam snapshots
-├─ image upload analysis path
-├─ backend snapshot/image analysis call
-├─ text-only visual observation save
-├─ Reset preview workaround for blurry webcam preview
-└─ compact upload metadata/no-preview fallback
-
-ChatLogToggle
-├─ discreet lower-left chat-log opener
-├─ opens chat/prompt without starting voice input
-├─ uses smooth chat/orb layout transition
-└─ closes idle peek with Escape
+canonical Focus read adapter
+        |
+        v
+background work-context compatibility
+        |
+        v
+Focus native read routing / Focus shadow middleware
+        |
+        v
+feature routers
 ```
 
-## Command flow
+`install_canonical_work_context_source()` adapts the canonical Focus state into the older background-coaching read shape. This prevents stale `activeSession` data in general Memory from resurrecting a Focus that has already ended canonically.
 
-QMeet has two command layers.
+The app registers routers for chat, unified-agent shadow/decision APIs, tool continuation, command compatibility, Search, Calendar, Memory, visual analysis, Focus, and Focus lifecycle operations.
+
+`/api/chat/tool-continuation/stream` is intentionally a response-generation seam, not a new Focus turn. A successful tool action should not accidentally create a second mutation opportunity merely because QMeet is composing a conversational follow-up.
+
+## Unified-agent decision layer
+
+The current agent implementation lives primarily in:
 
 ```text
-Exact parser
-└─ src/app/commands.ts
-   ├─ fast local command matching
-   └─ handles known command phrases directly
-
-Fuzzy interpreter
-└─ backend /api/command/interpret
-   ├─ deterministic pre-routing for focus/workflow/visual commands
-   ├─ OpenAI or mock interpreter fallback
-   ├─ maps fuzzy natural language to exact frontend commands
-   └─ returns confidence and frontendCommand
+backend/app/qmeet_agent_shadow.py
+backend/app/routers/agent_shadow.py
+backend/app/qmeet_capabilities.py
 ```
 
-Execution is split into command handler files:
+The historical `shadow` name remains, but the endpoint now supplies semantics used by promoted runtime paths.
+
+`POST /api/agent/shadow/decide` returns a structured decision containing concepts such as:
+
+- `turnOwner`
+- `focusRelevant`
+- `disposition`
+- proposed capability/action
+- proposed semantic arguments
+- response plan
+- confidence/reason metadata
+
+The model is instructed to decide turn ownership before deciding whether Focus matters.
+
+Representative owners include:
 
 ```text
-src/app/commandHandlers/
-├─ notes.ts
-├─ memory.ts
-├─ search.ts
-├─ voice.ts
-└─ calendar.ts
+general_chat
+calendar
+search
+memory
+tasks
+notes
+focus
+device_ui
+visual
+other
 ```
 
-`App.tsx` still owns the main orchestration path:
+### Focus relevance is separate from ownership
+
+A turn can be Calendar-owned and still use Focus as relevant context. For example, adding practice time for an active presentation Focus is still a Calendar operation if the user is asking to create a Calendar event.
+
+Conversely, an unrelated request such as `show my tasks`, `open settings`, or a general knowledge question should not be pulled into Focus merely because a Focus is active.
+
+A pending Focus coaching question is also advisory context, not a conversational lock.
+
+## Deterministic ownership floors
+
+The raw model decision is not automatically trusted. `backend/app/routers/agent_shadow.py` applies deterministic ownership floors after the model returns.
+
+Current floors include areas such as:
+
+- direct device/UI control
+- Calendar absolute-date create
+- Calendar edit/delete targeting
+- Calendar range reads
+- Daily Brief ownership
+- one-turn Focus proposal acceptance
+
+These floors exist to preserve known contracts when a model decision is too broad, too eager, or semantically unsafe.
+
+This is an important architectural pattern: **agent reasoning can expand natural-language coverage without removing deterministic authority.**
+
+## Single-intent execution flow
+
+For a promoted single-intent tool request, the intended flow is:
 
 ```text
-pending confirmation handling
-cancel handling
-exact local command parsing
-destructive-command confirmation checks
-feature-specific command handlers
-panel commands
-fuzzy backend command interpretation
-normal chat fallback
+user turn
+  |
+  v
+agent semantic decision
+  |
+  v
+deterministic ownership repair / validation
+  |
+  v
+existing canonical feature handler
+  |
+  v
+zero / one / many target resolution where needed
+  |
+  v
+confirmation gate for mutations where required
+  |
+  v
+verified execution result
+  |
+  v
+tool receipt
+  |
+  v
+grounded conversational continuation
 ```
 
-For spoken prompts, the orb should enter a thinking/routing state as soon as the final transcript is submitted. It should not sit in Ready while backend command interpretation or chat stream startup is pending.
+The agent may propose semantic lookup criteria, but deterministic code resolves authoritative object identity. A model-proposed task/event/Focus identifier must not be treated as canonical identity simply because the model supplied one.
 
-## Backend responsibilities
+## Composite-intent planning
 
-The backend owns LLM calls, web search, Google Calendar integration, snapshot/image analysis, persistent memory storage, and API routing.
+`backend/app/qmeet_agent_composite.py` supports multi-capability planning for promoted atomic actions.
+
+The planner is explicitly observational: it can describe ordered steps and dependencies, but it cannot execute tools, mutate state, confirm an action, or claim success.
+
+Important composite rules include:
+
+- do not split one semantic action into fake multiple steps;
+- do not invent follow-up actions the user did not request;
+- use only promoted canonical atomic actions;
+- do not invent canonical IDs;
+- resolve real identities later through deterministic feature code;
+- use verified output bindings only when a later step truly depends on an earlier result.
+
+Focus is deliberately more conservative in composite planning because it has additional canonical ownership and lifecycle semantics.
+
+## Tool continuation and stale-context isolation
+
+After a tool executes, `backend/app/tool_continuation.py` builds the context used for QMeet's visible follow-up response.
+
+This layer is intentionally grounded in the current action. Recent work isolates several capability continuations from stale cross-capability history.
+
+For example:
+
+- global task continuations use the original user turn plus the verified task receipt/context;
+- Focus-owned continuations use the original turn, current verified receipt/context, and the current canonical Focus snapshot when one remains active;
+- Search and Calendar continuations similarly avoid letting older tool cards override the newest verified result.
+
+This prevents errors such as an old `Saved task` receipt being repeated after the task was deleted, or an older Memory interaction reintroducing a Focus after a verified Focus end.
+
+## Active Focus
+
+Active Focus is the most state-sensitive subsystem in QMeet.
+
+The canonical implementation is under:
 
 ```text
-backend/app/
-├─ main.py
-│  └─ app setup, CORS, router includes
-├─ routers/
-│  ├─ chat.py
-│  ├─ command.py
-│  ├─ search.py
-│  ├─ calendar.py
-│  ├─ memory.py
-│  ├─ memory_state.py
-│  └─ visual.py
-├─ agent.py
-│  └─ chat, streaming, command interpreter, and web search helper logic
-├─ calendar_service.py
-│  └─ Google OAuth and Calendar API behavior
-├─ memory_store.py
-│  └─ local JSON memory persistence
-└─ schemas.py
-   └─ Pydantic request/response models
+backend/app/focus/
 ```
 
-## Backend routes
+The main runtime data file is:
 
 ```text
-Core
-├─ GET /health
-└─ GET /api/status
-
-Chat
-├─ POST /api/chat
-├─ POST /api/chat/stream
-└─ POST /api/reset
-
-Command interpreter
-└─ POST /api/command/interpret
-
-Search
-└─ POST /api/search
-
-Visual analysis
-└─ POST /api/visual/analyze-snapshot
-
-Calendar
-├─ GET /api/calendar/status
-├─ POST /api/calendar/auth/start
-├─ GET /api/calendar/auth/callback
-├─ POST /api/calendar/auth/reset
-├─ GET /api/calendar/events
-├─ POST /api/calendar/events
-├─ PATCH /api/calendar/events/{event_id}
-└─ DELETE /api/calendar/events/{event_id}
-
-Memory state
-└─ GET /api/memory/initialization
-
-Memory context
-├─ GET /api/memory/status
-├─ GET /api/memory/context
-├─ PUT /api/memory/context
-├─ GET /api/memory/export
-├─ POST /api/memory/import
-└─ POST /api/memory/clear
-
-Tasks
-├─ GET /api/memory/tasks
-├─ PUT /api/memory/tasks
-├─ POST /api/memory/tasks
-├─ PATCH /api/memory/tasks/{task_id}
-├─ DELETE /api/memory/tasks/{task_id}
-└─ POST /api/memory/tasks/clear-completed
-
-Notes
-├─ GET /api/memory/notes
-├─ PUT /api/memory/notes
-├─ POST /api/memory/notes
-├─ DELETE /api/memory/notes/{note_id}
-└─ POST /api/memory/notes/clear
-
-Recent actions
-├─ GET /api/memory/actions
-├─ PUT /api/memory/actions
-├─ POST /api/memory/actions
-├─ DELETE /api/memory/actions/{action_id}
-└─ POST /api/memory/actions/clear
-
-Active focus session
-├─ GET /api/memory/session
-├─ PUT /api/memory/session
-├─ PATCH /api/memory/session
-└─ DELETE /api/memory/session
-
-Recent focus sessions
-├─ GET /api/memory/sessions/recent
-├─ PUT /api/memory/sessions/recent
-├─ POST /api/memory/sessions/recent/clear
-└─ DELETE /api/memory/sessions/recent/{session_id}
-
-Visual context
-├─ GET /api/memory/visual
-├─ PUT /api/memory/visual
-├─ PATCH /api/memory/visual
-├─ POST /api/memory/visual/observations
-├─ POST /api/memory/visual/clear
-└─ DELETE /api/memory/visual/observations/{observation_id}
+backend/data/qmeet_focus.json
 ```
 
-## Memory model
+or the path configured through `QMEET_FOCUS_FILE`.
 
-The backend memory store keeps:
+### Canonical Focus model
+
+Focus is event-backed. Verified operations append canonical Focus events, and current state is reduced from that event history.
+
+The canonical lifecycle covers behaviors such as:
+
+- start
+- update title/objective/mode
+- add structured context
+- set or update next action
+- link/create Focus tasks
+- track linked-task progress
+- save summaries
+- end or complete
+- resume prior Focus
+- prepare from Calendar context
+
+Important modules include:
+
+```text
+backend/app/focus/store.py
+backend/app/focus/models.py
+backend/app/focus/lifecycle.py
+backend/app/focus/context.py
+backend/app/focus/tasks.py
+backend/app/focus/task_progress.py
+backend/app/focus/task_lineage.py
+backend/app/focus/summary.py
+backend/app/focus/calendar_prep.py
+backend/app/focus/planner.py
+backend/app/focus/middleware.py
+backend/app/focus/native_read_middleware.py
+backend/app/focus/canonical_work_context_source.py
+```
+
+### Canonical Focus vs legacy Memory
+
+Older QMeet versions stored an active session inside the general Memory document. That representation may still be projected for compatibility with older UI and coaching code, but the canonical Focus store is the only runtime authority for whether a Focus is active and what its authoritative state is.
+
+Normal runtime should not enable legacy Focus bootstrap. `QMEET_ENABLE_LEGACY_FOCUS_BOOTSTRAP=1` is an explicit migration/bootstrap escape hatch, not a normal operating mode.
+
+### Focus next-step proposals
+
+Daily Brief can propose a concrete next step when the active canonical Focus does not already have one. A short immediate acknowledgement such as `okay lets do it` can accept that proposal only while it is fresh and still matches the same canonical Focus state.
+
+The proposal is one-turn conversational context, not durable Memory. Any unrelated next turn expires it. Acceptance consumes the proposal and re-verifies canonical Focus identity/status/current next action before writing `NEXT_ACTION_SET`.
+
+If no fresh proposal exists, the same natural acknowledgement is forced back to normal conversation rather than becoming an unspecified Focus mutation.
+
+### Current proposal-isolation seam
+
+As of this audit, `backend/app/focus_proposal.py` still stores the pending proposal in one process-global `_PENDING_PROPOSAL` protected by a lock. The acceptance behavior is canonical and fail-closed, but the ephemeral proposal itself is not yet scoped per conversation/session.
+
+That means multi-conversation isolation is a known next architectural seam: one conversation should eventually be unable to overwrite or expire another conversation's pending proposal.
+
+Do not work around this by persisting proposals into general Memory or by weakening canonical verification. The correct direction is conversation-scoped ephemeral ownership.
+
+## General Memory, tasks, notes, and visual context
+
+General Memory remains separate from canonical Focus.
+
+Prototype-local general data lives in:
 
 ```text
 backend/data/qmeet_memory.json
-├─ version
-├─ tasks
-├─ notes
-├─ recentActions
-├─ activeSession
-├─ recentFocusSessions
-└─ visualContext
 ```
 
-### ActiveSession
+It contains non-Focus state such as:
 
-```ts
-type ActiveSession = {
-  id: string;
-  title: string;
-  mode: 'general' | 'coding' | 'meeting' | 'planning' | 'research' | 'personal';
-  goal: string;
-  startedAt: string;
-  updatedAt: string;
-  pinnedNoteIds: string[];
-  linkedTaskIds: string[];
-  summary?: string | null;
-};
-```
+- global tasks
+- notes
+- recent actions/history
+- visual observations
+- compatibility projections used by older UI seams
 
-### RecentFocusSession
+The Memory UI has intentionally moved away from broad reset behavior. General Memory cleanup must not imply ownership of canonical Focus state.
 
-```ts
-type RecentFocusSession = {
-  id: string;
-  title: string;
-  mode: ActiveSession['mode'];
-  goal: string;
-  startedAt: string;
-  endedAt: string;
-  pinnedNoteIds: string[];
-  linkedTaskIds: string[];
-  summary?: string | null;
-  summaryNoteId?: string | null;
-};
-```
+Global task reads are task-owned, not Focus-owned, unless the user specifically asks about tasks linked to the current Focus.
 
-### VisualContext
+## Calendar
 
-```ts
-type VisualContext = {
-  enabled: boolean;
-  lastObservation: VisualObservation | null;
-  recentObservations: VisualObservation[];
-};
+Google Calendar is a separate deterministic capability. Natural-language interpretation can determine the requested operation and semantic target, but Calendar state and target resolution remain authoritative in Calendar code.
 
-type VisualObservation = {
-  id: string;
-  source: 'camera' | 'screen' | 'manual';
-  summary: string;
-  capturedAt: string;
-  confidence?: number | null;
-  relatedFocusId?: string | null;
-};
-```
-
-The frontend treats backend memory as primary and browser `localStorage` as fallback. This lets the Raspberry Pi frontend and laptop frontend share the same backend memory when pointed at the same FastAPI server.
-
-Important memory rules:
+The backend now has dedicated interpretation/service seams for relative and absolute dates, range reads, creates, edits, and deletes, including:
 
 ```text
-- Backend memory initialization state is checked separately from memory contents.
-- Empty backend arrays can be intentional saved state.
-- Browser fallback migration should only happen when backend memory has not been initialized.
-- Backend writes should be atomic and locked within the FastAPI process.
-- Partial task PATCH operations should preserve omitted fields.
-- Clearing activeSession should archive it into recentFocusSessions when appropriate.
-- Context saves that omit recentFocusSessions should preserve backend history.
-- Context saves that omit visualContext should preserve backend visual context.
-- QMeet stores visual observations as text; raw images are not persisted by default.
+backend/app/calendar_service.py
+backend/app/calendar_read_date_interpreter.py
+backend/app/calendar_range_service.py
+backend/app/calendar_absolute_create_service.py
+backend/app/calendar_absolute_update_service.py
 ```
 
-## Active Context / Focus Session model
+Recent Calendar hardening also preserves explicit user naming. If the user says an event is `called`, `named`, or `titled` something, that explicit title is treated as user-grounded execution data and outranks a conflicting model-proposed title.
 
-The active context layer is the bridge between simple memory, workflow memory, and perception-aware assistance.
+The Calendar panel can navigate arbitrary dates while preserving the existing relative today/tomorrow flows.
+
+## Device/UI ownership
+
+Direct requests such as opening a panel, navigating, or controlling voice belong to the device/UI capability rather than general chat or Focus.
+
+Agent semantics can recognize these requests, but promoted device/UI execution remains bounded by the existing deterministic action vocabulary and frontend runtime controls.
+
+This keeps model reasoning from turning arbitrary text into arbitrary UI execution.
+
+## Search and external information
+
+Requests that explicitly require current external evidence, reviews, verification, or web opinions should be Search-owned rather than answered from model memory.
+
+Search execution remains a deterministic capability after agent classification. Search continuations are grounded in the current result rather than stale prior tool cards.
+
+## State authority table
+
+| State / behavior | Runtime authority | Compatibility / projection role |
+| --- | --- | --- |
+| Active Focus lifecycle | canonical Focus event store | legacy Memory session is read/display compatibility only |
+| Focus next action | canonical Focus state/events | frontend readout formats canonical state |
+| Global tasks | backend Memory/task store | Focus may link task IDs but does not own unrelated global task reads |
+| Notes | backend Memory/note store | Focus summaries may create/link notes through verified flows |
+| Calendar events | Google Calendar + deterministic Calendar services | agent supplies semantic intent, not authoritative event identity |
+| Device/UI state | frontend deterministic controls | agent may choose a supported device/UI action |
+| Search result | Search capability execution | agent decides when external evidence is required |
+| Tool success | verified handler/service receipt | model continuation describes the receipt; it does not manufacture it |
+
+## Important API surfaces
+
+Representative current routes include:
 
 ```text
-Active Focus
-├─ mode
-├─ title
-├─ goal
-├─ linked tasks
-├─ pinned summary notes
-├─ linked visual observations
-├─ recent actions
-└─ eventual richer perception observations
+GET  /health
+GET  /api/status
+POST /api/chat/stream
+POST /api/chat/tool-continuation/stream
+GET  /api/agent/shadow/status
+POST /api/agent/shadow/decide
+POST /api/agent/shadow/plan
+GET  /api/focus/state
+GET  /api/calendar/status
+GET  /api/memory/status
 ```
 
-Current implemented behavior:
+Feature routers expose additional operation-specific endpoints. Treat the router code and tests as authoritative if a route name changes.
+
+## Current transition seams
+
+The main architecture is intentionally transitional rather than fully collapsed into one agent loop.
+
+Areas that still deserve careful treatment include:
+
+1. **Conversation-scoped proposal ownership.** Pending Focus next-step proposals are still process-global ephemeral state.
+2. **Compatibility command paths.** Exact frontend commands and older routing seams remain alongside promoted agent ownership.
+3. **Legacy Focus projections.** They are still needed by some UI/background compatibility code and must stay subordinate to canonical Focus.
+4. **Composite execution coverage.** Composite planning is constrained to promoted atomic actions and should expand only behind deterministic validation.
+5. **Agent naming.** The `shadow` module/route names reflect the migration history even where decisions are now used by promoted runtime behavior.
+
+These are migration seams, not invitations to bypass the safety boundaries above.
+
+## Architectural regression principles
+
+When changing QMeet, regression coverage should prove behavior at the ownership boundary, not just match phrases.
+
+Examples:
+
+- a global task request stays global even when a Focus is active;
+- a Calendar request can use Focus context without becoming a Focus mutation;
+- a model-proposed object target is re-resolved against authoritative state;
+- a stale or ambiguous target cannot be reported as successfully changed;
+- ending Focus prevents stale Memory from resurrecting it;
+- a tool continuation cannot override the newest verified action with old conversation history;
+- an expired Focus proposal acknowledgement remains ordinary conversation;
+- canonical Focus reads expose fields such as `nextAction` even if a compatibility projection does not.
+
+Prefer canonical ownership and deterministic verification over adding isolated phrase-specific exceptions.
+
+## Where to start reading the code
+
+For runtime behavior, a useful order is:
 
 ```text
-- focus can be started, updated, read, ended, and ended with summary
-- focus appears in the top status bar and Memory panel
-- focus can be turned into linked memory tasks
-- focus can be summarized and saved as a note
-- ending focus can guard against losing unsaved progress
-- ended focus sessions archive into recentFocusSessions
-- recent focus sessions can be recalled, listed, removed, cleared, or resumed
-- chat receives neutral active focus context when relevant
-- enhanced recap can send memory/focus/visual context into the normal chat stream
-- latest visual observation can be linked to the active focus
-- focus summaries include linked visual observations
+src/app/App.tsx
+src/app/api.ts
+backend/app/main.py
+backend/app/routers/agent_shadow.py
+backend/app/qmeet_agent_shadow.py
+backend/app/qmeet_agent_composite.py
+backend/app/tool_continuation.py
+backend/app/focus/
+backend/app/memory_store.py
+backend/app/calendar_service.py
+backend/tests/
 ```
 
-## Visual context model
-
-Phase 14 and Phase 15 added the first visual loop:
-
-```text
-manual visual note
-or camera snapshot
-or uploaded image
-   -> backend/model description
-   -> VisualObservation text record
-   -> Memory panel / chat context / focus link
-```
-
-Sources:
-
-```text
-manual  user-provided visual note
-camera  webcam snapshot analyzed through backend/OpenAI
-screen  reserved for future screen/context observation support
-```
-
-Current camera/upload behavior:
-
-```text
-- camera preview uses browser getUserMedia
-- Snapshot captures one frame in memory
-- Analyze Snapshot sends image bytes to /api/visual/analyze-snapshot
-- backend uses OpenAI vision when configured
-- QMeet saves only returned text description
-- uploaded images use same analysis route
-- uploaded image UI intentionally avoids embedded previews because preview rendering was inconsistent
-```
-
-Known caveats:
-
-```text
-- Webcam preview can blur on some browser/device combinations.
-- Reset preview performs a close/reopen-style lifecycle inside the overlay and is the current workaround.
-- A blurry preview does not necessarily mean the actual snapshot or OpenAI analysis is blurry.
-- Uploaded images are analyzed from their original file blob, not from any embedded preview rendering.
-- Use Open original for inspecting an uploaded file.
-```
-
-## Focus nudges and actions
-
-The Memory panel includes focus nudges and common focus actions.
-
-```text
-No active focus
-└─ suggest starting a focus
-
-Active focus without goal
-└─ suggest setting a goal
-
-Active focus with goal but no linked tasks
-└─ suggest turning focus into tasks
-
-Active focus with linked tasks
-└─ suggest next open linked task
-
-Active focus with no saved note after time/progress
-└─ suggest saving a progress note
-```
-
-Common focus actions are available directly when a focus exists:
-
-```text
-Create tasks
-Save note
-End with summary
-Link visual
-```
-
-## Chat streaming model
-
-Normal chat uses `/api/chat/stream` with server-sent events.
-
-Expected event types:
-
-```text
-start
-chunk
-done
-error
-```
-
-The frontend SSE parser should tolerate:
-
-```text
-- LF and CRLF line endings
-- multiple data: lines
-- final buffered events without a trailing blank line
-- explicit terminal done/error events
-```
-
-If a stream closes before `done` or `error`, the frontend should surface a clear stream-closed error and reset active response state.
-
-Focus-aware and visual-aware chat context is neutral: QMeet passes the active focus and last saved visual observation as user-provided context, not as a custom safety filter or policy layer. Normal assistant safety still applies at the model layer.
-
-## Recap model
-
-Phase 13F has two recap paths:
-
-```text
-Local recap
-├─ deterministic memory summary
-├─ active focus
-├─ recent ended focus sessions
-├─ tasks
-├─ notes
-└─ recent actions
-
-Enhanced recap
-├─ compact memory snapshot
-├─ visual context when available
-├─ sent through the normal chat stream
-├─ asks model for concise recap
-├─ asks what changed
-├─ lists open loops
-└─ suggests next action
-```
-
-## Camera/upload privacy model
-
-```text
-QMeet local app
-├─ does not store raw webcam snapshots in memory
-├─ does not store uploaded image files in memory
-├─ stores only generated text observations
-└─ links observations to focus through relatedFocusId when requested
-
-Backend
-├─ receives image bytes for /api/visual/analyze-snapshot
-├─ validates content type and size
-├─ sends image to OpenAI vision when configured
-└─ returns text summary without saving raw image
-```
-
-OpenAI receives images for analysis when OpenAI vision is enabled. API data is not used for model training by default, but may be temporarily retained under OpenAI's API data-retention policy depending on account settings.
-
-## Google Calendar model
-
-QMeet supports both local fallback calendar events and connected Google Calendar events. Calendar writes are guarded by confirmations where appropriate, especially delete/edit operations.
-
-For connected Google Calendar, confirmed cold-start edit/delete flows should refresh Google Calendar and resolve the target from the fresh result instead of relying only on React state that may not have committed yet.
-
-## Deployment notes
-
-The app is still a prototype. Likely future deployment improvements:
-
-```text
-├─ environment validation on backend startup
-├─ production CORS tightening
-├─ more robust memory storage than local JSON
-├─ Pi startup service hardening
-├─ frontend error boundary
-├─ automated endpoint tests
-├─ calendar-aware chat context
-├─ richer active context/event timeline
-├─ optional screen observation model
-└─ optional continuous/periodic camera awareness with explicit user controls
-```
+For setup and test commands, use `README.md` and `docs/development.md` rather than this architecture document.

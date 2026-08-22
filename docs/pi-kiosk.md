@@ -1,193 +1,319 @@
-# QMeet Phase 8E — Raspberry Pi Kiosk Startup
+# QMeet Raspberry Pi Kiosk Guide
 
-This phase keeps laptop development unchanged. The React app still runs normally on the laptop with `npm run dev`, Chrome DevTools, and responsive testing at `1024 × 600`.
+QMeet can run as a fullscreen Chromium kiosk on a Raspberry Pi while the React frontend and FastAPI backend are hosted either on the Pi itself or on another machine on the same network.
 
-The Pi-specific part is only a launcher script that opens Chromium fullscreen/kiosk at the QMeet URL.
-
-## Files to add
+Normal laptop development does not require any kiosk configuration. The Pi-specific behavior is isolated in:
 
 ```text
 scripts/pi-kiosk-start.sh
-docs/pi-kiosk.md
+docs/pi-kiosk-autostart-example.desktop
 ```
 
-## Laptop development stays the same
+## Recommended development layout
 
-On the laptop, keep using the normal two-terminal workflow.
-
-Backend:
-
-```powershell
-cd C:\Users\EvenR\Documents\Work\Chascii\React\QMeet1-1\backend
-.\.venv\Scripts\Activate.ps1
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-Frontend:
-
-```powershell
-cd C:\Users\EvenR\Documents\Work\Chascii\React\QMeet1-1
-npm run dev -- --host 0.0.0.0
-```
-
-Then test in Chrome DevTools responsive mode at:
+For active development, the simplest setup is usually:
 
 ```text
-1024 × 600
+Development machine
+|- FastAPI backend :8000
+`- Vite frontend   :5173
+
+Raspberry Pi
+`- Chromium kiosk -> http://DEVELOPMENT_MACHINE_IP:5173
 ```
 
-## Before testing from the Pi
+The Pi browser loads the frontend from the development machine. The frontend must then be configured to call the development machine's backend address, not `localhost`.
 
-The Pi needs to reach the laptop over the local network.
+## 1. Find the host machine LAN address
 
-Find the laptop IPv4 address in PowerShell:
+On Windows:
 
 ```powershell
 ipconfig
 ```
 
-Look for the IPv4 address on the active Wi-Fi/Ethernet adapter. It will usually look like:
-
-```text
-192.168.x.x
-```
-
-On the laptop, make sure the frontend `.env.local` points to the laptop backend, not only localhost, when testing from another device:
-
-```env
-VITE_QMEET_API_URL=http://YOUR_LAPTOP_IP:8000
-```
-
-Restart Vite after changing `.env.local`.
-
-## Run kiosk mode on the Pi
-
-Copy `scripts/pi-kiosk-start.sh` into the repo on the Pi, then run:
+On Linux/macOS:
 
 ```bash
-chmod +x scripts/pi-kiosk-start.sh
-QMEET_URL=http://YOUR_LAPTOP_IP:5173 ./scripts/pi-kiosk-start.sh
-```
-
-Example:
-
-```bash
-QMEET_URL=http://192.168.1.50:5173 ./scripts/pi-kiosk-start.sh
-```
-
-## Optional scale override
-
-Default scale is `1`. If the UI is too large or too small on the Pi display, test:
-
-```bash
-QMEET_SCALE=0.9 QMEET_URL=http://YOUR_LAPTOP_IP:5173 ./scripts/pi-kiosk-start.sh
+ip addr
 ```
 
 or:
 
 ```bash
-QMEET_SCALE=1.1 QMEET_URL=http://YOUR_LAPTOP_IP:5173 ./scripts/pi-kiosk-start.sh
+ifconfig
 ```
 
-Use this only if the CSS layout is already correct but Chromium/device scaling looks off.
-
-## Optional: close old Chromium first
-
-If Chromium is already running and kiosk mode behaves strangely:
-
-```bash
-QMEET_KILL_CHROMIUM=1 QMEET_URL=http://YOUR_LAPTOP_IP:5173 ./scripts/pi-kiosk-start.sh
-```
-
-## Optional autostart later
-
-When the Pi test works manually, you can make it boot straight into QMeet.
-
-Create this file on the Pi:
-
-```bash
-mkdir -p ~/.config/autostart
-nano ~/.config/autostart/qmeet-kiosk.desktop
-```
-
-Example contents:
-
-```ini
-[Desktop Entry]
-Type=Application
-Name=QMeet Kiosk
-Exec=/home/pi/QMeet1-1/scripts/pi-kiosk-start.sh
-Terminal=false
-X-GNOME-Autostart-enabled=true
-```
-
-Adjust the `Exec=` path to wherever the repo/script lives on the Pi.
-
-For autostart with a laptop-hosted frontend, edit the script and set the default URL, or put a wrapper script around it:
-
-```bash
-#!/usr/bin/env bash
-export QMEET_URL=http://YOUR_LAPTOP_IP:5173
-exec /home/pi/QMeet1-1/scripts/pi-kiosk-start.sh
-```
-
-## What not to change yet
-
-Do not hardcode kiosk behavior into React yet.
-
-Avoid:
+Use the LAN IPv4 address reachable from the Pi, for example:
 
 ```text
-- forcing fullscreen from React
-- hiding the cursor globally during laptop dev
-- blocking right-click/devtools
-- hardcoding Pi-only URLs in the app
-- removing normal browser testing behavior
+192.168.1.50
 ```
 
-Keep kiosk behavior in Pi scripts until the tablet software is ready to become a packaged device image.
+## 2. Configure the frontend for LAN access
 
-## Troubleshooting
-
-### Pi cannot open QMeet
-
-Check from the Pi:
-
-```bash
-curl http://YOUR_LAPTOP_IP:5173
-curl http://YOUR_LAPTOP_IP:8000/health
-```
-
-If those fail:
-
-```text
-- make sure laptop and Pi are on the same network
-- run Vite with --host 0.0.0.0
-- run FastAPI with --host 0.0.0.0
-- check Windows firewall prompts for Node/Vite and Python/Uvicorn
-- confirm the laptop IP did not change
-```
-
-### Frontend loads but backend commands fail
-
-Check `.env.local` on the laptop:
+On the machine running QMeet, set `.env.local`:
 
 ```env
-VITE_QMEET_API_URL=http://YOUR_LAPTOP_IP:8000
+VITE_QMEET_API_URL=http://192.168.1.50:8000
 ```
 
-Then restart Vite.
+Replace the example IP with the host machine's actual address.
 
-### Mic/voice does not work in kiosk
+Restart Vite after changing `.env.local`:
 
-Open QMeet once in normal Chromium on the Pi and allow microphone permission. The script uses a dedicated Chromium profile at:
+```bash
+npm run dev -- --host 0.0.0.0
+```
+
+The `--host 0.0.0.0` flag is important because the Pi must be able to reach Vite over the LAN.
+
+Run the backend so it is also reachable on the network:
+
+```bash
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+## 3. Verify connectivity from the Pi
+
+Before using kiosk mode, open Chromium normally on the Pi and test:
+
+```text
+http://192.168.1.50:5173
+```
+
+Also verify the backend if needed:
+
+```text
+http://192.168.1.50:8000/health
+```
+
+Do not debug the kiosk script until these URLs work in an ordinary Pi browser tab.
+
+If they do not load, check:
+
+- both devices are on the same reachable network;
+- Vite and FastAPI are listening on `0.0.0.0`;
+- the host firewall allows ports `5173` and `8000`;
+- `.env.local` uses the host LAN IP, not `localhost`;
+- the IP address has not changed since the previous session.
+
+## 4. Launch the kiosk
+
+On the Pi, from the QMeet repository:
+
+```bash
+chmod +x scripts/pi-kiosk-start.sh
+QMEET_URL=http://192.168.1.50:5173 ./scripts/pi-kiosk-start.sh
+```
+
+The launcher searches for these browser executables in order:
+
+```text
+chromium-browser
+chromium
+google-chrome
+google-chrome-stable
+```
+
+If none are installed, the script exits with an explanatory error.
+
+## Launcher options
+
+`pi-kiosk-start.sh` supports these environment variables:
+
+### `QMEET_URL`
+
+Frontend URL to open.
+
+Default:
+
+```text
+http://localhost:5173
+```
+
+Remote-development example:
+
+```bash
+QMEET_URL=http://192.168.1.50:5173 ./scripts/pi-kiosk-start.sh
+```
+
+### `QMEET_SCALE`
+
+Chromium device scale factor.
+
+Default:
+
+```text
+1
+```
+
+Example:
+
+```bash
+QMEET_SCALE=1.1 QMEET_URL=http://192.168.1.50:5173 ./scripts/pi-kiosk-start.sh
+```
+
+Use this only if the 1024x600 layout needs display-specific scaling.
+
+### `QMEET_USER_DATA_DIR`
+
+Persistent Chromium profile directory.
+
+Default:
 
 ```text
 ~/.config/qmeet-kiosk-chromium
 ```
 
-Permissions should persist there after being accepted.
+This profile is important for microphone/camera permission persistence and other kiosk browser state.
 
-### Display sleeps
+### `QMEET_KILL_CHROMIUM`
 
-The script tries to disable X11 screen blanking with `xset` if available. If the display still sleeps, adjust Raspberry Pi desktop power/display settings later.
+Set to `1` to kill existing Chromium/Chrome processes before launch.
+
+Default:
+
+```text
+0
+```
+
+Example:
+
+```bash
+QMEET_KILL_CHROMIUM=1 QMEET_URL=http://192.168.1.50:5173 ./scripts/pi-kiosk-start.sh
+```
+
+Use it carefully if the Pi is running other Chromium sessions.
+
+## Microphone and camera permissions
+
+QMeet uses browser APIs for voice input and camera capture. Chromium may require permission the first time each is used.
+
+Because the kiosk launcher uses a persistent user-data directory, permissions can survive subsequent kiosk launches.
+
+A practical setup is:
+
+1. launch QMeet once in normal Chromium using the same profile if needed;
+2. allow microphone and camera access;
+3. close Chromium;
+4. start the kiosk launcher again.
+
+If permissions become corrupted or you deliberately want a clean kiosk profile, stop Chromium and remove or rename:
+
+```text
+~/.config/qmeet-kiosk-chromium
+```
+
+You will need to grant browser permissions again afterward.
+
+## Autostart on login
+
+A template exists at:
+
+```text
+docs/pi-kiosk-autostart-example.desktop
+```
+
+Copy it to the Pi autostart directory:
+
+```bash
+mkdir -p ~/.config/autostart
+cp docs/pi-kiosk-autostart-example.desktop ~/.config/autostart/qmeet-kiosk.desktop
+```
+
+Then edit the copied file so both the repository path and `QMEET_URL` match the Pi installation.
+
+A typical desktop entry is:
+
+```ini
+[Desktop Entry]
+Type=Application
+Name=QMeet Kiosk
+Exec=/usr/bin/env QMEET_URL=http://192.168.1.50:5173 /home/pi/QMeet1/scripts/pi-kiosk-start.sh
+Terminal=false
+X-GNOME-Autostart-enabled=true
+```
+
+Do not assume `/home/pi/QMeet1` is correct on every machine. Use the actual clone location.
+
+If network availability is slow at login, the desktop environment may start Chromium before the host is reachable. In that case, use the Pi's normal desktop autostart/delay mechanism or a systemd user service rather than adding retry logic to the QMeet application itself.
+
+## Running everything on the Pi
+
+QMeet can also be run with both Vite/FastAPI on the Pi. In that case:
+
+```env
+VITE_QMEET_API_URL=http://localhost:8000
+```
+
+and the kiosk launcher can use its default URL:
+
+```bash
+./scripts/pi-kiosk-start.sh
+```
+
+For a production-like Pi deployment, serving a built frontend is preferable to leaving the Vite development server running indefinitely. The current repository launcher is intentionally a prototype/development kiosk helper rather than a full deployment system.
+
+## Screen blanking
+
+The launcher makes a best-effort attempt to disable X11 screen blanking with `xset` when available. This is harmless when `xset` is unavailable, but it may not control blanking under every desktop/Wayland configuration.
+
+If the display still sleeps, configure the Pi desktop/power-management settings directly.
+
+## Kiosk troubleshooting
+
+### Chromium was not found
+
+Install Chromium or Chrome and verify one of these commands resolves:
+
+```bash
+command -v chromium-browser
+command -v chromium
+command -v google-chrome
+command -v google-chrome-stable
+```
+
+### QMeet opens but backend actions fail
+
+The Pi is only displaying the frontend. Check the frontend build/runtime API address:
+
+```env
+VITE_QMEET_API_URL=http://HOST_IP:8000
+```
+
+Then verify `http://HOST_IP:8000/health` from the Pi.
+
+### Voice or camera works on the laptop but not the Pi
+
+Check site permissions in the kiosk Chromium profile. Browser media permissions can differ by profile and origin.
+
+Also remember that changing from one host IP to another changes the web origin from Chromium's perspective and may require new permissions.
+
+### The UI scale is wrong
+
+Try a small `QMEET_SCALE` adjustment rather than changing application CSS only for one display:
+
+```bash
+QMEET_SCALE=0.9 QMEET_URL=http://HOST_IP:5173 ./scripts/pi-kiosk-start.sh
+```
+
+or:
+
+```bash
+QMEET_SCALE=1.1 QMEET_URL=http://HOST_IP:5173 ./scripts/pi-kiosk-start.sh
+```
+
+### The kiosk launches an old/broken browser session
+
+Try:
+
+```bash
+QMEET_KILL_CHROMIUM=1 QMEET_URL=http://HOST_IP:5173 ./scripts/pi-kiosk-start.sh
+```
+
+If the problem is profile-specific, stop Chromium and reset `QMEET_USER_DATA_DIR` only after understanding that stored permissions/settings will be lost.
+
+## Security note
+
+The current kiosk setup is for prototype LAN use. Do not expose the FastAPI development server or Vite development server directly to the public internet. Tighten backend CORS, authentication, secret handling, and deployment configuration before treating QMeet as an internet-facing service.
