@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.agent import AgentUserFacingError, sse_event
+from app.post_action_style import compact_success_continuation
 from app.tool_continuation import (
     ToolContinuationRequest,
     continuation_allowed_for_capability,
@@ -41,8 +42,19 @@ async def tool_continuation_stream(req: ToolContinuationRequest):
 
         try:
             yield sse_event("start", {"ok": True, "continuation": True})
+
+            # Phase 21I2: successful tool continuations are short enough that we
+            # can buffer the prose, remove only a generic trailing offer/question,
+            # and then emit the substantive response unchanged. Execution and
+            # verification already finished before this endpoint is entered.
+            reply_parts: list[str] = []
             async for chunk in stream_tool_continuation(req):
-                yield sse_event("chunk", {"text": chunk})
+                reply_parts.append(chunk)
+
+            reply = compact_success_continuation("".join(reply_parts))
+            if reply:
+                yield sse_event("chunk", {"text": reply})
+
             yield sse_event("done", {"ok": True, "continuation": True})
         except AgentUserFacingError as exc:
             yield sse_event("error", {"message": str(exc)})

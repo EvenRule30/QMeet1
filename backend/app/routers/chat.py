@@ -1,6 +1,5 @@
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-
 from app.agent import (
     AgentUserFacingError,
     generate_reply,
@@ -10,6 +9,7 @@ from app.agent import (
     stream_reply,
 )
 from app.conversation_lane import ConversationLaneRequest, stream_conversation_lane
+from app.daily_brief import generate_daily_brief, is_daily_brief_request, stream_daily_brief
 from app.schemas import ChatRequest, ChatResponse
 from app.work_context import (
     WorkContextError,
@@ -18,7 +18,6 @@ from app.work_context import (
     prepare_background_chat_message,
     record_background_assistant_reply,
 )
-
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
@@ -49,8 +48,13 @@ async def chat(req: ChatRequest):
     message = req.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
-
     try:
+        if is_daily_brief_request(message):
+            reply = await generate_daily_brief(
+                ConversationLaneRequest(userMessage=message)
+            )
+            return ChatResponse(reply=reply, state="speaking")
+
         contextual_message, _visible_user_message = prepare_background_chat_message(
             message
         )
@@ -75,6 +79,15 @@ async def chat_stream(req: ChatRequest):
     async def event_generator():
         assistant_reply_parts: list[str] = []
         try:
+            if is_daily_brief_request(message):
+                yield sse_event("start", {"ok": True})
+                async for chunk in stream_daily_brief(
+                    ConversationLaneRequest(userMessage=message)
+                ):
+                    yield sse_event("chunk", {"text": chunk})
+                yield sse_event("done", {"ok": True})
+                return
+
             contextual_message, _visible_user_message = prepare_background_chat_message(
                 message
             )
@@ -106,7 +119,6 @@ async def chat_stream(req: ChatRequest):
 @router.post("/chat/conversation/stream")
 async def conversation_stream(req: ConversationLaneRequest):
     """Read-only visible conversation lane after deterministic routing.
-
     This route intentionally does not call the legacy background Focus wrapper.
     Its path also remains outside the Focus/background middleware observation
     allowlists, so a turn already classified as conversation cannot gain a
@@ -116,7 +128,12 @@ async def conversation_stream(req: ConversationLaneRequest):
     async def event_generator():
         try:
             yield sse_event("start", {"ok": True})
-            async for chunk in stream_conversation_lane(req):
+            streamer = (
+                stream_daily_brief
+                if is_daily_brief_request(req.userMessage)
+                else stream_conversation_lane
+            )
+            async for chunk in streamer(req):
                 yield sse_event("chunk", {"text": chunk})
             yield sse_event("done", {"ok": True})
         except AgentUserFacingError as exc:
