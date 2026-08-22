@@ -1,11 +1,18 @@
 import type { CommandMatch } from '../commands';
+import { rememberMemoryUiContext } from './memoryUiContext';
 
 const GENERIC_FOCUS_REUSED_PREFIX = 'focus already matches:';
+const FOCUS_MEMORY_CONTEXT_COMMANDS = new Set([
+  'read-focus-session',
+  'summarize-focus-session',
+  'start-focus-session',
+  'update-focus-session',
+  'resume-last-focus-session',
+]);
 
 function clean(value: unknown): string {
   return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
 }
-
 /**
  * Keep canonical verification authoritative while making a verified no-op
  * receipt precise enough for the UI and post-tool continuation model.
@@ -19,8 +26,11 @@ export function normalizeVerifiedFocusToolReceipt(
   commandMatch: CommandMatch,
   receipt: string,
 ): string {
-  if (commandMatch.command !== 'update-focus-session') return receipt;
+  if (FOCUS_MEMORY_CONTEXT_COMMANDS.has(commandMatch.command)) {
+    rememberMemoryUiContext('focus');
+  }
 
+  if (commandMatch.command !== 'update-focus-session') return receipt;
   const normalizedReceipt = clean(receipt);
   if (!normalizedReceipt.toLowerCase().startsWith(GENERIC_FOCUS_REUSED_PREFIX)) {
     return receipt;
@@ -37,7 +47,6 @@ export function normalizeVerifiedFocusToolReceipt(
     goal ? 'goal' : '',
     mode ? 'mode' : '',
   ].filter(Boolean);
-
   if (requested.length === 1 && goal) {
     return `Focus goal already matches: ${goal}.`;
   }

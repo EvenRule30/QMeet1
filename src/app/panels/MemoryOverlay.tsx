@@ -3,6 +3,7 @@ import {
   type RefObject,
   useCallback,
   useEffect,
+  useRef,
   useState,
 } from 'react';
 import type {
@@ -14,6 +15,12 @@ import type {
 } from '../types';
 import type { ResultToast } from '../lib/toastUtils';
 import { formatMemoryTime } from '../lib/memoryUtils';
+import {
+  consumeMemoryUiContext,
+  MEMORY_UI_CONTEXT_EVENT,
+  readMemoryUiContextEventTarget,
+  type MemoryUiContextTarget,
+} from '../lib/memoryUiContext';
 import {
   clearVisualContext,
   deleteVisualObservationById,
@@ -413,6 +420,11 @@ export function MemoryOverlay({
   onClose,
 }: MemoryOverlayProps) {
   const [activeSession, setActiveSession] = useState(readStoredActiveSession);
+  const [memoryUiTarget, setMemoryUiTarget] = useState<MemoryUiContextTarget | null>(
+    () => consumeMemoryUiContext(),
+  );
+  const focusCardRef = useRef<HTMLElement | null>(null);
+  const tasksCardRef = useRef<HTMLElement | null>(null);
   const [recentFocusSessions, setRecentFocusSessions] = useState<
     RecentFocusSession[]
   >([]);
@@ -497,6 +509,53 @@ export function MemoryOverlay({
   useEffect(() => {
     void loadVisualContext();
   }, [loadVisualContext]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    let clearHighlightTimer: number | null = null;
+    let pendingFrame: number | null = null;
+
+    const applyMemoryUiTarget = (target: MemoryUiContextTarget | null) => {
+      if (!target) return;
+      setMemoryUiTarget(target);
+
+      if (pendingFrame !== null) {
+        window.cancelAnimationFrame(pendingFrame);
+      }
+      if (clearHighlightTimer !== null) {
+        window.clearTimeout(clearHighlightTimer);
+      }
+
+      pendingFrame = window.requestAnimationFrame(() => {
+        const element =
+          target === 'tasks' ? tasksCardRef.current : focusCardRef.current;
+        element?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+      clearHighlightTimer = window.setTimeout(() => {
+        setMemoryUiTarget(null);
+      }, 1800);
+    };
+
+    applyMemoryUiTarget(memoryUiTarget);
+
+    const handleMemoryUiContext = (event: Event) => {
+      const eventTarget = readMemoryUiContextEventTarget(event);
+      const storedTarget = consumeMemoryUiContext();
+      applyMemoryUiTarget(eventTarget ?? storedTarget);
+    };
+
+    window.addEventListener(MEMORY_UI_CONTEXT_EVENT, handleMemoryUiContext);
+    return () => {
+      if (pendingFrame !== null) {
+        window.cancelAnimationFrame(pendingFrame);
+      }
+      if (clearHighlightTimer !== null) {
+        window.clearTimeout(clearHighlightTimer);
+      }
+      window.removeEventListener(MEMORY_UI_CONTEXT_EVENT, handleMemoryUiContext);
+    };
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -617,7 +676,12 @@ export function MemoryOverlay({
             </div>
           </section>
 
-          <section className="memory-remaster-card memory-remaster-focus-card">
+          <section
+            ref={focusCardRef}
+            className={`memory-remaster-card memory-remaster-focus-card${
+              memoryUiTarget === 'focus' ? ' memory-remaster-context-target' : ''
+            }`}
+          >
             <div className="memory-remaster-section-head">
               <div>
                 <div className="memory-remaster-section-label">Current Focus</div>
@@ -734,7 +798,12 @@ export function MemoryOverlay({
             )}
           </section>
 
-          <section className="memory-remaster-card">
+          <section
+            ref={tasksCardRef}
+            className={`memory-remaster-card${
+              memoryUiTarget === 'tasks' ? ' memory-remaster-context-target' : ''
+            }`}
+          >
             <div className="memory-remaster-section-head memory-remaster-section-head-compact">
               <div>
                 <div className="memory-remaster-section-label">Tasks</div>

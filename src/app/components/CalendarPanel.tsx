@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CalendarBackendStatus, CalendarEvent } from '../types';
 import {
   getAcceptedDateKeysForCalendarView,
@@ -6,6 +6,7 @@ import {
   type CalendarView,
 } from '../lib/dateUtils';
 import { fetchCalendarEventsRange } from '../lib/calendarReadRange';
+import { consumeCalendarPanelDateHint } from '../lib/calendarUiContext';
 
 interface CalendarPanelProps {
   view: CalendarView;
@@ -96,7 +97,6 @@ function getEventSortValue(event: CalendarEvent): number {
   if (!time || time === 'later' || time === 'all day') {
     return Number.MAX_SAFE_INTEGER;
   }
-
   const match = time.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
   if (!match) return Number.MAX_SAFE_INTEGER - 1;
   let hour = Number(match[1]);
@@ -179,12 +179,17 @@ export function CalendarPanel({
   onClose,
 }: CalendarPanelProps) {
   const relativeViewDateKey = getDateKeyForCalendarView(view);
-  const [selectedDateKey, setSelectedDateKey] = useState(relativeViewDateKey);
+  const [selectedDateKey, setSelectedDateKey] = useState(
+    () => consumeCalendarPanelDateHint() ?? relativeViewDateKey,
+  );
+  const previousViewRef = useRef(view);
   const [rangeGoogleEvents, setRangeGoogleEvents] = useState<CalendarEvent[]>([]);
   const [rangeLoading, setRangeLoading] = useState(false);
   const [rangeError, setRangeError] = useState('');
 
   useEffect(() => {
+    if (previousViewRef.current === view) return;
+    previousViewRef.current = view;
     setSelectedDateKey(relativeViewDateKey);
   }, [relativeViewDateKey, view]);
 
@@ -199,7 +204,6 @@ export function CalendarPanel({
       setRangeError('');
       return;
     }
-
     setRangeLoading(true);
     setRangeError('');
     try {

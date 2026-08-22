@@ -1,6 +1,6 @@
 import { QMEET_API_BASE_URL } from '../api';
 import type { CalendarEvent } from '../types';
-
+import { rememberCalendarPanelDateHint } from './calendarUiContext';
 
 export type CalendarReadRange = {
   startDate: string;
@@ -54,7 +54,6 @@ export function validateCalendarReadRange(
   ) {
     return null;
   }
-
   const rawStart = record.startDate;
   const rawEnd = record.endDate;
   if (typeof rawStart !== 'string' || typeof rawEnd !== 'string') return null;
@@ -63,7 +62,6 @@ export function validateCalendarReadRange(
   const startUtc = parseIsoDateKey(startDate);
   const endUtc = parseIsoDateKey(endDate);
   if (startUtc === null || endUtc === null || endUtc < startUtc) return null;
-
   const dayCount = Math.floor((endUtc - startUtc) / 86_400_000) + 1;
   if (dayCount < 1 || dayCount > MAX_CALENDAR_READ_RANGE_DAYS) return null;
   return { startDate, endDate };
@@ -119,6 +117,7 @@ export async function fetchCalendarEventsRange(
   if (!validated) {
     throw new Error('Invalid Calendar read range.');
   }
+
   const params = new URLSearchParams({
     startDate: validated.startDate,
     endDate: validated.endDate,
@@ -142,7 +141,6 @@ export async function fetchCalendarEventsRange(
       detail || `Calendar range read failed with HTTP ${response.status}.`,
     );
   }
-
   const payload = (await response.json()) as CalendarRangeEventsResponse;
   const responseRange = validateCalendarReadRange({
     startDate: payload.startDate,
@@ -182,7 +180,6 @@ export function describeCalendarReadRange(range: CalendarReadRange): string {
   if (validated.startDate === validated.endDate) {
     return formatSingleDate(validated.startDate, true);
   }
-
   const start = dateForLabel(validated.startDate);
   const end = dateForLabel(validated.endDate);
   const sameYear = start.getUTCFullYear() === end.getUTCFullYear();
@@ -195,7 +192,6 @@ export function describeCalendarReadRange(range: CalendarReadRange): string {
     }).format(start);
     return `${month} ${start.getUTCDate()}–${end.getUTCDate()}, ${end.getUTCFullYear()}`;
   }
-
   const startLabel = new Intl.DateTimeFormat(undefined, {
     month: 'long',
     day: 'numeric',
@@ -218,6 +214,9 @@ export function formatCalendarRangeReadout(options: {
 }): string {
   const range = validateCalendarReadRange(options.range);
   if (!range) return 'I could not validate that Calendar date range.';
+  if (range.startDate === range.endDate) {
+    rememberCalendarPanelDateHint(range.startDate);
+  }
   const events = filterCalendarEventsForRange(options.events, range);
   const rangeLabel = describeCalendarReadRange(range);
   if (events.length === 0) {
@@ -225,7 +224,6 @@ export function formatCalendarRangeReadout(options: {
       ? `No Google Calendar events saved for ${rangeLabel}.`
       : `No calendar events saved for ${rangeLabel}.`;
   }
-
   const lines = [`Calendar for ${rangeLabel}:`];
   let previousDate = '';
   for (const event of events) {
