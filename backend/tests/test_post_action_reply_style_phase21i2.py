@@ -29,6 +29,16 @@ class PostActionReplyStylePhase21I2Tests(unittest.TestCase):
             'The task "Final Regression Task" is now marked done.',
         )
 
+    def test_removes_if_you_want_just_let_me_know_tail(self):
+        text = (
+            'The task “Test Short Reply Two” has been saved successfully as a global task. '
+            'If you want to manage or review your tasks next, just let me know.'
+        )
+        self.assertEqual(
+            compact_success_continuation(text),
+            'The task “Test Short Reply Two” has been saved successfully as a global task.',
+        )
+
     def test_removes_declarative_task_management_tail(self):
         text = (
             'The task "Test Short Reply" has been saved as a global task. '
@@ -48,6 +58,24 @@ class PostActionReplyStylePhase21I2Tests(unittest.TestCase):
             compact_success_continuation(text),
             'The task "Review report" has been saved globally.',
         )
+
+    def test_removes_global_task_focus_bookkeeping_and_followup_offer(self):
+        text = (
+            'The task “Test Short Reply Two” has been saved successfully as a global task. '
+            'It is not linked to any active focus session. '
+            'If you want to manage or review your tasks next, just let me know.'
+        )
+        self.assertEqual(
+            compact_success_continuation(text),
+            'The task “Test Short Reply Two” has been saved successfully as a global task.',
+        )
+
+    def test_preserves_meaningful_focus_linkage(self):
+        text = (
+            'The task "Prepare slides" was saved. '
+            'It is linked to your active Focus "Presentation prep".'
+        )
+        self.assertEqual(compact_success_continuation(text), text)
 
     def test_preserves_substantive_multi_sentence_reply(self):
         text = (
